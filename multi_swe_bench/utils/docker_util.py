@@ -18,7 +18,7 @@ from typing import Optional, Union
 
 import docker
 
-docker_client = docker.from_env()
+docker_client = docker.from_env(timeout=600)
 
 
 def exists(image_name: str) -> bool:
