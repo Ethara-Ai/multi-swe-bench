@@ -357,7 +357,22 @@ class CliArgs:
                     if instance_dir.is_dir() and instance_dir.name.startswith("pr-"):
                         try:
                             number = int(instance_dir.name[3:])
-                            task = ReportTask(org, repo, number, instance_dir)
+                            # Look up number_interval and tag from dataset
+                            task_id = f"{org}/{repo}:pr-{number}"
+                            number_interval = ""
+                            tag = ""
+                            try:
+                                if hasattr(self, '_dataset') and task_id in self._dataset:
+                                    ds = self._dataset[task_id]
+                                    number_interval = getattr(ds, 'number_interval', '')
+                                    tag = getattr(ds, 'tag', '')
+                                elif hasattr(self, '_raw_dataset') and task_id in self._raw_dataset:
+                                    pr = self._raw_dataset[task_id]
+                                    number_interval = getattr(pr, 'number_interval', '')
+                                    tag = getattr(pr, 'tag', '')
+                            except Exception:
+                                pass
+                            task = ReportTask(org, repo, number, instance_dir, number_interval=number_interval, tag=tag)
                             if not self.check_specific(task.id):
                                 continue
                             if self.check_skip(task.id):
@@ -535,6 +550,8 @@ class CliArgs:
             f.write(final_report.json())
 
     def run_evaluation(self):
+        # Pre-load dataset so collect_report_tasks can look up number_interval
+        _ = self.dataset
         tasks = self.collect_report_tasks(EVALUATION_WORKDIR)
         reports, invalid_reports, failed_tasks = self.gen_eval_reports(tasks)
         final_report = FinalReport.from_reports(reports, invalid_reports, failed_tasks)

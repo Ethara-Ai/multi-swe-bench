@@ -185,6 +185,8 @@ def generate_report(
 @dataclass
 class ReportTask(PullRequestBase):
     instance_dir: Path
+    number_interval: str = ""
+    tag: str = ""
 
     @property
     def instance(self) -> Instance:
@@ -199,6 +201,8 @@ class ReportTask(PullRequestBase):
             resolved_issues=[],
             fix_patch="",
             test_patch="",
+            number_interval=self.number_interval,
+            tag=self.tag,
         )
 
         config = Config(
