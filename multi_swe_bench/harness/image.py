@@ -13,6 +13,7 @@
 #  limitations under the License.
 
 from dataclasses import dataclass
+import re
 from typing import Optional, Union
 
 from multi_swe_bench.harness.pull_request import PullRequest
@@ -36,8 +37,14 @@ class Config:
 class Image:
     # Deprecated Debian images that need archive repository fix
     DEPRECATED_DEBIAN_IMAGES = [
-        "gcc:4", "gcc:5", "gcc:6", "gcc:7", "gcc:8",
-        "debian:buster", "debian:stretch", "debian:jessie",
+        "gcc:4",
+        "gcc:5",
+        "gcc:6",
+        "gcc:7",
+        "gcc:8",
+        "debian:buster",
+        "debian:stretch",
+        "debian:jessie",
     ]
 
     def __lt__(self, other: "Image") -> bool:
@@ -93,7 +100,7 @@ class Image:
         return "\n".join(valid_env_vars)
 
     def dependency(self) -> Union[str, "Image"]:
-        return NotImplementedError
+        raise NotImplementedError
 
     def image_full_name(self) -> str:
         return f"{self.image_name()}:{self.image_tag()}"
@@ -131,9 +138,9 @@ class Image:
         """Override this method to add extra setup commands after git checkout."""
         return ""
 
-    def _is_deprecated_debian(self, base_img: str) -> bool:
-        """Check if the base image uses a deprecated Debian version."""
-        for deprecated in self.DEPRECATED_DEBIAN_IMAGES:
+    @staticmethod
+    def _is_deprecated_debian(base_img: str) -> bool:
+        for deprecated in Image.DEPRECATED_DEBIAN_IMAGES:
             if base_img.startswith(deprecated):
                 return True
         return False
@@ -146,6 +153,7 @@ class Image:
     sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \\
     sed -i '/stretch-updates/d' /etc/apt/sources.list && \\
     sed -i '/buster-updates/d' /etc/apt/sources.list && \\
+    sed -i '/jessie-updates/d' /etc/apt/sources.list && \\
     apt-get update && apt-get install -y --no-install-recommends \\
     {packages_str} \\
     && rm -rf /var/lib/apt/lists/*"""
@@ -155,22 +163,16 @@ class Image:
     && rm -rf /var/lib/apt/lists/*"""
 
     def dockerfile(self) -> str:
-        """Generate Dockerfile with standard format. Repos can override if needed."""
-        # Get base image from dependency()
         base_img = self.dependency()
         if isinstance(base_img, Image):
-            # If dependency returns an Image, this is not a base image class
-            # Return empty - subclass should override
-            raise NotImplementedError("Subclass must override dockerfile() or return a string from dependency()")
+            raise NotImplementedError(
+                "Subclass must override dockerfile() or return a string from dependency()"
+            )
 
-        repo_url = f"https://github.com/{self.pr.org}/{self.pr.repo}.git"
-        base_commit = self.pr.base.sha
-
-        # Default packages
         default_packages = [
             "ca-certificates",
             "curl",
-            "g++",
+            "build-essential",
             "git",
             "gnupg",
             "make",
@@ -179,78 +181,215 @@ class Image:
             "wget",
         ]
 
-        # Combine with extra packages
         all_packages = default_packages + self.extra_packages()
         packages_str = " \\\n    ".join(all_packages)
-
-        # Get apt update command (with deprecated debian fix if needed)
         apt_command = self._get_apt_update_command(packages_str, base_img)
 
-        # Extra setup commands
+        clone_section = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
+
         extra_setup = self.extra_setup()
         extra_setup_section = f"\n{extra_setup}\n" if extra_setup else ""
 
-        return f"""# syntax=docker/dockerfile:1.6
+        return f"""FROM {base_img}
 
-FROM {base_img}
+{self.global_env}
 
-
-ARG TARGETARCH
-ARG REPO_URL="{repo_url}"
-ARG BASE_COMMIT
-
-
-ARG http_proxy=""
-ARG https_proxy=""
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG no_proxy="localhost,127.0.0.1,::1"
-ARG NO_PROXY="localhost,127.0.0.1,::1"
-ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
-
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    http_proxy=${{http_proxy}} \\
-    https_proxy=${{https_proxy}} \\
-    HTTP_PROXY=${{HTTP_PROXY}} \\
-    HTTPS_PROXY=${{HTTPS_PROXY}} \\
-    no_proxy=${{NO_PROXY}} \\
-    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
-    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
-
-
-LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
-      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
-      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
-      org.opencontainers.image.authors="https://www.ethara.ai/"
-
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
 
 {apt_command}
 
-
-RUN mkdir -p /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem
-
-
-RUN --mount=type=secret,id=mitm_ca,required=0 \\
-    if [ -f /run/secrets/mitm_ca ]; then \\
-        cp /run/secrets/mitm_ca /usr/local/share/ca-certificates/mitm-ca.crt && update-ca-certificates; \\
-    fi
-
-
-RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+{clone_section}
 
 WORKDIR /home/{self.pr.repo}
 
 RUN git reset --hard
 RUN git checkout ${{BASE_COMMIT}}
 {extra_setup_section}
+{self.clear_env}
 
 CMD ["/bin/bash"]
 """
+
+
+class DockerfileEnhancer:
+    """Injects standard infrastructure (proxy, MITM, multi-arch, certs, labels)
+    into any Dockerfile at the pipeline level.  Idempotent: skips content that
+    already carries the BuildKit syntax directive.
+
+    Also automatically standardises how the repository source code is fetched:
+    any ``COPY <repo> /home/<repo>`` or hardcoded
+    ``RUN git clone <url> /home/<repo>`` is replaced with
+    ``RUN git clone "${REPO_URL}" /home/<repo>`` followed by
+    ``git reset --hard`` and ``git checkout ${BASE_COMMIT}``.
+    """
+
+    SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1.6"
+
+    _TARGETARCH_ARG = "ARG TARGETARCH"
+
+    _PROXY_ARGS = (
+        'ARG http_proxy=""\n'
+        'ARG https_proxy=""\n'
+        'ARG HTTP_PROXY=""\n'
+        'ARG HTTPS_PROXY=""\n'
+        'ARG no_proxy="localhost,127.0.0.1,::1"\n'
+        'ARG NO_PROXY="localhost,127.0.0.1,::1"\n'
+        'ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"'
+    )
+
+    _ENV_BLOCK = (
+        "ENV DEBIAN_FRONTEND=noninteractive \\\n"
+        "    LANG=C.UTF-8 \\\n"
+        "    http_proxy=${http_proxy} \\\n"
+        "    https_proxy=${https_proxy} \\\n"
+        "    HTTP_PROXY=${HTTP_PROXY} \\\n"
+        "    HTTPS_PROXY=${HTTPS_PROXY} \\\n"
+        "    no_proxy=${NO_PROXY} \\\n"
+        "    SSL_CERT_FILE=${CA_CERT_PATH} \\\n"
+        "    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\\n"
+        "    CURL_CA_BUNDLE=${CA_CERT_PATH}"
+    )
+
+    _DEPRECATED_DEBIAN_FIX = (
+        "RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
+        "    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \\\n"
+        "    sed -i '/stretch-updates/d' /etc/apt/sources.list && \\\n"
+        "    sed -i '/buster-updates/d' /etc/apt/sources.list && \\\n"
+        "    sed -i '/jessie-updates/d' /etc/apt/sources.list"
+    )
+
+    _CERT_SYMLINKS = (
+        "RUN mkdir -p /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem && \\\n"
+        "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\\n"
+        "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\\n"
+        "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem"
+    )
+
+    _MITM_MOUNT = (
+        "RUN --mount=type=secret,id=mitm_ca,required=0 \\\n"
+        "    if [ -f /run/secrets/mitm_ca ]; then \\\n"
+        "        cp /run/secrets/mitm_ca /usr/local/share/ca-certificates/mitm-ca.crt && update-ca-certificates; \\\n"
+        "    fi"
+    )
+
+    @classmethod
+    def enhance(cls, image: "Image", dataset_generation: bool = False) -> str:
+        """Return the image's Dockerfile, enhanced with standard infrastructure
+        when the image is a base image (dependency returns a string).
+        PR images (dependency returns an Image) are returned as-is.
+
+        Always injects ARG REPO_URL (with repo-specific default) and ARG BASE_COMMIT
+        right after ARG TARGETARCH for base images.
+
+        Automatically replaces any COPY or hardcoded git clone of the repo
+        with the standardised git clone + git reset + git checkout pattern.
+        """
+        dep = image.dependency()
+        raw = image.dockerfile()
+        if not isinstance(dep, str):
+            return raw
+        if cls.SYNTAX_DIRECTIVE in raw:
+            return raw
+
+        lines = raw.split("\n")
+        from_idx, from_line = cls._find_from(lines)
+        if from_idx is None or from_line is None:
+            return raw
+
+        base_img = cls._extract_base_image(from_line)
+        infra = cls._infrastructure_block(image, base_img, dataset_generation)
+
+        result = [cls.SYNTAX_DIRECTIVE, ""]
+        result.extend(lines[:from_idx])
+        result.append(from_line)
+        result.append("")
+        result.append(infra)
+        result.extend(lines[from_idx + 1 :])
+
+        final = "\n".join(result)
+        final = cls._standardize_repo_fetch(final, image.pr.repo)
+        return final
+
+    @classmethod
+    def _find_from(cls, lines: list[str]) -> tuple[int, str] | tuple[None, None]:
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.upper().startswith("FROM "):
+                return i, stripped
+        return None, None
+
+    @classmethod
+    def _extract_base_image(cls, from_line: str) -> str:
+        for part in from_line.split()[1:]:  # skip "FROM"
+            if not part.startswith("--"):  # skip --platform and similar flags
+                return part
+        return ""
+
+    @classmethod
+    def _standardize_repo_fetch(cls, content: str, repo: str) -> str:
+        """Replace COPY or hardcoded git clone with standardised
+        git clone using REPO_URL, followed by git reset and git checkout.
+        Lines already using ${REPO_URL} are left untouched.
+        """
+        replacement = (
+            f'RUN git clone "${{REPO_URL}}" /home/{repo}\n'
+            f"\n"
+            f"WORKDIR /home/{repo}\n"
+            f"\n"
+            f"RUN git reset --hard\n"
+            f"RUN git checkout ${{BASE_COMMIT}}\n"
+            f"\n"
+            f'CMD ["/bin/bash"]'
+        )
+
+        # Pattern 1: COPY {repo} /home/{repo}
+        copy_pat = re.compile(
+            rf"^COPY\s+{re.escape(repo)}\s+/home/{re.escape(repo)}\s*$",
+            re.MULTILINE,
+        )
+        content = copy_pat.sub(replacement, content)
+
+        # Pattern 2: RUN git clone <hardcoded-url> /home/{repo}
+        # (skip lines that already use ${REPO_URL})
+        clone_pat = re.compile(
+            rf'^RUN\s+git\s+clone\s+(?!"\$\{{REPO_URL\}}")(\S+)\s+/home/{re.escape(repo)}\s*$',
+            re.MULTILINE,
+        )
+        content = clone_pat.sub(replacement, content)
+
+        return content
+
+    @classmethod
+    def _infrastructure_block(
+        cls, image: "Image", base_img: str, dataset_generation: bool = False
+    ) -> str:
+        org, repo = image.pr.org, image.pr.repo
+        repo_url = f"https://github.com/{org}/{repo}.git"
+
+        # Build ARGs: TARGETARCH, then REPO_URL and BASE_COMMIT, then proxy args
+        build_args = (
+            f"{cls._TARGETARCH_ARG}\n"
+            f'ARG REPO_URL="{repo_url}"\n'
+            f"ARG BASE_COMMIT\n"
+            f"\n{cls._PROXY_ARGS}"
+        )
+
+        label_block = (
+            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
+
+        sections = [build_args, cls._ENV_BLOCK, label_block]
+
+        if Image._is_deprecated_debian(base_img):
+            sections.append(cls._DEPRECATED_DEBIAN_FIX)
+
+        sections.extend([cls._CERT_SYMLINKS, cls._MITM_MOUNT])
+        return "\n\n".join(sections) + "\n"
 
 
 class SWEImageDefault(Image):

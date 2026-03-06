@@ -35,7 +35,7 @@ from multi_swe_bench.harness.constant import (
 )
 from multi_swe_bench.harness.dataset import Dataset
 from multi_swe_bench.harness.gen_report import CliArgs as ReportBuilder
-from multi_swe_bench.harness.image import Config, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, Image
 from multi_swe_bench.harness.instance import Instance
 from multi_swe_bench.harness.pull_request import PullRequestBase, Repository
 from multi_swe_bench.utils import docker_util, git_util
@@ -193,6 +193,13 @@ def get_parser() -> ArgumentParser:
         default=True,
         help="The dataset is constructed by human or not",
     )
+    parser.add_argument(
+        "--dataset_generation",
+        type=parser.bool,
+        required=False,
+        default=False,
+        help="Enable dataset generation mode: injects REPO_URL and BASE_COMMIT ARGs into Dockerfiles and passes them as build args.",
+    )
 
     return parser
 
@@ -237,6 +244,7 @@ class CliArgs:
     log_level: str
     log_to_console: bool
     human_mode: bool = True
+    dataset_generation: bool = False
 
     def __post_init__(self):
         self._check_mode()
@@ -587,13 +595,20 @@ class CliArgs:
         dockerfile_path = image_dir / image.dockerfile_name()
         dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
         with open(dockerfile_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(image.dockerfile())
+            f.write(DockerfileEnhancer.enhance(image, dataset_generation=self.dataset_generation))
 
         for file in image.files():
             file_path = image_dir / file.dir / file.name
             file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(file.content)
+
+        buildargs = {}
+        if self.dataset_generation:
+            dep = image.dependency()
+            if isinstance(dep, str):
+                buildargs["REPO_URL"] = f"https://github.com/{image.pr.org}/{image.pr.repo}.git"
+                buildargs["BASE_COMMIT"] = image.pr.base.sha
 
         self.logger.info(f"Building image {image.image_full_name()}...")
         docker_util.build(
@@ -606,6 +621,7 @@ class CliArgs:
                 self.log_level,
                 False,
             ),
+            buildargs=buildargs,
         )
         self.logger.info(f"Image {image.image_full_name()} built successfully.")
 

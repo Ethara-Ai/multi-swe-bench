@@ -38,7 +38,7 @@ from multi_swe_bench.harness.constant import (
     TEST_PATCH_RUN_LOG_FILE,
 )
 from multi_swe_bench.harness.gen_report import CliArgs as ReportBuilder
-from multi_swe_bench.harness.image import Config, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, Image
 from multi_swe_bench.harness.instance import Instance
 from multi_swe_bench.harness.pull_request import PullRequest, Repository
 from multi_swe_bench.harness.report import generate_report
@@ -226,6 +226,13 @@ def get_parser() -> ArgumentParser:
         default=1800,
         help="The timeout for the agent to run",
     )
+    parser.add_argument(
+        "--dataset_generation",
+        type=parser.bool,
+        required=False,
+        default=False,
+        help="Enable dataset generation mode: injects REPO_URL and BASE_COMMIT ARGs into Dockerfiles and passes them as build args.",
+    )
 
     return parser
 
@@ -265,6 +272,7 @@ class CliArgs:
     run_log: bool = True
     human_mode: bool = True
     agent_timeout: int = 1800
+    dataset_generation: bool = False
 
     def __post_init__(self):
         self._check_mode()
@@ -546,13 +554,18 @@ class CliArgs:
         image_dir = workdir / image.workdir()
         image_dir.mkdir(parents=True, exist_ok=True)
 
-        if self.repo_dir and image.need_copy_code:
+        # Source code is now fetched via `git clone "${REPO_URL}"` inside the
+        # Dockerfile, so copying a local checkout into the build context is no
+        # longer necessary for base images.  We keep the guard only for any
+        # non-base (PR) images that might still rely on COPY.
+        dep = image.dependency()
+        if self.repo_dir and image.need_copy_code and not isinstance(dep, str):
             copy_source_code(self.repo_dir, image, image_dir)
 
         dockerfile_path = image_dir / image.dockerfile_name()
         dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
         with open(dockerfile_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(image.dockerfile())
+            f.write(DockerfileEnhancer.enhance(image, dataset_generation=self.dataset_generation))
 
         for file in image.files():
             file_path = image_dir / file.dir / file.name
@@ -566,6 +579,12 @@ class CliArgs:
             )
             return
 
+        buildargs = {}
+        dep = image.dependency()
+        if isinstance(dep, str):
+            buildargs["REPO_URL"] = f"https://github.com/{image.pr.org}/{image.pr.repo}.git"
+            buildargs["BASE_COMMIT"] = image.pr.base.sha
+
         self.logger.info(f"Building image {image.image_full_name()}...")
         docker_util.build(
             image_dir,
@@ -577,6 +596,7 @@ class CliArgs:
                 self.log_level,
                 False,
             ),
+            buildargs=buildargs,
         )
         self.logger.info(f"Image {image.image_full_name()} built successfully.")
 

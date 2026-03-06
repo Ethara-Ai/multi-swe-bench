@@ -30,7 +30,11 @@ def exists(image_name: str) -> bool:
 
 
 def build(
-    workdir: Path, dockerfile_name: str, image_full_name: str, logger: logging.Logger
+    workdir: Path,
+    dockerfile_name: str,
+    image_full_name: str,
+    logger: logging.Logger,
+    buildargs: dict[str, str] | None = None,
 ):
     workdir = str(workdir)
     logger.info(
@@ -45,6 +49,7 @@ def build(
             forcerm=True,
             decode=True,
             encoding="utf-8",
+            buildargs=buildargs or {},
         )
 
         for log in build_logs:
