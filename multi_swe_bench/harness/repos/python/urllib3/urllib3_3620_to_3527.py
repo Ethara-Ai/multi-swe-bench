@@ -105,7 +105,7 @@ uv run pytest -v -ra -n auto --tb=native --durations=10 --strict-config --strict
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
 uv run pytest -v -ra -n auto --tb=native --durations=10 --strict-config --strict-markers --disable-socket --allow-unix-socket --allow-hosts=localhost,127.0.0.1,::1,127.0.0.0,240.0.0.0 test/
 
@@ -118,7 +118,7 @@ uv run pytest -v -ra -n auto --tb=native --durations=10 --strict-config --strict
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
 uv run pytest -v -ra -n auto --tb=native --durations=10 --strict-config --strict-markers --disable-socket --allow-unix-socket --allow-hosts=localhost,127.0.0.1,::1,127.0.0.0,240.0.0.0 test/
 
@@ -208,12 +208,14 @@ class URLLIB3_3620_TO_3527(Instance):
 
         # Extract test names and their statuses using regular expressions
         # Pattern for test names (includes '::' to ensure full test identifier)
-        passed_matches = re.findall(r".*PASSED (test/.*::.*?)(?:\s|$)", log)
+        passed_matches = re.findall(r"PASSED (test/.*::.*?)\s*$", log, re.MULTILINE)
         passed_tests.update(passed_matches)
-        failed_matches = re.findall(r".*FAILED (test/.*::.*?)(?:\s|$)", log)
+        failed_matches = re.findall(r"FAILED (test/.*::.*?)\s*$", log, re.MULTILINE)
         failed_tests.update(failed_matches)
         skipped_matches = re.findall(
-            r".*?SKIPPED (?:\[\d+\] )?(test/(?:.*?::.*?|.*?\.py:\d+))(?:[:\s]|$)", log
+            r"SKIPPED (?:\[\d+\] )?(test/(?:.*?::.*?|.*?\.py:\d+))(?:[:\s]|$)",
+            log,
+            re.MULTILINE,
         )
         skipped_tests.update(skipped_matches)
         parsed_results = {
