@@ -12,18 +12,18 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import asyncio
 import concurrent.futures
 import glob
 import logging
+import os
+import shutil
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, Literal, Optional
-import asyncio
-import docker
-import os
-import shutil
 
+import docker
 from dataclasses_json import dataclass_json
 from tqdm import tqdm
 
@@ -233,6 +233,21 @@ def get_parser() -> ArgumentParser:
         default=False,
         help="Enable dataset generation mode: injects REPO_URL and BASE_COMMIT ARGs into Dockerfiles and passes them as build args.",
     )
+    parser.add_argument(
+        "--platform",
+        type=str,
+        required=False,
+        default=None,
+        help='Target platform(s) for Docker build (e.g. "linux/amd64", "linux/arm64", '
+        '"linux/amd64,linux/arm64" for multi-arch). Requires docker buildx.',
+    )
+    parser.add_argument(
+        "--output_tar",
+        type=Path,
+        required=False,
+        default=None,
+        help="Directory for per-image multi-arch OCI tar files. Each image is exported as <dir>/<safe_name>.tar AND loaded into the Docker daemon.",
+    )
 
     return parser
 
@@ -273,6 +288,8 @@ class CliArgs:
     human_mode: bool = True
     agent_timeout: int = 1800
     dataset_generation: bool = False
+    platform: Optional[str] = None
+    output_tar: Optional[Path] = None
 
     def __post_init__(self):
         self._check_mode()
@@ -565,7 +582,11 @@ class CliArgs:
         dockerfile_path = image_dir / image.dockerfile_name()
         dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
         with open(dockerfile_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(DockerfileEnhancer.enhance(image, dataset_generation=self.dataset_generation))
+            f.write(
+                DockerfileEnhancer.enhance(
+                    image, dataset_generation=self.dataset_generation
+                )
+            )
 
         for file in image.files():
             file_path = image_dir / file.dir / file.name
@@ -573,16 +594,32 @@ class CliArgs:
             with open(file_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(file.content)
 
-        if not self.force_build and docker_util.exists(image.image_full_name()):
-            self.logger.debug(
-                f"Image {image.image_full_name()} already exists, skipping..."
-            )
-            return
+        per_image_tar = None
+        if self.output_tar:
+            self.output_tar.mkdir(parents=True, exist_ok=True)
+            safe_name = image.image_full_name().replace("/", "_").replace(":", "_")
+            per_image_tar = self.output_tar / f"{safe_name}.tar"
+
+        tar_exists = per_image_tar is not None and per_image_tar.exists()
+        image_exists = docker_util.exists(image.image_full_name())
+        if not self.force_build:
+            if tar_exists:
+                self.logger.debug(
+                    f"Image {image.image_full_name()} tar already exists, skipping..."
+                )
+                return
+            if image_exists and per_image_tar is None:
+                self.logger.debug(
+                    f"Image {image.image_full_name()} already exists, skipping..."
+                )
+                return
 
         buildargs = {}
         dep = image.dependency()
         if isinstance(dep, str):
-            buildargs["REPO_URL"] = f"https://github.com/{image.pr.org}/{image.pr.repo}.git"
+            buildargs["REPO_URL"] = (
+                f"https://github.com/{image.pr.org}/{image.pr.repo}.git"
+            )
             buildargs["BASE_COMMIT"] = image.pr.base.sha
 
         self.logger.info(f"Building image {image.image_full_name()}...")
@@ -597,6 +634,8 @@ class CliArgs:
                 False,
             ),
             buildargs=buildargs,
+            platform=self.platform,
+            output_tar=per_image_tar,
         )
         self.logger.info(f"Image {image.image_full_name()} built successfully.")
 
@@ -830,12 +869,20 @@ class CliArgs:
             if (not self.human_mode) and report.valid:
                 from multi_swe_bench.utils.docker_util import build
 
+                envagent_tar = None
+                if self.output_tar:
+                    self.output_tar.mkdir(parents=True, exist_ok=True)
+                    safe_name = envagent_image_name.replace("/", "_").replace(":", "_")
+                    envagent_tar = self.output_tar / f"{safe_name}.tar"
+
                 try:
                     build(
                         workdir=Path(temp_dir),
                         dockerfile_name="Dockerfile",
                         image_full_name=envagent_image_name,
                         logger=self.logger,
+                        platform=self.platform,
+                        output_tar=envagent_tar,
                     )
                     self.logger.info(f"{instance.name()}: image build success")
                 except Exception as e:

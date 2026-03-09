@@ -12,8 +12,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Optional, Union
 
 from multi_swe_bench.harness.pull_request import PullRequest
@@ -217,12 +217,6 @@ class DockerfileEnhancer:
     """Injects standard infrastructure (proxy, MITM, multi-arch, certs, labels)
     into any Dockerfile at the pipeline level.  Idempotent: skips content that
     already carries the BuildKit syntax directive.
-
-    Also automatically standardises how the repository source code is fetched:
-    any ``COPY <repo> /home/<repo>`` or hardcoded
-    ``RUN git clone <url> /home/<repo>`` is replaced with
-    ``RUN git clone "${REPO_URL}" /home/<repo>`` followed by
-    ``git reset --hard`` and ``git checkout ${BASE_COMMIT}``.
     """
 
     SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1.6"
@@ -252,16 +246,8 @@ class DockerfileEnhancer:
         "    CURL_CA_BUNDLE=${CA_CERT_PATH}"
     )
 
-    _DEPRECATED_DEBIAN_FIX = (
-        "RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
-        "    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \\\n"
-        "    sed -i '/stretch-updates/d' /etc/apt/sources.list && \\\n"
-        "    sed -i '/buster-updates/d' /etc/apt/sources.list && \\\n"
-        "    sed -i '/jessie-updates/d' /etc/apt/sources.list"
-    )
-
     _CERT_SYMLINKS = (
-        "RUN mkdir -p /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem && \\\n"
+        "RUN mkdir -p /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\\n"
         "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\\n"
         "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\\n"
         "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem"
@@ -276,16 +262,7 @@ class DockerfileEnhancer:
 
     @classmethod
     def enhance(cls, image: "Image", dataset_generation: bool = False) -> str:
-        """Return the image's Dockerfile, enhanced with standard infrastructure
-        when the image is a base image (dependency returns a string).
-        PR images (dependency returns an Image) are returned as-is.
 
-        Always injects ARG REPO_URL (with repo-specific default) and ARG BASE_COMMIT
-        right after ARG TARGETARCH for base images.
-
-        Automatically replaces any COPY or hardcoded git clone of the repo
-        with the standardised git clone + git reset + git checkout pattern.
-        """
         dep = image.dependency()
         raw = image.dockerfile()
         if not isinstance(dep, str):
@@ -329,10 +306,6 @@ class DockerfileEnhancer:
 
     @classmethod
     def _standardize_repo_fetch(cls, content: str, repo: str) -> str:
-        """Replace COPY or hardcoded git clone with standardised
-        git clone using REPO_URL, followed by git reset and git checkout.
-        Lines already using ${REPO_URL} are left untouched.
-        """
         replacement = (
             f'RUN git clone "${{REPO_URL}}" /home/{repo}\n'
             f"\n"
@@ -388,7 +361,7 @@ class DockerfileEnhancer:
         if Image._is_deprecated_debian(base_img):
             sections.append(cls._DEPRECATED_DEBIAN_FIX)
 
-        sections.extend([cls._CERT_SYMLINKS, cls._MITM_MOUNT])
+        sections.extend([cls._CERT_SYMLINKS])
         return "\n\n".join(sections) + "\n"
 
 

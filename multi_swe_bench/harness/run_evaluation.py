@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import asyncio
 import concurrent.futures
 import glob
 import logging
@@ -19,9 +20,8 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, Literal, Optional
-import asyncio
-import docker
 
+import docker
 from dataclasses_json import dataclass_json
 from tqdm import tqdm
 
@@ -200,6 +200,21 @@ def get_parser() -> ArgumentParser:
         default=False,
         help="Enable dataset generation mode: injects REPO_URL and BASE_COMMIT ARGs into Dockerfiles and passes them as build args.",
     )
+    parser.add_argument(
+        "--platform",
+        type=str,
+        required=False,
+        default=None,
+        help='Target platform(s) for Docker build (e.g. "linux/amd64", "linux/arm64", '
+        '"linux/amd64,linux/arm64" for multi-arch). Requires docker buildx.',
+    )
+    parser.add_argument(
+        "--output_tar",
+        type=Path,
+        required=False,
+        default=None,
+        help="Directory for per-image multi-arch OCI tar files. Each image is exported as <dir>/<safe_name>.tar AND loaded into the Docker daemon.",
+    )
 
     return parser
 
@@ -245,6 +260,8 @@ class CliArgs:
     log_to_console: bool
     human_mode: bool = True
     dataset_generation: bool = False
+    platform: Optional[str] = None
+    output_tar: Optional[Path] = None
 
     def __post_init__(self):
         self._check_mode()
@@ -551,8 +568,8 @@ class CliArgs:
             is_clean, error_msg = git_util.is_clean(repo_dir)
             # if it is not clean, try to clean it
             if not is_clean:
-                is_clean, error_msg = True, ""
                 git_util.clean(repo_dir)
+                is_clean, error_msg = git_util.is_clean(repo_dir)
             # check if it is clean again
             if not is_clean:
                 self.logger.error(error_msg)
@@ -579,7 +596,18 @@ class CliArgs:
             raise ValueError("Check commit hashes failed, please check the logs.")
 
     def build_image(self, image: Image):
-        if not self.force_build and docker_util.exists(image.image_full_name()):
+        per_image_tar = None
+        if self.output_tar:
+            self.output_tar.mkdir(parents=True, exist_ok=True)
+            safe_name = image.image_full_name().replace("/", "_").replace(":", "_")
+            per_image_tar = self.output_tar / f"{safe_name}.tar"
+
+        tar_missing = per_image_tar is not None and not per_image_tar.exists()
+        if (
+            not self.force_build
+            and docker_util.exists(image.image_full_name())
+            and not tar_missing
+        ):
             self.logger.debug(
                 f"Image {image.image_full_name()} already exists, skipping..."
             )
@@ -595,7 +623,11 @@ class CliArgs:
         dockerfile_path = image_dir / image.dockerfile_name()
         dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
         with open(dockerfile_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(DockerfileEnhancer.enhance(image, dataset_generation=self.dataset_generation))
+            f.write(
+                DockerfileEnhancer.enhance(
+                    image, dataset_generation=self.dataset_generation
+                )
+            )
 
         for file in image.files():
             file_path = image_dir / file.dir / file.name
@@ -607,7 +639,9 @@ class CliArgs:
         if self.dataset_generation:
             dep = image.dependency()
             if isinstance(dep, str):
-                buildargs["REPO_URL"] = f"https://github.com/{image.pr.org}/{image.pr.repo}.git"
+                buildargs["REPO_URL"] = (
+                    f"https://github.com/{image.pr.org}/{image.pr.repo}.git"
+                )
                 buildargs["BASE_COMMIT"] = image.pr.base.sha
 
         self.logger.info(f"Building image {image.image_full_name()}...")
@@ -622,6 +656,8 @@ class CliArgs:
                 False,
             ),
             buildargs=buildargs,
+            platform=self.platform,
+            output_tar=per_image_tar,
         )
         self.logger.info(f"Image {image.image_full_name()} built successfully.")
 
