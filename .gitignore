@@ -195,3 +195,4 @@ scripts/push_docker.sh
 scripts/push_docker_internal.sh
 exp/
 .DS_Store
+.sisyphus
