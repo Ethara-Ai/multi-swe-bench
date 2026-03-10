@@ -121,6 +121,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
+export DOCS_RS=1
 cargo test --locked || true
 
 """.format(pr=self.pr),
@@ -132,6 +133,7 @@ cargo test --locked || true
 set -e
 
 cd /home/{pr.repo}
+export DOCS_RS=1
 cargo test --locked
 
 """.format(pr=self.pr),
@@ -143,6 +145,7 @@ cargo test --locked
 set -e
 
 cd /home/{pr.repo}
+export DOCS_RS=1
 git apply /home/test.patch
 cargo test
 
@@ -155,6 +158,7 @@ cargo test
 set -e
 
 cd /home/{pr.repo}
+export DOCS_RS=1
 git apply /home/test.patch /home/fix.patch
 cargo test
 
