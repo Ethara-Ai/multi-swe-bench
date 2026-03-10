@@ -95,3 +95,4 @@ from multi_swe_bench.harness.repos.typescript.GMOD import *
 from multi_swe_bench.harness.repos.typescript.HoudiniGraphql import *
 from multi_swe_bench.harness.repos.typescript.NomicFoundation import *
 from multi_swe_bench.harness.repos.typescript.Effect_TS import *
+from multi_swe_bench.harness.repos.typescript.stakwork import *
