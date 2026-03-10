@@ -196,3 +196,5 @@ scripts/push_docker_internal.sh
 exp/
 .DS_Store
 .sisyphus
+
+datasets/
