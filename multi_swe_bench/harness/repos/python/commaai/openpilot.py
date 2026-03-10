@@ -51,8 +51,8 @@ class ImageDefault(Image):
         return (
             "RUN pip3 install --no-cache-dir --break-system-packages "
             "pytest scons cython numpy pycapnp setuptools cffi requests\n"
-            "RUN git submodule update --init --recursive || true\n"
-            "RUN scons -j$(nproc) || true"
+            "RUN git submodule update --init --recursive\n"
+            "RUN scons -j$(nproc)"
         )
 
     def files(self) -> list[File]:
@@ -74,9 +74,9 @@ class ImageDefault(Image):
 ###ACTION_DELIMITER###
 pip3 install --break-system-packages pytest scons cython numpy pycapnp
 ###ACTION_DELIMITER###
-git submodule update --init --recursive || true
+git submodule update --init --recursive
 ###ACTION_DELIMITER###
-scons -j$(nproc) || true
+scons -j$(nproc)
 ###ACTION_DELIMITER###
 pytest --no-header -rA --tb=no -p no:cacheprovider
 ###ACTION_DELIMITER###
