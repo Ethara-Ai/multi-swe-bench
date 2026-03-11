@@ -69,7 +69,7 @@ bun test
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='bun.lockb' /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
@@ -82,7 +82,7 @@ bun test
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='bun.lockb' /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
@@ -159,24 +159,38 @@ class TscircuitFootprinterInstance(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        passed_match = re.search(r"(\d+)\s+pass", log)
-        failed_match = re.search(r"(\d+)\s+fail", log)
-        skipped_match = re.search(r"(\d+)\s+skip", log)
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
 
-        passed_count = int(passed_match.group(1)) if passed_match else 0
-        failed_count = int(failed_match.group(1)) if failed_match else 0
-        skipped_count = int(skipped_match.group(1)) if skipped_match else 0
-        
-        # If regex failed, just use 1/0
-        if passed_count == 0 and failed_count == 0:
-            if "failing" in log.lower() or "error" in log.lower():
-                failed_count = 1
-            else:
-                passed_count = 1
+        re_pass_color = re.compile(r"^\s*✓\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        re_fail_color = re.compile(r"^\s*✗\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        re_skip_color = re.compile(r"^\s*»\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        re_todo_color = re.compile(r"^\s*✎\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
 
-        for i in range(passed_count): passed_tests.add("passed_test_" + str(i))
-        for i in range(failed_count): failed_tests.add("failed_test_" + str(i))
-        for i in range(skipped_count): skipped_tests.add("skipped_test_" + str(i))
+        re_pass_plain = re.compile(r"^\s*\(pass\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        re_fail_plain = re.compile(r"^\s*\(fail\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        re_skip_plain = re.compile(r"^\s*\(skip\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        re_todo_plain = re.compile(r"^\s*\(todo\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+
+        for line in log.splitlines():
+            line = ansi_escape.sub("", line).strip()
+            for pattern, target in [
+                (re_pass_color, passed_tests),
+                (re_pass_plain, passed_tests),
+                (re_fail_color, failed_tests),
+                (re_fail_plain, failed_tests),
+                (re_skip_color, skipped_tests),
+                (re_skip_plain, skipped_tests),
+                (re_todo_color, skipped_tests),
+                (re_todo_plain, skipped_tests),
+            ]:
+                m = pattern.match(line)
+                if m:
+                    target.add(m.group(1))
+                    break
+
+        passed_count = len(passed_tests)
+        failed_count = len(failed_tests)
+        skipped_count = len(skipped_tests)
 
         return TestResult(
             passed_count=passed_count,
