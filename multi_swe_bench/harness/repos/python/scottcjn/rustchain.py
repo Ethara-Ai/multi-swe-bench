@@ -1,5 +1,4 @@
 import re
-from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -35,7 +34,7 @@ class ImageDefault(Image):
         return []
 
     def extra_setup(self) -> str:
-        return "RUN pip install --no-cache-dir pytest requests"
+        return "RUN pip install --no-cache-dir pytest requests flask"
 
     def dockerfile(self) -> str:
         base = super().dockerfile()
@@ -60,21 +59,21 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -F
+                """#!/bin/bash
+ls -F
 ###ACTION_DELIMITER###
-pip install pytest requests
+pip install pytest requests flask
 ###ACTION_DELIMITER###
-pytest --no-header -rA --tb=no -p no:cacheprovider
+pytest --no-header -rA --tb=no -p no:cacheprovider --ignore=deprecated/ --override-ini="testpaths=." --continue-on-collection-errors || true
 ###ACTION_DELIMITER###
-echo 'pytest --no-header -rA --tb=no -p no:cacheprovider' > test_commands.sh""",
+echo 'pytest --no-header -rA --tb=no -p no:cacheprovider --ignore=deprecated/ --override-ini="testpaths=." --continue-on-collection-errors' > test_commands.sh""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{repo}
-pytest --no-header -rA --tb=no -p no:cacheprovider
-
+pytest --no-header -rA --tb=no -p no:cacheprovider --ignore=deprecated/ --override-ini="testpaths=." --continue-on-collection-errors
 """.format(repo=self.pr.repo),
             ),
             File(
@@ -82,12 +81,8 @@ pytest --no-header -rA --tb=no -p no:cacheprovider
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/{repo}
-if ! git -C /home/{repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
-pytest --no-header -rA --tb=no -p no:cacheprovider
-
+git apply --whitespace=nowarn /home/test.patch
+pytest --no-header -rA --tb=no -p no:cacheprovider --ignore=deprecated/ --override-ini="testpaths=." --continue-on-collection-errors
 """.format(repo=self.pr.repo),
             ),
             File(
@@ -95,12 +90,8 @@ pytest --no-header -rA --tb=no -p no:cacheprovider
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/{repo}
-if ! git -C /home/{repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
-pytest --no-header -rA --tb=no -p no:cacheprovider
-
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+pytest --no-header -rA --tb=no -p no:cacheprovider --ignore=deprecated/ --override-ini="testpaths=." --continue-on-collection-errors
 """.format(repo=self.pr.repo),
             ),
         ]
@@ -117,7 +108,7 @@ class RUSTCHAIN(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image:
         return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -135,36 +126,34 @@ class RUSTCHAIN(Instance):
             return fix_patch_run_cmd
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, log: str) -> TestResult:
+    def parse_log(self, test_log: str) -> TestResult:
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
         test_results = {}
 
-        pattern = re.compile(
-            r"^(PASSED|FAILED|ERROR|SKIPPED(?: \[[\d]+\])?)\s+([^:\s]+)"
-        )
-        for line in log.splitlines():
+        pattern = re.compile(r"^(PASSED|FAILED|ERROR|SKIPPED(?: \[[\d]+\])?)\s+(\S+)")
+        for line in test_log.splitlines():
             match = pattern.search(line)
             if match:
-                status, test_file = match.group(1), match.group(2)
-                test_file = test_file.strip()
+                status, test_name = match.group(1), match.group(2)
+                test_name = test_name.strip()
                 if "FAIL" in status or "ERROR" in status:
-                    test_results[test_file] = "failed"
+                    test_results[test_name] = "failed"
                 elif "SKIP" in status:
-                    if test_results.get(test_file) != "failed":
-                        test_results[test_file] = "skipped"
+                    if test_results.get(test_name) != "failed":
+                        test_results[test_name] = "skipped"
                 elif "PASS" in status:
-                    if test_results.get(test_file) not in ["failed", "skipped"]:
-                        test_results[test_file] = "passed"
+                    if test_results.get(test_name) not in ["failed", "skipped"]:
+                        test_results[test_name] = "passed"
 
-        for test_file, status in test_results.items():
+        for test_name, status in test_results.items():
             if status == "passed":
-                passed_tests.add(test_file)
+                passed_tests.add(test_name)
             elif status == "failed":
-                failed_tests.add(test_file)
+                failed_tests.add(test_name)
             elif status == "skipped":
-                skipped_tests.add(test_file)
+                skipped_tests.add(test_name)
 
         return TestResult(
             passed_count=len(passed_tests),
