@@ -98,15 +98,9 @@ bun test
             copy_commands += "COPY " + file.name + " /home/\n"
 
         dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
 
 FROM node:20
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements
 RUN apt-get update && apt-get install -y git curl
 
 # Ensure bash is available
@@ -114,7 +108,6 @@ RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then 
 
 # Install bun
 RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:$PATH"
 
 WORKDIR /home/
 COPY fix.patch /home/
