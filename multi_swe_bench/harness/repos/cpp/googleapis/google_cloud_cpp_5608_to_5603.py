@@ -5,36 +5,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_VALID_COMPONENTS = frozenset(
-    {
-        "storage",
-        "bigtable",
-        "spanner",
-        "pubsub",
-        "bigquery",
-        "iam",
-        "logging",
-    }
-)
 
-
-def _detect_components_era2(test_patch: str, fix_patch: str) -> str:
-    components = set()
-    for patch in (test_patch, fix_patch):
-        for line in patch.split("\n"):
-            if line.startswith("diff --git"):
-                filepath = line.split(" b/")[-1]
-                parts = filepath.split("/")
-                if len(parts) >= 3 and parts[0] == "google" and parts[1] == "cloud":
-                    comp = parts[2]
-                    if comp in _VALID_COMPONENTS:
-                        components.add(comp)
-    if not components:
-        return "storage,bigtable,spanner,pubsub"
-    return ",".join(sorted(components))
-
-
-class Era2ImageBase(Image):
+class Fc33EarlyImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -77,46 +49,24 @@ WORKDIR /home/
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
+RUN sed -i -e 's|^metalink=|#metalink=|g' \
+       -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux|g' \
+       /etc/yum.repos.d/fedora*.repo
+
 RUN dnf makecache && dnf install -y \\
     cmake gcc-c++ git make ninja-build \\
     patch pkg-config tar wget curl zip unzip findutils \\
     libcurl-devel openssl-devel zlib-devel \\
-    c-ares-devel re2-devel \\
     protobuf-devel protobuf-compiler grpc-devel grpc-plugins \\
+    abseil-cpp-devel gtest-devel gmock-devel json-devel \\
+    c-ares-devel re2-devel \\
     && dnf clean all
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20200225.2.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    sed -i 's/^#define ABSL_OPTION_USE_\\(.*\\) 2/#define ABSL_OPTION_USE_\\1 0/' "absl/base/options.h" && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -DBUILD_TESTING=OFF -DABSL_BUILD_TESTING=OFF \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/google/googletest/archive/release-1.10.0.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/google/crc32c/archive/1.1.0.tar.gz | \\
+RUN curl -sSL https://github.com/google/crc32c/archive/1.0.6.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
       -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF -DCRC32C_USE_GLOG=OFF \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/nlohmann/json/archive/v3.9.0.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -DBUILD_TESTING=OFF -DJSON_BuildTests=OFF \\
       -GNinja -S . -B cmake-out && \\
     cmake --build cmake-out --target install && \\
     ldconfig && cd /var/tmp && rm -fr build
@@ -132,7 +82,7 @@ WORKDIR /home/
 """
 
 
-class Era2ImageDefault(Image):
+class Fc33EarlyImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -146,7 +96,7 @@ class Era2ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return Era2ImageBase(self.pr, self._config)
+        return Fc33EarlyImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -155,8 +105,6 @@ class Era2ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        components = _detect_components_era2(self.pr.test_patch, self.pr.fix_patch)
-
         return [
             File(
                 ".",
@@ -187,7 +135,7 @@ fi
 echo "check_git_changes: No uncommitted changes"
 exit 0
 
-""",
+""".format(),
             ),
             File(
                 ".",
@@ -195,26 +143,22 @@ exit 0
                 """#!/bin/bash
 set -e
 
-cd /home/{repo}
+cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {base_sha}
+git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
 mkdir -p build && cd build
-cmake -S /home/{repo} -B /home/{repo}/build \\
+cmake -S /home/{pr.repo} -B /home/{pr.repo}/build \\
     -DBUILD_TESTING=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE={components} \\
+    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,iam,logging \\
     -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \\
     -DCMAKE_BUILD_TYPE=Debug \\
     -GNinja
-cmake --build /home/{repo}/build -j $(nproc)
+cmake --build /home/{pr.repo}/build -j $(nproc)
 
-""".format(
-                    repo=self.pr.repo,
-                    base_sha=self.pr.base.sha,
-                    components=components,
-                ),
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -222,10 +166,10 @@ cmake --build /home/{repo}/build -j $(nproc)
                 """#!/bin/bash
 set -e
 
-cd /home/{repo}/build
+cd /home/{pr.repo}/build
 ctest --output-on-failure
 
-""".format(repo=self.pr.repo),
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -233,13 +177,13 @@ ctest --output-on-failure
                 """#!/bin/bash
 set -e
 
-cd /home/{repo}
+cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
 cd build
 cmake --build . -j $(nproc)
 ctest --output-on-failure
 
-""".format(repo=self.pr.repo),
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -247,13 +191,13 @@ ctest --output-on-failure
                 """#!/bin/bash
 set -e
 
-cd /home/{repo}
+cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 cd build
 cmake --build . -j $(nproc)
 ctest --output-on-failure
 
-""".format(repo=self.pr.repo),
+""".format(pr=self.pr),
             ),
         ]
 
@@ -281,8 +225,8 @@ ctest --output-on-failure
 """
 
 
-@Instance.register("googleapis", "google-cloud-cpp_7058_to_5603")
-class GoogleCloudCpp7058To5603(Instance):
+@Instance.register("googleapis", "google-cloud-cpp_5608_to_5603")
+class GoogleCloudCpp5608To5603(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -293,7 +237,7 @@ class GoogleCloudCpp7058To5603(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return Era2ImageDefault(self.pr, self._config)
+        return Fc33EarlyImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

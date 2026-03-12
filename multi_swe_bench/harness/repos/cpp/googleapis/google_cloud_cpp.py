@@ -5,37 +5,6 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_VALID_COMPONENTS = frozenset(
-    {
-        "storage",
-        "bigtable",
-        "spanner",
-        "pubsub",
-        "bigquery",
-        "iam",
-        "logging",
-        "kms",
-        "secretmanager",
-        "compute",
-    }
-)
-
-
-def _detect_components(test_patch: str, fix_patch: str) -> str:
-    components = set()
-    for patch in (test_patch, fix_patch):
-        for line in patch.split("\n"):
-            if line.startswith("diff --git"):
-                filepath = line.split(" b/")[-1]
-                parts = filepath.split("/")
-                if len(parts) >= 3 and parts[0] == "google" and parts[1] == "cloud":
-                    comp = parts[2]
-                    if comp in _VALID_COMPONENTS:
-                        components.add(comp)
-    if not components:
-        return "storage,bigtable,spanner,pubsub"
-    return ",".join(sorted(components))
-
 
 class GoogleCloudCppImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -51,7 +20,7 @@ class GoogleCloudCppImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "fedora:36"
+        return "fedora:37"
 
     def image_tag(self) -> str:
         return "base"
@@ -84,11 +53,13 @@ RUN dnf makecache && dnf install -y \\
     cmake gcc-c++ git make ninja-build \\
     patch pkg-config tar wget curl zip unzip findutils \\
     libcurl-devel openssl-devel zlib-devel \\
+    gtest-devel gmock-devel json-devel \\
+    google-crc32c-devel \\
     c-ares-devel re2-devel \\
     && dnf clean all
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20220623.0.tar.gz | \\
+RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20230802.0.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     sed -i 's/^#define ABSL_OPTION_USE_\\(.*\\) 2/#define ABSL_OPTION_USE_\\1 0/' "absl/base/options.h" && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DABSL_BUILD_TESTING=OFF -DBUILD_SHARED_LIBS=yes \\
@@ -97,33 +68,7 @@ RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20220623.0.tar.gz | \
     ldconfig && cd /var/tmp && rm -fr build
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/google/googletest/archive/release-1.12.1.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/google/crc32c/archive/1.1.2.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF -DCRC32C_USE_GLOG=OFF \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/nlohmann/json/archive/v3.11.2.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -DBUILD_TESTING=OFF -DJSON_BuildTests=OFF \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v21.4.tar.gz | \\
+RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v24.0.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
       -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_ABSL_PROVIDER=package \\
@@ -132,7 +77,7 @@ RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v21.4.tar.gz |
     ldconfig && cd /var/tmp && rm -fr build
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/grpc/grpc/archive/v1.47.1.tar.gz | \\
+RUN curl -sSL https://github.com/grpc/grpc/archive/v1.57.0.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \\
       -DgRPC_INSTALL=ON -DgRPC_BUILD_TESTS=OFF \\
@@ -177,8 +122,6 @@ class GoogleCloudCppImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        components = _detect_components(self.pr.test_patch, self.pr.fix_patch)
-
         return [
             File(
                 ".",
@@ -217,26 +160,22 @@ exit 0
                 """#!/bin/bash
 set -e
 
-cd /home/{repo}
+cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {base_sha}
+git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
 mkdir -p build && cd build
-cmake -S /home/{repo} -B /home/{repo}/build \\
+cmake -S /home/{pr.repo} -B /home/{pr.repo}/build \\
     -DBUILD_TESTING=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE={components} \\
+    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,bigquery,iam,logging,kms,secretmanager,compute \\
     -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \\
     -DCMAKE_BUILD_TYPE=Debug \\
     -GNinja
-cmake --build /home/{repo}/build -j $(nproc)
+cmake --build /home/{pr.repo}/build -j $(nproc)
 
-""".format(
-                    repo=self.pr.repo,
-                    base_sha=self.pr.base.sha,
-                    components=components,
-                ),
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -244,10 +183,10 @@ cmake --build /home/{repo}/build -j $(nproc)
                 """#!/bin/bash
 set -e
 
-cd /home/{repo}/build
+cd /home/{pr.repo}/build
 ctest --output-on-failure
 
-""".format(repo=self.pr.repo),
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -255,13 +194,13 @@ ctest --output-on-failure
                 """#!/bin/bash
 set -e
 
-cd /home/{repo}
+cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
 cd build
 cmake --build . -j $(nproc)
 ctest --output-on-failure
 
-""".format(repo=self.pr.repo),
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -269,13 +208,13 @@ ctest --output-on-failure
                 """#!/bin/bash
 set -e
 
-cd /home/{repo}
+cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 cd build
 cmake --build . -j $(nproc)
 ctest --output-on-failure
 
-""".format(repo=self.pr.repo),
+""".format(pr=self.pr),
             ),
         ]
 

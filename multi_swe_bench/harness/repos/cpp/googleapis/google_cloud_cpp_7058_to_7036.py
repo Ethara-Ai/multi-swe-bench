@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class Era1ImageBase(Image):
+class Fc34ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class Era1ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:18.04"
+        return "fedora:34"
 
     def image_tag(self) -> str:
         return "base"
@@ -48,26 +48,21 @@ class Era1ImageBase(Image):
 WORKDIR /home/
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
-ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \\
-    build-essential cmake git ninja-build \\
-    patch pkg-config tar wget curl zip unzip \\
-    libcurl4-openssl-dev libssl-dev zlib1g-dev \\
-    ca-certificates automake autoconf libtool \\
-    && rm -rf /var/lib/apt/lists/*
+RUN sed -i -e 's|^metalink=|#metalink=|g' \
+       -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux|g' \
+       /etc/yum.repos.d/fedora*.repo
 
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/google/crc32c/archive/1.0.6.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF -DCRC32C_USE_GLOG=OFF \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
+RUN dnf makecache && dnf install -y \\
+    cmake gcc-c++ git make ninja-build \\
+    patch pkg-config tar wget curl zip unzip findutils \\
+    libcurl-devel openssl-devel zlib-devel \\
+    abseil-cpp-devel gtest-devel gmock-devel json-devel \\
+    c-ares-devel re2-devel \\
+    && dnf clean all
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v3.9.1.tar.gz | \\
+RUN curl -sSL https://github.com/google/protobuf/archive/v3.15.8.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
       -Dprotobuf_BUILD_TESTS=OFF \\
@@ -76,50 +71,22 @@ RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v3.9.1.tar.gz 
     ldconfig && cd /var/tmp && rm -fr build
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/c-ares/c-ares/archive/cares-1_14_0.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ./buildconf && ./configure && \\
-    install -m 644 -D -t /usr/local/lib/pkgconfig libcares.pc && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/grpc/grpc/archive/v1.24.3.tar.gz | \\
+RUN curl -sSL https://github.com/grpc/grpc/archive/v1.35.0.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \\
       -DgRPC_INSTALL=ON -DgRPC_BUILD_TESTS=OFF \\
-      -DgRPC_CARES_PROVIDER=package \\
-      -DgRPC_PROTOBUF_PROVIDER=package \\
-      -DgRPC_SSL_PROVIDER=package \\
-      -DgRPC_ZLIB_PROVIDER=package \\
+      -DgRPC_ABSL_PROVIDER=package -DgRPC_CARES_PROVIDER=package \\
+      -DgRPC_PROTOBUF_PROVIDER=package -DgRPC_RE2_PROVIDER=package \\
+      -DgRPC_SSL_PROVIDER=package -DgRPC_ZLIB_PROVIDER=package \\
       -GNinja -S . -B cmake-out && \\
     cmake --build cmake-out --target install && \\
     ldconfig && cd /var/tmp && rm -fr build
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/googleapis/cpp-cmakefiles/archive/v0.1.5.tar.gz | \\
+RUN curl -sSL https://github.com/google/crc32c/archive/1.1.0.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/google/googletest/archive/release-1.10.0.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/googleapis/google-cloud-cpp-common/archive/v0.16.0.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -DBUILD_TESTING=OFF \\
-      -DGOOGLE_CLOUD_CPP_TESTING_UTIL_ENABLE_INSTALL=ON \\
+      -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF -DCRC32C_USE_GLOG=OFF \\
       -GNinja -S . -B cmake-out && \\
     cmake --build cmake-out --target install && \\
     ldconfig && cd /var/tmp && rm -fr build
@@ -135,7 +102,7 @@ WORKDIR /home/
 """
 
 
-class Era1ImageDefault(Image):
+class Fc34ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -149,7 +116,7 @@ class Era1ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return Era1ImageBase(self.pr, self._config)
+        return Fc34ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -159,16 +126,8 @@ class Era1ImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -205,9 +164,8 @@ bash /home/check_git_changes.sh
 mkdir -p build && cd build
 cmake -S /home/{pr.repo} -B /home/{pr.repo}/build \\
     -DBUILD_TESTING=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE_BIGTABLE=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE_STORAGE=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE_FIRESTORE=OFF \\
+    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,iam,logging \\
+    -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \\
     -DCMAKE_BUILD_TYPE=Debug \\
     -GNinja
 cmake --build /home/{pr.repo}/build -j $(nproc)
@@ -279,8 +237,8 @@ ctest --output-on-failure
 """
 
 
-@Instance.register("googleapis", "google-cloud-cpp_4801_to_3303")
-class GoogleCloudCpp4801To3303(Instance):
+@Instance.register("googleapis", "google-cloud-cpp_7058_to_7036")
+class GoogleCloudCpp7058To7036(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -291,24 +249,21 @@ class GoogleCloudCpp4801To3303(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return Era1ImageDefault(self.pr, self._config)
+        return Fc34ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
@@ -316,39 +271,31 @@ class GoogleCloudCpp4801To3303(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*Passed"),
-        ]
+        re_pass_tests = [re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*Passed")]
         re_fail_tests = [
             re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Failed"),
             re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Timeout"),
         ]
         re_skip_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Not Run"),
+            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Not Run")
         ]
 
         for line in test_log.splitlines():
             line = line.strip()
             if not line:
                 continue
-
-            for re_pass in re_pass_tests:
-                pass_match = re_pass.match(line)
-                if pass_match:
-                    test = pass_match.group(1)
-                    passed_tests.add(test)
-
-            for re_fail in re_fail_tests:
-                fail_match = re_fail.match(line)
-                if fail_match:
-                    test = fail_match.group(1)
-                    failed_tests.add(test)
-
-            for re_skip in re_skip_tests:
-                skip_match = re_skip.match(line)
-                if skip_match:
-                    test = skip_match.group(1)
-                    skipped_tests.add(test)
+            for rp in re_pass_tests:
+                m = rp.match(line)
+                if m:
+                    passed_tests.add(m.group(1))
+            for rf in re_fail_tests:
+                m = rf.match(line)
+                if m:
+                    failed_tests.add(m.group(1))
+            for rs in re_skip_tests:
+                m = rs.match(line)
+                if m:
+                    skipped_tests.add(m.group(1))
 
         return TestResult(
             passed_count=len(passed_tests),
