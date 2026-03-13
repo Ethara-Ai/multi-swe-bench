@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TscircuitCoreImageBase(Image):
+class AzerothcoreWotlkImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class TscircuitCoreImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:latest"
+        return "gcc:14"
 
     def image_tag(self) -> str:
         return "base"
@@ -31,41 +31,31 @@ class TscircuitCoreImageBase(Image):
     def files(self) -> list[File]:
         return []
 
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+    def extra_packages(self) -> list[str]:
+        return [
+            "cmake",
+            "libboost-all-dev",
+            "libssl-dev",
+            "libreadline-dev",
+            "zlib1g-dev",
+            "libbz2-dev",
+            "libncurses-dev",
+            "lsb-release",
+        ]
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    unzip \
-    nodejs \
-    npm \
-    && apt-get clean
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:$PATH"
-
-{code}
-
-{self.clear_env}
-
-"""
+    def extra_setup(self) -> str:
+        return r"""RUN apt-get update && \
+    apt-get purge -y libmariadb-dev libmariadb-dev-compat default-libmysqlclient-dev || true && \
+    apt-get install -y wget lsb-release gnupg && \
+    wget https://dev.mysql.com/get/mysql-apt-config_0.8.33-1_all.deb && \
+    DEBIAN_FRONTEND=noninteractive dpkg -i mysql-apt-config_0.8.33-1_all.deb || true && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys B7B3B788A8D3785C || true && \
+    apt-get update && \
+    apt-get install -y libmysqlclient-dev && \
+    rm -f mysql-apt-config_0.8.33-1_all.deb"""
 
 
-class TscircuitCoreImageDefault(Image):
+class AzerothcoreWotlkImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -78,8 +68,8 @@ class TscircuitCoreImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return TscircuitCoreImageBase(self.pr, self.config)
+    def dependency(self) -> Union[str, "Image"]:
+        return AzerothcoreWotlkImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -132,7 +122,21 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-bun install 
+# Fix ARM64 compatibility: remove SSE2 target_compile_definitions that break on aarch64.
+if [ "$(uname -m)" = "aarch64" ]; then
+  SETTINGS_FILE='src/cmake/compiler/gcc/settings.cmake'
+  if [ -f "$SETTINGS_FILE" ]; then
+    # Remove any target_compile_definitions line referencing SSE2
+    sed -i '/target_compile_definitions.*HAVE_SSE2\\|target_compile_definitions.*__SSE2__/d' "$SETTINGS_FILE"
+    # Remove SSE2 flags forced message
+    sed -i '/SSE2 flags forced/d' "$SETTINGS_FILE"
+    echo "ARM64: Patched $SETTINGS_FILE to remove SSE2 definitions"
+  else
+    echo "ARM64: $SETTINGS_FILE not found, skipping SSE2 patch"
+  fi
+fi
+
+mkdir build || true
 
 """.format(pr=self.pr),
             ),
@@ -143,8 +147,10 @@ bun install
 set -e
 
 cd /home/{pr.repo}
-bun test
-
+cd build
+cmake .. -DBUILD_TESTING=1
+cmake --build .
+ctest
 """.format(pr=self.pr),
             ),
             File(
@@ -154,8 +160,11 @@ bun test
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch
-bun test
+git apply --whitespace=nowarn /home/test.patch
+cd build
+cmake .. -DBUILD_TESTING=1
+cmake --build .
+ctest
 
 """.format(pr=self.pr),
             ),
@@ -166,17 +175,21 @@ bun test
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch /home/fix.patch
-bun test
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+cd build
+cmake .. -DBUILD_TESTING=1
+cmake --build .
+ctest
 
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        dep = self.dependency()
+        assert isinstance(dep, Image)
+        name = dep.image_name()
+        tag = dep.image_tag()
 
         copy_commands = ""
         for file in self.files():
@@ -197,8 +210,8 @@ bun test
 """
 
 
-@Instance.register("tscircuit", "core")
-class TscircuitCoreInstance(Instance):
+@Instance.register("azerothcore", "azerothcore-wotlk")
+class AzerothcoreWotlk(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -208,8 +221,8 @@ class TscircuitCoreInstance(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
-        return TscircuitCoreImageDefault(self.pr, self._config)
+    def dependency(self) -> Image:
+        return AzerothcoreWotlkImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -230,74 +243,31 @@ class TscircuitCoreInstance(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
 
-        # Color/TTY format: ✓ test name [1.23ms]
-        re_pass_color = re.compile(r"^\s*✓\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_fail_color = re.compile(r"^\s*✗\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_skip_color = re.compile(r"^\s*»\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-
-        # Non-color/Docker format: (pass) test name [1.23ms]
-        re_pass_plain = re.compile(r"^\s*\(pass\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_fail_plain = re.compile(r"^\s*\(fail\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_skip_plain = re.compile(r"^\s*\(skip\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-
-        # Todo format (bun's test.todo() - count as skipped)
-        re_todo_color = re.compile(r"^\s*✎\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_todo_plain = re.compile(r"^\s*\(todo\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-
-        # Strip ANSI escape codes that bun emits in color mode
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        re_pass_tests = [re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*Passed")]
+        re_fail_tests = [
+            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Failed$")
+        ]
 
         for line in test_log.splitlines():
-            line = ansi_escape.sub("", line).strip()
-
-            match = re_pass_color.match(line)
-            if match:
-                passed_tests.add(match.group(1))
+            line = line.strip()
+            if not line:
                 continue
 
-            match = re_fail_color.match(line)
-            if match:
-                failed_tests.add(match.group(1))
-                continue
+            for re_pass_test in re_pass_tests:
+                pass_match = re_pass_test.match(line)
+                if pass_match:
+                    test = pass_match.group(1)
+                    passed_tests.add(test)
 
-            match = re_skip_color.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_pass_plain.match(line)
-            if match:
-                passed_tests.add(match.group(1))
-                continue
-
-            match = re_fail_plain.match(line)
-            if match:
-                failed_tests.add(match.group(1))
-                continue
-
-            match = re_skip_plain.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_todo_color.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_todo_plain.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-        # Dedup: worst result wins (failed > skipped > passed)
-        passed_tests -= failed_tests
-        passed_tests -= skipped_tests
-        skipped_tests -= failed_tests
+            for re_fail_test in re_fail_tests:
+                fail_match = re_fail_test.match(line)
+                if fail_match:
+                    test = fail_match.group(1)
+                    failed_tests.add(test)
 
         return TestResult(
             passed_count=len(passed_tests),

@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TscircuitCoreImageBase(Image):
+class LuantiImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class TscircuitCoreImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:latest"
+        return "gcc:14"
 
     def image_tag(self) -> str:
         return "base"
@@ -31,41 +31,30 @@ class TscircuitCoreImageBase(Image):
     def files(self) -> list[File]:
         return []
 
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+    def extra_packages(self) -> list[str]:
+        return [
+            "cmake",
+            "libgmp-dev",
+            "libjsoncpp-dev",
+            "libluajit-5.1-dev",
+            "libsqlite3-dev",
+            "zlib1g-dev",
+            "libzstd-dev",
+            "libncurses-dev",
+        ]
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    unzip \
-    nodejs \
-    npm \
-    && apt-get clean
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:$PATH"
-
-{code}
-
-{self.clear_env}
-
-"""
+    def extra_setup(self) -> str:
+        return """RUN apt-get update && apt-get install -y --no-install-recommends \\
+    libx11-dev libgl1-mesa-dev libpng-dev libjpeg-dev libxi-dev \\
+    && rm -rf /var/lib/apt/lists/* \\
+    && git clone --depth=1 https://github.com/minetest/irrlicht /tmp/irrlichtmt \\
+    && cmake -S /tmp/irrlichtmt -B /tmp/irrlichtmt/build -DBUILD_SHARED_LIBS=OFF \\
+    && cmake --build /tmp/irrlichtmt/build \\
+    && cmake --install /tmp/irrlichtmt/build \\
+    && rm -rf /tmp/irrlichtmt"""
 
 
-class TscircuitCoreImageDefault(Image):
+class LuantiImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -78,8 +67,8 @@ class TscircuitCoreImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return TscircuitCoreImageBase(self.pr, self.config)
+    def dependency(self) -> Union[str, "Image"]:
+        return LuantiImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -131,8 +120,7 @@ git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
-
-bun install 
+mkdir build || true
 
 """.format(pr=self.pr),
             ),
@@ -143,8 +131,10 @@ bun install
 set -e
 
 cd /home/{pr.repo}
-bun test
-
+cd build
+cmake .. -DBUILD_CLIENT=OFF -DBUILD_SERVER=ON
+cmake --build .
+ctest
 """.format(pr=self.pr),
             ),
             File(
@@ -154,8 +144,11 @@ bun test
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch
-bun test
+git apply --whitespace=nowarn /home/test.patch || git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.gif' --exclude='*.bmp' --exclude='*.ico' --exclude='*.ogg' --exclude='*.wav' /home/test.patch
+cd build
+cmake .. -DBUILD_CLIENT=OFF -DBUILD_SERVER=ON
+cmake --build .
+ctest
 
 """.format(pr=self.pr),
             ),
@@ -166,17 +159,21 @@ bun test
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch /home/fix.patch
-bun test
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch || git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.gif' --exclude='*.bmp' --exclude='*.ico' --exclude='*.ogg' --exclude='*.wav' /home/test.patch /home/fix.patch
+cd build
+cmake .. -DBUILD_CLIENT=OFF -DBUILD_SERVER=ON
+cmake --build .
+ctest
 
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        dep = self.dependency()
+        assert isinstance(dep, Image)
+        name = dep.image_name()
+        tag = dep.image_tag()
 
         copy_commands = ""
         for file in self.files():
@@ -197,8 +194,8 @@ bun test
 """
 
 
-@Instance.register("tscircuit", "core")
-class TscircuitCoreInstance(Instance):
+@Instance.register("luanti-org", "luanti")
+class Luanti(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -208,8 +205,8 @@ class TscircuitCoreInstance(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
-        return TscircuitCoreImageDefault(self.pr, self._config)
+    def dependency(self) -> Image:
+        return LuantiImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -230,74 +227,31 @@ class TscircuitCoreInstance(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
 
-        # Color/TTY format: ✓ test name [1.23ms]
-        re_pass_color = re.compile(r"^\s*✓\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_fail_color = re.compile(r"^\s*✗\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_skip_color = re.compile(r"^\s*»\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-
-        # Non-color/Docker format: (pass) test name [1.23ms]
-        re_pass_plain = re.compile(r"^\s*\(pass\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_fail_plain = re.compile(r"^\s*\(fail\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_skip_plain = re.compile(r"^\s*\(skip\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-
-        # Todo format (bun's test.todo() - count as skipped)
-        re_todo_color = re.compile(r"^\s*✎\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_todo_plain = re.compile(r"^\s*\(todo\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-
-        # Strip ANSI escape codes that bun emits in color mode
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        re_pass_tests = [re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*Passed")]
+        re_fail_tests = [
+            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Failed$")
+        ]
 
         for line in test_log.splitlines():
-            line = ansi_escape.sub("", line).strip()
-
-            match = re_pass_color.match(line)
-            if match:
-                passed_tests.add(match.group(1))
+            line = line.strip()
+            if not line:
                 continue
 
-            match = re_fail_color.match(line)
-            if match:
-                failed_tests.add(match.group(1))
-                continue
+            for re_pass_test in re_pass_tests:
+                pass_match = re_pass_test.match(line)
+                if pass_match:
+                    test = pass_match.group(1)
+                    passed_tests.add(test)
 
-            match = re_skip_color.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_pass_plain.match(line)
-            if match:
-                passed_tests.add(match.group(1))
-                continue
-
-            match = re_fail_plain.match(line)
-            if match:
-                failed_tests.add(match.group(1))
-                continue
-
-            match = re_skip_plain.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_todo_color.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_todo_plain.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-        # Dedup: worst result wins (failed > skipped > passed)
-        passed_tests -= failed_tests
-        passed_tests -= skipped_tests
-        skipped_tests -= failed_tests
+            for re_fail_test in re_fail_tests:
+                fail_match = re_fail_test.match(line)
+                if fail_match:
+                    test = fail_match.group(1)
+                    failed_tests.add(test)
 
         return TestResult(
             passed_count=len(passed_tests),

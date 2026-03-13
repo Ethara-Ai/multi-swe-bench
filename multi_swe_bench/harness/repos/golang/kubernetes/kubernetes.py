@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TscircuitCoreImageBase(Image):
+class KubernetesImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class TscircuitCoreImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:latest"
+        return "golang:1.25"
 
     def image_tag(self) -> str:
         return "base"
@@ -47,17 +47,6 @@ class TscircuitCoreImageBase(Image):
 
 WORKDIR /home/
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    unzip \
-    nodejs \
-    npm \
-    && apt-get clean
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:$PATH"
-
 {code}
 
 {self.clear_env}
@@ -65,7 +54,7 @@ ENV PATH="/root/.bun/bin:$PATH"
 """
 
 
-class TscircuitCoreImageDefault(Image):
+class KubernetesImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -79,7 +68,7 @@ class TscircuitCoreImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return TscircuitCoreImageBase(self.pr, self.config)
+        return KubernetesImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -132,7 +121,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-bun install 
+go test -v -count=1 ./... || true
 
 """.format(pr=self.pr),
             ),
@@ -143,7 +132,7 @@ bun install
 set -e
 
 cd /home/{pr.repo}
-bun test
+go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
@@ -154,8 +143,8 @@ bun test
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch
-bun test
+git apply /home/test.patch
+go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
@@ -166,8 +155,8 @@ bun test
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch /home/fix.patch
-bun test
+git apply /home/test.patch /home/fix.patch
+go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
@@ -197,8 +186,8 @@ bun test
 """
 
 
-@Instance.register("tscircuit", "core")
-class TscircuitCoreInstance(Instance):
+@Instance.register("kubernetes", "kubernetes")
+class Kubernetes(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -209,7 +198,7 @@ class TscircuitCoreInstance(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return TscircuitCoreImageDefault(self.pr, self._config)
+        return KubernetesImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -230,74 +219,56 @@ class TscircuitCoreInstance(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
 
-        # Color/TTY format: ✓ test name [1.23ms]
-        re_pass_color = re.compile(r"^\s*✓\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_fail_color = re.compile(r"^\s*✗\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_skip_color = re.compile(r"^\s*»\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
+        re_fail_tests = [
+            re.compile(r"--- FAIL: (\S+)"),
+            re.compile(r"FAIL:?\s?(.+?)\s"),
+        ]
+        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
 
-        # Non-color/Docker format: (pass) test name [1.23ms]
-        re_pass_plain = re.compile(r"^\s*\(pass\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_fail_plain = re.compile(r"^\s*\(fail\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_skip_plain = re.compile(r"^\s*\(skip\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-
-        # Todo format (bun's test.todo() - count as skipped)
-        re_todo_color = re.compile(r"^\s*✎\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_todo_plain = re.compile(r"^\s*\(todo\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-
-        # Strip ANSI escape codes that bun emits in color mode
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        def get_base_name(test_name: str) -> str:
+            index = test_name.rfind("/")
+            if index == -1:
+                return test_name
+            return test_name[:index]
 
         for line in test_log.splitlines():
-            line = ansi_escape.sub("", line).strip()
+            line = line.strip()
 
-            match = re_pass_color.match(line)
-            if match:
-                passed_tests.add(match.group(1))
-                continue
+            for re_pass_test in re_pass_tests:
+                pass_match = re_pass_test.match(line)
+                if pass_match:
+                    base_name = get_base_name(pass_match.group(1))
+                    if base_name in failed_tests:
+                        continue
+                    if base_name in skipped_tests:
+                        skipped_tests.remove(base_name)
+                    passed_tests.add(base_name)
 
-            match = re_fail_color.match(line)
-            if match:
-                failed_tests.add(match.group(1))
-                continue
+            for re_fail_test in re_fail_tests:
+                fail_match = re_fail_test.match(line)
+                if fail_match:
+                    base_name = get_base_name(fail_match.group(1))
+                    if base_name in passed_tests:
+                        passed_tests.remove(base_name)
+                    if base_name in skipped_tests:
+                        skipped_tests.remove(base_name)
+                    failed_tests.add(base_name)
 
-            match = re_skip_color.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_pass_plain.match(line)
-            if match:
-                passed_tests.add(match.group(1))
-                continue
-
-            match = re_fail_plain.match(line)
-            if match:
-                failed_tests.add(match.group(1))
-                continue
-
-            match = re_skip_plain.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_todo_color.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_todo_plain.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-        # Dedup: worst result wins (failed > skipped > passed)
-        passed_tests -= failed_tests
-        passed_tests -= skipped_tests
-        skipped_tests -= failed_tests
+            for re_skip_test in re_skip_tests:
+                skip_match = re_skip_test.match(line)
+                if skip_match:
+                    base_name = get_base_name(skip_match.group(1))
+                    if base_name in passed_tests:
+                        continue
+                    if base_name not in failed_tests:
+                        continue
+                    failed_tests.discard(base_name)
+                    skipped_tests.add(base_name)
 
         return TestResult(
             passed_count=len(passed_tests),

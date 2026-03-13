@@ -7,3 +7,4 @@ from multi_swe_bench.harness.repos.python.huggingface.datasets_5079_to_4372 impo
 from multi_swe_bench.harness.repos.python.huggingface.datasets_4322_to_3382 import *
 from multi_swe_bench.harness.repos.python.huggingface.datasets_3088_to_2608 import *
 from multi_swe_bench.harness.repos.python.huggingface.datasets_1626_to_403 import *
+from multi_swe_bench.harness.repos.python.huggingface.transformers_44040_to_3323 import *

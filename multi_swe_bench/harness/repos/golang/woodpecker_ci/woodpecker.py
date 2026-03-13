@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TscircuitCoreImageBase(Image):
+class WoodpeckerImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class TscircuitCoreImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:latest"
+        return "golang:1.18-bullseye"
 
     def image_tag(self) -> str:
         return "base"
@@ -47,25 +47,17 @@ class TscircuitCoreImageBase(Image):
 
 WORKDIR /home/
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    unzip \
-    nodejs \
-    npm \
-    && apt-get clean
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:$PATH"
-
 {code}
+
+# Create dummy web/dist so //go:embed dist/* compiles (frontend not built)
+RUN mkdir -p /home/{self.pr.repo}/web/dist && echo "placeholder" > /home/{self.pr.repo}/web/dist/index.html
 
 {self.clear_env}
 
 """
 
 
-class TscircuitCoreImageDefault(Image):
+class WoodpeckerImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -79,7 +71,7 @@ class TscircuitCoreImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return TscircuitCoreImageBase(self.pr, self.config)
+        return WoodpeckerImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -132,7 +124,12 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-bun install 
+# Re-create dummy web/dist after checkout (//go:embed dist/* needs it)
+mkdir -p web/dist
+echo "placeholder" > web/dist/index.html
+
+go mod download || true
+go test -count=1 ./... || true
 
 """.format(pr=self.pr),
             ),
@@ -143,7 +140,8 @@ bun install
 set -e
 
 cd /home/{pr.repo}
-bun test
+mkdir -p web/dist && echo "placeholder" > web/dist/index.html
+go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
@@ -154,8 +152,9 @@ bun test
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch
-bun test
+git apply --whitespace=nowarn /home/test.patch
+mkdir -p web/dist && echo "placeholder" > web/dist/index.html
+go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
@@ -166,8 +165,9 @@ bun test
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch /home/fix.patch
-bun test
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+mkdir -p web/dist && echo "placeholder" > web/dist/index.html
+go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
@@ -197,8 +197,8 @@ bun test
 """
 
 
-@Instance.register("tscircuit", "core")
-class TscircuitCoreInstance(Instance):
+@Instance.register("woodpecker-ci", "woodpecker")
+class Woodpecker(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -209,7 +209,7 @@ class TscircuitCoreInstance(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return TscircuitCoreImageDefault(self.pr, self._config)
+        return WoodpeckerImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -229,75 +229,34 @@ class TscircuitCoreInstance(Instance):
 
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, test_log: str) -> TestResult:
+    def parse_log(self, log: str) -> TestResult:
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Color/TTY format: ✓ test name [1.23ms]
-        re_pass_color = re.compile(r"^\s*✓\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_fail_color = re.compile(r"^\s*✗\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_skip_color = re.compile(r"^\s*»\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        passed_pattern = re.compile(r"--- PASS: (\S+)")
+        failed_pattern = re.compile(r"--- FAIL: (\S+)")
+        skipped_pattern = re.compile(r"--- SKIP: (\S+)")
 
-        # Non-color/Docker format: (pass) test name [1.23ms]
-        re_pass_plain = re.compile(r"^\s*\(pass\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_fail_plain = re.compile(r"^\s*\(fail\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_skip_plain = re.compile(r"^\s*\(skip\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        for line in log.splitlines():
+            line = line.strip()
 
-        # Todo format (bun's test.todo() - count as skipped)
-        re_todo_color = re.compile(r"^\s*✎\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_todo_plain = re.compile(r"^\s*\(todo\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-
-        # Strip ANSI escape codes that bun emits in color mode
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-
-        for line in test_log.splitlines():
-            line = ansi_escape.sub("", line).strip()
-
-            match = re_pass_color.match(line)
-            if match:
-                passed_tests.add(match.group(1))
+            m = passed_pattern.search(line)
+            if m:
+                if m.group(1) not in failed_tests:
+                    passed_tests.add(m.group(1))
                 continue
 
-            match = re_fail_color.match(line)
-            if match:
-                failed_tests.add(match.group(1))
+            m = failed_pattern.search(line)
+            if m:
+                passed_tests.discard(m.group(1))
+                failed_tests.add(m.group(1))
                 continue
 
-            match = re_skip_color.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_pass_plain.match(line)
-            if match:
-                passed_tests.add(match.group(1))
-                continue
-
-            match = re_fail_plain.match(line)
-            if match:
-                failed_tests.add(match.group(1))
-                continue
-
-            match = re_skip_plain.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_todo_color.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-            match = re_todo_plain.match(line)
-            if match:
-                skipped_tests.add(match.group(1))
-                continue
-
-        # Dedup: worst result wins (failed > skipped > passed)
-        passed_tests -= failed_tests
-        passed_tests -= skipped_tests
-        skipped_tests -= failed_tests
+            m = skipped_pattern.search(line)
+            if m:
+                if m.group(1) not in passed_tests and m.group(1) not in failed_tests:
+                    skipped_tests.add(m.group(1))
 
         return TestResult(
             passed_count=len(passed_tests),
