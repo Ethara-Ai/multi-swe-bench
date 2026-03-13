@@ -23,7 +23,8 @@ class ImageBase(Image):
         return "gcc:latest"
 
     def image_tag(self) -> str:
-        return "base"
+        base_sha = self.pr.base.sha[:8] if hasattr(self.pr.base, "sha") else "base"
+        return f"base-{base_sha}"
 
     def workdir(self) -> str:
         return "base"
@@ -71,8 +72,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return ImageBase(self.pr, self._config)
+    def dependency(self) -> str:
+        return "gcc:latest"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -174,26 +175,38 @@ ctest
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        base_img = self.dependency()
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
+        return f"""FROM {base_img}
 
 {self.global_env}
 
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+RUN apt-get update && apt-get install -y cmake
+
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+WORKDIR /home
+
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 

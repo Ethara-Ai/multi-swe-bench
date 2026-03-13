@@ -5,6 +5,9 @@ from typing import Optional, Union
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.javascript.KaTeX._flow_compat import (
+    wrap_with_flow_stub,
+)
 
 
 class ImageDefault(Image):
@@ -207,19 +210,19 @@ class KATEX_1454_TO_1273(Instance):
         if run_cmd:
             return run_cmd
 
-        return "bash /home/run.sh"
+        return wrap_with_flow_stub("/home/run.sh")
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
 
-        return "bash /home/test-run.sh"
+        return wrap_with_flow_stub("/home/test-run.sh")
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
 
-        return "bash /home/fix-run.sh"
+        return wrap_with_flow_stub("/home/fix-run.sh")
 
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.

@@ -165,6 +165,7 @@ RUN git checkout {pr.base.sha}
 
 
 @Instance.register("Textualize", "textual_1659_to_88")
+@Instance.register("textualize", "textual_1659_to_88")
 class TEXTUAL_1659_TO_88(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

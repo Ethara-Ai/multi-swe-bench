@@ -6,70 +6,6 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class prettierImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:18"
-
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-
-RUN apt update && apt install -y libxkbfile-dev pkg-config build-essential python3 libkrb5-dev libxss1 xvfb libgtk-3-0 libgbm1
-
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
-        fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \
-        --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \
-    export NVM_DIR="$HOME/.nvm" && \
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
 class prettierImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -83,8 +19,8 @@ class prettierImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return prettierImageBase(self.pr, self._config)
+    def dependency(self) -> str:
+        return "node:18"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -198,15 +134,12 @@ yarn test
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        base_img = self.dependency()
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
         proxy_setup = ""
         proxy_cleanup = ""
 
@@ -239,20 +172,50 @@ yarn test
                     RUN rm -f $HOME/.npmrc
                 """
                 )
-        return f"""FROM {name}:{tag}
+
+        return f"""FROM {base_img}
 
 {self.global_env}
+
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+RUN apt update && apt install -y libxkbfile-dev pkg-config build-essential python3 libkrb5-dev libxss1 xvfb libgtk-3-0 libgbm1 \
+    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-khmeros fonts-kacst fonts-freefont-ttf dbus dbus-x11
+
+RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+        && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
+        && apt-get update \
+        && apt-get install -y google-chrome-stable --no-install-recommends \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \
+    export NVM_DIR="$HOME/.nvm" && \
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+WORKDIR /home
 
 {proxy_setup}
 
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
 
 {proxy_cleanup}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 

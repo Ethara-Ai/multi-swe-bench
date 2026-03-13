@@ -4,6 +4,9 @@ import textwrap
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.javascript.KaTeX._flow_compat import (
+    wrap_with_flow_stub,
+)
 
 
 class KaTeXImageBase(Image):
@@ -23,10 +26,12 @@ class KaTeXImageBase(Image):
         return "node:18"
 
     def image_tag(self) -> str:
-        return "base"
+        base_sha = self.pr.base.sha[:8] if hasattr(self.pr.base, "sha") else "base"
+        return f"base-{base_sha}"
 
     def workdir(self) -> str:
-        return "base"
+        base_sha = self.pr.base.sha[:8] if hasattr(self.pr.base, "sha") else "base"
+        return f"base-{base_sha}"
 
     def files(self) -> list[File]:
         return []
@@ -73,8 +78,8 @@ class KaTeXImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return KaTeXImageBase(self.pr, self._config)
+    def dependency(self) -> str:
+        return "node:18"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -282,9 +287,7 @@ yarn test
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        base_img = self.dependency()
 
         copy_commands = ""
         for file in self.files():
@@ -323,9 +326,27 @@ yarn test
                     RUN rm -f $HOME/.npmrc
                 """
                 )
-        return f"""FROM {name}:{tag}
+        return f"""FROM {base_img}
 
 {self.global_env}
+
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+RUN npm install yarn
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \\
+    export NVM_DIR="$HOME/.nvm" && \\
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+WORKDIR /home
 
 {proxy_setup}
 
@@ -337,6 +358,7 @@ yarn test
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -358,19 +380,19 @@ class KaTeX(Instance):
         if run_cmd:
             return run_cmd
 
-        return "bash /home/run.sh"
+        return wrap_with_flow_stub("/home/run.sh")
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
 
-        return "bash /home/test-run.sh"
+        return wrap_with_flow_stub("/home/test-run.sh")
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
 
-        return "bash /home/fix-run.sh"
+        return wrap_with_flow_stub("/home/fix-run.sh")
 
     def parse_log(self, test_log: str) -> TestResult:
         passed_tests = set()

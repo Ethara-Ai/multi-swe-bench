@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.11-slim"
+        return "python:3.11-slim-bookworm"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -120,7 +120,7 @@ tox -e py311-test
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -142,6 +142,7 @@ RUN git clone https://github.com/astropy/astropy.git /home/astropy
 WORKDIR /home/astropy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN pip install --no-cache-dir "setuptools<70" "Cython>=0.29.33"
 """
         dockerfile_content += f"""
 {copy_commands}
