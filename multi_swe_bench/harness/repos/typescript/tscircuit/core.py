@@ -294,6 +294,11 @@ class TscircuitCoreInstance(Instance):
                 skipped_tests.add(match.group(1))
                 continue
 
+        # Dedup: worst result wins (failed > skipped > passed)
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
+
         return TestResult(
             passed_count=len(passed_tests),
             failed_count=len(failed_tests),
