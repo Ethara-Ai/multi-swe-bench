@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class Fc33LateImageBase(Image):
+class MsquicImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class Fc33LateImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "fedora:33"
+        return "ubuntu:22.04"
 
     def image_tag(self) -> str:
         return "base"
@@ -46,44 +46,10 @@ class Fc33LateImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
-
-RUN sed -i -e 's|^metalink=|#metalink=|g' \
-       -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux|g' \
-       /etc/yum.repos.d/fedora*.repo
-
-RUN dnf makecache && dnf groupinstall -y "Development Tools" && dnf install -y \\
-    cmake ninja-build git \\
-    tar wget curl zip unzip \\
-    libcurl-devel openssl-devel zlib-devel \\
-    protobuf-devel protobuf-compiler grpc-devel grpc-plugins \\
-    gtest-devel gmock-devel json-devel \\
-    c-ares-devel re2-devel \\
-    && dnf clean all
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20200923.3.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    sed -i 's/^#define ABSL_OPTION_USE_\\(.*\\) 2/#define ABSL_OPTION_USE_\\1 0/' "absl/base/options.h" && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -DBUILD_TESTING=OFF -DABSL_BUILD_TESTING=OFF \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/google/crc32c/archive/1.0.6.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF -DCRC32C_USE_GLOG=OFF \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-RUN ldconfig /usr/local/lib*
-
-WORKDIR /home/
+RUN apt-get update && apt-get install -y build-essential cmake git libssl-dev liblttng-ust-dev lttng-tools libnuma-dev pkg-config wget curl perl && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -92,7 +58,7 @@ WORKDIR /home/
 """
 
 
-class Fc33LateImageDefault(Image):
+class MsquicImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -105,8 +71,8 @@ class Fc33LateImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image:
-        return Fc33LateImageBase(self.pr, self._config)
+    def dependency(self) -> Image | None:
+        return MsquicImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -116,8 +82,16 @@ class Fc33LateImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(".", "fix.patch", f"{self.pr.fix_patch}"),
-            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(
+                ".",
+                "fix.patch",
+                f"{self.pr.fix_patch}",
+            ),
+            File(
+                ".",
+                "test.patch",
+                f"{self.pr.test_patch}",
+            ),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -129,7 +103,7 @@ if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
   exit 1
 fi
 
-if [[ -n $(git status --porcelain) ]]; then
+if [[ -n $(git status --porcelain --ignore-submodules=all) ]]; then
   echo "check_git_changes: Uncommitted changes"
   exit 1
 fi
@@ -149,16 +123,8 @@ cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-mkdir -p build && cd build
-cmake -S /home/{pr.repo} -B /home/{pr.repo}/build \\
-    -DBUILD_TESTING=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,iam,logging \\
-    -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \\
-    -DCMAKE_BUILD_TYPE=Debug \\
-    -GNinja
-cmake --build /home/{pr.repo}/build -j $(nproc)
+git submodule sync --recursive
+git submodule update --init --recursive --force 2>&1 || git submodule update --init --recursive 2>&1 || true
 
 """.format(pr=self.pr),
             ),
@@ -168,9 +134,14 @@ cmake --build /home/{pr.repo}/build -j $(nproc)
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}/build
-ctest --output-on-failure
-
+cd /home/{pr.repo}
+mkdir -p build && cd build
+if grep -q 'QUIC_TLS_LIB' ../CMakeLists.txt 2>/dev/null; then
+  cmake -DQUIC_BUILD_TEST=ON -DQUIC_TLS_LIB=openssl ..
+else
+  cmake -DQUIC_BUILD_TEST=ON -DQUIC_TLS=openssl ..
+fi
+cmake --build . -j$(nproc)
 """.format(pr=self.pr),
             ),
             File(
@@ -181,9 +152,19 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-cd build
-cmake --build . -j $(nproc)
-ctest --output-on-failure
+cd /home/{pr.repo}
+mkdir -p build && cd build
+if grep -q 'QUIC_TLS_LIB' ../CMakeLists.txt 2>/dev/null; then
+  cmake -DQUIC_BUILD_TEST=ON -DQUIC_TLS_LIB=openssl ..
+else
+  cmake -DQUIC_BUILD_TEST=ON -DQUIC_TLS=openssl ..
+fi
+cmake --build . -j$(nproc)
+for tb in msquiccoretest msquicplatformtest; do
+  if [ -x ./bin/Release/$tb ]; then
+    ./bin/Release/$tb --gtest_filter='-*DataPath*:*Socket*:*Send*:*Recv*' 2>&1 || true
+  fi
+done
 
 """.format(pr=self.pr),
             ),
@@ -195,9 +176,19 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-cd build
-cmake --build . -j $(nproc)
-ctest --output-on-failure
+cd /home/{pr.repo}
+mkdir -p build && cd build
+if grep -q 'QUIC_TLS_LIB' ../CMakeLists.txt 2>/dev/null; then
+  cmake -DQUIC_BUILD_TEST=ON -DQUIC_TLS_LIB=openssl ..
+else
+  cmake -DQUIC_BUILD_TEST=ON -DQUIC_TLS=openssl ..
+fi
+cmake --build . -j$(nproc)
+for tb in msquiccoretest msquicplatformtest; do
+  if [ -x ./bin/Release/$tb ]; then
+    ./bin/Release/$tb --gtest_filter='-*DataPath*:*Socket*:*Send*:*Recv*' 2>&1 || true
+  fi
+done
 
 """.format(pr=self.pr),
             ),
@@ -227,8 +218,8 @@ ctest --output-on-failure
 """
 
 
-@Instance.register("googleapis", "google-cloud-cpp_6659_to_5713")
-class GoogleCloudCpp6659To5713(Instance):
+@Instance.register("microsoft", "msquic")
+class Msquic(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -239,21 +230,24 @@ class GoogleCloudCpp6659To5713(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return Fc33LateImageDefault(self.pr, self._config)
+        return MsquicImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
+
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
+
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
+
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
@@ -261,33 +255,20 @@ class GoogleCloudCpp6659To5713(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*Passed"),
-        ]
-        re_fail_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Failed"),
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Timeout"),
-        ]
-        re_skip_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Not Run"),
-        ]
+        re_pass = re.compile(r"^\[\s*OK\s*\]\s+(\S+)")
+        re_fail = re.compile(r"^\[\s*FAILED\s*\]\s+(\S+)")
 
         for line in test_log.splitlines():
             line = line.strip()
             if not line:
                 continue
-            for re_pass in re_pass_tests:
-                pass_match = re_pass.match(line)
-                if pass_match:
-                    passed_tests.add(pass_match.group(1))
-            for re_fail in re_fail_tests:
-                fail_match = re_fail.match(line)
-                if fail_match:
-                    failed_tests.add(fail_match.group(1))
-            for re_skip in re_skip_tests:
-                skip_match = re_skip.match(line)
-                if skip_match:
-                    skipped_tests.add(skip_match.group(1))
+
+            m = re_pass.match(line)
+            if m:
+                passed_tests.add(m.group(1))
+            m = re_fail.match(line)
+            if m:
+                failed_tests.add(m.group(1))
 
         return TestResult(
             passed_count=len(passed_tests),

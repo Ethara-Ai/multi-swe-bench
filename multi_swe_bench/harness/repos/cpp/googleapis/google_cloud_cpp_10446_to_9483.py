@@ -49,17 +49,36 @@ WORKDIR /home/
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
+RUN sed -i -e 's|^metalink=|#metalink=|g' \
+       -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux|g' \
+       /etc/yum.repos.d/fedora*.repo
+
 RUN dnf makecache && dnf groupinstall -y "Development Tools" && dnf install -y \\
     cmake ninja-build git \\
     tar wget curl zip unzip \\
     libcurl-devel openssl-devel zlib-devel \\
-    gtest-devel gmock-devel json-devel \\
-    google-crc32c-devel \\
+    gtest-devel gmock-devel \\
     c-ares-devel re2-devel \\
     && dnf clean all
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20220623.0.tar.gz | \\
+RUN curl -sSL https://github.com/nlohmann/json/releases/download/v3.10.5/include.zip -o include.zip && \\
+    unzip -q include.zip -d nlohmann && \\
+    mkdir -p /usr/local/include && \\
+    cp -r nlohmann/include/nlohmann /usr/local/include/ && \\
+    cd /var/tmp && rm -fr build
+
+WORKDIR /var/tmp/build
+RUN curl -sSL https://github.com/google/crc32c/archive/1.1.2.tar.gz | \\
+    tar -xzf - --strip-components=1 && \\
+    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
+      -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF -DCRC32C_USE_GLOG=OFF \\
+      -GNinja -S . -B cmake-out && \\
+    cmake --build cmake-out --target install && \\
+    ldconfig && cd /var/tmp && rm -fr build
+
+WORKDIR /var/tmp/build
+RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20220623.1.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     sed -i 's/^#define ABSL_OPTION_USE_\\(.*\\) 2/#define ABSL_OPTION_USE_\\1 0/' "absl/base/options.h" && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DABSL_BUILD_TESTING=OFF -DBUILD_SHARED_LIBS=yes \\
@@ -161,7 +180,7 @@ bash /home/check_git_changes.sh
 mkdir -p build && cd build
 cmake -S /home/{pr.repo} -B /home/{pr.repo}/build \\
     -DBUILD_TESTING=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,bigquery,iam,logging,kms,secretmanager,compute \\
+    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,iam,logging \\
     -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \\
     -DCMAKE_BUILD_TYPE=Debug \\
     -GNinja

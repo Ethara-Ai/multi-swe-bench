@@ -22,3 +22,12 @@ from multi_swe_bench.harness.repos.golang.terrastruct import *
 from multi_swe_bench.harness.repos.golang.go_gitea import *
 from multi_swe_bench.harness.repos.golang.projectdiscovery import *
 from multi_swe_bench.harness.repos.golang.weaviate_proj import *
+from multi_swe_bench.harness.repos.golang.stakwork import *
+from multi_swe_bench.harness.repos.golang.celestiaorg import *
+from multi_swe_bench.harness.repos.golang.googlecloudplatform import *
+from multi_swe_bench.harness.repos.golang.aws import *
+from multi_swe_bench.harness.repos.golang.alexandrevilain import *
+from multi_swe_bench.harness.repos.golang.omni_network import *
+from multi_swe_bench.harness.repos.golang.ethereum import *
+from multi_swe_bench.harness.repos.golang.datazip_inc import *
+from multi_swe_bench.harness.repos.golang.stashapp import *

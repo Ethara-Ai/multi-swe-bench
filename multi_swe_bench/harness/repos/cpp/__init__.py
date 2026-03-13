@@ -14,3 +14,4 @@ from multi_swe_bench.harness.repos.cpp.einsteintoolkit import *
 from multi_swe_bench.harness.repos.cpp.AMReXCodes import *
 from multi_swe_bench.harness.repos.cpp.celeritas_project import *
 from multi_swe_bench.harness.repos.cpp.googleapis import *
+from multi_swe_bench.harness.repos.cpp.dosbox_staging import *

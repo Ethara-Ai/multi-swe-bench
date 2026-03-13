@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class GoogleCloudCppImageBase(Image):
+class DunstImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class GoogleCloudCppImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "fedora:37"
+        return "ubuntu:22.04"
 
     def image_tag(self) -> str:
         return "base"
@@ -37,84 +37,28 @@ class GoogleCloudCppImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""# syntax=docker/dockerfile:1.6
-FROM {image_name}
-
-ARG TARGETARCH
-ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
-ARG BASE_COMMIT
+        return f"""FROM {image_name}
 
 {self.global_env}
 
 WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
-
-RUN sed -i -e 's|^metalink=|#metalink=|g' \
-       -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux|g' \
-       /etc/yum.repos.d/fedora*.repo
-
-RUN dnf makecache --setopt=retries=10 --setopt=timeout=60 && dnf groupinstall -y "Development Tools" && dnf install -y \\
-    cmake ninja-build git gcc-c++ \\
-    tar wget curl zip unzip \\
-    libcurl-devel openssl-devel zlib-devel \\
-    gtest-devel gmock-devel json-devel \\
-    google-crc32c-devel google-benchmark-devel \\
-    c-ares-devel re2-devel \\
-    && dnf clean all
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20230802.0.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    sed -i 's/^#define ABSL_OPTION_USE_\\(.*\\) 2/#define ABSL_OPTION_USE_\\1 0/' "absl/base/options.h" && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DABSL_BUILD_TESTING=OFF -DBUILD_SHARED_LIBS=yes \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v24.0.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_ABSL_PROVIDER=package \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/grpc/grpc/archive/v1.57.0.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \\
-      -DgRPC_INSTALL=ON -DgRPC_BUILD_TESTS=OFF \\
-      -DgRPC_ABSL_PROVIDER=package -DgRPC_CARES_PROVIDER=package \\
-      -DgRPC_PROTOBUF_PROVIDER=package -DgRPC_RE2_PROVIDER=package \\
-      -DgRPC_SSL_PROVIDER=package -DgRPC_ZLIB_PROVIDER=package \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-RUN ldconfig /usr/local/lib*
-
-WORKDIR /home/
+RUN apt-get update && apt-get install -y build-essential git pkg-config libglib2.0-dev libgdk-pixbuf-2.0-dev libpango1.0-dev libcairo2-dev libx11-dev libxinerama-dev libxext-dev libxrandr-dev libxss-dev libwayland-dev wayland-protocols libnotify-dev libdbus-1-dev doxygen && rm -rf /var/lib/apt/lists/*
 
 {code}
 
-WORKDIR /home/{self.pr.repo}
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
 {self.clear_env}
 
-CMD ["/bin/bash"]
 """
 
 
-class GoogleCloudCppImageDefault(Image):
+class DunstImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -127,8 +71,8 @@ class GoogleCloudCppImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image:
-        return GoogleCloudCppImageBase(self.pr, self._config)
+    def dependency(self) -> Image | None:
+        return DunstImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -159,7 +103,7 @@ if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
   exit 1
 fi
 
-if [[ -n $(git status --porcelain) ]]; then
+if [[ -n $(git status --porcelain --ignore-submodules=all) ]]; then
   echo "check_git_changes: Uncommitted changes"
   exit 1
 fi
@@ -179,16 +123,6 @@ cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-mkdir -p build && cd build
-cmake -S /home/{pr.repo} -B /home/{pr.repo}/build \\
-    -DBUILD_TESTING=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,bigquery,iam,logging,kms,secretmanager,compute \\
-    -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \\
-    -DCMAKE_BUILD_TYPE=Debug \\
-    -GNinja
-cmake --build /home/{pr.repo}/build -j $(nproc)
 
 """.format(pr=self.pr),
             ),
@@ -198,9 +132,9 @@ cmake --build /home/{pr.repo}/build -j $(nproc)
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}/build
-ctest --output-on-failure
-
+cd /home/{pr.repo}
+make -j$(nproc) all
+make test
 """.format(pr=self.pr),
             ),
             File(
@@ -211,9 +145,9 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-cd build
-cmake --build . -j $(nproc)
-ctest --output-on-failure
+cd /home/{pr.repo}
+make -j$(nproc) all
+make test
 
 """.format(pr=self.pr),
             ),
@@ -225,9 +159,9 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-cd build
-cmake --build . -j $(nproc)
-ctest --output-on-failure
+cd /home/{pr.repo}
+make -j$(nproc) all
+make test
 
 """.format(pr=self.pr),
             ),
@@ -257,8 +191,8 @@ ctest --output-on-failure
 """
 
 
-@Instance.register("googleapis", "google-cloud-cpp")
-class GoogleCloudCpp(Instance):
+@Instance.register("dunst-project", "dunst")
+class Dunst(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -269,7 +203,7 @@ class GoogleCloudCpp(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return GoogleCloudCppImageDefault(self.pr, self._config)
+        return DunstImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -290,44 +224,32 @@ class GoogleCloudCpp(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        import re as _re
+        # Strip ANSI color codes before parsing
+        _ansi_re = _re.compile(r'\x1b\[[0-9;]*m')
+        clean_log = _ansi_re.sub('', test_log)
+
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
 
-        # CTest: "1/N Test #1: name ...   Passed    0.5 sec"
-        re_pass_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*Passed"),
-        ]
-        re_fail_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Failed"),
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Timeout"),
-        ]
-        re_skip_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Not Run"),
-        ]
+        re_pass = _re.compile(r'^PASS\s+(\S.+?):\s+\(')
+        re_fail = _re.compile(r'^FAIL\s+(\S.+?):\s+\(')
+        re_skip = _re.compile(r'^SKIP\s+(\S.+?):\s+\(')
 
-        for line in test_log.splitlines():
+        for line in clean_log.splitlines():
             line = line.strip()
             if not line:
                 continue
-
-            for re_pass in re_pass_tests:
-                pass_match = re_pass.match(line)
-                if pass_match:
-                    test = pass_match.group(1)
-                    passed_tests.add(test)
-
-            for re_fail in re_fail_tests:
-                fail_match = re_fail.match(line)
-                if fail_match:
-                    test = fail_match.group(1)
-                    failed_tests.add(test)
-
-            for re_skip in re_skip_tests:
-                skip_match = re_skip.match(line)
-                if skip_match:
-                    test = skip_match.group(1)
-                    skipped_tests.add(test)
+            m = re_pass.match(line)
+            if m:
+                passed_tests.add(m.group(1).strip())
+            m = re_fail.match(line)
+            if m:
+                failed_tests.add(m.group(1).strip())
+            m = re_skip.match(line)
+            if m:
+                skipped_tests.add(m.group(1).strip())
 
         return TestResult(
             passed_count=len(passed_tests),

@@ -6,7 +6,9 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class Fc33EarlyImageBase(Image):
+class OlakeImageBase(Image):
+    """Base image: Go 1.24 runtime + olake repo clone."""
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +22,7 @@ class Fc33EarlyImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "fedora:33"
+        return "golang:1.24-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -46,34 +48,6 @@ class Fc33EarlyImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-
-RUN sed -i -e 's|^metalink=|#metalink=|g' \
-       -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux|g' \
-       /etc/yum.repos.d/fedora*.repo
-
-RUN dnf makecache && dnf groupinstall -y "Development Tools" && dnf install -y \\
-    cmake ninja-build git \\
-    tar wget curl zip unzip \\
-    libcurl-devel openssl-devel zlib-devel \\
-    protobuf-devel protobuf-compiler grpc-devel grpc-plugins \\
-    abseil-cpp-devel gtest-devel gmock-devel json-devel \\
-    c-ares-devel re2-devel \\
-    && dnf clean all
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/google/crc32c/archive/1.0.6.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF -DCRC32C_USE_GLOG=OFF \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-RUN ldconfig /usr/local/lib*
-
-WORKDIR /home/
 
 {code}
 
@@ -82,7 +56,9 @@ WORKDIR /home/
 """
 
 
-class Fc33EarlyImageDefault(Image):
+class OlakeImageDefault(Image):
+    """Per-PR image: patches + shell scripts."""
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -95,8 +71,8 @@ class Fc33EarlyImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image:
-        return Fc33EarlyImageBase(self.pr, self._config)
+    def dependency(self) -> Image | None:
+        return OlakeImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -149,14 +125,23 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-mkdir -p build && cd build
-cmake -S /home/{pr.repo} -B /home/{pr.repo}/build \\
-    -DBUILD_TESTING=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,iam,logging \\
-    -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \\
-    -DCMAKE_BUILD_TYPE=Debug \\
-    -GNinja
-cmake --build /home/{pr.repo}/build -j $(nproc)
+# This is a Go workspace (go.work) with multiple modules.
+# Download dependencies for root and all workspace modules.
+go work sync || true
+go mod download || true
+for d in drivers/mongodb drivers/mysql drivers/postgres drivers/oracle drivers/s3 drivers/kafka drivers/db2; do
+  if [ -f "$d/go.mod" ]; then
+    (cd "$d" && go mod download) || true
+  fi
+done
+
+# Warm the build cache for commonly tested packages.
+go test -count=1 ./types/... ./utils/... || true
+for d in drivers/mongodb drivers/mysql drivers/postgres; do
+  if [ -f "$d/go.mod" ]; then
+    (cd "$d" && go test -count=1 ./...) || true
+  fi
+done
 
 """.format(pr=self.pr),
             ),
@@ -166,8 +151,17 @@ cmake --build /home/{pr.repo}/build -j $(nproc)
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}/build
-ctest --output-on-failure
+cd /home/{pr.repo}
+
+# Test root module packages
+go test -v -count=1 ./types/... ./utils/... 2>&1 || true
+
+# Test workspace driver modules
+for d in drivers/mongodb drivers/mysql drivers/postgres; do
+  if [ -f "$d/go.mod" ]; then
+    (cd "$d" && go test -v -count=1 ./...) 2>&1 || true
+  fi
+done
 
 """.format(pr=self.pr),
             ),
@@ -179,9 +173,16 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-cd build
-cmake --build . -j $(nproc)
-ctest --output-on-failure
+
+# Test root module packages
+go test -v -count=1 ./types/... ./utils/... 2>&1 || true
+
+# Test workspace driver modules
+for d in drivers/mongodb drivers/mysql drivers/postgres; do
+  if [ -f "$d/go.mod" ]; then
+    (cd "$d" && go test -v -count=1 ./...) 2>&1 || true
+  fi
+done
 
 """.format(pr=self.pr),
             ),
@@ -193,9 +194,16 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-cd build
-cmake --build . -j $(nproc)
-ctest --output-on-failure
+
+# Test root module packages
+go test -v -count=1 ./types/... ./utils/... 2>&1 || true
+
+# Test workspace driver modules
+for d in drivers/mongodb drivers/mysql drivers/postgres; do
+  if [ -f "$d/go.mod" ]; then
+    (cd "$d" && go test -v -count=1 ./...) 2>&1 || true
+  fi
+done
 
 """.format(pr=self.pr),
             ),
@@ -225,8 +233,8 @@ ctest --output-on-failure
 """
 
 
-@Instance.register("googleapis", "google-cloud-cpp_5608_to_5603")
-class GoogleCloudCpp5608To5603(Instance):
+@Instance.register("datazip-inc", "olake")
+class Olake(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -237,7 +245,7 @@ class GoogleCloudCpp5608To5603(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return Fc33EarlyImageDefault(self.pr, self._config)
+        return OlakeImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -257,44 +265,34 @@ class GoogleCloudCpp5608To5603(Instance):
 
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+    def parse_log(self, log: str) -> TestResult:
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        re_pass_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*Passed"),
-        ]
-        re_fail_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Failed"),
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Timeout"),
-        ]
-        re_skip_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Not Run"),
-        ]
+        passed_pattern = re.compile(r"--- PASS: (\S+)")
+        failed_pattern = re.compile(r"--- FAIL: (\S+)")
+        skipped_pattern = re.compile(r"--- SKIP: (\S+)")
 
-        for line in test_log.splitlines():
+        for line in log.splitlines():
             line = line.strip()
-            if not line:
+
+            m = passed_pattern.search(line)
+            if m:
+                if m.group(1) not in failed_tests:
+                    passed_tests.add(m.group(1))
                 continue
 
-            for re_pass in re_pass_tests:
-                pass_match = re_pass.match(line)
-                if pass_match:
-                    test = pass_match.group(1)
-                    passed_tests.add(test)
+            m = failed_pattern.search(line)
+            if m:
+                passed_tests.discard(m.group(1))
+                failed_tests.add(m.group(1))
+                continue
 
-            for re_fail in re_fail_tests:
-                fail_match = re_fail.match(line)
-                if fail_match:
-                    test = fail_match.group(1)
-                    failed_tests.add(test)
-
-            for re_skip in re_skip_tests:
-                skip_match = re_skip.match(line)
-                if skip_match:
-                    test = skip_match.group(1)
-                    skipped_tests.add(test)
+            m = skipped_pattern.search(line)
+            if m:
+                if m.group(1) not in passed_tests and m.group(1) not in failed_tests:
+                    skipped_tests.add(m.group(1))
 
         return TestResult(
             passed_count=len(passed_tests),

@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class Fc34ImageBase(Image):
+class Fc33MidImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class Fc34ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "fedora:34"
+        return "fedora:33"
 
     def image_tag(self) -> str:
         return "base"
@@ -62,14 +62,14 @@ RUN dnf makecache && dnf groupinstall -y "Development Tools" && dnf install -y \
     && dnf clean all
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/nlohmann/json/releases/download/v3.9.1/include.zip -o include.zip && \\
+RUN curl -sSL https://github.com/nlohmann/json/releases/download/v3.9.0/include.zip -o include.zip && \\
     unzip -q include.zip -d nlohmann && \\
     mkdir -p /usr/local/include && \\
     cp -r nlohmann/include/nlohmann /usr/local/include/ && \\
     cd /var/tmp && rm -fr build
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20210324.2.tar.gz | \\
+RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20200923.3.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     sed -i 's/^#define ABSL_OPTION_USE_\\(.*\\) 2/#define ABSL_OPTION_USE_\\1 0/' "absl/base/options.h" && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
@@ -79,33 +79,34 @@ RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20210324.2.tar.gz | \
     ldconfig && cd /var/tmp && rm -fr build
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v3.17.3.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -Dprotobuf_BUILD_TESTS=OFF \\
-      -GNinja -S cmake -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/grpc/grpc/archive/v1.38.1.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \\
-      -DgRPC_INSTALL=ON -DgRPC_BUILD_TESTS=OFF \\
-      -DgRPC_ABSL_PROVIDER=package -DgRPC_CARES_PROVIDER=package \\
-      -DgRPC_PROTOBUF_PROVIDER=package -DgRPC_RE2_PROVIDER=package \\
-      -DgRPC_SSL_PROVIDER=package -DgRPC_ZLIB_PROVIDER=package \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
-
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/google/crc32c/archive/1.1.1.tar.gz | \\
+RUN curl -sSL https://github.com/google/crc32c/archive/1.0.6.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
       -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF -DCRC32C_USE_GLOG=OFF \\
       -GNinja -S . -B cmake-out && \\
     cmake --build cmake-out --target install && \\
+    ldconfig && cd /var/tmp && rm -fr build
+
+
+WORKDIR /var/tmp/build
+RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v3.14.0.tar.gz | \
+    tar -xzf - --strip-components=1 && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \
+      -Dprotobuf_BUILD_TESTS=OFF \
+      -GNinja -S cmake -B cmake-out && \
+    cmake --build cmake-out --target install && \
+    ldconfig && cd /var/tmp && rm -fr build
+
+WORKDIR /var/tmp/build
+RUN curl -sSL https://github.com/grpc/grpc/archive/v1.35.0.tar.gz | \
+    tar -xzf - --strip-components=1 && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+      -DgRPC_INSTALL=ON -DgRPC_BUILD_TESTS=OFF \
+      -DgRPC_ABSL_PROVIDER=package -DgRPC_CARES_PROVIDER=package \
+      -DgRPC_PROTOBUF_PROVIDER=package -DgRPC_RE2_PROVIDER=package \
+      -DgRPC_SSL_PROVIDER=package -DgRPC_ZLIB_PROVIDER=package \
+      -GNinja -S . -B cmake-out && \
+    cmake --build cmake-out --target install && \
     ldconfig && cd /var/tmp && rm -fr build
 
 RUN ldconfig /usr/local/lib*
@@ -119,7 +120,7 @@ WORKDIR /home/
 """
 
 
-class Fc34ImageDefault(Image):
+class Fc33MidImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -133,7 +134,7 @@ class Fc34ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return Fc34ImageBase(self.pr, self._config)
+        return Fc33MidImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -254,8 +255,8 @@ ctest --output-on-failure
 """
 
 
-@Instance.register("googleapis", "google-cloud-cpp_7058_to_7036")
-class GoogleCloudCpp7058To7036(Instance):
+@Instance.register("googleapis", "google-cloud-cpp_6077_to_5881")
+class GoogleCloudCpp6077To5881(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -266,7 +267,7 @@ class GoogleCloudCpp7058To7036(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return Fc34ImageDefault(self.pr, self._config)
+        return Fc33MidImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -288,31 +289,33 @@ class GoogleCloudCpp7058To7036(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*Passed")]
+        re_pass_tests = [
+            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*Passed"),
+        ]
         re_fail_tests = [
             re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Failed"),
             re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Timeout"),
         ]
         re_skip_tests = [
-            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Not Run")
+            re.compile(r"^\d+/\d+\s*Test\s*#\d+:\s*(.*?)\s*\.+\s*\*+Not Run"),
         ]
 
         for line in test_log.splitlines():
             line = line.strip()
             if not line:
                 continue
-            for rp in re_pass_tests:
-                m = rp.match(line)
-                if m:
-                    passed_tests.add(m.group(1))
-            for rf in re_fail_tests:
-                m = rf.match(line)
-                if m:
-                    failed_tests.add(m.group(1))
-            for rs in re_skip_tests:
-                m = rs.match(line)
-                if m:
-                    skipped_tests.add(m.group(1))
+            for re_pass in re_pass_tests:
+                pass_match = re_pass.match(line)
+                if pass_match:
+                    passed_tests.add(pass_match.group(1))
+            for re_fail in re_fail_tests:
+                fail_match = re_fail.match(line)
+                if fail_match:
+                    failed_tests.add(fail_match.group(1))
+            for re_skip in re_skip_tests:
+                skip_match = re_skip.match(line)
+                if skip_match:
+                    skipped_tests.add(skip_match.group(1))
 
         return TestResult(
             passed_count=len(passed_tests),

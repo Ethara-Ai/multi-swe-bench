@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class Fc40ImageBase(Image):
+class Era2ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class Fc40ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "fedora:40"
+        return "ubuntu:18.04"
 
     def image_tag(self) -> str:
         return "base"
@@ -48,45 +48,61 @@ class Fc40ImageBase(Image):
 WORKDIR /home/
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive
 
-RUN dnf makecache && dnf groupinstall -y "Development Tools" && dnf install -y \\
-    cmake ninja-build git \\
-    tar wget curl zip unzip \\
-    libcurl-devel openssl-devel zlib-devel \\
-    gtest-devel gmock-devel json-devel \\
-    google-crc32c-devel \\
-    c-ares-devel re2-devel \\
-    && dnf clean all
+RUN sed -i -e 's|archive.ubuntu.com|old-releases.ubuntu.com|g' \
+       -e 's|security.ubuntu.com|old-releases.ubuntu.com|g' \
+       /etc/apt/sources.list
 
-WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20250127.1.tar.gz | \\
-    tar -xzf - --strip-components=1 && \\
-    sed -i 's/^#define ABSL_OPTION_USE_\\(.*\\) 2/#define ABSL_OPTION_USE_\\1 0/' "absl/base/options.h" && \\
-    cmake -DCMAKE_BUILD_TYPE=Release -DABSL_BUILD_TESTING=OFF -DBUILD_SHARED_LIBS=yes \\
-      -GNinja -S . -B cmake-out && \\
-    cmake --build cmake-out --target install && \\
-    ldconfig && cd /var/tmp && rm -fr build
+RUN apt-get update && apt-get install -y \\
+    build-essential cmake git ninja-build \\
+    patch pkg-config tar wget curl zip unzip \\
+    libcurl4-openssl-dev libssl-dev zlib1g-dev \\
+    ca-certificates automake autoconf libtool \\
+    libc-ares-dev libgtest-dev google-mock \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN cd /usr/src/googletest && cmake . -GNinja && ninja && ninja install && ldconfig
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v29.4.tar.gz | \\
+RUN curl -sSL https://github.com/nlohmann/json/releases/download/v3.9.0/include.zip -o include.zip && \\
+    unzip -q include.zip -d nlohmann && \\
+    mkdir -p /usr/local/include && \\
+    cp -r nlohmann/include/nlohmann /usr/local/include/ && \\
+    cd /var/tmp && rm -fr build
+
+WORKDIR /var/tmp/build
+RUN curl -sSL https://github.com/google/crc32c/archive/1.0.6.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
-      -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_ABSL_PROVIDER=package \\
+      -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF -DCRC32C_USE_GLOG=OFF \\
       -GNinja -S . -B cmake-out && \\
     cmake --build cmake-out --target install && \\
     ldconfig && cd /var/tmp && rm -fr build
 
 WORKDIR /var/tmp/build
-RUN curl -sSL https://github.com/grpc/grpc/archive/v1.69.0.tar.gz | \\
+RUN curl -sSL https://github.com/protocolbuffers/protobuf/archive/v3.12.4.tar.gz | \\
+    tar -xzf - --strip-components=1 && \\
+    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=yes \\
+      -Dprotobuf_BUILD_TESTS=OFF \\
+      -GNinja -S cmake -B cmake-out && \\
+    cmake --build cmake-out --target install && \\
+    ldconfig && cd /var/tmp && rm -fr build
+
+WORKDIR /var/tmp/build
+RUN curl -sSL https://github.com/grpc/grpc/archive/v1.29.1.tar.gz | \\
     tar -xzf - --strip-components=1 && \\
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \\
       -DgRPC_INSTALL=ON -DgRPC_BUILD_TESTS=OFF \\
-      -DgRPC_ABSL_PROVIDER=package -DgRPC_CARES_PROVIDER=package \\
-      -DgRPC_PROTOBUF_PROVIDER=package -DgRPC_RE2_PROVIDER=package \\
-      -DgRPC_SSL_PROVIDER=package -DgRPC_ZLIB_PROVIDER=package \\
+      -DgRPC_CARES_PROVIDER=package \\
+      -DgRPC_PROTOBUF_PROVIDER=package \\
+      -DgRPC_SSL_PROVIDER=package \\
+      -DgRPC_ZLIB_PROVIDER=package \\
       -GNinja -S . -B cmake-out && \\
     cmake --build cmake-out --target install && \\
     ldconfig && cd /var/tmp && rm -fr build
+
+
 
 RUN ldconfig /usr/local/lib*
 
@@ -99,7 +115,7 @@ WORKDIR /home/
 """
 
 
-class Fc40ImageDefault(Image):
+class Era2ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -113,7 +129,7 @@ class Fc40ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return Fc40ImageBase(self.pr, self._config)
+        return Era2ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -123,8 +139,16 @@ class Fc40ImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(".", "fix.patch", f"{self.pr.fix_patch}"),
-            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(
+                ".",
+                "fix.patch",
+                f"{self.pr.fix_patch}",
+            ),
+            File(
+                ".",
+                "test.patch",
+                f"{self.pr.test_patch}",
+            ),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -161,8 +185,9 @@ bash /home/check_git_changes.sh
 mkdir -p build && cd build
 cmake -S /home/{pr.repo} -B /home/{pr.repo}/build \\
     -DBUILD_TESTING=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,bigquery,iam,logging,kms,secretmanager,compute \\
-    -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \\
+    -DGOOGLE_CLOUD_CPP_ENABLE_BIGTABLE=ON \\
+    -DGOOGLE_CLOUD_CPP_ENABLE_STORAGE=ON \\
+    -DGOOGLE_CLOUD_CPP_ENABLE_FIRESTORE=OFF \\
     -DCMAKE_BUILD_TYPE=Debug \\
     -GNinja
 cmake --build /home/{pr.repo}/build -j $(nproc)
@@ -234,8 +259,8 @@ ctest --output-on-failure
 """
 
 
-@Instance.register("googleapis", "google-cloud-cpp_15057_to_14350")
-class GoogleCloudCpp15057To14350(Instance):
+@Instance.register("googleapis", "google-cloud-cpp_5713_to_3423")
+class GoogleCloudCpp5713To3423(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -246,21 +271,24 @@ class GoogleCloudCpp15057To14350(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return Fc40ImageDefault(self.pr, self._config)
+        return Era2ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
+
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
+
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
+
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
@@ -283,18 +311,24 @@ class GoogleCloudCpp15057To14350(Instance):
             line = line.strip()
             if not line:
                 continue
+
             for re_pass in re_pass_tests:
                 pass_match = re_pass.match(line)
                 if pass_match:
-                    passed_tests.add(pass_match.group(1))
+                    test = pass_match.group(1)
+                    passed_tests.add(test)
+
             for re_fail in re_fail_tests:
                 fail_match = re_fail.match(line)
                 if fail_match:
-                    failed_tests.add(fail_match.group(1))
+                    test = fail_match.group(1)
+                    failed_tests.add(test)
+
             for re_skip in re_skip_tests:
                 skip_match = re_skip.match(line)
                 if skip_match:
-                    skipped_tests.add(skip_match.group(1))
+                    test = skip_match.group(1)
+                    skipped_tests.add(test)
 
         return TestResult(
             passed_count=len(passed_tests),

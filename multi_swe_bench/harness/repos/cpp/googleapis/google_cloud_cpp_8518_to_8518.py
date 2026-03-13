@@ -57,9 +57,16 @@ RUN dnf makecache && dnf groupinstall -y "Development Tools" && dnf install -y \
     cmake ninja-build git \\
     tar wget curl zip unzip \\
     libcurl-devel openssl-devel zlib-devel \\
-    gtest-devel gmock-devel json-devel \\
+    gtest-devel gmock-devel \\
     c-ares-devel re2-devel \\
     && dnf clean all
+
+WORKDIR /var/tmp/build
+RUN curl -sSL https://github.com/nlohmann/json/releases/download/v3.10.5/include.zip -o include.zip && \\
+    unzip -q include.zip -d nlohmann && \\
+    mkdir -p /usr/local/include && \\
+    cp -r nlohmann/include/nlohmann /usr/local/include/ && \\
+    cd /var/tmp && rm -fr build
 
 WORKDIR /var/tmp/build
 RUN curl -sSL https://github.com/abseil/abseil-cpp/archive/20211102.0.tar.gz | \\
@@ -174,7 +181,7 @@ bash /home/check_git_changes.sh
 mkdir -p build && cd build
 cmake -S /home/{pr.repo} -B /home/{pr.repo}/build \\
     -DBUILD_TESTING=ON \\
-    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,bigquery,iam,logging,kms,secretmanager,compute \\
+    -DGOOGLE_CLOUD_CPP_ENABLE=storage,bigtable,spanner,pubsub,iam,logging \\
     -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \\
     -DCMAKE_BUILD_TYPE=Debug \\
     -GNinja
