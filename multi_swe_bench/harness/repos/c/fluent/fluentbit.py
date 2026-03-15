@@ -5,6 +5,16 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# Central cmake flags for all test phases.
+# Include sub-library test flags (CMT_TESTS for cmetrics, CIO_TESTS for chunkio)
+# so that PRs modifying lib/cmetrics/tests/ or lib/chunkio/tests/ get coverage.
+_CMAKE_TEST_FLAGS = (
+    "-DFLB_TESTS_RUNTIME=ON "
+    "-DFLB_TESTS_INTERNAL=ON "
+    "-DCMT_TESTS=ON "
+    "-DCIO_TESTS=ON"
+)
+
 
 class FluentbitImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -46,9 +56,13 @@ class FluentbitImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt update && apt install -y cmake flex bison libyaml-dev libssl-dev
+RUN apt-get update && apt-get install -y flex bison libyaml-dev libssl-dev wget && \\
+    CMAKE_VERSION=3.27.9 && \\
+    if [ "$TARGETARCH" = "amd64" ]; then CMAKE_ARCH=x86_64; elif [ "$TARGETARCH" = "arm64" ]; then CMAKE_ARCH=aarch64; else CMAKE_ARCH=$TARGETARCH; fi && \\
+    wget -q https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION-linux-$CMAKE_ARCH.tar.gz -O /tmp/cmake.tar.gz && \\
+    tar xzf /tmp/cmake.tar.gz -C /usr/local --strip-components=1 && \\
+    rm /tmp/cmake.tar.gz && \\
+    cmake --version
 
 {code}
 
@@ -97,9 +111,7 @@ class FluentbitImageBaseGCC7(Image):
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt update && apt install -y cmake flex bison libyaml-dev libssl-dev
+RUN apt-get update && apt-get install -y cmake flex bison libyaml-dev libssl-dev
 
 {code}
 
@@ -188,10 +200,10 @@ set -e
 
 cd /home/{pr.repo}
 cd build
-cmake -DFLB_TESTS_RUNTIME=ON -DFLB_TESTS_INTERNAL=ON ..
+cmake {cmake_flags} ..
 make -j 4
-ctest -j 4 --timeout 320
-""".format(pr=self.pr),
+ctest -j 8 --timeout 60 || true
+""".format(pr=self.pr, cmake_flags=_CMAKE_TEST_FLAGS),
             ),
             File(
                 ".",
@@ -200,13 +212,15 @@ ctest -j 4 --timeout 320
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+if [ -s /home/test.patch ]; then
+    git apply --whitespace=nowarn /home/test.patch || echo "WARNING: test patch failed to apply completely" >&2
+fi
 cd build
-cmake -DFLB_TESTS_RUNTIME=ON -DFLB_TESTS_INTERNAL=ON ..
+cmake {cmake_flags} ..
 make -j 4
-ctest -j 4 --timeout 320
+ctest -j 8 --timeout 60 || true
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, cmake_flags=_CMAKE_TEST_FLAGS),
             ),
             File(
                 ".",
@@ -215,13 +229,18 @@ ctest -j 4 --timeout 320
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+if [ -s /home/test.patch ]; then
+    git apply --whitespace=nowarn /home/test.patch || echo "WARNING: test patch failed to apply completely" >&2
+fi
+if [ -s /home/fix.patch ]; then
+    git apply --whitespace=nowarn /home/fix.patch || echo "WARNING: fix patch failed to apply completely" >&2
+fi
 cd build
-cmake -DFLB_TESTS_RUNTIME=ON -DFLB_TESTS_INTERNAL=ON ..
+cmake {cmake_flags} ..
 make -j 4
-ctest -j 4 --timeout 320
+ctest -j 8 --timeout 60 || true
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, cmake_flags=_CMAKE_TEST_FLAGS),
             ),
         ]
 
@@ -267,19 +286,51 @@ class FluentBit(Instance):
         if run_cmd:
             return run_cmd
 
-        return "bash /home/run.sh"
+        return (
+            "bash -c '"
+            "cd /home/fluent-bit/build && "
+            f"cmake {_CMAKE_TEST_FLAGS} .. && "
+            "make -j 4 && "
+            "(ctest -j 8 --timeout 60 || true)"
+            "'"
+        )
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
 
-        return "bash /home/test-run.sh"
+        return (
+            "bash -c '"
+            "cd /home/fluent-bit && "
+            "if [ -s /home/test.patch ]; then "
+            "git apply --whitespace=nowarn /home/test.patch || true; "
+            "fi && "
+            "cd build && "
+            f"cmake {_CMAKE_TEST_FLAGS} .. && "
+            "make -j 4 && "
+            "(ctest -j 8 --timeout 60 || true)"
+            "'"
+        )
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
 
-        return "bash /home/fix-run.sh"
+        return (
+            "bash -c '"
+            "cd /home/fluent-bit && "
+            "if [ -s /home/test.patch ]; then "
+            "git apply --whitespace=nowarn /home/test.patch || true; "
+            "fi && "
+            "if [ -s /home/fix.patch ]; then "
+            "git apply --whitespace=nowarn /home/fix.patch || true; "
+            "fi && "
+            "cd build && "
+            f"cmake {_CMAKE_TEST_FLAGS} .. && "
+            "make -j 4 && "
+            "(ctest -j 8 --timeout 60 || true)"
+            "'"
+        )
 
     def parse_log(self, test_log: str) -> TestResult:
         passed_tests = set()

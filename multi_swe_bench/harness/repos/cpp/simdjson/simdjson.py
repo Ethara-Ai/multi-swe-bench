@@ -131,9 +131,6 @@ class SimdjsonImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        if self.pr.number <= 958:
-            return SimdjsonImageBaseCpp7(self.pr, self._config)
-
         return SimdjsonImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -199,9 +196,9 @@ set -e
 
 cd /home/{pr.repo}
 cd build
-cmake -DSIMDJSON_DEVELOPER_MODE=ON ..
-cmake --build .
-ctest
+cmake -DSIMDJSON_DEVELOPER_MODE=ON -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_FLAGS="-Wno-error" ..
+cmake --build . -j 4
+ctest --output-on-failure || true
 """.format(pr=self.pr),
             ),
             File(
@@ -211,11 +208,13 @@ ctest
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+if [ -s /home/test.patch ]; then
+  git apply --whitespace=nowarn --binary /home/test.patch || true
+fi
 cd build
-cmake -DSIMDJSON_DEVELOPER_MODE=ON ..
-cmake --build .
-ctest
+cmake -DSIMDJSON_DEVELOPER_MODE=ON -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_FLAGS="-Wno-error" ..
+cmake --build . -j 4
+ctest --output-on-failure || true
 
 """.format(pr=self.pr),
             ),
@@ -226,11 +225,16 @@ ctest
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+if [ -s /home/test.patch ]; then
+  git apply --whitespace=nowarn --binary /home/test.patch || true
+fi
+if [ -s /home/fix.patch ]; then
+  git apply --whitespace=nowarn --binary /home/fix.patch || true
+fi
 cd build
-cmake -DSIMDJSON_DEVELOPER_MODE=ON ..
-cmake --build .
-ctest
+cmake -DSIMDJSON_DEVELOPER_MODE=ON -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_FLAGS="-Wno-error" ..
+cmake --build . -j 4
+ctest --output-on-failure || true
 
 """.format(pr=self.pr),
             ),
