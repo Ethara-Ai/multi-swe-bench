@@ -1,1 +1,1 @@
-from multi_swe_bench.harness.repos.typescript.tscircuit.core import *
+from multi_swe_bench.harness.repos.typescript.tscircuit.base import *

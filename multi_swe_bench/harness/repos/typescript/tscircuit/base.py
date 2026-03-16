@@ -20,7 +20,7 @@ class TscircuitCoreImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:latest"
+        return "node:20-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -52,9 +52,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     unzip \
-    nodejs \
-    npm \
-    && apt-get clean
+    && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/root/.bun/bin:$PATH"
 
@@ -78,7 +76,7 @@ class TscircuitCoreImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Image:
         return TscircuitCoreImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
@@ -132,7 +130,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-bun install 
+bun install || true
 
 """.format(pr=self.pr),
             ),
@@ -140,7 +138,8 @@ bun install
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 bun test
@@ -151,7 +150,8 @@ bun test
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch
@@ -163,7 +163,8 @@ bun test
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn --exclude='bun.lockb' --exclude='*.png' /home/test.patch /home/fix.patch
@@ -198,7 +199,30 @@ bun test
 
 
 @Instance.register("tscircuit", "core")
-class TscircuitCoreInstance(Instance):
+@Instance.register("tscircuit", "checks")
+@Instance.register("tscircuit", "circuit-json-to-gltf")
+@Instance.register("tscircuit", "circuit-json-to-step")
+@Instance.register("tscircuit", "circuit-to-svg")
+@Instance.register("tscircuit", "cli")
+@Instance.register("tscircuit", "common")
+@Instance.register("tscircuit", "contribution-tracker")
+@Instance.register("tscircuit", "easyeda-converter")
+@Instance.register("tscircuit", "eval")
+@Instance.register("tscircuit", "footprinter")
+@Instance.register("tscircuit", "jscad-electronics")
+@Instance.register("tscircuit", "jscad-fiber")
+@Instance.register("tscircuit", "jscad-to-gltf")
+@Instance.register("tscircuit", "kicad-component-converter")
+@Instance.register("tscircuit", "poppygl")
+@Instance.register("tscircuit", "runframe")
+@Instance.register("tscircuit", "schematic-trace-solver")
+@Instance.register("tscircuit", "solver-utils")
+@Instance.register("tscircuit", "stepts")
+@Instance.register("tscircuit", "svg.tscircuit.com")
+@Instance.register("tscircuit", "template-api-fake")
+@Instance.register("tscircuit", "tscircuit-autorouter")
+@Instance.register("tscircuit", "tscircuit.com")
+class TSCIRCUIT_CORE(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -208,7 +232,7 @@ class TscircuitCoreInstance(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image:
         return TscircuitCoreImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -234,64 +258,90 @@ class TscircuitCoreInstance(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
+        # Track current test file for unique test identification
+        # bun test outputs file headers like: "tests/pcb/pcb-silkscreen-text.test.ts:"
+        current_file: str = ""
+        re_file_header = re.compile(
+            r"^([^\s:]+\.(?:test\.ts|test\.tsx|spec\.ts|spec\.tsx)):$"
+        )
+
         # Color/TTY format: ✓ test name [1.23ms]
         re_pass_color = re.compile(r"^\s*✓\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
         re_fail_color = re.compile(r"^\s*✗\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
         re_skip_color = re.compile(r"^\s*»\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
 
         # Non-color/Docker format: (pass) test name [1.23ms]
-        re_pass_plain = re.compile(r"^\s*\(pass\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_fail_plain = re.compile(r"^\s*\(fail\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_skip_plain = re.compile(r"^\s*\(skip\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        re_pass_plain = re.compile(
+            r"^\s*\(pass\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$"
+        )
+        re_fail_plain = re.compile(
+            r"^\s*\(fail\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$"
+        )
+        re_skip_plain = re.compile(
+            r"^\s*\(skip\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$"
+        )
 
         # Todo format (bun's test.todo() - count as skipped)
         re_todo_color = re.compile(r"^\s*✎\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
-        re_todo_plain = re.compile(r"^\s*\(todo\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$")
+        re_todo_plain = re.compile(
+            r"^\s*\(todo\)\s+(.+?)(?:\s+\[[\d.]+(?:µs|ms|s)\])?\s*$"
+        )
 
         # Strip ANSI escape codes that bun emits in color mode
         ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
 
+        def make_unique_name(test_name: str) -> str:
+            if current_file:
+                return f"{current_file} > {test_name}"
+            return test_name
+
         for line in test_log.splitlines():
             line = ansi_escape.sub("", line).strip()
 
+            # Check for file header line (e.g., "tests/sch/resistor.test.tsx:")
+            file_match = re_file_header.match(line)
+            if file_match:
+                current_file = file_match.group(1)
+                continue
+
             match = re_pass_color.match(line)
             if match:
-                passed_tests.add(match.group(1))
+                passed_tests.add(make_unique_name(match.group(1)))
                 continue
 
             match = re_fail_color.match(line)
             if match:
-                failed_tests.add(match.group(1))
+                failed_tests.add(make_unique_name(match.group(1)))
                 continue
 
             match = re_skip_color.match(line)
             if match:
-                skipped_tests.add(match.group(1))
+                skipped_tests.add(make_unique_name(match.group(1)))
                 continue
 
             match = re_pass_plain.match(line)
             if match:
-                passed_tests.add(match.group(1))
+                passed_tests.add(make_unique_name(match.group(1)))
                 continue
 
             match = re_fail_plain.match(line)
             if match:
-                failed_tests.add(match.group(1))
+                failed_tests.add(make_unique_name(match.group(1)))
                 continue
 
             match = re_skip_plain.match(line)
             if match:
-                skipped_tests.add(match.group(1))
+                skipped_tests.add(make_unique_name(match.group(1)))
                 continue
 
             match = re_todo_color.match(line)
             if match:
-                skipped_tests.add(match.group(1))
+                skipped_tests.add(make_unique_name(match.group(1)))
                 continue
 
             match = re_todo_plain.match(line)
             if match:
-                skipped_tests.add(match.group(1))
+                skipped_tests.add(make_unique_name(match.group(1)))
                 continue
 
         # Dedup: worst result wins (failed > skipped > passed)
