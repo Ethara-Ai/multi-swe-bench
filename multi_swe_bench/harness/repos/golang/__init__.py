@@ -41,3 +41,4 @@ from multi_swe_bench.harness.repos.golang.stakwork import *
 from multi_swe_bench.harness.repos.golang.superplanehq.superplane import *
 from multi_swe_bench.harness.repos.golang.pactus_project import *
 from multi_swe_bench.harness.repos.golang.moby import *
+from multi_swe_bench.harness.repos.golang.ignite import *
