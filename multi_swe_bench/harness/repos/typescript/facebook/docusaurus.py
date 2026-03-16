@@ -1,3 +1,4 @@
+import re
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -220,6 +221,79 @@ class Puppeteer(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
+
+        current_suite = ""
+        current_suite_status = ""
+        has_checkmark_tests = False
+        passed_suites = set()
+        failed_suites = set()
+
+        for line in test_log.splitlines():
+            stripped = line.strip()
+
+            suite_match = re.match(r"^(PASS|FAIL)\s+(.+?)(?:\s+\([\d.]+\s*m?s\))?$", stripped)
+            if suite_match:
+                current_suite_status = suite_match.group(1)
+                current_suite = suite_match.group(2)
+                if current_suite_status == "PASS":
+                    passed_suites.add(current_suite)
+                else:
+                    failed_suites.add(current_suite)
+                continue
+
+            # ✓ / ✔ format (newer Jest)
+            pass_match = re.match(
+                r"^[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", stripped
+            )
+            if pass_match:
+                has_checkmark_tests = True
+                test_name = (
+                    f"{current_suite} > {pass_match.group(1)}"
+                    if current_suite
+                    else pass_match.group(1)
+                )
+                passed_tests.add(test_name)
+                continue
+
+            # ✕ / ✗ / ✘ / × format (newer Jest)
+            fail_match = re.match(
+                r"^[✕✗✘×]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", stripped
+            )
+            if fail_match:
+                has_checkmark_tests = True
+                test_name = (
+                    f"{current_suite} > {fail_match.group(1)}"
+                    if current_suite
+                    else fail_match.group(1)
+                )
+                failed_tests.add(test_name)
+                continue
+
+            # ○ format (skipped)
+            skip_match = re.match(r"^[○⊘]\s+(.+)", stripped)
+            if skip_match:
+                has_checkmark_tests = True
+                test_name = (
+                    f"{current_suite} > {skip_match.group(1)}"
+                    if current_suite
+                    else skip_match.group(1)
+                )
+                skipped_tests.add(test_name)
+                continue
+
+            # ● suite › test name (older Jest failure detail)
+            bullet_match = re.match(r"^●\s+(.+?)\s+›\s+(.+)", stripped)
+            if bullet_match and current_suite_status == "FAIL":
+                test_name = f"{current_suite} > {bullet_match.group(1)} › {bullet_match.group(2)}"
+                failed_tests.add(test_name)
+                continue
+
+        if not has_checkmark_tests:
+            for suite in passed_suites:
+                passed_tests.add(suite)
+            if not failed_tests:
+                for suite in failed_suites:
+                    failed_tests.add(suite)
 
         return TestResult(
             passed_count=len(passed_tests),
