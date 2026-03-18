@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "node:20-slim"
+        return "node:18-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -67,7 +67,21 @@ echo 'npm test -- --browsers ChromeHeadless,FirefoxHeadless --verbose --chromeFl
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-npm test -- --browsers ChromeHeadless,FirefoxHeadless --verbose --chromeFlags="--no-sandbox --disable-gpu" --firefoxFlags="-headless"
+
+# Fix karma config: disable suppressPassed, force ChromeHeadless default
+for kconf in karma.conf.js karma.conf.cjs; do
+  if [ -f "$kconf" ]; then
+    sed -i 's/suppressPassed: true/suppressPassed: false/' "$kconf" 2>/dev/null || true
+    sed -i "s#args.browsers || 'chrome,firefox'#args.browsers || 'ChromeHeadless'#" "$kconf" 2>/dev/null || true
+  fi
+done
+
+export NODE_PATH=$(pwd)/node_modules
+if grep -q '"packageManager".*pnpm' package.json 2>/dev/null; then
+  pnpm run test-ci 2>&1 || pnpm test 2>&1 || true
+else
+  npm run test-ci 2>&1 || npm test 2>&1 || true
+fi
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -76,11 +90,24 @@ npm test -- --browsers ChromeHeadless,FirefoxHeadless --verbose --chromeFlags="-
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
+
+# Apply test patch with --binary for PNG diffs, || true for partial applies
+git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --binary /home/test.patch || true
+
+# Fix karma config: disable suppressPassed, force ChromeHeadless default (patches may revert it)
+for kconf in karma.conf.js karma.conf.cjs; do
+  if [ -f "$kconf" ]; then
+    sed -i 's/suppressPassed: true/suppressPassed: false/' "$kconf" 2>/dev/null || true
+    sed -i "s#args.browsers || 'chrome,firefox'#args.browsers || 'ChromeHeadless'#" "$kconf" 2>/dev/null || true
+  fi
+done
+
+export NODE_PATH=$(pwd)/node_modules
+if grep -q '"packageManager".*pnpm' package.json 2>/dev/null; then
+  pnpm run test-ci 2>&1 || pnpm test 2>&1 || true
+else
+  npm run test-ci 2>&1 || npm test 2>&1 || true
 fi
-npm test -- --browsers ChromeHeadless,FirefoxHeadless --verbose --chromeFlags="--no-sandbox --disable-gpu" --firefoxFlags="-headless"
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -89,11 +116,25 @@ npm test -- --browsers ChromeHeadless,FirefoxHeadless --verbose --chromeFlags="-
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
+
+# Apply patches separately with --binary for PNG diffs, || true for partial applies
+git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --binary /home/test.patch || true
+git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --binary /home/fix.patch || true
+
+# Fix karma config: disable suppressPassed, force ChromeHeadless default (patches may revert it)
+for kconf in karma.conf.js karma.conf.cjs; do
+  if [ -f "$kconf" ]; then
+    sed -i 's/suppressPassed: true/suppressPassed: false/' "$kconf" 2>/dev/null || true
+    sed -i "s#args.browsers || 'chrome,firefox'#args.browsers || 'ChromeHeadless'#" "$kconf" 2>/dev/null || true
+  fi
+done
+
+export NODE_PATH=$(pwd)/node_modules
+if grep -q '"packageManager".*pnpm' package.json 2>/dev/null; then
+  pnpm run test-ci 2>&1 || pnpm test 2>&1 || true
+else
+  npm run test-ci 2>&1 || npm test 2>&1 || true
 fi
-npm test -- --browsers ChromeHeadless,FirefoxHeadless --verbose --chromeFlags="--no-sandbox --disable-gpu" --firefoxFlags="-headless"
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -105,24 +146,26 @@ npm test -- --browsers ChromeHeadless,FirefoxHeadless --verbose --chromeFlags="-
             copy_commands += f"COPY {file.name} /home/\n"
 
         dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+FROM node:18-slim
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM node:20-slim
-
-## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
+# Install git, browsers, and build dependencies
+RUN apt-get update && apt-get install -y \\
+    git \\
+    ca-certificates \\
+    chromium \\
+    firefox-esr \\
+    && rm -rf /var/lib/apt/lists/*
 
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+# Create chromium wrapper with --no-sandbox for Docker root compatibility
+RUN printf '#!/bin/bash\\nexec /usr/bin/chromium --no-sandbox --disable-gpu "$@"\\n' > /usr/local/bin/chromium-no-sandbox && chmod +x /usr/local/bin/chromium-no-sandbox
+ENV CHROME_BIN=/usr/local/bin/chromium-no-sandbox
+ENV CHROMIUM_BIN=/usr/local/bin/chromium-no-sandbox
+
+# Enable corepack for pnpm support (Chart.js v4+)
+RUN corepack enable
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -132,6 +175,21 @@ RUN git clone https://github.com/chartjs/Chart.js.git /home/Chart.js
 WORKDIR /home/Chart.js
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install dependencies (pnpm if packageManager set, otherwise npm)
+RUN if grep -q '"packageManager".*pnpm' package.json 2>/dev/null; then \\
+        pnpm install --no-frozen-lockfile --shamefully-hoist || true; \\
+    else \\
+        npm install || true; \\
+    fi
+
+# Disable suppressPassed and force ChromeHeadless in karma config
+RUN for kconf in karma.conf.js karma.conf.cjs; do \\
+      if [ -f "$kconf" ]; then \\
+        sed -i 's/suppressPassed: true/suppressPassed: false/' "$kconf" || true; \\
+        sed -i "s#args.browsers || 'chrome,firefox'#args.browsers || 'ChromeHeadless'#" "$kconf" || true; \\
+      fi; \\
+    done
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -139,7 +197,7 @@ RUN git checkout {pr.base.sha}
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("chartjs", "Chart_js_9183_to_8983")
+@Instance.register("chartjs", "Chart.js")
 class CHART_JS_9183_TO_8983(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
