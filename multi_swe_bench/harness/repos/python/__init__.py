@@ -230,6 +230,7 @@ from multi_swe_bench.harness.repos.python.repobee import *
 from multi_swe_bench.harness.repos.python.rigetti import *
 from multi_swe_bench.harness.repos.python.robotframework import *
 from multi_swe_bench.harness.repos.python.rotki import *
+from multi_swe_bench.harness.repos.python.SAIC_iSmart_API import *
 from multi_swe_bench.harness.repos.python.saleor import *
 from multi_swe_bench.harness.repos.python.sanic_org import *
 from multi_swe_bench.harness.repos.python.SatelliteQE import *
