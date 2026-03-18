@@ -76,5 +76,8 @@ from multi_swe_bench.harness.repos.javascript.City_of_Helsinki import *
 from multi_swe_bench.harness.repos.javascript.cuttle_cards import *
 from multi_swe_bench.harness.repos.javascript.vercel.next_js import *
 from multi_swe_bench.harness.repos.javascript.webpack.webpack import *
+from multi_swe_bench.harness.repos.javascript.alam00000 import *
+from multi_swe_bench.harness.repos.javascript.exercism import *
+from multi_swe_bench.harness.repos.javascript.jsx_eslint import *
 from multi_swe_bench.harness.repos.javascript.markedjs import *
 
