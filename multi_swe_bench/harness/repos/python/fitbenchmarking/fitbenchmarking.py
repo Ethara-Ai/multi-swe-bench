@@ -41,14 +41,15 @@ class FitbenchmarkingImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
+        global_env_block = f"\n{self.global_env}" if self.global_env else ""
+
         return f"""FROM {image_name}
-
-{self.global_env}
-
+{global_env_block}
 WORKDIR /home/
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y \\
+ENV TZ=UTC
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
     git \\
     build-essential \\
     pkg-config \\
@@ -60,8 +61,11 @@ RUN apt-get update && apt-get install -y \\
     liblapack-dev \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
+{code}
 """
 
 
@@ -179,22 +183,21 @@ pytest fitbenchmarking/ --test-type default -v 2>&1
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        copy_commands = "\n".join(
+            f"COPY {file.name} /home/" for file in self.files()
+        )
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        global_env_block = f"\n{self.global_env}" if self.global_env else ""
+        clear_env_block = f"\n{self.clear_env}" if self.clear_env else ""
+
         return f"""FROM {name}:{tag}
-
-{self.global_env}
-
+{global_env_block}
 {copy_commands}
 
 {prepare_commands}
-
-{self.clear_env}
-
+{clear_env_block}
 """
 
 
