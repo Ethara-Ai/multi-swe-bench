@@ -47,6 +47,7 @@ from multi_swe_bench.harness.repos.typescript.facebook import *
 from multi_swe_bench.harness.repos.typescript.footprinter import *
 from multi_swe_bench.harness.repos.typescript.gitcoinco import *
 from multi_swe_bench.harness.repos.typescript.GMOD import *
+from multi_swe_bench.harness.repos.typescript.grafana import *
 from multi_swe_bench.harness.repos.typescript.Hacker0x01 import *
 from multi_swe_bench.harness.repos.typescript.hasadna import *
 from multi_swe_bench.harness.repos.typescript.highcharts import *
