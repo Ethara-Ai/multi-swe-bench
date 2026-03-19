@@ -4,6 +4,9 @@ from multi_swe_bench.harness.repos.cpp.bitcoin import *
 from multi_swe_bench.harness.repos.cpp.catchorg import *
 from multi_swe_bench.harness.repos.cpp.celeritas_project import *
 from multi_swe_bench.harness.repos.cpp.cgal import *
+from multi_swe_bench.harness.repos.cpp.crankyoldgit import *
+from multi_swe_bench.harness.repos.cpp.ClusterDuck_Protocol import *
+from multi_swe_bench.harness.repos.cpp.dragonflydb import *
 from multi_swe_bench.harness.repos.cpp.dosbox_staging import *
 from multi_swe_bench.harness.repos.cpp.einsteintoolkit import *
 from multi_swe_bench.harness.repos.cpp.fmtlib import *
