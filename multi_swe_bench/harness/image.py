@@ -188,29 +188,31 @@ class Image:
         clone_section = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
 
         extra_setup = self.extra_setup()
-        extra_setup_section = f"\n{extra_setup}\n" if extra_setup else ""
 
-        return f"""FROM {base_img}
+        # Build dockerfile sections, filtering out empty parts to avoid consecutive blank lines
+        sections = [f"FROM {base_img}"]
 
-{self.global_env}
+        if self.global_env:
+            sections.append(self.global_env)
 
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
+        sections.append(
+            "WORKDIR /home/\nENV DEBIAN_FRONTEND=noninteractive\nENV LANG=C.UTF-8"
+        )
 
-{apt_command}
+        sections.append(apt_command)
+        sections.append(clone_section)
+        sections.append(f"WORKDIR /home/{self.pr.repo}")
+        sections.append("RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}")
 
-{clone_section}
+        if extra_setup:
+            sections.append(extra_setup)
 
-WORKDIR /home/{self.pr.repo}
+        if self.clear_env:
+            sections.append(self.clear_env)
 
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-{extra_setup_section}
-{self.clear_env}
+        sections.append('CMD ["/bin/bash"]')
 
-CMD ["/bin/bash"]
-"""
+        return "\n\n".join(sections) + "\n"
 
 
 class DockerfileEnhancer:
@@ -236,22 +238,26 @@ class DockerfileEnhancer:
     _ENV_BLOCK = (
         "ENV DEBIAN_FRONTEND=noninteractive \\\n"
         "    LANG=C.UTF-8 \\\n"
+        "    TZ=UTC \\\n"
         "    http_proxy=${http_proxy} \\\n"
         "    https_proxy=${https_proxy} \\\n"
         "    HTTP_PROXY=${HTTP_PROXY} \\\n"
         "    HTTPS_PROXY=${HTTPS_PROXY} \\\n"
-        "    NO_PROXY=${NO_PROXY} \\\n"
         "    no_proxy=${no_proxy} \\\n"
+        "    NO_PROXY=${NO_PROXY} \\\n"
         "    SSL_CERT_FILE=${CA_CERT_PATH} \\\n"
         "    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\\n"
         "    CURL_CA_BUNDLE=${CA_CERT_PATH}"
     )
 
     _CERT_SYMLINKS = (
-        "RUN mkdir -p /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\\n"
+        "RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\\n"
         "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\\n"
         "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\\n"
-        "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem"
+        "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\\n"
+        "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\\n"
+        "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\\n"
+        "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt"
     )
 
     _MITM_MOUNT = (
