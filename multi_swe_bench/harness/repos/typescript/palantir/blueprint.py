@@ -48,13 +48,23 @@ class blueprintImageBase(Image):
 WORKDIR /home/
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
-        fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \
-        --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+ARG TARGETARCH
+RUN set -eux; \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+      wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -; \
+      echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends \
+        google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
+        fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11; \
+    else \
+      apt-get update; \
+      apt-get install -y --no-install-recommends \
+        chromium fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
+        fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+ENV CHROME_EXEC=/usr/bin/google-chrome
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \
     export NVM_DIR="$HOME/.nvm" && \
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -159,7 +169,7 @@ nvm use || true
 corepack enable || true
 yarn || true
 yarn compile || true
-CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/google-chrome --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn test --no-bail
+CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec ${{CHROME_EXEC:-/usr/bin/google-chrome}} --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn test --no-bail
 """.format(pr=self.pr),
             ),
             File(
@@ -176,7 +186,7 @@ nvm use || true
 corepack enable || true
 yarn || true
 yarn compile || true
-CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/google-chrome --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn test --no-bail
+CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec ${{CHROME_EXEC:-/usr/bin/google-chrome}} --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn test --no-bail
 
 """.format(pr=self.pr),
             ),
@@ -194,7 +204,7 @@ nvm use || true
 corepack enable || true
 yarn || true
 yarn compile || true
-CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/google-chrome --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn test --no-bail
+CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec ${{CHROME_EXEC:-/usr/bin/google-chrome}} --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn test --no-bail
 
 """.format(pr=self.pr),
             ),
