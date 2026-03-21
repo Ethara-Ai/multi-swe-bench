@@ -43,3 +43,5 @@ from multi_swe_bench.harness.repos.golang.pactus_project import *
 from multi_swe_bench.harness.repos.golang.moby import *
 from multi_swe_bench.harness.repos.golang.ignite import *
 from multi_swe_bench.harness.repos.golang.kyverno import *
+from multi_swe_bench.harness.repos.golang.open_telemetry import *
+from multi_swe_bench.harness.repos.golang.thanos_io import *
