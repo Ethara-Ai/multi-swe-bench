@@ -48,22 +48,43 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -la
-###ACTION_DELIMITER###
-npm run install
-###ACTION_DELIMITER###
-npm test
-###ACTION_DELIMITER###
-echo 'MOCHA_OPTS="--reporter spec" npm test' > test_commands.sh
-###ACTION_DELIMITER###
-echo 'MOCHA_OPTS="--reporter json" npm test' > test_commands.sh""",
+                """#!/bin/bash
+set -e
+cd /home/abaplint
+npm run install 2>/dev/null || npm install
+""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
+set -e
 cd /home/[[REPO_NAME]]
-MOCHA_OPTS="--reporter json" npm test
+
+run_package_tests() {
+    local pkg="$1"
+    local mocha_args="$2"
+    echo "###MOCHA_JSON_START:${pkg}###"
+    cd /home/[[REPO_NAME]]/packages/${pkg}
+    if npm run compile 2>&1; then
+        npx mocha --reporter json ${mocha_args} 2>&1 || true
+    else
+        echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_error":true}'
+    fi
+    echo "###MOCHA_JSON_END:${pkg}###"
+    cd /home/[[REPO_NAME]]
+}
+
+run_package_tests "core" "--timeout 1000"
+run_package_tests "cli" ""
+echo "###MOCHA_JSON_START:monaco###"
+cd /home/[[REPO_NAME]]/packages/monaco
+if tsc 2>&1; then
+    echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_only":true}'
+else
+    echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_error":true}'
+fi
+echo "###MOCHA_JSON_END:monaco###"
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -71,12 +92,37 @@ MOCHA_OPTS="--reporter json" npm test
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
+set -e
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='package-lock.json' --exclude='**/package-lock.json' /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-MOCHA_OPTS="--reporter json" npm test
+
+run_package_tests() {
+    local pkg="$1"
+    local mocha_args="$2"
+    echo "###MOCHA_JSON_START:${pkg}###"
+    cd /home/[[REPO_NAME]]/packages/${pkg}
+    if npm run compile 2>&1; then
+        npx mocha --reporter json ${mocha_args} 2>&1 || true
+    else
+        echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_error":true}'
+    fi
+    echo "###MOCHA_JSON_END:${pkg}###"
+    cd /home/[[REPO_NAME]]
+}
+
+run_package_tests "core" "--timeout 1000"
+run_package_tests "cli" ""
+echo "###MOCHA_JSON_START:monaco###"
+cd /home/[[REPO_NAME]]/packages/monaco
+if tsc 2>&1; then
+    echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_only":true}'
+else
+    echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_error":true}'
+fi
+echo "###MOCHA_JSON_END:monaco###"
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -84,12 +130,37 @@ MOCHA_OPTS="--reporter json" npm test
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
+set -e
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='package-lock.json' --exclude='**/package-lock.json' /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-MOCHA_OPTS="--reporter json" npm test
+
+run_package_tests() {
+    local pkg="$1"
+    local mocha_args="$2"
+    echo "###MOCHA_JSON_START:${pkg}###"
+    cd /home/[[REPO_NAME]]/packages/${pkg}
+    if npm run compile 2>&1; then
+        npx mocha --reporter json ${mocha_args} 2>&1 || true
+    else
+        echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_error":true}'
+    fi
+    echo "###MOCHA_JSON_END:${pkg}###"
+    cd /home/[[REPO_NAME]]
+}
+
+run_package_tests "core" "--timeout 1000"
+run_package_tests "cli" ""
+echo "###MOCHA_JSON_START:monaco###"
+cd /home/[[REPO_NAME]]/packages/monaco
+if tsc 2>&1; then
+    echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_only":true}'
+else
+    echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_error":true}'
+fi
+echo "###MOCHA_JSON_END:monaco###"
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -131,6 +202,7 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
 """
         return dockerfile_content.format(pr=self.pr)
 
@@ -168,52 +240,74 @@ class ABAPLINT_3405_TO_2222(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests: set[str] = set()  # Tests that passed successfully
-        failed_tests: set[str] = set()  # Tests that failed
-        skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
-        import json
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        # Remove ANSI escape codes to handle colored logs
         log = re.sub(r"\x1B\[[0-9;]*m", "", log)
-        # Extract failed tests from error lines (e.g., 'test/...ts:line:col - error')
-        failed_pattern = re.compile(
-            r"(test/(?!\*\*/).*?\.ts):\d+:\d+ - error", re.IGNORECASE | re.MULTILINE
-        )
-        failed_tests.update(failed_pattern.findall(log))
-        # Extract passed tests from success indicators (e.g., 'test/...ts passed')
-        passed_pattern = re.compile(
-            r"(test/(?!\*\*/).*?\.ts) - passed", re.IGNORECASE | re.MULTILINE
-        )
-        passed_tests.update(passed_pattern.findall(log))
-        # Extract skipped tests from skipped indicators (e.g., 'test/...ts skipped')
-        skipped_pattern = re.compile(
-            r"(test/(?!\*\*/).*?\.ts) - skipped", re.IGNORECASE | re.MULTILINE
-        )
-        skipped_tests.update(skipped_pattern.findall(log))
-        # Handle cases where only failed tests are logged; infer passed tests from total test files
-        # If no passed tests are found, assume all non-failed/skipped test files are passed
-        if not passed_tests:
-            all_tests_pattern = re.compile(
-                r"(test/(?!\*\*/).*?\.ts)", re.IGNORECASE | re.MULTILINE
-            )
-            all_tests = set(all_tests_pattern.findall(log))
-            # Fallback to default test names if none are found (from test-patch-run.log)
-            if not all_tests:
-                default_tests = {
-                    "test/abap/flow/statement_flow.ts",
-                    "test/rules/add_test_attributes.ts",
-                    "test/rules/empty_event.ts",
-                    "test/rules/implicit_start_of_selection.ts",
-                }
-                all_tests = default_tests
-            passed_tests.update(all_tests - failed_tests - skipped_tests)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+
+        packages = ["core", "cli", "monaco"]
+        for pkg in packages:
+            start_marker = f"###MOCHA_JSON_START:{pkg}###"
+            end_marker = f"###MOCHA_JSON_END:{pkg}###"
+            start_idx = log.find(start_marker)
+            end_idx = log.find(end_marker)
+
+            if start_idx == -1 or end_idx == -1:
+                skipped_tests.add(f"{pkg}::tsc_compile")
+                continue
+
+            section = log[start_idx + len(start_marker):end_idx].strip()
+
+            json_start = section.rfind("\n{")
+            if json_start == -1:
+                json_start = 0 if section.startswith("{") else -1
+
+            if json_start == -1:
+                skipped_tests.add(f"{pkg}::tsc_compile")
+                continue
+
+            json_str = section[json_start:].strip()
+            brace_count = 0
+            json_end = 0
+            for i, ch in enumerate(json_str):
+                if ch == "{":
+                    brace_count += 1
+                elif ch == "}":
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_end = i + 1
+                        break
+            if json_end > 0:
+                json_str = json_str[:json_end]
+
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                skipped_tests.add(f"{pkg}::tsc_compile")
+                continue
+
+            if data.get("tsc_error"):
+                failed_tests.add(f"{pkg}::tsc_compile")
+                continue
+            if data.get("tsc_only"):
+                passed_tests.add(f"{pkg}::tsc_compile")
+                continue
+
+            for test in data.get("passes", []):
+                title = test.get("fullTitle", "").strip()
+                if title:
+                    passed_tests.add(f"{pkg}::{title}")
+
+            for test in data.get("failures", []):
+                title = test.get("fullTitle", "").strip()
+                if title:
+                    failed_tests.add(f"{pkg}::{title}")
+
+            for test in data.get("pending", []):
+                title = test.get("fullTitle", "").strip()
+                if title:
+                    skipped_tests.add(f"{pkg}::{title}")
 
         return TestResult(
             passed_count=len(passed_tests),
