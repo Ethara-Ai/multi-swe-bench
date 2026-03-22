@@ -48,24 +48,43 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -la
-###ACTION_DELIMITER###
-npm install
-###ACTION_DELIMITER###
-echo 'npm test' > test_commands.sh
-###ACTION_DELIMITER###
-echo 'npm test -- --verbose' > test_commands.sh
-###ACTION_DELIMITER###
-echo -e 'cd packages/core && npm test --verbose && cd ../../\ncd packages/cli && npm test --verbose && cd ../../\ncd packages/monaco && npm test --verbose && cd ../../' > test_commands.sh""",
+                """#!/bin/bash
+set -e
+cd /home/abaplint
+npm install && cd packages/core/ && npm install && cd ../../ && cd ./packages/cli/ && npm install && cd ../../ && cd ./packages/monaco/ && npm install && cd ../../
+""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
+set -e
 cd /home/[[REPO_NAME]]
-cd packages/core && npm test --verbose && cd ../../
-cd packages/cli && npm test --verbose && cd ../../
-cd packages/monaco && npm test --verbose && cd ../../
+
+run_package_tests() {
+    local pkg="$1"
+    local mocha_args="$2"
+    local pkg_dir="/home/[[REPO_NAME]]/packages/${pkg}"
+    if [ ! -d "${pkg_dir}" ]; then
+        echo "###MOCHA_JSON_START:${pkg}###"
+        echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"missing_dir":true}'
+        echo "###MOCHA_JSON_END:${pkg}###"
+        return 0
+    fi
+    echo "###MOCHA_JSON_START:${pkg}###"
+    cd "${pkg_dir}"
+    if npm run compile 2>&1; then
+        npx mocha --reporter json ${mocha_args} 2>&1 || true
+    else
+        echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_error":true}'
+    fi
+    echo "###MOCHA_JSON_END:${pkg}###"
+    cd /home/[[REPO_NAME]]
+}
+
+run_package_tests "core" ""
+run_package_tests "cli" ""
+run_package_tests "monaco" ""
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -73,14 +92,37 @@ cd packages/monaco && npm test --verbose && cd ../../
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
+set -e
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='package-lock.json' --exclude='**/package-lock.json' /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-cd packages/core && npm test --verbose && cd ../../
-cd packages/cli && npm test --verbose && cd ../../
-cd packages/monaco && npm test --verbose && cd ../../
+
+run_package_tests() {
+    local pkg="$1"
+    local mocha_args="$2"
+    local pkg_dir="/home/[[REPO_NAME]]/packages/${pkg}"
+    if [ ! -d "${pkg_dir}" ]; then
+        echo "###MOCHA_JSON_START:${pkg}###"
+        echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"missing_dir":true}'
+        echo "###MOCHA_JSON_END:${pkg}###"
+        return 0
+    fi
+    echo "###MOCHA_JSON_START:${pkg}###"
+    cd "${pkg_dir}"
+    if npm run compile 2>&1; then
+        npx mocha --reporter json ${mocha_args} 2>&1 || true
+    else
+        echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_error":true}'
+    fi
+    echo "###MOCHA_JSON_END:${pkg}###"
+    cd /home/[[REPO_NAME]]
+}
+
+run_package_tests "core" ""
+run_package_tests "cli" ""
+run_package_tests "monaco" ""
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -88,14 +130,37 @@ cd packages/monaco && npm test --verbose && cd ../../
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
+set -e
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='package-lock.json' --exclude='**/package-lock.json' /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-cd packages/core && npm test --verbose && cd ../../
-cd packages/cli && npm test --verbose && cd ../../
-cd packages/monaco && npm test --verbose && cd ../../
+
+run_package_tests() {
+    local pkg="$1"
+    local mocha_args="$2"
+    local pkg_dir="/home/[[REPO_NAME]]/packages/${pkg}"
+    if [ ! -d "${pkg_dir}" ]; then
+        echo "###MOCHA_JSON_START:${pkg}###"
+        echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"missing_dir":true}'
+        echo "###MOCHA_JSON_END:${pkg}###"
+        return 0
+    fi
+    echo "###MOCHA_JSON_START:${pkg}###"
+    cd "${pkg_dir}"
+    if npm run compile 2>&1; then
+        npx mocha --reporter json ${mocha_args} 2>&1 || true
+    else
+        echo '{"stats":{"tests":0,"passes":0,"failures":0},"tests":[],"passes":[],"failures":[],"tsc_error":true}'
+    fi
+    echo "###MOCHA_JSON_END:${pkg}###"
+    cd /home/[[REPO_NAME]]
+}
+
+run_package_tests "core" ""
+run_package_tests "cli" ""
+run_package_tests "monaco" ""
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -137,6 +202,7 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
 """
         return dockerfile_content.format(pr=self.pr)
 
@@ -174,43 +240,77 @@ class ABAPLINT_1312_TO_1223(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
-        import re
-        import json
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        # Extract test packages from test lines
-        test_package_pattern = re.compile(
-            r"> @abaplint/([a-z]+)@\d+\.\d+\.\d+ (?:pretest|compile|test)"
-        )
-        test_packages = set(test_package_pattern.findall(log))
-        # Extract skipped packages from 'cd' errors
-        skipped_pattern = re.compile(
-            r"cd: packages/([a-z]+): No such file or directory"
-        )
-        skipped_packages = set(skipped_pattern.findall(log))
-        skipped_tests.update(skipped_packages)
-        # Identify failed packages (errors after test execution)
-        failed_pattern = re.compile(r"error TS\d+|Found \d+ errors")
-        for package in test_packages:
-            if package in skipped_packages:
+        log = re.sub(r"\x1B\[[0-9;]*m", "", log)
+
+        packages = ["core", "cli", "monaco"]
+        for pkg in packages:
+            start_marker = f"###MOCHA_JSON_START:{pkg}###"
+            end_marker = f"###MOCHA_JSON_END:{pkg}###"
+            start_idx = log.find(start_marker)
+            end_idx = log.find(end_marker)
+
+            if start_idx == -1 or end_idx == -1:
+                skipped_tests.add(f"{pkg}::tsc_compile")
                 continue
-            test_line = re.search(
-                rf"> @abaplint/{package}@\d+\.\d+\.\d+ (pretest|compile|test)", log
-            )
-            if test_line:
-                subsequent_log = log[test_line.end() :]
-                if failed_pattern.search(subsequent_log):
-                    failed_tests.add(package)
-        # Determine passed packages (tested but not failed/skipped)
-        passed_tests = test_packages - skipped_packages - failed_tests
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+
+            section = log[start_idx + len(start_marker):end_idx].strip()
+
+            json_start = section.rfind("\n{")
+            if json_start == -1:
+                json_start = 0 if section.startswith("{") else -1
+
+            if json_start == -1:
+                skipped_tests.add(f"{pkg}::tsc_compile")
+                continue
+
+            json_str = section[json_start:].strip()
+            brace_count = 0
+            json_end = 0
+            for i, ch in enumerate(json_str):
+                if ch == "{":
+                    brace_count += 1
+                elif ch == "}":
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_end = i + 1
+                        break
+            if json_end > 0:
+                json_str = json_str[:json_end]
+
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                skipped_tests.add(f"{pkg}::tsc_compile")
+                continue
+
+            if data.get("missing_dir"):
+                skipped_tests.add(f"{pkg}::tsc_compile")
+                continue
+            if data.get("tsc_error"):
+                failed_tests.add(f"{pkg}::tsc_compile")
+                continue
+            if data.get("tsc_only"):
+                passed_tests.add(f"{pkg}::tsc_compile")
+                continue
+
+            for test in data.get("passes", []):
+                title = test.get("fullTitle", "").strip()
+                if title:
+                    passed_tests.add(f"{pkg}::{title}")
+
+            for test in data.get("failures", []):
+                title = test.get("fullTitle", "").strip()
+                if title:
+                    failed_tests.add(f"{pkg}::{title}")
+
+            for test in data.get("pending", []):
+                title = test.get("fullTitle", "").strip()
+                if title:
+                    skipped_tests.add(f"{pkg}::{title}")
 
         return TestResult(
             passed_count=len(passed_tests),
