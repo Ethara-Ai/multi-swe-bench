@@ -156,6 +156,10 @@ RUN git clone https://github.com/aeon-toolkit/aeon.git /home/aeon
 WORKDIR /home/aeon
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+RUN apt-get update && apt-get install -y software-properties-common && add-apt-repository ppa:deadsnakes/ppa -y && apt-get update && apt-get install -y build-essential libopenblas-dev libgfortran5 curl python3.10 python3.10-dev python3.10-venv
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && python3.10 /tmp/get-pip.py --break-system-packages && rm /tmp/get-pip.py
+RUN python3.10 -m pip install --no-cache-dir --break-system-packages '.[all_extras,dev]'
 """
         dockerfile_content += f"""
 {copy_commands}

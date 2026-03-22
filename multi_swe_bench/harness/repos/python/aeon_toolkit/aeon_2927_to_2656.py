@@ -148,6 +148,9 @@ RUN git clone https://github.com/aeon-toolkit/aeon.git /home/aeon
 WORKDIR /home/aeon
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+RUN apt-get update && apt-get install -y build-essential libopenblas-dev libgfortran5
+RUN pip install --no-cache-dir -e '.[all_extras,dev]'
 """
         dockerfile_content += f"""
 {copy_commands}
