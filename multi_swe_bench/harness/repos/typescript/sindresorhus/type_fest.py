@@ -167,14 +167,24 @@ set -eo pipefail
 
 cd /home/{repo}
 {patches}
+# Enumerate all test-d/ files so parse_log knows which files exist.
+# Format: "TESTFILE: <path>" — one per line.
+echo "===TESTFILES_START==="
+find test-d -name '*.ts' -type f 2>/dev/null | sort
+echo "===TESTFILES_END==="
+
 # Run tsd (type definition tests) — primary test tool.
 # Outputs nothing on success, errors to stderr on failure.
+echo "===TSD_START==="
 {tsd} 2>&1 || true
+echo "===TSD_END==="
 
 # Run tsc (TypeScript compiler check).
 # Only meaningful when tsconfig.json exists (PR >=153).
 if [ -f tsconfig.json ]; then
+    echo "===TSC_START==="
     {tsc} 2>&1 || true
+    echo "===TSC_END==="
 fi
 {extra}
 """.format(
@@ -305,25 +315,25 @@ class TypeFest(Instance):
     def parse_log(self, test_log: str) -> TestResult:
         """Parse combined tsd + tsc + node --test output.
 
-        tsd error format (to stderr, grouped by file):
-            test-d/some-type.ts
-            ✖  10:20  Argument of type string is not assignable ...
+        The shell scripts emit structured markers:
+            ===TESTFILES_START===
+            test-d/foo.ts
+            test-d/bar.ts
+            ===TESTFILES_END===
+            ===TSD_START===
+            test-d/foo.ts
+            ✖  10:20  Some type error ...
+            ===TSD_END===
+            ===TSC_START===
+            test-d/foo.ts(10,20): error TS2345: ...
+            ===TSC_END===
 
-        tsc error format:
-            source/some-type.d.ts(10,20): error TS2345: ...
-
-        node --test output (TAP-like):
-            ✔ test name (duration)
-            ✖ test name (duration)
-
-        node script/test output:
-            source/foo.ts extension should be `.d.ts`.
-            (exit 1 on failure, no output on success)
-
-        Strategy: parse each error as a unique failed test name keyed by
-        file:line:col.  Errors stable across phases (e.g. node_modules/)
-        cancel out in the 3-phase diff.  Errors introduced by test.patch
-        and removed by fix.patch drive the FAIL→PASS transitions.
+        Strategy: file-based test names.  Each test-d/*.ts file is a test.
+        - If tsd reports errors under that file header → FAIL
+        - If tsc reports errors in that file → FAIL
+        - Otherwise → PASS
+        This ensures test names are STABLE across all 3 phases, so the
+        Report diff detects real FAIL→PASS transitions.
         """
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
@@ -333,18 +343,119 @@ class TypeFest(Instance):
         ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
         clean_log = ansi_escape.sub("", test_log)
 
-        # Track tsd file context
+        lines = clean_log.splitlines()
+
+        # 1. Extract the list of all test-d/ files from TESTFILES markers
+        all_test_files: set[str] = set()
+        in_testfiles = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "===TESTFILES_START===":
+                in_testfiles = True
+                continue
+            if stripped == "===TESTFILES_END===":
+                in_testfiles = False
+                continue
+            if in_testfiles and stripped:
+                all_test_files.add(stripped)
+
+        # 2. Parse tsd output — collect files with errors
+        tsd_failed_files: set[str] = set()
+        in_tsd = False
         current_tsd_file: str = ""
-
-        # tsd file header: a bare file path on its own line
         re_tsd_file = re.compile(r"^([\w./-]+\.tsx?)$")
-
-        # tsd error: ✖  line:col  message
         re_tsd_error = re.compile(r"^\s*✖\s+(\d+:\d+)\s+(.+)$")
 
-        # tsc error: file(line,col): error TSxxxx: message
-        re_tsc_error = re.compile(
-            r"^([\w./-]+\.tsx?)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.+)$"
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "===TSD_START===":
+                in_tsd = True
+                continue
+            if stripped == "===TSD_END===":
+                in_tsd = False
+                continue
+            if not in_tsd:
+                continue
+
+            file_match = re_tsd_file.match(stripped)
+            if file_match:
+                current_tsd_file = file_match.group(1)
+                continue
+
+            if re_tsd_error.match(stripped) and current_tsd_file:
+                tsd_failed_files.add(current_tsd_file)
+
+        # 3. Parse tsc output — collect files with errors
+        tsc_failed_files: set[str] = set()
+        in_tsc = False
+        re_tsc_error = re.compile(r"^([\w./-]+\.tsx?)\(\d+,\d+\):\s+error\s+TS\d+:")
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "===TSC_START===":
+                in_tsc = True
+                continue
+            if stripped == "===TSC_END===":
+                in_tsc = False
+                continue
+            if not in_tsc:
+                continue
+
+            tsc_match = re_tsc_error.match(stripped)
+            if tsc_match:
+                tsc_failed_files.add(tsc_match.group(1))
+
+        # 4. Classify each test-d/ file as PASS or FAIL
+        all_failed_files = tsd_failed_files | tsc_failed_files
+        for f in all_test_files:
+            if f in all_failed_files:
+                failed_tests.add(f)
+            else:
+                passed_tests.add(f)
+
+        # 5. Also add any failed files NOT in the enumerated list
+        #    (e.g. source/*.d.ts errors from tsc, or node_modules/ from old tsd)
+        for f in all_failed_files:
+            if f not in all_test_files:
+                failed_tests.add(f)
+
+        # 6. Parse node --test output (for PRs >=1265)
+        re_node_test_pass = re.compile(r"^✔\s+(.+?)(?:\s+\(.+\))?\s*$")
+        re_node_test_fail = re.compile(r"^✖\s+(.+?)(?:\s+\(.+\))?\s*$")
+        re_tap_ok = re.compile(r"^ok\s+\d+\s+-?\s*(.+)$")
+        re_tap_not_ok = re.compile(r"^not ok\s+\d+\s+-?\s*(.+)$")
+
+        for line in lines:
+            stripped = line.strip()
+            m = re_node_test_pass.match(stripped) or re_tap_ok.match(stripped)
+            if m:
+                passed_tests.add(f"node-test:{m.group(1).strip()}")
+                continue
+            m = re_node_test_fail.match(stripped) or re_tap_not_ok.match(stripped)
+            if m:
+                failed_tests.add(f"node-test:{m.group(1).strip()}")
+                continue
+
+        # 7. Parse source-files-extension script errors
+        re_ext_error = re.compile(r"^(source/[\w./-]+)\s+extension should be")
+        for line in lines:
+            stripped = line.strip()
+            ext_err = re_ext_error.match(stripped)
+            if ext_err:
+                failed_tests.add(f"ext-check:{ext_err.group(1)}")
+
+        # Ensure no overlap
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
+
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
         )
 
         # tsd summary: N error(s)
