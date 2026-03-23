@@ -106,3 +106,4 @@ from multi_swe_bench.harness.repos.typescript.VKCOM import *
 from multi_swe_bench.harness.repos.typescript.vuejs import *
 from multi_swe_bench.harness.repos.typescript.vuetifyjs import *
 from multi_swe_bench.harness.repos.typescript.withastro import *
+from multi_swe_bench.harness.repos.typescript.refinedev import *
