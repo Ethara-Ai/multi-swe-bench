@@ -7,3 +7,6 @@ from multi_swe_bench.harness.repos.python.pallets.flask_2765_to_1593 import *
 from multi_swe_bench.harness.repos.python.pallets.click_2956_to_2840 import *
 from multi_swe_bench.harness.repos.python.pallets.click_2800_to_1400 import *
 from multi_swe_bench.harness.repos.python.pallets.click_1400_to_123 import *
+from multi_swe_bench.harness.repos.python.pallets.werkzeug_1065_to_1062 import *
+from multi_swe_bench.harness.repos.python.pallets.werkzeug_2509_to_1286 import *
+from multi_swe_bench.harness.repos.python.pallets.werkzeug_3085_to_2656 import *

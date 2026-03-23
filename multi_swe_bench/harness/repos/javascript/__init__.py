@@ -83,6 +83,5 @@ from multi_swe_bench.harness.repos.javascript.alam00000 import *
 from multi_swe_bench.harness.repos.javascript.exercism import *
 from multi_swe_bench.harness.repos.javascript.jsx_eslint import *
 from multi_swe_bench.harness.repos.javascript.markedjs import *
-from multi_swe_bench.harness.repos.javascript.serverless import *
-from multi_swe_bench.harness.repos.javascript.sindresorhus import *
+from multi_swe_bench.harness.repos.javascript.acornjs import *
 
