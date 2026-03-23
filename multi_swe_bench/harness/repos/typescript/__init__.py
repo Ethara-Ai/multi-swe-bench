@@ -98,15 +98,6 @@ from multi_swe_bench.harness.repos.typescript.Effect_TS import *
 from multi_swe_bench.harness.repos.typescript.stakwork import *
 from multi_swe_bench.harness.repos.typescript.thenewboston_blockchain import *
 
-from multi_swe_bench.harness.repos.typescript.footprinter import *
-from multi_swe_bench.harness.repos.typescript.archestra import *
-from multi_swe_bench.harness.repos.typescript.cal_com import *
-from multi_swe_bench.harness.repos.typescript.remotion import *
-from multi_swe_bench.harness.repos.typescript.circuit_to_svg import *
-from multi_swe_bench.harness.repos.typescript.tscircuit_com import *
-from multi_swe_bench.harness.repos.typescript.cli import *
-from multi_swe_bench.harness.repos.typescript.eval import *
-from multi_swe_bench.harness.repos.typescript.footprinter import *
 from multi_swe_bench.harness.repos.typescript.archestra import *
 from multi_swe_bench.harness.repos.typescript.cal_com import *
 from multi_swe_bench.harness.repos.typescript.remotion import *
@@ -115,5 +106,15 @@ from multi_swe_bench.harness.repos.typescript.tscircuit_com import *
 from multi_swe_bench.harness.repos.typescript.cli import *
 from multi_swe_bench.harness.repos.typescript.eval import *
 from multi_swe_bench.harness.repos.typescript.tscircuit import *
+from multi_swe_bench.harness.repos.typescript.latticexyz import *
+from multi_swe_bench.harness.repos.typescript.gitcoinco import *
+from multi_swe_bench.harness.repos.typescript.electron import *
+from multi_swe_bench.harness.repos.typescript.equinor import *
+from multi_swe_bench.harness.repos.typescript.hasadna import *
+from multi_swe_bench.harness.repos.typescript.chakra_ui import *
+from multi_swe_bench.harness.repos.typescript.firecrawl import *
+from multi_swe_bench.harness.repos.typescript.sphinx_tribes_frontend import *
+from multi_swe_bench.harness.repos.typescript.webdriverio import *
+from multi_swe_bench.harness.repos.typescript.website import *
 from multi_swe_bench.harness.repos.typescript.nestjs import *
 from multi_swe_bench.harness.repos.typescript.realm import *
