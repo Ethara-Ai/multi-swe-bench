@@ -20,7 +20,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.6-slim"
+        return "python:3.10-alpine"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -46,48 +46,22 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls
+                """ls -F
 ###ACTION_DELIMITER###
-pip install -r requirements.txt
+pip install poetry
 ###ACTION_DELIMITER###
-pip install .[test]
+poetry install
 ###ACTION_DELIMITER###
-sed -i "26s/moto==0.4.31/moto>=1.0.0/" setup.py
+poetry run pytest --no-header -rA --tb=no -p no:cacheprovider
 ###ACTION_DELIMITER###
-pip install .[test]
-###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
-###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/compiled_vpc.json
-###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/compiled_vpc_sud.json
-###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
-###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/vpc.json
-###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/vpc.template
-###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
-###ACTION_DELIMITER###
-sed -i "s/'true'/true/g" tests/fixtures/templates/vpc.yaml
-###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
-###ACTION_DELIMITER###
-echo "pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s" > test_commands.sh""",
+echo 'poetry run pytest --no-header -rA --tb=no -p no:cacheprovider' > /home/sceptre/test_commands.sh""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+poetry run pytest --no-header -rA --tb=no -p no:cacheprovider
 
 """.format(pr=self.pr),
             ),
@@ -100,7 +74,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+poetry run pytest --no-header -rA --tb=no -p no:cacheprovider
 
 """.format(pr=self.pr),
             ),
@@ -113,7 +87,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+poetry run pytest --no-header -rA --tb=no -p no:cacheprovider
 
 """.format(pr=self.pr),
             ),
@@ -130,7 +104,7 @@ pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xm
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.6-slim
+FROM python:3.10-alpine
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -139,9 +113,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # For example: RUN apt-get update && apt-get install -y git
 # For example: RUN yum install -y git
 # For example: RUN apk add --no-cache git
-RUN CODENAME=$(cat /etc/os-release | grep VERSION_CODENAME | cut -d= -f2) && \
-    echo "deb [trusted=yes] http://archive.debian.org/debian $CODENAME main" > /etc/apt/sources.list && \
-    apt-get update && apt-get install -y git
+RUN apk add --no-cache git
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
@@ -156,10 +128,7 @@ RUN git reset --hard
 RUN git checkout {pr.base.sha}
 
 # Install project dependencies
-RUN sed -i 's/moto==0.4.31/moto>=1.3.0/g' requirements.txt && \
-    pip install -r requirements.txt && \
-    sed -i 's/moto==0.4.31/moto>=1.0.0/' setup.py && \
-    pip install .[test]
+RUN pip install poetry && poetry install
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -167,8 +136,8 @@ RUN sed -i 's/moto==0.4.31/moto>=1.3.0/g' requirements.txt && \
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("Sceptre", "sceptre_v1_4_2")
-class SCEPTRE_V1_4_2(Instance):
+@Instance.register("Sceptre", "sceptre_v4_5_1")
+class SCEPTRE_V4_5_1(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -204,32 +173,16 @@ class SCEPTRE_V1_4_2(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        # Regex to capture the file path and the test result markers
-        test_line_re = re.compile(r"^(tests/.*?\.py) (.*)")
-        # Regex to capture the full test name from the FAILED summary
-        failed_test_re = re.compile(r"^FAILED (.*?)$")
+        passed_pattern = re.compile(r"^PASSED (.*)")
+        failed_pattern = re.compile(r"^FAILED (.*)")
+        skipped_pattern = re.compile(r"^SKIPPED (.*)")
         for line in log.splitlines():
-            # Check for lines indicating test results
-            match = test_line_re.match(line)
-            if match:
-                test_file, results = match.groups()
-                if "F" in results:
-                    # Will be captured by the failed_test_re
-                    continue
-                if "s" in results:
-                    skipped_tests.add(test_file)
-                    continue
-                if all(c == "." for c in results.strip()):
-                    passed_tests.add(test_file)
-            # Check for the failed test summary
-            match = failed_test_re.match(line)
-            if match:
-                failed_test = match.group(1)
-                failed_tests.add(failed_test)
-                # Remove the file from passed_tests if it's there
-                test_file = failed_test.split("::")[0]
-                if test_file in passed_tests:
-                    passed_tests.remove(test_file)
+            if passed_match := passed_pattern.match(line):
+                passed_tests.add(passed_match.group(1).strip())
+            elif failed_match := failed_pattern.match(line):
+                failed_tests.add(failed_match.group(1).strip())
+            elif skipped_match := skipped_pattern.match(line):
+                skipped_tests.add(skipped_match.group(1).strip())
 
         return TestResult(
             passed_count=len(passed_tests),

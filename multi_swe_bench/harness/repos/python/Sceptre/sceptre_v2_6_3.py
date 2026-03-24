@@ -20,7 +20,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.6-slim"
+        return "python:3.7-alpine"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -46,48 +46,52 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls
+                """ls -F
 ###ACTION_DELIMITER###
-pip install -r requirements.txt
+ls -F requirements/
 ###ACTION_DELIMITER###
-pip install .[test]
+make install-dev
 ###ACTION_DELIMITER###
-sed -i "26s/moto==0.4.31/moto>=1.0.0/" setup.py
+apk add --no-cache make
 ###ACTION_DELIMITER###
-pip install .[test]
+make install-dev
 ###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+apk add --no-cache gcc musl-dev
 ###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/compiled_vpc.json
+apk add --no-cache libffi-dev
 ###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/compiled_vpc_sud.json
+pip install Cython
 ###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+make install-dev
 ###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/vpc.json
+pip install --upgrade pip setuptools
 ###ACTION_DELIMITER###
-
+make install-dev
 ###ACTION_DELIMITER###
-
+pip install -r requirements/dev.txt
 ###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/vpc.template
+make test
 ###ACTION_DELIMITER###
-
+pip install -r requirements/prod.txt
 ###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+pip install -r requirements/prod.txt --no-build-isolation
 ###ACTION_DELIMITER###
-sed -i "s/'true'/true/g" tests/fixtures/templates/vpc.yaml
+apk add --no-cache make gcc musl-dev libffi-dev cython
 ###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+pip install colorama
 ###ACTION_DELIMITER###
-echo "pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s" > test_commands.sh""",
+make test
+###ACTION_DELIMITER###
+echo 'pytest --no-header -rA --tb=no -p no:cacheprovider --cov sceptre --cov-report term-missing --cov-fail-under 90
+behave integration-tests/' > test_commands.sh""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+pytest --no-header -rA --tb=no -p no:cacheprovider --cov sceptre --cov-report term-missing --cov-fail-under 90
+behave integration-tests/
 
 """.format(pr=self.pr),
             ),
@@ -100,7 +104,8 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+pytest --no-header -rA --tb=no -p no:cacheprovider --cov sceptre --cov-report term-missing --cov-fail-under 90
+behave integration-tests/
 
 """.format(pr=self.pr),
             ),
@@ -113,7 +118,8 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+pytest --no-header -rA --tb=no -p no:cacheprovider --cov sceptre --cov-report term-missing --cov-fail-under 90
+behave integration-tests/
 
 """.format(pr=self.pr),
             ),
@@ -130,7 +136,7 @@ pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xm
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.6-slim
+FROM python:3.7-alpine
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -139,9 +145,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # For example: RUN apt-get update && apt-get install -y git
 # For example: RUN yum install -y git
 # For example: RUN apk add --no-cache git
-RUN CODENAME=$(cat /etc/os-release | grep VERSION_CODENAME | cut -d= -f2) && \
-    echo "deb [trusted=yes] http://archive.debian.org/debian $CODENAME main" > /etc/apt/sources.list && \
-    apt-get update && apt-get install -y git
+RUN apk add --no-cache git
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
@@ -155,11 +159,22 @@ WORKDIR /home/sceptre
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
 
-# Install project dependencies
-RUN sed -i 's/moto==0.4.31/moto>=1.3.0/g' requirements.txt && \
-    pip install -r requirements.txt && \
-    sed -i 's/moto==0.4.31/moto>=1.0.0/' setup.py && \
-    pip install .[test]
+# Install build dependencies and project requirements
+RUN apk add --no-cache make gcc musl-dev libffi-dev openssl-dev cargo rust
+
+RUN pip install --upgrade pip "setuptools<58" wheel Cython
+
+RUN PYYAML_FORCE_LIBYAML=0 pip install --no-cache-dir "pyyaml>=5.1,<6.0" --global-option="--without-libyaml"
+
+RUN cd /home/sceptre && \
+    sed -i '/[Pp][Yy][Yy][Aa][Mm][Ll]/d' requirements/prod.txt && \
+    sed -i '/[Pp][Yy][Aa][Mm][Ll]/d' requirements/prod.txt && \
+    sed -i '/[Pp][Yy][Yy][Aa][Mm][Ll]/d' requirements/dev.txt && \
+    sed -i '/[Pp][Yy][Aa][Mm][Ll]/d' requirements/dev.txt && \
+    pip install -r requirements/prod.txt && \
+    pip install -r requirements/dev.txt && \
+    pip install colorama && \
+    pip install -e .
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -167,8 +182,8 @@ RUN sed -i 's/moto==0.4.31/moto>=1.3.0/g' requirements.txt && \
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("Sceptre", "sceptre_v1_4_2")
-class SCEPTRE_V1_4_2(Instance):
+@Instance.register("Sceptre", "sceptre_v2_6_3")
+class SCEPTRE_V2_6_3(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -204,32 +219,27 @@ class SCEPTRE_V1_4_2(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        # Regex to capture the file path and the test result markers
-        test_line_re = re.compile(r"^(tests/.*?\.py) (.*)")
-        # Regex to capture the full test name from the FAILED summary
-        failed_test_re = re.compile(r"^FAILED (.*?)$")
+        pattern = re.compile(
+            r"^(PASSED|FAILED|ERROR|SKIPPED)\s+([\w\.\/:]+(?:\[.*?\])?)(?:\s+-\s+.*)?$"
+        )
+        parsing = False
         for line in log.splitlines():
-            # Check for lines indicating test results
-            match = test_line_re.match(line)
-            if match:
-                test_file, results = match.groups()
-                if "F" in results:
-                    # Will be captured by the failed_test_re
-                    continue
-                if "s" in results:
-                    skipped_tests.add(test_file)
-                    continue
-                if all(c == "." for c in results.strip()):
-                    passed_tests.add(test_file)
-            # Check for the failed test summary
-            match = failed_test_re.match(line)
-            if match:
-                failed_test = match.group(1)
-                failed_tests.add(failed_test)
-                # Remove the file from passed_tests if it's there
-                test_file = failed_test.split("::")[0]
-                if test_file in passed_tests:
-                    passed_tests.remove(test_file)
+            if "short test summary info" in line:
+                parsing = True
+                continue
+            if parsing and line.startswith("="):
+                parsing = False
+                continue
+            if parsing:
+                match = pattern.match(line)
+                if match:
+                    status, test_name = match.groups()[:2]
+                    if status == "PASSED":
+                        passed_tests.add(test_name)
+                    elif status in ["FAILED", "ERROR"]:
+                        failed_tests.add(test_name)
+                    elif status == "SKIPPED":
+                        skipped_tests.add(test_name)
 
         return TestResult(
             passed_count=len(passed_tests),

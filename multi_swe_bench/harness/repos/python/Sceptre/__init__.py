@@ -16,3 +16,9 @@ from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v3_0_0 import *
 from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v2_1_4 import *
 from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v1_2_0 import *
 from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v2_0_0 import *
+from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v1_1_2 import *
+from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v1_3_0 import *
+from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v1_4_1 import *
+from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v2_6_3 import *
+from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v4_3_0 import *
+from multi_swe_bench.harness.repos.python.Sceptre.sceptre_v4_5_1 import *

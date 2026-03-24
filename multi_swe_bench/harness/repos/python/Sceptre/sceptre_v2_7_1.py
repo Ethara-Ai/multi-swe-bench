@@ -178,6 +178,13 @@ RUN git clone https://github.com/Sceptre/sceptre.git /home/sceptre
 WORKDIR /home/sceptre
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install project dependencies
+RUN apk add --no-cache build-base libffi-dev openssl-dev && \
+    pip install --upgrade pip cython wheel "setuptools<58" && \
+    pip install "pyyaml>=6.0.1" && \
+    pip install -r requirements/prod.txt --no-build-isolation && \
+    pip install -r requirements/dev.txt --no-build-isolation
 """
         dockerfile_content += f"""
 {copy_commands}

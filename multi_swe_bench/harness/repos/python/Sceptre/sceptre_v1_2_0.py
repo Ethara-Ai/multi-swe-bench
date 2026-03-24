@@ -147,7 +147,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # For example: RUN apt-get update && apt-get install -y git
 # For example: RUN yum install -y git
 # For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
+RUN CODENAME=$(cat /etc/os-release | grep VERSION_CODENAME | cut -d= -f2) && \
+    echo "deb [trusted=yes] http://archive.debian.org/debian $CODENAME main" > /etc/apt/sources.list && \
+    apt-get update && apt-get install -y git
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
@@ -160,6 +162,27 @@ RUN git clone https://github.com/Sceptre/sceptre.git /home/sceptre
 WORKDIR /home/sceptre
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install project dependencies individually to avoid pip resolver bugs on Python 2.7
+RUN apt-get install -y --force-yes make gcc
+
+RUN pip install PyYAML==3.12 Jinja2==2.8 MarkupSafe click==6.6 packaging==16.8 colorama==0.3.7 six
+
+RUN pip install boto3==1.4.8 botocore==1.8.50 s3transfer jmespath python-dateutil docutils
+
+RUN sed -i 's/moto==0.4.19/moto==1.0.0/g' requirements_tests.txt && \
+    sed -i 's/moto==0.4.19/moto==1.0.0/g' setup.py
+
+RUN pip install mock==1.3.0 responses freezegun==0.3.8
+
+RUN pip install --no-deps moto==1.0.0 && \
+    pip install werkzeug==1.0.1 boto>=2.36.0 flask requests urllib3 cookies pytz xmltodict pyaml==16.12.2
+
+RUN pip install pytest==2.8.5 pytest-runner==2.6.2 "troposphere>=1.4.0,<1.11.0" behave==1.2.5
+
+RUN pip install pyaml==16.12.2
+
+RUN pip install -e .
 """
         dockerfile_content += f"""
 {copy_commands}

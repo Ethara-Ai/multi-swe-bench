@@ -20,7 +20,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.6-slim"
+        return "python:2.7-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -46,48 +46,36 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls
+                """ls -F
 ###ACTION_DELIMITER###
 pip install -r requirements.txt
 ###ACTION_DELIMITER###
-pip install .[test]
+pip install -r requirements_tests.txt
 ###ACTION_DELIMITER###
-sed -i "26s/moto==0.4.31/moto>=1.0.0/" setup.py
+sed -i 's/moto==0.4.19/moto==1.0.0/g' requirements_tests.txt
 ###ACTION_DELIMITER###
-pip install .[test]
+pip install -r requirements_tests.txt
 ###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+make install
 ###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/compiled_vpc.json
+apt-get update && apt-get install -y make
 ###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/compiled_vpc_sud.json
+make install
 ###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+python setup.py test
 ###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/vpc.json
+pip install pyaml==16.12.2
 ###ACTION_DELIMITER###
-
+python setup.py test
 ###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/vpc.template
-###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
-###ACTION_DELIMITER###
-sed -i "s/'true'/true/g" tests/fixtures/templates/vpc.yaml
-###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
-###ACTION_DELIMITER###
-echo "pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s" > test_commands.sh""",
+echo 'python setup.py test' > test_commands.sh""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+python setup.py test
 
 """.format(pr=self.pr),
             ),
@@ -100,7 +88,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+python setup.py test
 
 """.format(pr=self.pr),
             ),
@@ -113,7 +101,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+python setup.py test
 
 """.format(pr=self.pr),
             ),
@@ -130,7 +118,7 @@ pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xm
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.6-slim
+FROM python:2.7-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -155,11 +143,26 @@ WORKDIR /home/sceptre
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
 
-# Install project dependencies
-RUN sed -i 's/moto==0.4.31/moto>=1.3.0/g' requirements.txt && \
-    pip install -r requirements.txt && \
-    sed -i 's/moto==0.4.31/moto>=1.0.0/' setup.py && \
-    pip install .[test]
+# Install project dependencies individually to avoid pip resolver bugs on Python 2.7
+RUN apt-get install -y --force-yes make gcc
+
+RUN pip install PyYAML==3.12 Jinja2==2.8 MarkupSafe click==6.6 packaging==16.8 colorama==0.3.7 six
+
+RUN pip install boto3==1.4.8 botocore==1.8.50 s3transfer jmespath python-dateutil docutils
+
+RUN sed -i 's/moto==0.4.19/moto==1.0.0/g' requirements_tests.txt && \
+    sed -i 's/moto==0.4.19/moto==1.0.0/g' setup.py
+
+RUN pip install mock==1.3.0 responses freezegun==0.3.8
+
+RUN pip install --no-deps moto==1.0.0 && \
+    pip install werkzeug==1.0.1 boto>=2.36.0 flask requests urllib3 cookies pytz xmltodict pyaml==16.12.2
+
+RUN pip install pytest==2.8.5 pytest-runner==2.6.2 "troposphere>=1.4.0,<1.11.0" behave==1.2.5
+
+RUN pip install pyaml==16.12.2
+
+RUN pip install -e .
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -167,8 +170,8 @@ RUN sed -i 's/moto==0.4.31/moto>=1.3.0/g' requirements.txt && \
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("Sceptre", "sceptre_v1_4_2")
-class SCEPTRE_V1_4_2(Instance):
+@Instance.register("Sceptre", "sceptre_v1_1_2")
+class SCEPTRE_V1_1_2(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -204,32 +207,19 @@ class SCEPTRE_V1_4_2(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        # Regex to capture the file path and the test result markers
-        test_line_re = re.compile(r"^(tests/.*?\.py) (.*)")
-        # Regex to capture the full test name from the FAILED summary
-        failed_test_re = re.compile(r"^FAILED (.*?)$")
-        for line in log.splitlines():
-            # Check for lines indicating test results
-            match = test_line_re.match(line)
+        test_pattern = re.compile(r"^(tests/.*?) (PASSED|FAILED|SKIPPED)$")
+        lines = log.splitlines()
+        for line in lines:
+            match = test_pattern.match(line)
             if match:
-                test_file, results = match.groups()
-                if "F" in results:
-                    # Will be captured by the failed_test_re
-                    continue
-                if "s" in results:
-                    skipped_tests.add(test_file)
-                    continue
-                if all(c == "." for c in results.strip()):
-                    passed_tests.add(test_file)
-            # Check for the failed test summary
-            match = failed_test_re.match(line)
-            if match:
-                failed_test = match.group(1)
-                failed_tests.add(failed_test)
-                # Remove the file from passed_tests if it's there
-                test_file = failed_test.split("::")[0]
-                if test_file in passed_tests:
-                    passed_tests.remove(test_file)
+                test_name = match.group(1).strip()
+                status = match.group(2)
+                if status == "PASSED":
+                    passed_tests.add(test_name)
+                elif status == "FAILED":
+                    failed_tests.add(test_name)
+                elif status == "SKIPPED":
+                    skipped_tests.add(test_name)
 
         return TestResult(
             passed_count=len(passed_tests),

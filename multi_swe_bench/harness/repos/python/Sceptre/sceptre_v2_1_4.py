@@ -127,6 +127,10 @@ RUN git clone https://github.com/Sceptre/sceptre.git /home/sceptre
 WORKDIR /home/sceptre
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install project dependencies
+RUN python -m pip install -e '.[test]' && \
+    pip install markupsafe==2.0.1
 """
         dockerfile_content += f"""
 {copy_commands}

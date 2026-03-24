@@ -160,6 +160,14 @@ RUN git clone https://github.com/Sceptre/sceptre.git /home/sceptre
 WORKDIR /home/sceptre
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install project dependencies
+RUN apk add --no-cache make gcc musl-dev libffi-dev openssl-dev && \
+    pip install --upgrade pip "setuptools<58" Cython wheel && \
+    pip install "pyyaml>=6.0.1" && \
+    pip install -r requirements/prod.txt --no-build-isolation && \
+    pip install -r requirements/dev.txt --no-build-isolation && \
+    pip install colorama
 """
         dockerfile_content += f"""
 {copy_commands}

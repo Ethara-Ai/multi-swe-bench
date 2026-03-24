@@ -124,6 +124,9 @@ RUN git clone https://github.com/Sceptre/sceptre.git /home/sceptre
 WORKDIR /home/sceptre
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install project dependencies
+RUN pip install -r requirements/prod.txt -r requirements/dev.txt
 """
         dockerfile_content += f"""
 {copy_commands}

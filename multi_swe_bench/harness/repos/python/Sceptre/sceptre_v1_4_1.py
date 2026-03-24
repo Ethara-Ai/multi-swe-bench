@@ -50,44 +50,25 @@ class ImageDefault(Image):
 ###ACTION_DELIMITER###
 pip install -r requirements.txt
 ###ACTION_DELIMITER###
-pip install .[test]
+sed -i 's/moto==0.4.31/moto/' requirements.txt
 ###ACTION_DELIMITER###
-sed -i "26s/moto==0.4.31/moto>=1.0.0/" setup.py
+pip install -r requirements.txt
 ###ACTION_DELIMITER###
-pip install .[test]
+pip install moto==1.3.14
 ###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+coverage run --source sceptre -m pytest
 ###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/compiled_vpc.json
+echo '#!/bin/bash
+coverage run --source sceptre -m pytest' > /home/sceptre/test_commands.sh
 ###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/compiled_vpc_sud.json
-###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
-###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/vpc.json
-###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-sed -i 's/"true"/true/g' tests/fixtures/templates/vpc.template
-###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
-###ACTION_DELIMITER###
-sed -i "s/'true'/true/g" tests/fixtures/templates/vpc.yaml
-###ACTION_DELIMITER###
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
-###ACTION_DELIMITER###
-echo "pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s" > test_commands.sh""",
+""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+coverage run --source sceptre -m pytest
 
 """.format(pr=self.pr),
             ),
@@ -100,7 +81,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+coverage run --source sceptre -m pytest
 
 """.format(pr=self.pr),
             ),
@@ -113,7 +94,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest tests/ --ignore=env/ --ignore=venv/ --junitxml=build/pytest/junit-py36.xml -s
+coverage run --source sceptre -m pytest
 
 """.format(pr=self.pr),
             ),
@@ -156,10 +137,9 @@ RUN git reset --hard
 RUN git checkout {pr.base.sha}
 
 # Install project dependencies
-RUN sed -i 's/moto==0.4.31/moto>=1.3.0/g' requirements.txt && \
+RUN sed -i 's/moto==0.4.31/moto/' requirements.txt && \
     pip install -r requirements.txt && \
-    sed -i 's/moto==0.4.31/moto>=1.0.0/' setup.py && \
-    pip install .[test]
+    pip install moto==1.3.14
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -167,8 +147,8 @@ RUN sed -i 's/moto==0.4.31/moto>=1.3.0/g' requirements.txt && \
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("Sceptre", "sceptre_v1_4_2")
-class SCEPTRE_V1_4_2(Instance):
+@Instance.register("Sceptre", "sceptre_v1_4_1")
+class SCEPTRE_V1_4_1(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -204,32 +184,43 @@ class SCEPTRE_V1_4_2(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        # Regex to capture the file path and the test result markers
-        test_line_re = re.compile(r"^(tests/.*?\.py) (.*)")
-        # Regex to capture the full test name from the FAILED summary
-        failed_test_re = re.compile(r"^FAILED (.*?)$")
-        for line in log.splitlines():
-            # Check for lines indicating test results
-            match = test_line_re.match(line)
-            if match:
-                test_file, results = match.groups()
-                if "F" in results:
-                    # Will be captured by the failed_test_re
-                    continue
-                if "s" in results:
-                    skipped_tests.add(test_file)
-                    continue
-                if all(c == "." for c in results.strip()):
-                    passed_tests.add(test_file)
-            # Check for the failed test summary
-            match = failed_test_re.match(line)
-            if match:
-                failed_test = match.group(1)
-                failed_tests.add(failed_test)
-                # Remove the file from passed_tests if it's there
-                test_file = failed_test.split("::")[0]
+        test_file_pattern = re.compile(r"^(tests/[^:]+\.py)")
+        failed_pattern = re.compile(r"ERROR collecting (tests/.+\.py)")
+        lines = log.splitlines()
+        for i, line in enumerate(lines):
+            line = line.strip()
+            # Check for collection errors.
+            failed_match = failed_pattern.search(line)
+            if failed_match:
+                test_file = failed_match.group(1)
+                failed_tests.add(test_file)
                 if test_file in passed_tests:
                     passed_tests.remove(test_file)
+                if test_file in skipped_tests:
+                    skipped_tests.remove(test_file)
+                continue
+            # Check for test files.
+            match = test_file_pattern.match(line)
+            if match:
+                test_file = match.group(1)
+                # Extract status from the rest of the line or the next line.
+                status_line = line[len(test_file) :].strip()
+                if not status_line and i + 1 < len(lines):
+                    next_line_is_test_file = test_file_pattern.match(
+                        lines[i + 1].strip()
+                    )
+                    if not next_line_is_test_file:
+                        status_line = lines[i + 1].strip()
+                if test_file in failed_tests:
+                    continue
+                # Prioritize pass over skip
+                if "." in status_line:
+                    passed_tests.add(test_file)
+                    if test_file in skipped_tests:
+                        skipped_tests.remove(test_file)
+                elif "s" in status_line:
+                    if test_file not in passed_tests:
+                        skipped_tests.add(test_file)
 
         return TestResult(
             passed_count=len(passed_tests),
