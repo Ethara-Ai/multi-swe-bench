@@ -53,11 +53,11 @@ sed -i 's/"pip-shims<=0.3.4"/"pip-shims"/' pyproject.toml
 ###ACTION_DELIMITER###
 poetry install
 ###ACTION_DELIMITER###
-curl -sSL https://install.python-poetry.org | python3 -
+curl -sSL https://install.python-poetry.org | POETRY_VERSION=1.5.1 python3 -
 ###ACTION_DELIMITER###
 apt-get update && apt-get install -y curl
 ###ACTION_DELIMITER###
-curl -sSL https://install.python-poetry.org | python3 -
+curl -sSL https://install.python-poetry.org | POETRY_VERSION=1.5.1 python3 -
 ###ACTION_DELIMITER###
 export PATH="/root/.local/bin:$PATH"
 ###ACTION_DELIMITER###

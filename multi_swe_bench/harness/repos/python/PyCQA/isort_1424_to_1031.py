@@ -49,11 +49,11 @@ class ImageDefault(Image):
                 "prepare.sh",
                 """ls
 ###ACTION_DELIMITER###
-curl -sSL https://install.python-poetry.org | python3 -
+curl -sSL https://install.python-poetry.org | POETRY_VERSION=1.5.1 python3 -
 ###ACTION_DELIMITER###
 apt-get update && apt-get install -y curl
 ###ACTION_DELIMITER###
-curl -sSL https://install.python-poetry.org | python3 -
+curl -sSL https://install.python-poetry.org | POETRY_VERSION=1.5.1 python3 -
 ###ACTION_DELIMITER###
 export PATH="/root/.local/bin:$PATH"
 ###ACTION_DELIMITER###
@@ -108,6 +108,8 @@ poetry run pip install --no-binary :all: typed_ast==1.4.3
 sed -i '/example_isort_formatting_plugin/d' pyproject.toml && sed -i 's/black = {version = "^20.08b1", allow-prereleases = true}/black = {version = "^21.0", allow-prereleases = true}/' pyproject.toml && poetry lock && poetry install
 ###ACTION_DELIMITER###
 sed -i 's/python = "^3.6"/python = ">=3.6.2,<3.10"/' pyproject.toml && poetry lock && poetry install
+###ACTION_DELIMITER###
+poetry run python -c "import pathlib; p=pathlib.Path('conftest.py'); existing=p.read_text() if p.exists() else ''; p.write_text('try:\\n    import typing\\n    from hypothesis import strategies as st, register_type_strategy\\n    register_type_strategy(typing.Any, st.from_type(str))\\nexcept Exception:\\n    pass\\n' + existing)"
 ###ACTION_DELIMITER###
 ./test_commands.sh""",
             ),
