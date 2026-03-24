@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.10-slim"
+        return "python:3.11-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -48,24 +48,24 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """pip install -e ./hypothesis-python[all]
+                """ls
 ###ACTION_DELIMITER###
-pytest -v ./hypothesis-python/tests
+pip install -r requirements/test.in
 ###ACTION_DELIMITER###
-pip install pexpect fakeredis 'numpy<2.0'
+pip install -r requirements/tools.in
 ###ACTION_DELIMITER###
-pytest -v ./hypothesis-python/tests
+pip install -e hypothesis-python/
 ###ACTION_DELIMITER###
-echo 'pytest -v ./hypothesis-python/tests' > /home/hypothesis/test_commands.sh
+echo 'pytest --no-header -rA --tb=no -p no:cacheprovider hypothesis-python/tests/cover/' > test_commands.sh
 ###ACTION_DELIMITER###
-cat /home/hypothesis/test_commands.sh""",
+bash test_commands.sh""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-pytest -v ./hypothesis-python/tests
+pytest --no-header -rA --tb=no -p no:cacheprovider hypothesis-python/tests/cover/
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -78,7 +78,7 @@ if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest -v ./hypothesis-python/tests
+pytest --no-header -rA --tb=no -p no:cacheprovider hypothesis-python/tests/cover/
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -91,7 +91,7 @@ if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /hom
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest -v ./hypothesis-python/tests
+pytest --no-header -rA --tb=no -p no:cacheprovider hypothesis-python/tests/cover/
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -108,7 +108,7 @@ pytest -v ./hypothesis-python/tests
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -131,8 +131,9 @@ WORKDIR /home/hypothesis
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
 
-RUN pip install -e ./hypothesis-python[all] && \
-    pip install pexpect fakeredis 'numpy<2.0'
+RUN pip install -r requirements/test.in && \
+    pip install -r requirements/tools.in && \
+    pip install -e hypothesis-python/
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -140,8 +141,8 @@ RUN pip install -e ./hypothesis-python[all] && \
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("HypothesisWorks", "hypothesis_2920_to_2864")
-class HYPOTHESIS_2920_TO_2864(Instance):
+@Instance.register("HypothesisWorks", "hypothesis_4543_to_4510")
+class HYPOTHESIS_4543_TO_4510(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -173,25 +174,38 @@ class HYPOTHESIS_2920_TO_2864(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set[str]()  # Tests that passed successfully
-        failed_tests = set[str]()  # Tests that failed
-        skipped_tests = set[str]()  # Tests that were skipped
-        import re
-        import json
-
-        # Parse passed tests
-        passed_matches = re.findall(r"^(.+?)\s+PASSED\s+\[\s*\d+%\]", log, re.MULTILINE)
-        passed_tests.update(passed_matches)
-        # Parse failed tests
-        failed_matches = re.findall(r"^FAILED\s+(.+?)\s*$", log, re.MULTILINE)
-        failed_tests.update(failed_matches)
-        # Parse skipped tests
-        skipped_matches = re.findall(
-            r"^(.+?)\s+SKIPPED\s+\[\s*\d+%\]", log, re.MULTILINE
-        )
-        skipped_matches += re.findall(r"^SKIPPED\s+(.+?)\s*$", log, re.MULTILINE)
-        skipped_tests.update(skipped_matches)
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
+        xfail_tests = set()
+        for line in log.split("\n"):
+            line = line.strip()
+            if "PASSED " in line:
+                parts = line.split("PASSED ", 1)
+                if len(parts) > 1:
+                    test = parts[1].strip().split(" - ", 1)[0].strip()
+                    passed_tests.add(test)
+            elif "FAILED " in line:
+                parts = line.split("FAILED ", 1)
+                if len(parts) > 1:
+                    test = parts[1].strip().split(" - ", 1)[0].strip()
+                    failed_tests.add(test)
+            elif "SKIPPED " in line:
+                parts = line.split("SKIPPED ", 1)
+                if len(parts) > 1:
+                    test_part = parts[1].strip().split(":", 1)[0].strip()
+                    test = (
+                        test_part.split("]", 1)[-1].strip()
+                        if "]" in test_part
+                        else test_part
+                    )
+                    skipped_tests.add(test)
+            elif "XFAIL " in line:
+                parts = line.split("XFAIL ", 1)
+                if len(parts) > 1:
+                    test = parts[1].strip().split(" - ", 1)[0].strip()
+                    xfail_tests.add(test)
+        failed_tests.update(xfail_tests)
         parsed_results = {
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,

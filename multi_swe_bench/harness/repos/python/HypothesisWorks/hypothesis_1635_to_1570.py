@@ -198,6 +198,10 @@ RUN git clone https://github.com/HypothesisWorks/hypothesis.git /home/hypothesis
 WORKDIR /home/hypothesis
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+RUN apt-get update && apt-get install -y python3 python3-pip python3-venv software-properties-common
+RUN pip install --break-system-packages -e hypothesis-python/ && \
+    pip install --break-system-packages pytest --upgrade
 """
         dockerfile_content += f"""
 {copy_commands}

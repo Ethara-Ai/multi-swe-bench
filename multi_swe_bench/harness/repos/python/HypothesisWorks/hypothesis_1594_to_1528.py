@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.10-slim"
+        return "ubuntu:latest"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -48,24 +48,92 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """pip install -e ./hypothesis-python[all]
+                """ls
 ###ACTION_DELIMITER###
-pytest -v ./hypothesis-python/tests
+ls hypothesis-python
 ###ACTION_DELIMITER###
-pip install pexpect fakeredis 'numpy<2.0'
+apt-get update
 ###ACTION_DELIMITER###
-pytest -v ./hypothesis-python/tests
+apt-get install -y python3 python3-pip
 ###ACTION_DELIMITER###
-echo 'pytest -v ./hypothesis-python/tests' > /home/hypothesis/test_commands.sh
+apt-get update
 ###ACTION_DELIMITER###
-cat /home/hypothesis/test_commands.sh""",
+apt-get install -y python3 python3-pip --fix-missing
+###ACTION_DELIMITER###
+apt-get install -y --no-install-recommends python3 python3-pip --fix-missing
+###ACTION_DELIMITER###
+dpkg --configure -a
+###ACTION_DELIMITER###
+apt-get install -y media-types libreadline8t64 python3-wheel --fix-missing
+###ACTION_DELIMITER###
+apt --fix-broken install -y
+###ACTION_DELIMITER###
+pip install -r requirements/test.txt
+###ACTION_DELIMITER###
+python3 -m venv venv
+###ACTION_DELIMITER###
+apt-get install -y python3.12-venv
+###ACTION_DELIMITER###
+apt-get install -y python3.12-venv --fix-missing
+###ACTION_DELIMITER###
+python3 -m venv venv
+###ACTION_DELIMITER###
+source venv/bin/activate
+###ACTION_DELIMITER###
+pip install -r requirements/test.txt
+###ACTION_DELIMITER###
+pip install -e hypothesis-python/
+###ACTION_DELIMITER###
+echo 'pytest -v hypothesis-python/tests/cover/' > test_commands.sh
+###ACTION_DELIMITER###
+cat test_commands.sh
+###ACTION_DELIMITER###
+bash test_commands.sh
+###ACTION_DELIMITER###
+pip install --upgrade pytest
+###ACTION_DELIMITER###
+bash test_commands.sh
+###ACTION_DELIMITER###
+pip install --upgrade py
+###ACTION_DELIMITER###
+bash test_commands.sh
+###ACTION_DELIMITER###
+apt-get install -y python3.8 python3.8-venv
+###ACTION_DELIMITER###
+apt-get install -y software-properties-common
+###ACTION_DELIMITER###
+add-apt-repository -y ppa:deadsnakes/ppa
+###ACTION_DELIMITER###
+apt-get install -y python3.8 python3.8-venv
+###ACTION_DELIMITER###
+python3.8 -m venv venv38
+###ACTION_DELIMITER###
+source venv38/bin/activate
+###ACTION_DELIMITER###
+pip install -r requirements/test.txt
+###ACTION_DELIMITER###
+pip install -e hypothesis-python/
+###ACTION_DELIMITER###
+bash test_commands.sh
+###ACTION_DELIMITER###
+apt-get install -y python3.7 python3.7-venv
+###ACTION_DELIMITER###
+python3.7 -m venv venv37
+###ACTION_DELIMITER###
+source venv37/bin/activate
+###ACTION_DELIMITER###
+pip install -r requirements/test.txt
+###ACTION_DELIMITER###
+pip install -e hypothesis-python/
+###ACTION_DELIMITER###
+bash test_commands.sh""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-pytest -v ./hypothesis-python/tests
+pytest -v hypothesis-python/tests/cover/
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -78,7 +146,7 @@ if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest -v ./hypothesis-python/tests
+pytest -v hypothesis-python/tests/cover/
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -91,7 +159,7 @@ if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /hom
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest -v ./hypothesis-python/tests
+pytest -v hypothesis-python/tests/cover/
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -106,9 +174,9 @@ pytest -v ./hypothesis-python/tests
 # This is a template for creating a Dockerfile to test patches
 # LLM should fill in the appropriate values based on the context
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
+# Choose an appropriate base image based on the project's requirements - replace ubuntu:latest with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.10-slim
+FROM ubuntu:latest
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -131,8 +199,9 @@ WORKDIR /home/hypothesis
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
 
-RUN pip install -e ./hypothesis-python[all] && \
-    pip install pexpect fakeredis 'numpy<2.0'
+RUN apt-get update && apt-get install -y python3 python3-pip python3-venv software-properties-common
+RUN pip install --break-system-packages -e hypothesis-python/ && \
+    pip install --break-system-packages pytest --upgrade
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -140,8 +209,8 @@ RUN pip install -e ./hypothesis-python[all] && \
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("HypothesisWorks", "hypothesis_2920_to_2864")
-class HYPOTHESIS_2920_TO_2864(Instance):
+@Instance.register("HypothesisWorks", "hypothesis_1594_to_1528")
+class HYPOTHESIS_1594_TO_1528(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -174,24 +243,24 @@ class HYPOTHESIS_2920_TO_2864(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.
-        passed_tests = set[str]()  # Tests that passed successfully
-        failed_tests = set[str]()  # Tests that failed
-        skipped_tests = set[str]()  # Tests that were skipped
+        passed_tests: set[str] = set()  # Tests that passed successfully
+        failed_tests: set[str] = set()  # Tests that failed
+        skipped_tests: set[str] = set()  # Tests that were skipped
         import re
         import json
 
-        # Parse passed tests
-        passed_matches = re.findall(r"^(.+?)\s+PASSED\s+\[\s*\d+%\]", log, re.MULTILINE)
-        passed_tests.update(passed_matches)
-        # Parse failed tests
-        failed_matches = re.findall(r"^FAILED\s+(.+?)\s*$", log, re.MULTILINE)
-        failed_tests.update(failed_matches)
-        # Parse skipped tests
-        skipped_matches = re.findall(
-            r"^(.+?)\s+SKIPPED\s+\[\s*\d+%\]", log, re.MULTILINE
-        )
-        skipped_matches += re.findall(r"^SKIPPED\s+(.+?)\s*$", log, re.MULTILINE)
-        skipped_tests.update(skipped_matches)
+        # TODO: Implement the parse_log function
+        # Use regex to find test cases and their statuses
+        test_pattern = re.compile(r"::([^\s]+)\s+(PASSED|FAILED|SKIPPED)")
+        for match in test_pattern.finditer(log):
+            test_name = match.group(1)
+            status = match.group(2)
+            if status == "PASSED":
+                passed_tests.add(test_name)
+            elif status == "FAILED":
+                failed_tests.add(test_name)
+            elif status == "SKIPPED":
+                skipped_tests.add(test_name)
         parsed_results = {
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,

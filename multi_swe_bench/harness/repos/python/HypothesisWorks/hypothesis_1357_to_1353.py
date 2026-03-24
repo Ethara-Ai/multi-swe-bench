@@ -238,8 +238,8 @@ RUN bash -c 'source /tmp/.hypothesis-runtimes/virtualenvs/build-efbe04e210/bin/a
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("HypothesisWorks", "hypothesis_1559_to_1524")
-class HYPOTHESIS_1559_TO_1524(Instance):
+@Instance.register("HypothesisWorks", "hypothesis_1357_to_1353")
+class HYPOTHESIS_1357_TO_1353(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

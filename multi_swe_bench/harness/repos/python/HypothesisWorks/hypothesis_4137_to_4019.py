@@ -130,6 +130,10 @@ RUN git clone https://github.com/HypothesisWorks/hypothesis.git /home/hypothesis
 WORKDIR /home/hypothesis
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+RUN pip install -r requirements/test.in && \
+    pip install -r requirements/tools.in && \
+    pip install -e hypothesis-python/
 """
         dockerfile_content += f"""
 {copy_commands}

@@ -140,8 +140,8 @@ RUN pip install -e ./hypothesis-python[all] && \
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("HypothesisWorks", "hypothesis_2920_to_2864")
-class HYPOTHESIS_2920_TO_2864(Instance):
+@Instance.register("HypothesisWorks", "hypothesis_2790_to_2775")
+class HYPOTHESIS_2790_TO_2775(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
