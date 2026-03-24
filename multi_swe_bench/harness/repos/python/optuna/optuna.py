@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -127,7 +126,7 @@ pytest -v --ignore tests/integration_tests/test_chainer.py --ignore tests/integr
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
 pytest -v --ignore tests/integration_tests/test_chainer.py --ignore tests/integration_tests/test_cma.py --ignore tests/integration_tests/test_fastai.py --ignore tests/integration_tests/test_keras.py --ignore tests/integration_tests/test_mxnet.py --ignore tests/integration_tests/test_pytorch_ignite.py --ignore tests/integration_tests/test_pytorch_lightning.py --ignore tests/integration_tests/test_skopt.py --ignore tests/integration_tests/test_tensorflow.py --ignore tests/integration_tests/test_tfkeras.py --ignore tests/integration_tests/test_xgboost.py
 
@@ -140,7 +139,7 @@ pytest -v --ignore tests/integration_tests/test_chainer.py --ignore tests/integr
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
 pytest -v --ignore tests/integration_tests/test_chainer.py --ignore tests/integration_tests/test_cma.py --ignore tests/integration_tests/test_fastai.py --ignore tests/integration_tests/test_keras.py --ignore tests/integration_tests/test_mxnet.py --ignore tests/integration_tests/test_pytorch_ignite.py --ignore tests/integration_tests/test_pytorch_lightning.py --ignore tests/integration_tests/test_skopt.py --ignore tests/integration_tests/test_tensorflow.py --ignore tests/integration_tests/test_tfkeras.py --ignore tests/integration_tests/test_xgboost.py
 
@@ -157,10 +156,12 @@ pytest -v --ignore tests/integration_tests/test_chainer.py --ignore tests/integr
 # This is a template for creating a Dockerfile to test patches
 # LLM should fill in the appropriate values based on the context
 
-# Choose an appropriate base image based on the project's requirements - replace ubuntu:latest with actual base image
+# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
 FROM ubuntu:latest
 
+## Set noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install basic requirements
 # For example: RUN apt-get update && apt-get install -y git
@@ -179,7 +180,21 @@ RUN git clone https://github.com/optuna/optuna.git /home/optuna
 WORKDIR /home/optuna
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
-"""
+
+# Install Python 3.8 and dependencies
+RUN apt-get update && apt-get install -y python3 python3-pip \\
+    software-properties-common swig && \\
+    add-apt-repository -y ppa:deadsnakes/ppa && \\
+    apt-get update && \\
+    apt-get install -y python3.8 python3.8-venv python3.8-dev && \\
+    rm -rf /var/lib/apt/lists/*
+RUN python3.8 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --upgrade pip && \\
+    pip install "setuptools<70" wheel numpy && \\
+    (pip install --no-build-isolation -e ".[tests]" || pip install --no-build-isolation -e ".") && \\
+    pip install mock pandas scikit-learn lightgbm plotly && \\
+    (pip install git+https://github.com/automl/fanova.git || true)"""
         dockerfile_content += f"""
 {copy_commands}
 RUN bash /home/prepare.sh; exit 0
@@ -187,8 +202,8 @@ RUN bash /home/prepare.sh; exit 0
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("optuna", "optuna_1077_to_44")
-class OPTUNA_1077_TO_44(Instance):
+@Instance.register("optuna", "optuna")
+class OPTUNA(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -198,7 +213,7 @@ class OPTUNA_1077_TO_44(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image:
         return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -219,21 +234,17 @@ class OPTUNA_1077_TO_44(Instance):
 
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests: set[str] = set()  # Tests that passed successfully
-        failed_tests: set[str] = set()  # Tests that failed
-        skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
+    def parse_log(self, test_log: str) -> TestResult:
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        # Define regex patterns to match test lines
-        # Pattern 1: Matches lines like 'tests/... PASSED [ 0%]'
+        # Matches lines like 'tests/... PASSED [ 0%]'
         pattern1 = re.compile(r"^(tests/.*?)\s+(PASSED|FAILED|SKIPPED)\s+\[")
-        # Pattern 2: Matches lines like 'FAILED tests/...' (ignores trailing error messages)
+        # Matches lines like 'FAILED tests/...' (ignores trailing error messages)
         pattern2 = re.compile(r"^(PASSED|FAILED|SKIPPED)\s+(tests/.*?)(\s+-.*)?$")
-        # Split log into lines
-        lines = log.split("\n")
-        for line in lines:
+
+        for line in test_log.split("\n"):
             line = line.strip()
             match1 = pattern1.match(line)
             if match1:
@@ -245,19 +256,13 @@ class OPTUNA_1077_TO_44(Instance):
                     status = match2.group(1)
                     test_name = match2.group(2).strip()
                 else:
-                    continue  # No match, skip
-            # Add to the appropriate set
+                    continue
             if status == "PASSED":
                 passed_tests.add(test_name)
             elif status == "FAILED":
                 failed_tests.add(test_name)
             elif status == "SKIPPED":
                 skipped_tests.add(test_name)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
 
         return TestResult(
             passed_count=len(passed_tests),
