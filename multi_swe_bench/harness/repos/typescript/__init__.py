@@ -117,10 +117,10 @@ from multi_swe_bench.harness.repos.typescript.sphinx_tribes_frontend import *
 from multi_swe_bench.harness.repos.typescript.webdriverio import *
 from multi_swe_bench.harness.repos.typescript.website import *
 from multi_swe_bench.harness.repos.typescript.nestjs import *
-from multi_swe_bench.harness.repos.typescript.realm import *
 from multi_swe_bench.harness.repos.typescript.vendure_ecommerce import *
 from multi_swe_bench.harness.repos.typescript.typeorm import *
 from multi_swe_bench.harness.repos.typescript.strapi import *
 from multi_swe_bench.harness.repos.typescript.urql_graphql import *
 from multi_swe_bench.harness.repos.typescript.blitz_js import *
 from multi_swe_bench.harness.repos.typescript.drizzle_team import *
+from multi_swe_bench.harness.repos.typescript.xtermjs import *
