@@ -11,6 +11,7 @@ from multi_swe_bench.harness.repos.rust.GitoxideLabs import *
 from multi_swe_bench.harness.repos.rust.golemcloud import *
 from multi_swe_bench.harness.repos.rust.helix_editor import *
 from multi_swe_bench.harness.repos.rust.nushell import *
+from multi_swe_bench.harness.repos.rust.ogham import *
 from multi_swe_bench.harness.repos.rust.qdrant import *
 from multi_swe_bench.harness.repos.rust.rayon_rs import *
 from multi_swe_bench.harness.repos.rust.rusqlite import *
