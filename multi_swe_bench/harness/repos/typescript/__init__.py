@@ -125,3 +125,15 @@ from multi_swe_bench.harness.repos.typescript.blitz_js import *
 from multi_swe_bench.harness.repos.typescript.drizzle_team import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
 from multi_swe_bench.harness.repos.typescript.babel import *
+from multi_swe_bench.harness.repos.typescript.Expensify import *
+from multi_swe_bench.harness.repos.typescript.activist_org import *
+from multi_swe_bench.harness.repos.typescript.archestra_ai import *
+from multi_swe_bench.harness.repos.typescript.asyncapi import *
+from multi_swe_bench.harness.repos.typescript.decentralized_identity import *
+from multi_swe_bench.harness.repos.typescript.google_gemini import *
+from multi_swe_bench.harness.repos.typescript.grafana import *
+from multi_swe_bench.harness.repos.typescript.pmndrs import *
+from multi_swe_bench.harness.repos.typescript.realm import *
+from multi_swe_bench.harness.repos.typescript.refinedev import *
+from multi_swe_bench.harness.repos.typescript.remotion_dev import *
+from multi_swe_bench.harness.repos.typescript.sindresorhus import *
