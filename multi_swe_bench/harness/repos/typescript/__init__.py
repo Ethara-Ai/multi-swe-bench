@@ -138,3 +138,4 @@ from multi_swe_bench.harness.repos.typescript.refinedev import *
 from multi_swe_bench.harness.repos.typescript.remotion_dev import *
 from multi_swe_bench.harness.repos.typescript.sindresorhus import *
 from multi_swe_bench.harness.repos.typescript.payloadcms import *
+from multi_swe_bench.harness.repos.typescript.SBoudrias import *
