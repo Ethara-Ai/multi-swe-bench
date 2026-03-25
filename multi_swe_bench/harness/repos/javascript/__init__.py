@@ -82,6 +82,7 @@ from multi_swe_bench.harness.repos.javascript.webpack.webpack import *
 from multi_swe_bench.harness.repos.javascript.alam00000 import *
 from multi_swe_bench.harness.repos.javascript.exercism import *
 from multi_swe_bench.harness.repos.javascript.jsx_eslint import *
+from multi_swe_bench.harness.repos.javascript.koajs import *
 from multi_swe_bench.harness.repos.javascript.markedjs import *
 from multi_swe_bench.harness.repos.javascript.acornjs import *
 from multi_swe_bench.harness.repos.javascript.videojs import *
