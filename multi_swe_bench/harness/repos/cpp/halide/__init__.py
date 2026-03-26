@@ -1,4 +1,1 @@
-try:
-    from multi_swe_bench.harness.repos.cpp.halide.Halide import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.cpp.halide.Halide import *

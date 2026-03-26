@@ -1,4 +1,1 @@
-try:
-    from multi_swe_bench.harness.repos.typescript.RocketChat.Rocket_Chat_ReactNative_3696_to_1300 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.typescript.RocketChat.Rocket_Chat_ReactNative_3696_to_1300 import *

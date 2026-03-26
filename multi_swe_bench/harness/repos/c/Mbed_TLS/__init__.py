@@ -1,4 +1,1 @@
-try:
-    from multi_swe_bench.harness.repos.c.Mbed_TLS.mbedtls import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.c.Mbed_TLS.mbedtls import *

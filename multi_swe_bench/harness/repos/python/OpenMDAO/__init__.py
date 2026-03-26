@@ -1,40 +1,10 @@
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_3570_to_3241 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_3192_to_3084 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2984_to_2927 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2925_to_2870 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2738_to_2689 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2679_to_2605 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2454_to_2363 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2341_to_2185 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2123_to_2059 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_1982_to_1154 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_3570_to_3241 import *
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_3192_to_3084 import *
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2984_to_2927 import *
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2925_to_2870 import *
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2738_to_2689 import *
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2679_to_2605 import *
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2454_to_2363 import *
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2341_to_2185 import *
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_2123_to_2059 import *
+from multi_swe_bench.harness.repos.python.OpenMDAO.OpenMDAO_1982_to_1154 import *

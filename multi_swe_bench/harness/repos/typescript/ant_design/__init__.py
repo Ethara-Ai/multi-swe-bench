@@ -1,64 +1,16 @@
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_52448_to_51636 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_51609_to_47010 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_46830_to_46012 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_40759_to_39919 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_39883_to_35706 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_33055_to_32981 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_32143_to_31755 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_31042_to_30655 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_28240_to_27822 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_25073_to_24514 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_24514_to_23989 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_17846_to_16950 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_7404_to_4765 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_4013_to_2177 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_1936_to_1623 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_52448_to_51636 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_51609_to_47010 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_46830_to_46012 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_40759_to_39919 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_39883_to_35706 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_33055_to_32981 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_32143_to_31755 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_31042_to_30655 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_28240_to_27822 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_25073_to_24514 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_24514_to_23989 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_17846_to_16950 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_7404_to_4765 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_4013_to_2177 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_1936_to_1623 import *

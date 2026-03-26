@@ -1,4 +1,1 @@
-try:
-    from multi_swe_bench.harness.repos.java.a2aproject.a2a_java import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.java.a2aproject.a2a_java import *

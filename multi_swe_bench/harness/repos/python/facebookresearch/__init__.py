@@ -1,36 +1,9 @@
-try:
-    from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_1 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_3_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_0rc4 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_3 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_1_1 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_1_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_1_0_dev6 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_2 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_0rc1 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_1 import *
+from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_3_0 import *
+from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_0rc4 import *
+from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_3 import *
+from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_1_1 import *
+from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_1_0 import *
+from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_1_0_dev6 import *
+from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_2 import *
+from multi_swe_bench.harness.repos.python.facebookresearch.hydra_v1_0_0rc1 import *

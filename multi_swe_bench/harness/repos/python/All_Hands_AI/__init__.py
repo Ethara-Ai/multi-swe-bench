@@ -1,60 +1,15 @@
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_12982_to_12488 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_12354_to_11818 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_11351_to_11262 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_10496_to_9942 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_9911_to_9214 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_8736_to_8101 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_7948_to_6176 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_5990_to_5805 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_5613_to_5118 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_5833_to_4945 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_4932_to_3989 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_3665_to_3448 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_3383_to_3128 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_3099_to_1660 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_1613_to_1221 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_12982_to_12488 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_12354_to_11818 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_11351_to_11262 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_10496_to_9942 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_9911_to_9214 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_8736_to_8101 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_7948_to_6176 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_5990_to_5805 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_5613_to_5118 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_5833_to_4945 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_4932_to_3989 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_3665_to_3448 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_3383_to_3128 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_3099_to_1660 import *
+from multi_swe_bench.harness.repos.python.All_Hands_AI.OpenHands_1613_to_1221 import *

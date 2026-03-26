@@ -1,8 +1,2 @@
-try:
-    from multi_swe_bench.harness.repos.typescript.League_of_Foundry_Developers.foundry_vtt_types_1518_to_1464 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.League_of_Foundry_Developers.foundry_vtt_types_1420_to_246 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.typescript.League_of_Foundry_Developers.foundry_vtt_types_1518_to_1464 import *
+from multi_swe_bench.harness.repos.typescript.League_of_Foundry_Developers.foundry_vtt_types_1420_to_246 import *

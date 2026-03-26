@@ -1,60 +1,15 @@
-try:
-    from multi_swe_bench.harness.repos.c import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.cpp import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.golang import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.javascript import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.rust import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.ruby import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.php import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.swift import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.kotlin import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.scala import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.csharp import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.html import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.c import *
+from multi_swe_bench.harness.repos.cpp import *
+from multi_swe_bench.harness.repos.golang import *
+from multi_swe_bench.harness.repos.java import *
+from multi_swe_bench.harness.repos.javascript import *
+from multi_swe_bench.harness.repos.python import *
+from multi_swe_bench.harness.repos.rust import *
+from multi_swe_bench.harness.repos.typescript import *
+from multi_swe_bench.harness.repos.ruby import *
+from multi_swe_bench.harness.repos.php import *
+from multi_swe_bench.harness.repos.swift import *
+from multi_swe_bench.harness.repos.kotlin import *
+from multi_swe_bench.harness.repos.scala import *
+from multi_swe_bench.harness.repos.csharp import *
+from multi_swe_bench.harness.repos.html import *

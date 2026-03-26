@@ -1,4 +1,1 @@
-try:
-    from multi_swe_bench.harness.repos.scala.scalameta.scalameta import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.scala.scalameta.scalameta import *

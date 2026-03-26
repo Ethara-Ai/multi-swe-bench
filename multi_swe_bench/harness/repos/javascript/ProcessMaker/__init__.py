@@ -1,4 +1,1 @@
-try:
-    from multi_swe_bench.harness.repos.javascript.ProcessMaker.modeler_384_to_209 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.javascript.ProcessMaker.modeler_384_to_209 import *

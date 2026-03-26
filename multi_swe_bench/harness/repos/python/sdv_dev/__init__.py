@@ -1,76 +1,19 @@
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_11_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_19_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_9_1 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_9_2 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_6_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_16_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_12_1 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_15_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_14_1 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_10_1 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_8_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_5_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_18_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_11_1 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_17_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDV_2614_to_2562 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDV_2363_to_2268 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDV_2127_to_1909 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.sdv_dev.SDV_1909_to_1791 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_11_0 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_19_0 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_9_1 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_9_2 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_6_0 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_16_0 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_12_1 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_15_0 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_14_1 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_10_1 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_8_0 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_5_0 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_18_0 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_11_1 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDMetrics_v0_17_0 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDV_2614_to_2562 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDV_2363_to_2268 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDV_2127_to_1909 import *
+from multi_swe_bench.harness.repos.python.sdv_dev.SDV_1909_to_1791 import *

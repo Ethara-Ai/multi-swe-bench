@@ -1,36 +1,9 @@
-try:
-    from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_3296_to_2675 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_2249_to_1920 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_1768_to_1631 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_1631_to_1532 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_1489_to_1396 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_1394_to_1270 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.betagouv.mon_entreprise_3824_to_2903 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.betagouv.mon_entreprise_2897_to_2464 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.typescript.betagouv.mon_entreprise_984_to_786 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_3296_to_2675 import *
+from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_2249_to_1920 import *
+from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_1768_to_1631 import *
+from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_1631_to_1532 import *
+from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_1489_to_1396 import *
+from multi_swe_bench.harness.repos.typescript.betagouv.api_subventions_asso_1394_to_1270 import *
+from multi_swe_bench.harness.repos.typescript.betagouv.mon_entreprise_3824_to_2903 import *
+from multi_swe_bench.harness.repos.typescript.betagouv.mon_entreprise_2897_to_2464 import *
+from multi_swe_bench.harness.repos.typescript.betagouv.mon_entreprise_984_to_786 import *

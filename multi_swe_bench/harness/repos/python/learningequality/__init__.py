@@ -1,32 +1,8 @@
-try:
-    from multi_swe_bench.harness.repos.python.learningequality.kolibri_9292_to_9230 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.learningequality.kolibri_7614_to_7319 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.learningequality.kolibri_7614_to_7319 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.learningequality.kolibri_7311_to_7073 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.learningequality.kolibri_5431_to_5115 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.learningequality.kolibri_4737_to_4486 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.learningequality.studio import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.learningequality.studio_5487_to_5303 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.python.learningequality.kolibri_9292_to_9230 import *
+from multi_swe_bench.harness.repos.python.learningequality.kolibri_7614_to_7319 import *
+from multi_swe_bench.harness.repos.python.learningequality.kolibri_7614_to_7319 import *
+from multi_swe_bench.harness.repos.python.learningequality.kolibri_7311_to_7073 import *
+from multi_swe_bench.harness.repos.python.learningequality.kolibri_5431_to_5115 import *
+from multi_swe_bench.harness.repos.python.learningequality.kolibri_4737_to_4486 import *
+from multi_swe_bench.harness.repos.python.learningequality.studio import *
+from multi_swe_bench.harness.repos.python.learningequality.studio_5487_to_5303 import *

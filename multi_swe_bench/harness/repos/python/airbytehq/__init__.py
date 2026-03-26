@@ -1,12 +1,3 @@
-try:
-    from multi_swe_bench.harness.repos.python.airbytehq.airbyte_31162_to_31089 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.airbytehq.airbyte_14650_to_14251 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.airbytehq.airbyte_24223_to_22874 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.python.airbytehq.airbyte_31162_to_31089 import *
+from multi_swe_bench.harness.repos.python.airbytehq.airbyte_14650_to_14251 import *
+from multi_swe_bench.harness.repos.python.airbytehq.airbyte_24223_to_22874 import *

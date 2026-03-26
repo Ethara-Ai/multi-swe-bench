@@ -1,60 +1,15 @@
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_9_6 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_27_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_9_5 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_20_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_29_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_14_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_26_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_13_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_15_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_16_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_28_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_1_0a4 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_19_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_0_12_1 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.python.hylang.hy_1_0_0 import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.python.hylang.hy_0_9_6 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_27_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_9_5 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_20_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_29_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_14_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_26_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_13_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_15_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_16_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_28_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_1_0a4 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_19_0 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_0_12_1 import *
+from multi_swe_bench.harness.repos.python.hylang.hy_1_0_0 import *

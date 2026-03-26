@@ -1,4 +1,1 @@
-try:
-    from multi_swe_bench.harness.repos.golang.spf13.cobra import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.golang.spf13.cobra import *

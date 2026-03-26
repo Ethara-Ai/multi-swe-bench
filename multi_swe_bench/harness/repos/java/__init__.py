@@ -1,76 +1,19 @@
-try:
-    from multi_swe_bench.harness.repos.java.alibaba import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.apache import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.checkstyle import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.eclipsevertx import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.elastic import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.fasterxml import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.google import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.googlecontainertools import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.junitteam import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.keycloak import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.mockito import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.pmd import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.ReactiveX import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.spotbugs import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.provectus import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.OpenRefine import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.Graylog2 import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.JodaOrg import *
-except (ImportError, ModuleNotFoundError):
-    pass
-try:
-    from multi_swe_bench.harness.repos.java.micronautprojects import *
-except (ImportError, ModuleNotFoundError):
-    pass
+from multi_swe_bench.harness.repos.java.alibaba import *
+from multi_swe_bench.harness.repos.java.apache import *
+from multi_swe_bench.harness.repos.java.checkstyle import *
+from multi_swe_bench.harness.repos.java.eclipsevertx import *
+from multi_swe_bench.harness.repos.java.elastic import *
+from multi_swe_bench.harness.repos.java.fasterxml import *
+from multi_swe_bench.harness.repos.java.google import *
+from multi_swe_bench.harness.repos.java.googlecontainertools import *
+from multi_swe_bench.harness.repos.java.junitteam import *
+from multi_swe_bench.harness.repos.java.keycloak import *
+from multi_swe_bench.harness.repos.java.mockito import *
+from multi_swe_bench.harness.repos.java.pmd import *
+from multi_swe_bench.harness.repos.java.ReactiveX import *
+from multi_swe_bench.harness.repos.java.spotbugs import *
+from multi_swe_bench.harness.repos.java.provectus import *
+from multi_swe_bench.harness.repos.java.OpenRefine import *
+from multi_swe_bench.harness.repos.java.Graylog2 import *
+from multi_swe_bench.harness.repos.java.JodaOrg import *
+from multi_swe_bench.harness.repos.java.micronautprojects import *
