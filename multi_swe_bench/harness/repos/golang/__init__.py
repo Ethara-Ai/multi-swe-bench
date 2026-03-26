@@ -51,3 +51,4 @@ from multi_swe_bench.harness.repos.golang.spf13 import *
 from multi_swe_bench.harness.repos.golang.open_telemetry import *
 from multi_swe_bench.harness.repos.golang.containerd import *
 from multi_swe_bench.harness.repos.golang.jackc import *
+from multi_swe_bench.harness.repos.golang.pingcap import *
