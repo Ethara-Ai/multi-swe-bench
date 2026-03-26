@@ -118,6 +118,7 @@ set -e
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
+git fetch origin
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
@@ -143,6 +144,12 @@ cargo test
 set -e
 
 cd /home/{pr.repo}
+# Strip binary diff blocks that git apply cannot handle
+for pfile in /home/test.patch; do
+    if [ -s "$pfile" ]; then
+        awk '/^diff --git /{{ block=$0"\\n"; next }} {{ if (block!="") {{ block=block$0"\\n"; if (/^Binary files .* differ$/) {{ block=""; next }}; if (/^--- /||/^\\+\\+\\+ /||/^@@ /) {{ printf "%s",block; block="" }} }} else print }} END {{ if (block!="") printf "%s",block }}' "$pfile" > "${{pfile}}.tmp" && mv "${{pfile}}.tmp" "$pfile"
+    fi
+done
 git apply /home/test.patch
 cargo test
 
@@ -155,6 +162,12 @@ cargo test
 set -e
 
 cd /home/{pr.repo}
+# Strip binary diff blocks that git apply cannot handle
+for pfile in /home/test.patch /home/fix.patch; do
+    if [ -s "$pfile" ]; then
+        awk '/^diff --git /{{ block=$0"\\n"; next }} {{ if (block!="") {{ block=block$0"\\n"; if (/^Binary files .* differ$/) {{ block=""; next }}; if (/^--- /||/^\\+\\+\\+ /||/^@@ /) {{ printf "%s",block; block="" }} }} else print }} END {{ if (block!="") printf "%s",block }}' "$pfile" > "${{pfile}}.tmp" && mv "${{pfile}}.tmp" "$pfile"
+    fi
+done
 git apply /home/test.patch /home/fix.patch
 cargo test
 

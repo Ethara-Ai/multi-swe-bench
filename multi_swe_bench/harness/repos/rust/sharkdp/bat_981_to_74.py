@@ -1,5 +1,6 @@
 import re
-from typing import Optional
+import json
+from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -20,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "rust:1.74"
+        return "rust:1.40"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -48,18 +49,30 @@ class ImageDefault(Image):
                 "prepare.sh",
                 """ls -F
 ###ACTION_DELIMITER###
-cargo build --release
+ls -F ci/
 ###ACTION_DELIMITER###
-cargo test
+cargo build --verbose
 ###ACTION_DELIMITER###
-echo 'cargo test -- --nocapture' > test_commands.sh""",
+apt-get install -y libclang-dev
+###ACTION_DELIMITER###
+cargo build --verbose
+###ACTION_DELIMITER###
+cargo test --verbose
+###ACTION_DELIMITER###
+
+###ACTION_DELIMITER###
+echo "cargo test --verbose" > test_commands.sh
+###ACTION_DELIMITER###
+""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-cargo test -- --nocapture --skip show_all_with_caret_notation
+# Fix url crate v1.7.0 E0713 borrow checker error (NLL incompatibility on Rust 1.40+)
+cargo update --package url --precise 1.7.2 2>/dev/null || true
+cargo test --verbose
 
 """.format(pr=self.pr),
             ),
@@ -78,7 +91,9 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-cargo test -- --nocapture --skip show_all_with_caret_notation
+# Fix url crate v1.7.0 E0713 borrow checker error (NLL incompatibility on Rust 1.40+)
+cargo update --package url --precise 1.7.2 2>/dev/null || true
+cargo test --verbose
 
 """.format(pr=self.pr),
             ),
@@ -97,7 +112,13 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-cargo test -- --nocapture --skip show_all_with_caret_notation
+# Handle renamed binary assets (PR #74: syntax_set->syntaxes.bin, theme_set->themes.bin)
+# Binary diffs stripped by awk, so old files remain. Copy to new names if fix patch renames them.
+[ -f assets/syntax_set ] && [ ! -f assets/syntaxes.bin ] && cp assets/syntax_set assets/syntaxes.bin
+[ -f assets/theme_set ] && [ ! -f assets/themes.bin ] && cp assets/theme_set assets/themes.bin
+# Fix url crate v1.7.0 E0713 borrow checker error (NLL incompatibility on Rust 1.40+)
+cargo update --package url --precise 1.7.2 2>/dev/null || true
+cargo test --verbose
 
 """.format(pr=self.pr),
             ),
@@ -114,16 +135,16 @@ cargo test -- --nocapture --skip show_all_with_caret_notation
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM rust:1.74
+FROM rust:1.40
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
+# Fix dead Buster repos (EOL) by switching to archive.debian.org
+RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list && \
+    sed -i '/security.debian.org/d' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y git cmake libclang-dev
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
@@ -143,8 +164,8 @@ RUN git checkout {pr.base.sha}
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("sharkdp", "bat_3068_to_1971")
-class BAT_3068_TO_1971(Instance):
+@Instance.register("sharkdp", "bat_981_to_74")
+class BAT_981_TO_74(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -180,18 +201,17 @@ class BAT_3068_TO_1971(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
+        import re
 
+        # TODO: Implement the parse_log function
+        # Implement the log parsing logic here
         for line in log.splitlines():
-            match = re.match(r"^test (.*) ... (ok|FAILED|ignored)$", line)
-            if match:
-                test_name = match.group(1).strip()
-                status = match.group(2)
-                if status == "ok":
-                    passed_tests.add(test_name)
-                elif status == "FAILED":
-                    failed_tests.add(test_name)
-                elif status == "ignored":
-                    skipped_tests.add(test_name)
+            passed_match = re.search(r"test (.*) ... ok", line)
+            if passed_match:
+                passed_tests.add(passed_match.group(1).strip())
+            failed_match = re.search(r"test (.*) ... FAILED", line)
+            if failed_match:
+                failed_tests.add(failed_match.group(1).strip())
         parsed_results = {
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,

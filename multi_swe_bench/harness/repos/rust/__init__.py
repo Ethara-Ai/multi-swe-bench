@@ -43,6 +43,10 @@ try:
 except (ImportError, ModuleNotFoundError):
     pass
 try:
+    from multi_swe_bench.harness.repos.rust.hyperium import *
+except (ImportError, ModuleNotFoundError):
+    pass
+try:
     from multi_swe_bench.harness.repos.rust.nushell import *
 except (ImportError, ModuleNotFoundError):
     pass

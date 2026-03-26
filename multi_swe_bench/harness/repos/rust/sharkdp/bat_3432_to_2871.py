@@ -1,5 +1,6 @@
 import re
-from typing import Optional
+import json
+from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -20,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "rust:1.74"
+        return "rust:latest"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -59,7 +60,7 @@ echo 'cargo test -- --nocapture' > test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-cargo test -- --nocapture --skip show_all_with_caret_notation
+cargo test -- --nocapture
 
 """.format(pr=self.pr),
             ),
@@ -78,7 +79,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-cargo test -- --nocapture --skip show_all_with_caret_notation
+cargo test -- --nocapture
 
 """.format(pr=self.pr),
             ),
@@ -97,7 +98,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-cargo test -- --nocapture --skip show_all_with_caret_notation
+cargo test -- --nocapture
 
 """.format(pr=self.pr),
             ),
@@ -114,7 +115,7 @@ cargo test -- --nocapture --skip show_all_with_caret_notation
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM rust:1.74
+FROM rust:latest
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -143,8 +144,8 @@ RUN git checkout {pr.base.sha}
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("sharkdp", "bat_3068_to_1971")
-class BAT_3068_TO_1971(Instance):
+@Instance.register("sharkdp", "bat_3432_to_2871")
+class BAT_3432_TO_2871(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -180,6 +181,8 @@ class BAT_3068_TO_1971(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
+        import re
+        import json
 
         for line in log.splitlines():
             match = re.match(r"^test (.*) ... (ok|FAILED|ignored)$", line)
