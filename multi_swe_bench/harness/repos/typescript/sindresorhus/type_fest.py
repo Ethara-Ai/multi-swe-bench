@@ -15,15 +15,22 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #   - node --test (lint-rules/*.test.js, only at PRs >=1265)
 #   - node script/test/... (source file extension validator, from PR 264+)
 #
-# 96 PRs in dataset, range #78 - #1374. All SWE-mode (no number_interval).
-# Single node:20 base image works for all PRs (verified: old deps install
-# on modern Node).
+# 96 PRs in dataset, range #78 - #1374.
+# Single node:20 base image works for all PRs.
+#
+# Image chain:  node:20 → Base (clone repo)
+#                        → Per-PR (git checkout + npm install + patches + run scripts)
 #
 # Verified issues requiring per-PR handling:
 #   1. PRs >= 1119: tsd/tsc need --max-old-space-size=6144 (OOM otherwise)
 #   2. PRs 1265, 1309: test_patch modifies lint-rules/ only → need node --test
 #   3. PR 264: test_patch creates script/test/source-files-extension.js
 #      (doesn't exist at base) → must run conditionally after patches
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Base Image
 # ---------------------------------------------------------------------------
 
 
@@ -91,7 +98,7 @@ _NEEDS_MEMORY_FLAG = 1119
 
 class TypeFestImageDefault(Image):
     """Per-PR instance image. Injects patches and shell scripts tailored
-    to the PR's era."""
+    to the PR's era. Checks out the exact base commit and runs npm install."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -232,7 +239,7 @@ bash /home/check_git_changes.sh
 git checkout {sha}
 bash /home/check_git_changes.sh
 
-npm install
+npm install --legacy-peer-deps
 
 """.format(repo=self.pr.repo, sha=self.pr.base.sha),
             ),
@@ -262,7 +269,6 @@ npm install
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
-
         prepare_commands = "RUN bash /home/prepare.sh"
 
         return f"""FROM {name}:{tag}
@@ -322,7 +328,7 @@ class TypeFest(Instance):
             ===TESTFILES_END===
             ===TSD_START===
             test-d/foo.ts
-            ✖  10:20  Some type error ...
+              ✖  10:20  Some type error ...
             ===TSD_END===
             ===TSC_START===
             test-d/foo.ts(10,20): error TS2345: ...
@@ -363,8 +369,15 @@ class TypeFest(Instance):
         tsd_failed_files: set[str] = set()
         in_tsd = False
         current_tsd_file: str = ""
+
+        # Modern tsd format: bare file path on its own line, then errors
         re_tsd_file = re.compile(r"^([\w./-]+\.tsx?)$")
-        re_tsd_error = re.compile(r"^\s*✖\s+(\d+:\d+)\s+(.+)$")
+        # Error line: "  ✖  line:col  message" (handles ✖ ✗ × variants)
+        re_tsd_error = re.compile(r"^\s*[✖✗×]\s+(\d+:\d+)\s+(.+)$")
+        # Old tsd format: "  filepath:line:col" on one line (tsd <0.20)
+        re_tsd_inline_error = re.compile(
+            r"^\s*([\w./-]+\.tsx?):(\d+):(\d+)\s*$"
+        )
 
         for line in lines:
             stripped = line.strip()
@@ -377,13 +390,22 @@ class TypeFest(Instance):
             if not in_tsd:
                 continue
 
+            # Modern format: file header
             file_match = re_tsd_file.match(stripped)
             if file_match:
                 current_tsd_file = file_match.group(1)
                 continue
 
+            # Modern format: error under file header
             if re_tsd_error.match(stripped) and current_tsd_file:
                 tsd_failed_files.add(current_tsd_file)
+                continue
+
+            # Old format: filepath:line:col on a single line
+            inline_match = re_tsd_inline_error.match(stripped)
+            if inline_match:
+                tsd_failed_files.add(inline_match.group(1))
+                continue
 
         # 3. Parse tsc output — collect files with errors
         tsc_failed_files: set[str] = set()
@@ -419,13 +441,34 @@ class TypeFest(Instance):
             if f not in all_test_files:
                 failed_tests.add(f)
 
+        # Build set of line indices inside structured markers (TSD/TSC)
+        # so sections 6-7 skip lines already parsed above.
+        _marker_lines: set[int] = set()
+        _inside_marker = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped in ("===TSD_START===", "===TSC_START===",
+                            "===TESTFILES_START==="):
+                _inside_marker = True
+                _marker_lines.add(i)
+                continue
+            if stripped in ("===TSD_END===", "===TSC_END===",
+                            "===TESTFILES_END==="):
+                _marker_lines.add(i)
+                _inside_marker = False
+                continue
+            if _inside_marker:
+                _marker_lines.add(i)
+
         # 6. Parse node --test output (for PRs >=1265)
         re_node_test_pass = re.compile(r"^✔\s+(.+?)(?:\s+\(.+\))?\s*$")
         re_node_test_fail = re.compile(r"^✖\s+(.+?)(?:\s+\(.+\))?\s*$")
         re_tap_ok = re.compile(r"^ok\s+\d+\s+-?\s*(.+)$")
         re_tap_not_ok = re.compile(r"^not ok\s+\d+\s+-?\s*(.+)$")
 
-        for line in lines:
+        for i, line in enumerate(lines):
+            if i in _marker_lines:
+                continue
             stripped = line.strip()
             m = re_node_test_pass.match(stripped) or re_tap_ok.match(stripped)
             if m:
@@ -438,96 +481,13 @@ class TypeFest(Instance):
 
         # 7. Parse source-files-extension script errors
         re_ext_error = re.compile(r"^(source/[\w./-]+)\s+extension should be")
-        for line in lines:
+        for i, line in enumerate(lines):
+            if i in _marker_lines:
+                continue
             stripped = line.strip()
             ext_err = re_ext_error.match(stripped)
             if ext_err:
                 failed_tests.add(f"ext-check:{ext_err.group(1)}")
-
-        # Ensure no overlap
-        passed_tests -= failed_tests
-        passed_tests -= skipped_tests
-        skipped_tests -= failed_tests
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
-
-        # tsd summary: N error(s)
-        re_tsd_summary = re.compile(r"^\s*(\d+)\s+errors?$")
-
-        # node --test pass/fail (TAP output from Node built-in test runner)
-        re_node_test_pass = re.compile(r"^✔\s+(.+?)(?:\s+\(.+\))?\s*$")
-        re_node_test_fail = re.compile(r"^✖\s+(.+?)(?:\s+\(.+\))?\s*$")
-        # Also handle TAP "ok" / "not ok" format
-        re_tap_ok = re.compile(r"^ok\s+\d+\s+-?\s*(.+)$")
-        re_tap_not_ok = re.compile(r"^not ok\s+\d+\s+-?\s*(.+)$")
-
-        # source-files-extension script error
-        re_ext_error = re.compile(r"^(source/[\w./-]+)\s+extension should be")
-
-        for line in clean_log.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-
-            # tsd file header
-            file_match = re_tsd_file.match(line)
-            if file_match:
-                current_tsd_file = file_match.group(1)
-                continue
-
-            # tsd error
-            tsd_err = re_tsd_error.match(line)
-            if tsd_err:
-                loc = tsd_err.group(1)
-                if current_tsd_file:
-                    failed_tests.add(f"{current_tsd_file}:{loc}")
-                else:
-                    failed_tests.add(f"tsd:{loc}")
-                continue
-
-            # tsc error
-            tsc_err = re_tsc_error.match(line)
-            if tsc_err:
-                filepath = tsc_err.group(1)
-                line_no = tsc_err.group(2)
-                col = tsc_err.group(3)
-                ts_code = tsc_err.group(4)
-                failed_tests.add(f"{filepath}({line_no},{col}):{ts_code}")
-                continue
-
-            # node --test pass
-            m = re_node_test_pass.match(line) or re_tap_ok.match(line)
-            if m:
-                passed_tests.add(f"node-test:{m.group(1).strip()}")
-                continue
-
-            # node --test fail
-            m = re_node_test_fail.match(line) or re_tap_not_ok.match(line)
-            if m:
-                failed_tests.add(f"node-test:{m.group(1).strip()}")
-                continue
-
-            # source-files-extension error
-            ext_err = re_ext_error.match(line)
-            if ext_err:
-                failed_tests.add(f"ext-check:{ext_err.group(1)}")
-                continue
-
-            # Skip tsd summary lines
-            if re_tsd_summary.match(line):
-                continue
-
-        # If log has no output at all, the whole run passed.
-        if not failed_tests and not passed_tests:
-            passed_tests.add("tsd:all")
-            passed_tests.add("tsc:all")
 
         # Ensure no overlap
         passed_tests -= failed_tests
