@@ -115,6 +115,7 @@ exit 0
                 """#!/bin/bash
 set -e
 
+git config --global --add safe.directory /home/{pr.repo}
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
@@ -142,6 +143,7 @@ cargo test
                 """#!/bin/bash
 set -e
 
+git config --global --add safe.directory /home/{pr.repo}
 cd /home/{pr.repo}
 git apply /home/test.patch
 cargo test
@@ -154,6 +156,7 @@ cargo test
                 """#!/bin/bash
 set -e
 
+git config --global --add safe.directory /home/{pr.repo}
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
 cargo test
