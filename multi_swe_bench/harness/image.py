@@ -268,20 +268,13 @@ class DockerfileEnhancer:
         "    fi"
     )
 
-    _DEPRECATED_DEBIAN_FIX = (
-        "RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
-        "    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \\\n"
-        "    sed -i '/stretch-updates/d' /etc/apt/sources.list && \\\n"
-        "    sed -i '/buster-updates/d' /etc/apt/sources.list && \\\n"
-        "    sed -i '/jessie-updates/d' /etc/apt/sources.list"
-    )
-
     @classmethod
     def enhance(cls, image: "Image", dataset_generation: bool = False) -> str:
 
         dep = image.dependency()
         raw = image.dockerfile()
-
+        if not isinstance(dep, str):
+            return raw
         if cls.SYNTAX_DIRECTIVE in raw:
             return raw
 
@@ -290,23 +283,6 @@ class DockerfileEnhancer:
         if from_idx is None or from_line is None:
             return raw
 
-        if not isinstance(dep, str):
-            # PR image (dep is an Image object): add BuildKit syntax + lightweight
-            # infrastructure (platform awareness, proxy, certs) but skip
-            # REPO_URL / BASE_COMMIT args and git-clone standardisation — the
-            # base image already provides the repository.
-            infra = cls._pr_infrastructure_block(image)
-
-            result = [cls.SYNTAX_DIRECTIVE, ""]
-            result.extend(lines[:from_idx])
-            result.append(from_line)
-            result.append("")
-            result.append(infra)
-            result.extend(lines[from_idx + 1 :])
-
-            return "\n".join(result)
-
-        # Base image (dep is a string like "rust:latest"): full enhancement
         base_img = cls._extract_base_image(from_line)
         infra = cls._infrastructure_block(image, base_img, dataset_generation)
 
@@ -320,32 +296,6 @@ class DockerfileEnhancer:
         final = "\n".join(result)
         final = cls._standardize_repo_fetch(final, image.pr.repo)
         return final
-
-    @classmethod
-    def _pr_infrastructure_block(cls, image: "Image") -> str:
-        """Lightweight infrastructure block for PR images (non-base).
-
-        PR images inherit the repository from the base image, so we skip
-        REPO_URL / BASE_COMMIT args and git-clone standardisation.  We still
-        need TARGETARCH for platform resolution, proxy args, env, and cert
-        symlinks so that buildx can resolve the base image manifest correctly.
-        """
-        org, repo = image.pr.org, image.pr.repo
-
-        build_args = (
-            f"{cls._TARGETARCH_ARG}\n"
-            f"\n{cls._PROXY_ARGS}"
-        )
-
-        label_block = (
-            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
-            f'      org.opencontainers.image.description="{org}/{repo} PR image" \\\n'
-            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
-            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
-        )
-
-        sections = [build_args, cls._ENV_BLOCK, label_block, cls._CERT_SYMLINKS]
-        return "\n\n".join(sections) + "\n"
 
     @classmethod
     def _find_from(cls, lines: list[str]) -> tuple[int, str] | tuple[None, None]:
