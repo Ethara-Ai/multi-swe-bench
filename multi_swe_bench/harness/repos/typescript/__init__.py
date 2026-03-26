@@ -96,10 +96,29 @@ from multi_swe_bench.harness.repos.typescript.HoudiniGraphql import *
 from multi_swe_bench.harness.repos.typescript.NomicFoundation import *
 from multi_swe_bench.harness.repos.typescript.Effect_TS import *
 from multi_swe_bench.harness.repos.typescript.stakwork import *
+from multi_swe_bench.harness.repos.typescript.Expensify import *
+from multi_swe_bench.harness.repos.typescript.activist_org import *
+from multi_swe_bench.harness.repos.typescript.archestra_ai import *
+from multi_swe_bench.harness.repos.typescript.asyncapi import *
+from multi_swe_bench.harness.repos.typescript.babel import *
+from multi_swe_bench.harness.repos.typescript.blitz_js import *
+from multi_swe_bench.harness.repos.typescript.chakra_ui import *
+from multi_swe_bench.harness.repos.typescript.decentralized_identity import *
+from multi_swe_bench.harness.repos.typescript.drizzle_team import *
+from multi_swe_bench.harness.repos.typescript.electron import *
+from multi_swe_bench.harness.repos.typescript.equinor import *
+from multi_swe_bench.harness.repos.typescript.firecrawl import *
+from multi_swe_bench.harness.repos.typescript.gitcoinco import *
+from multi_swe_bench.harness.repos.typescript.google_gemini import *
+from multi_swe_bench.harness.repos.typescript.grafana import *
+from multi_swe_bench.harness.repos.typescript.hasadna import *
+from multi_swe_bench.harness.repos.typescript.latticexyz import *
+from multi_swe_bench.harness.repos.typescript.nestjs import *
+from multi_swe_bench.harness.repos.typescript.pmndrs import *
+from multi_swe_bench.harness.repos.typescript.realm import *
+from multi_swe_bench.harness.repos.typescript.remotion_dev import *
+from multi_swe_bench.harness.repos.typescript.sindresorhus import *
 from multi_swe_bench.harness.repos.typescript.thenewboston_blockchain import *
-
-
-
 from multi_swe_bench.harness.repos.typescript.tscircuit import *
 from multi_swe_bench.harness.repos.typescript.latticexyz import *
 from multi_swe_bench.harness.repos.typescript.gitcoinco import *
@@ -120,19 +139,7 @@ from multi_swe_bench.harness.repos.typescript.blitz_js import *
 from multi_swe_bench.harness.repos.typescript.drizzle_team import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
 from multi_swe_bench.harness.repos.typescript.babel import *
-from multi_swe_bench.harness.repos.typescript.Expensify import *
-from multi_swe_bench.harness.repos.typescript.activist_org import *
-from multi_swe_bench.harness.repos.typescript.archestra_ai import *
-from multi_swe_bench.harness.repos.typescript.asyncapi import *
-from multi_swe_bench.harness.repos.typescript.decentralized_identity import *
-from multi_swe_bench.harness.repos.typescript.google_gemini import *
-from multi_swe_bench.harness.repos.typescript.grafana import *
-from multi_swe_bench.harness.repos.typescript.pmndrs import *
-from multi_swe_bench.harness.repos.typescript.realm import *
 from multi_swe_bench.harness.repos.typescript.refinedev import *
-from multi_swe_bench.harness.repos.typescript.remotion_dev import *
-from multi_swe_bench.harness.repos.typescript.sindresorhus import *
 from multi_swe_bench.harness.repos.typescript.payloadcms import *
 from multi_swe_bench.harness.repos.typescript.SBoudrias import *
-
 from multi_swe_bench.harness.repos.typescript.refined_github import *
