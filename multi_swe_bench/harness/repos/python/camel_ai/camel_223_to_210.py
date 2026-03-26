@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -172,7 +171,6 @@ class CAMEL_223_TO_210(Instance):
         passed_tests = set[str]()  # Tests that passed successfully
         failed_tests = set[str]()  # Tests that failed
         skipped_tests = set[str]()  # Tests that were skipped
-        import re
 
         # Regex pattern to match test names and statuses (handles both 'test... STATUS' and 'STATUS test...' formats)
         # Matches test names with slashes, colons, dots, brackets, and hyphens

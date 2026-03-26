@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -208,7 +207,6 @@ class PGMPY_1584_TO_1269(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Regex patterns based on log analysis
         # Updated patterns to match real log format (no sample line numbers)

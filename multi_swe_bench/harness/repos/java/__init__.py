@@ -74,3 +74,31 @@ try:
     from multi_swe_bench.harness.repos.java.micronautprojects import *
 except (ImportError, ModuleNotFoundError):
     pass
+try:
+    from multi_swe_bench.harness.repos.java.a2aproject import *
+except (ImportError, ModuleNotFoundError):
+    pass
+try:
+    from multi_swe_bench.harness.repos.java.hyperledger import *
+except (ImportError, ModuleNotFoundError):
+    pass
+try:
+    from multi_swe_bench.harness.repos.java.OWASP import *
+except (ImportError, ModuleNotFoundError):
+    pass
+try:
+    from multi_swe_bench.harness.repos.java.CatimaLoyalty import *
+except (ImportError, ModuleNotFoundError):
+    pass
+try:
+    from multi_swe_bench.harness.repos.java.OpenElements import *
+except (ImportError, ModuleNotFoundError):
+    pass
+try:
+    from multi_swe_bench.harness.repos.java.FindFirst_Development import *
+except (ImportError, ModuleNotFoundError):
+    pass
+try:
+    from multi_swe_bench.harness.repos.java.testcontainers import *
+except (ImportError, ModuleNotFoundError):
+    pass

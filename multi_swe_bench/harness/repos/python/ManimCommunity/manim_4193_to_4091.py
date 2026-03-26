@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -184,7 +183,6 @@ class MANIM_4193_TO_4091(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Extract passed tests (inclusive of special characters)
         passed_matches = re.findall(r"PASSED\s+(.*?\.py::.*?)[\s:]", log)

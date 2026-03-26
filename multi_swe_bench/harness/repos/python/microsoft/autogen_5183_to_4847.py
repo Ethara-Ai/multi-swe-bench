@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -214,7 +213,6 @@ class AUTOGEN_5183_TO_4847(Instance):
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        import re
 
         # Pattern to match individual test lines with status
         test_pattern = r"::([^\s]+)\s+(PASSED|FAILED|SKIPPED)\s+\[\s*\d+%]"

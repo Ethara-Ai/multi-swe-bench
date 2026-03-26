@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -167,7 +166,6 @@ class GRASPOLOGIC_1018_TO_1017(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Regex pattern to match test cases with PASSED, FAILED, or SKIPPED status
         pattern = re.compile(

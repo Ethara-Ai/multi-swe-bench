@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -243,7 +242,6 @@ class IGNITE_1756_TO_1557(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Improved parsing: capture full test IDs and prioritize execution lines
         execution_pattern = re.compile(

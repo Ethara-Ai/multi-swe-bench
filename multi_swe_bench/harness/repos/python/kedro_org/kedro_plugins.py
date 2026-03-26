@@ -1,7 +1,6 @@
 from __future__ import annotations
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -164,8 +163,6 @@ class KEDRO_PLUGINS(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
-        import json
 
         # Strip ANSI color codes from log output
         log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)

@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -179,8 +178,6 @@ class SVELTE_15892_TO_15506(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
-        import json
 
         lines = log.split("\n")
         for line in lines:

@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -184,7 +183,6 @@ class PAPERLESS_NGX_4007_TO_2566(Instance):
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        import re
 
         # Regular expression pattern to match test result lines
         pattern = re.compile(r"^\s*(PASSED|FAILED|SKIPPED)\s+(.*)$", re.MULTILINE)

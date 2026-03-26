@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -178,8 +177,6 @@ class KEEP_3638_TO_2877(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
-        import json
 
         # Regex pattern to match test cases with their status
         pattern = r"(?:(PASSED|FAILED|ERROR)\s+(tests/[\w/-]+\.py::[\w-]+(?:\[(?:[^]]*)\])?)\s*|(tests/[\w/-]+\.py::[\w-]+(?:\[(?:[^]]*)\])?)\s+(PASSED|FAILED|ERROR))"

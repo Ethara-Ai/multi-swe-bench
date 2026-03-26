@@ -26,10 +26,10 @@ class ImageDefault(Image):
         return "envagent"
 
     def image_tag(self) -> str:
-        return f"pr-{{self.pr.number}}"
+        return "pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return f"pr-{{self.pr.number}}"
+        return "pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         repo_name = self.pr.repo
@@ -37,12 +37,12 @@ class ImageDefault(Image):
             File(
                 ".",
                 "fix.patch",
-                f"{{self.pr.fix_patch}}",
+                "{self.pr.fix_patch}",
             ),
             File(
                 ".",
                 "test.patch",
-                f"{{self.pr.test_patch}}",
+                "{self.pr.test_patch}",
             ),
             File(
                 ".",

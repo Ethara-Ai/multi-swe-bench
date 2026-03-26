@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -188,7 +187,6 @@ class PYOMO_2070_TO_2007(Instance):
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        import re
 
         # Regex pattern to match test lines. Captures test name and status.
         # Pattern matches lines like: [123] test_name (module.Class) ... status

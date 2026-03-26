@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -181,7 +180,6 @@ class TOGA_3401_TO_3395(Instance):
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
         # Implement the log parsing logic here
-        import re
 
         lines = log.split("\n")
         for line in lines:

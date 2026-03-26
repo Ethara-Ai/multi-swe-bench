@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -174,8 +173,6 @@ class LIGHTHOUSE_11698_TO_10130(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
-        import json
 
         # Pattern to match PASS lines, capturing test name (ignoring optional time in parentheses)
         pass_pattern = re.compile(r"^PASS (.*?)(?: \(\d+\.\d+s\))?$", re.MULTILINE)

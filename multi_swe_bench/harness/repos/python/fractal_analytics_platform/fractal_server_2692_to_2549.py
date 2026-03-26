@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -275,7 +274,6 @@ class FRACTAL_SERVER_2692_TO_2549(Instance):
         passed_tests = set[str]()  # Tests that passed successfully
         failed_tests = set[str]()  # Tests that failed
         skipped_tests = set[str]()  # Tests that were skipped
-        import re
 
         # Extract test names and statuses using regex
         passed_tests = set(re.findall(r"(tests/[^:]+::[^ ]+) PASSED", log))

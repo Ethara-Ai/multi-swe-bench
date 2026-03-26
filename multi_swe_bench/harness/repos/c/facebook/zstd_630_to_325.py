@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -181,7 +180,6 @@ class ZSTD_630_TO_325(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Handle cases where all tests pass
         if "tests completed: OK" in log:

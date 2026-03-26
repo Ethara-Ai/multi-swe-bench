@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -194,8 +193,6 @@ class SOURMASH_2339_TO_1720(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
-        import json
 
         # Regex patterns to match different test result line formats
         # Pattern 1: Pytest worker lines (e.g., [gw3] [  0%] PASSED tests/test_index_protocol.py::test_index_search_exact_match[build_sqlite_index])

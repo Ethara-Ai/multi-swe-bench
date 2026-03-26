@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -222,7 +221,6 @@ class LISK_MOBILE_1916_TO_1911(Instance):
         passed_tests = set[str]()
         failed_tests = set[str]()
         skipped_tests = set[str]()
-        import re
 
         # Parse test names using regex patterns for Jest output
         # Passed tests are marked with ✓, failed with ✕, skipped with ○

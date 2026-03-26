@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -192,7 +191,6 @@ class QIBO_53_TO_13(Instance):
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
         test_status = {}  # Track latest status for each test
-        import re
 
         # Pattern 1: test name (src/...::test) followed by status
         pattern1 = re.compile(

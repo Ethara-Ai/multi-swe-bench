@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -236,8 +235,6 @@ class ANNDATA_457_TO_425(Instance):
         passed_tests: set[str] = set()  # Tests that passed successfully
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
-        import json  # Included as per skeleton, not used in this implementation
 
         # Regex patterns to match test result lines
         # Pattern 1: Test name followed by status and percentage (e.g., 'test PASSED [ 0%]')

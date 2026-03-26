@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -176,7 +175,6 @@ class PYSTAC_1539_TO_1162(Instance):
         passed_tests: set[str] = set()  # Tests that passed successfully
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
 
         # Implement the log parsing logic here
         pattern = re.compile(r"^(tests/.*?)\s+(PASSED|FAILED|SKIPPED)\s+\[.*\]")

@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -191,7 +190,6 @@ class PILLOW_4833_TO_4566(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Remove ANSI escape codes (fixed: single backslash for \x1b)
         log_clean = re.sub(r"\x1b\[[0-9;]*m", "", log)

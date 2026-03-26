@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -190,7 +189,6 @@ class DATALAD_613_TO_607(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Pattern 1: Test name followed by ... and status (ok, ERROR, SKIP)
         pattern1 = re.compile(r"^(.+?)\s+\.\.\.\s+(ok|ERROR|SKIP)(:.*)?$", re.MULTILINE)

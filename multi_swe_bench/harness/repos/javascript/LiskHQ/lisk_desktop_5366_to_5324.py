@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -187,8 +186,6 @@ class LISK_DESKTOP_5366_TO_5324(Instance):
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
         test_status: dict[str, str] = {}  # Track latest status of each test
-        import re
-        import json
 
         test_case_pattern = re.compile(r"^\s*([✓✕○−-])\s+(.*?)(?:\s+\(\d+ ms\))?$")
         lines = log.split("\n")

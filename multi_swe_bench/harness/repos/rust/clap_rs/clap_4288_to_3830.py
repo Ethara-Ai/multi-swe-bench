@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -179,7 +178,6 @@ class CLAP_4288_TO_3830(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Regex to find passed tests
         passed_regex = re.compile(r"test (.*) \.\.\. ok")

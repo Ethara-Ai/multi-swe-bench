@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -227,8 +226,6 @@ class UI5_WEBCOMPONENTS_REACT_3744_TO_3639(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
-        import json
 
         # Extract test names using regex patterns
         # Passed tests: lines starting with 'PASS '

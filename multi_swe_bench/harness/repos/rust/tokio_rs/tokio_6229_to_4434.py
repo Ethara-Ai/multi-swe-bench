@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -169,8 +168,6 @@ class TOKIO_6229_TO_4434(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
-        import json
 
         passed_regex = re.compile(r"test (.*) ... ok")
         failed_regex = re.compile(r"test (.*) ... FAILED")

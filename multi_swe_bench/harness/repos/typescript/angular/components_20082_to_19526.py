@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -240,7 +239,6 @@ class COMPONENTS_20082_TO_19526(Instance):
         passed_tests: set[str] = set()  # Tests that passed successfully
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
 
         # Pattern for passed tests: captures test name before (cached) and PASSED
         passed_pattern = re.compile(r"^(\S+)\s+(?:\(cached\)\s+)?PASSED", re.MULTILINE)

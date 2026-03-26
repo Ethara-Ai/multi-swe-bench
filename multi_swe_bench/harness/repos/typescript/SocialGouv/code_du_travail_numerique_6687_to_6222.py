@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -188,7 +187,6 @@ class CODE_DU_TRAVAIL_NUMERIQUE_6687_TO_6222(Instance):
         passed_tests: set[str] = set()  # Tests that passed successfully
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
 
         # Remove ANSI escape codes
         ansi_escape = re.compile(r"\x1b\[[0-9;]*m")

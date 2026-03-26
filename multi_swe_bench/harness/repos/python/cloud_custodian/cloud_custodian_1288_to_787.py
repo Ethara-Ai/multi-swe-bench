@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -205,7 +204,6 @@ class CLOUD_CUSTODIAN_1288_TO_787(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Parse passed tests
         passed_pattern = re.compile(r".*?([\w_]+) \(.+?\) \.\.\. ok", re.MULTILINE)

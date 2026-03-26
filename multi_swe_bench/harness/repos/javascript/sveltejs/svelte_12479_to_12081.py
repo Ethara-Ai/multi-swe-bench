@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -169,7 +168,6 @@ class SVELTE_12479_TO_12081(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Regex to find test files
         test_file_pattern = re.compile(r"(packages/svelte/.*?\.ts)")

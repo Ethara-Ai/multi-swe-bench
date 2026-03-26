@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -184,7 +183,6 @@ class HYPOTHESIS_3766_TO_3574(Instance):
         passed_tests = set[str]()  # Tests that passed successfully
         failed_tests = set[str]()  # Tests that failed
         skipped_tests = set[str]()  # Tests that were skipped
-        import re
 
         # Extract passed tests (format: 'test_name PASSED [  %]')
         passed_pattern = re.compile(r"^(.*?) PASSED \[\s*\d+%\]", re.MULTILINE)

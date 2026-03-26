@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -228,7 +227,6 @@ class EVAP_1416_TO_1360(Instance):
         passed_tests = set[str]()
         failed_tests = set[str]()
         skipped_tests = set[str]()
-        import re
 
         # Expanded patterns to include more statuses and allow dots in test names
         # Matches lines with varied statuses and test names: e.g., [ 310] test_wrong_state (module) ... ok or test.wrong_state ... pass

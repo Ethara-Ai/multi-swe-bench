@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -209,7 +208,6 @@ class SCIKIT_IMAGE_4875_TO_4666(Instance):
         passed_tests = set[str]()  # Tests that passed successfully
         failed_tests = set[str]()  # Tests that failed
         skipped_tests = set[str]()  # Tests that were skipped
-        import re
 
         # Regex patterns to match test lines
         # Pattern 1: Test name followed by status and percentage (e.g., "test_name PASSED [  0%]")

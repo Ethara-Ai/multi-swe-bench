@@ -491,7 +491,6 @@ class PYSCF(Instance):
         failed_tests = set()
         skipped_tests = set()
         import re
-        import json
 
         for line in log.splitlines():
             if line.startswith("PASSED"):

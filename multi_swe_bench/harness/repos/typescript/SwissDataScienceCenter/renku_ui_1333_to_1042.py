@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -72,9 +71,7 @@ sed -i 's/print "%s.%s.%s" % sys.version_info/print("%s.%s.%s" % sys.version_inf
 ###ACTION_DELIMITER###
 sed -i '/node-sass-chokidar/d' package.json && sed -i 's/node-sass-chokidar/sass/g' package.json && npm install
 ###ACTION_DELIMITER###
-npm test -- --verbose
-###ACTION_DELIMITER###
-npm test -- --verbose --watchAll=false
+echo 'cd client && npm test -- --verbose' > /home/renku-ui/test_commands.sh
 ###ACTION_DELIMITER###
 echo 'cd client && npm test -- --verbose --watchAll=false' > /home/renku-ui/test_commands.sh""",
             ),
@@ -192,7 +189,6 @@ class RENKU_UI_1333_TO_1042(Instance):
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        import re
 
         # Parse passed tests: handle test names with parentheses and durations
         passed_pattern = re.compile(

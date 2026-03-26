@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -218,8 +217,6 @@ class FREQTRADE_7298_TO_7258(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
-        import json
 
         # Parse log content using regex patterns
         pattern = r"(PASSED|FAILED|SKIPPED)\s+(tests/[\w/\.::\[\]-]+)|(tests/[\w/\.::\[\]-]+)\s+(PASSED|FAILED|SKIPPED)"

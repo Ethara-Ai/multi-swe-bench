@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -174,7 +173,6 @@ class PYTHON_1347_TO_152(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Extract all test names from lines starting with "#  "
         test_names = set(re.findall(r"^\s*#\s+([^\s]+)\s*$", log, re.MULTILINE))

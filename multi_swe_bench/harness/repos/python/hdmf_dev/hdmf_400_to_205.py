@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -187,8 +186,6 @@ class HDMF_400_TO_205(Instance):
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.
         test_status: dict[str, str] = {}  # Track latest status for each test
-        import re
-        import json
 
         # Pattern to match test case lines with test name and status
         test_pattern = re.compile(

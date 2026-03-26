@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -180,8 +179,6 @@ class CONDA_662_TO_662(Instance):
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        import re
-        import json
 
         # Regex pattern to match test cases with PASSED, FAILED, or SKIPPED status
         pattern = re.compile(

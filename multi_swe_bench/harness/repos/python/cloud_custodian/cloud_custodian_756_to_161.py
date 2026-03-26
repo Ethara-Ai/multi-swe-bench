@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -236,7 +235,6 @@ class CLOUD_CUSTODIAN_756_TO_161(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Regex pattern to match test lines (e.g., [   1] test_name (class) ... status)
         passed_pattern = r"^(\w+)\s*\(.*?\)\s+\.\.\.\s+ok$"

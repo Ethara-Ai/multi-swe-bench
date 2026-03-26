@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -212,8 +211,6 @@ class GREAT_EXPECTATIONS_7313_TO_6981(Instance):
         passed_tests = set[str]()  # Tests that passed successfully
         failed_tests = set[str]()  # Tests that failed
         skipped_tests = set[str]()  # Tests that were skipped
-        import re
-        import json
 
         # Define regex patterns to match test lines
         # Pattern 1: Test name followed by status and progress (e.g., "[  0%]")

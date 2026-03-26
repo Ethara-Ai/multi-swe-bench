@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -198,8 +197,6 @@ class POETRY_421_TO_377(Instance):
         passed_tests = set[str]  # Tests that passed successfully
         failed_tests = set[str]  # Tests that failed
         skipped_tests = set[str]  # Tests that were skipped
-        import re
-        import json
 
         # Extract passed tests using regex pattern
         passed_pattern = re.compile(

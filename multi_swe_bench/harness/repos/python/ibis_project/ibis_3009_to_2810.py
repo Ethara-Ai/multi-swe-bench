@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -233,7 +232,6 @@ class IBIS_3009_TO_2810(Instance):
         passed_tests: set[str] = set()  # Tests that passed successfully
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
 
         # Implement the log parsing logic here
         # Regex patterns to match test execution lines and summary lines

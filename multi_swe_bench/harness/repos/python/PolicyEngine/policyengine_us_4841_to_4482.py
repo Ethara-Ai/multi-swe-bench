@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -208,7 +207,6 @@ class POLICYENGINE_US_4841_TO_4482(Instance):
         passed_tests: set[str] = set()  # Tests that passed successfully
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
 
         # Extract test files from progress lines (e.g., 'policyengine_us/tests/...yaml ..........')
         progress_pattern = re.compile(r"(policyengine_us/tests/.*?\.yaml) ")

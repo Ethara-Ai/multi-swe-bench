@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -182,7 +181,6 @@ class GITHUB_README_STATS_560_TO_27(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Regex patterns to identify test status and extract test names
         passed_pattern = re.compile(r"✓ (.*?) \(\d+ms\)")

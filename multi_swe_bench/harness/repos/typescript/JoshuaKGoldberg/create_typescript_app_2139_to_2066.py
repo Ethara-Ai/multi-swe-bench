@@ -1,6 +1,6 @@
 import re
 import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -187,8 +187,6 @@ class CREATE_TYPESCRIPT_APP_2139_TO_2066(Instance):
         passed_tests = set[str]()
         failed_tests = set[str]()
         skipped_tests = set[str]()
-        import re
-        import json
 
         # Extract JSON part from log (assuming it's at the end)
         json_match = re.search(r'\{"numTotalTestSuites.*\}', log, re.DOTALL)

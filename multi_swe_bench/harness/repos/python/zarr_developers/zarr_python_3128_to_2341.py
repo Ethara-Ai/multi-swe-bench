@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -177,8 +176,6 @@ class ZARR_PYTHON_3128_TO_2341(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
-        import json
 
         # Regex patterns for different test statuses
         passed_pattern1 = re.compile(r"^(tests/.*?)\s+PASSED\b", re.MULTILINE)

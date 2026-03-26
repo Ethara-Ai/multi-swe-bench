@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -186,8 +185,6 @@ class PVLIB_PYTHON_1231_TO_1160(Instance):
         passed_tests = set[str]()  # Tests that passed successfully
         failed_tests = set[str]()  # Tests that failed
         skipped_tests = set[str]()  # Tests that were skipped
-        import re
-        import json
 
         # Parse test lines using regex patterns
         # Flexible regex to match test lines with/without line numbers and brackets

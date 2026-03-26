@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -190,7 +189,6 @@ class PYPDF_1364_TO_814(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Regex to match full test names and statuses, ignoring trailing characters
         # Pattern 1: Test name first (e.g., "tests/...::test_name[params] PASSED [  0%]")

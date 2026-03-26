@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -298,7 +297,6 @@ class METAMASK_MOBILE_11262_TO_9409(Instance):
         passed_tests = set[str]()  # Tests that passed successfully
         failed_tests = set[str]()  # Tests that failed
         skipped_tests = set[str]()  # Tests that were skipped
-        import re
 
         # Parse passed test suites and individual tests (optional line number prefix and indentation)
         # Capture passed test suites (e.g., 'PASS app/components/UI/Stake/utils/value/value.test.ts')

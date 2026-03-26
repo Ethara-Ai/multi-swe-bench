@@ -212,7 +212,7 @@ fi
 echo "Testing packages: $GO_TEST_PKGS"
 go test -v -count=1 $GO_TEST_PKGS
 
-""".format(pr=self.pr),
+""".format(),
             ),
             File(
                 ".",

@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -196,7 +195,6 @@ class TALAWA_API_1252_TO_1139(Instance):
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        import re
 
         # Pattern for passed tests: matches "✓ " followed by test name (including indented lines)
         passed_pattern = re.compile(r"^\s*✓\s+([^>]+)", re.MULTILINE)

@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -243,7 +242,6 @@ class KEDRO_578_TO_190(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Pattern for passed tests: test name followed by PASSED and [ percentage ]
         passed_pattern = re.compile(r"^(.*?)\s+PASSED\s+\[\s*\d+%\]$", re.MULTILINE)

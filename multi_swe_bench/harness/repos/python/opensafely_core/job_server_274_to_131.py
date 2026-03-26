@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -212,7 +211,6 @@ class JOB_SERVER_274_TO_131(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Pattern to match test lines with status
         pattern = r"^.*?(tests/[^:]+::[^ ]+)\s+(PASSED|FAILED|SKIPPED)\s+\[\s*\d+%\]"

@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -190,7 +189,6 @@ class PIONEER_746_TO_461(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Regex pattern to match test lines with status and test name
         # Matches lines like "| PASS test/membership/hooks/useMyMemberships.test.tsx (31.183 s)"

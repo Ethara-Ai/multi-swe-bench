@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -175,8 +174,12 @@ class TEXTUAL_3112_TO_1922(Instance):
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
         return f"bash -c 'cd /home/textual && git apply --whitespace=nowarn /home/test.patch /home/fix.patch && {self._POETRY_ENSURE} && {self._TEST_CMD}'"
-        import re
-        import json
+
+    def parse_log(self, log: str) -> TestResult:
+        # Parse the log content and extract test execution results.
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
         # Regex patterns to match test cases and their statuses
         # Pattern 1: Test name followed by status (PASSED, SKIPPED, FAILED) with percentage

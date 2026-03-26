@@ -1,6 +1,4 @@
-import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -188,8 +186,6 @@ class LISK_DESKTOP_5474_TO_5376(Instance):
         passed_tests = set()  # type: set[str]
         failed_tests = set()  # type: set[str]
         skipped_tests = set()  # type: set[str]
-        import re
-        import json
 
         lines = log.split("\n")
         current_hierarchy = []

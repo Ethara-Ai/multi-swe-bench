@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -169,8 +168,6 @@ class WAGTAIL_13160_TO_12784(Instance):
         passed_tests = set[str]()  # Tests that passed successfully
         failed_tests = set[str]()  # Tests that failed
         skipped_tests = set[str]()  # Tests that were skipped
-        import re
-        import json
 
         # Extract passed tests
         # Pattern 1: Test name and status on the same line (e.g., "... (test.name) ... ok")

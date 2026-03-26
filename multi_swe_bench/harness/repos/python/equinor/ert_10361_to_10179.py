@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -185,7 +184,6 @@ class ERT_10361_TO_10179(Instance):
         # Parse the log content and extract test execution results.
         test_status = {}  # Tracks latest status for each test (key: test name, value: 'passed'/'failed'/'skipped')
         # Original sets replaced with a dictionary to avoid overlapping entries
-        import re
 
         # Refined patterns to handle parameters, line numbers, and metadata
         # Enhanced patterns to capture full test names with parameters and handle varied metadata

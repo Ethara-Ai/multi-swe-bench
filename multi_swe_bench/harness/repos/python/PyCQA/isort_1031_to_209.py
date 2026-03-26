@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -181,8 +180,6 @@ class ISORT_1031_TO_209(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
-        import json
 
         # Use regex to find test cases and their statuses
         pattern_exec = re.compile(r"test_isort\.py::(test_\w+(?:\[.*?\])?) (PASSED|FAILED|SKIPPED)")

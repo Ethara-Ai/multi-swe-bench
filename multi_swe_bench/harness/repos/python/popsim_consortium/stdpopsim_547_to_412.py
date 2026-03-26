@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -203,7 +202,6 @@ class STDPOPSIM_547_TO_412(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         pattern_test_first = re.compile(r"(tests/[^\s]+)\s+(PASSED|FAILED|SKIPPED).*")
         pattern_status_first = re.compile(

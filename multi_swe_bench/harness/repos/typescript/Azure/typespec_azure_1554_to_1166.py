@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -188,7 +187,6 @@ class TYPESPEC_AZURE_1554_TO_1166(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Capture package + test file for unique identification
         # Pattern for passed tests (e.g., 'packages/typespec-azure-core test:  ✓ test/decorators.test.ts  (36 tests)')

@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -239,7 +238,6 @@ class PYATV_117_TO_61(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Use regex to find test cases and their statuses
         pattern = re.compile(r"^(tests/[^ ]+)\s+(PASSED|FAILED|SKIPPED)$", re.MULTILINE)

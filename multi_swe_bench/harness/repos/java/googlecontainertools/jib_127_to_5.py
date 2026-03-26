@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -183,7 +182,6 @@ class JIB_127_TO_5(Instance):
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        import re
 
         log_clean = re.sub(r"\x1b\[[0-9;]*m", "", log)
         for line in log_clean.splitlines():

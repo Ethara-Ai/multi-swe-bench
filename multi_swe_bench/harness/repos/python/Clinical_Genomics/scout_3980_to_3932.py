@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -215,7 +214,6 @@ class SCOUT_3980_TO_3932(Instance):
         passed_tests: set[str] = set()  # Tests that passed successfully
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
 
         # Regex pattern to match test cases with PASSED, FAILED, or SKIPPED status
         pattern_test_first = r"(tests/[^\s]+).*?(PASSED|FAILED|SKIPPED)"

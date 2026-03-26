@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -186,7 +185,6 @@ class PYOMO_1713_TO_1500(Instance):
         passed_tests = set()  # type: set[str]
         failed_tests = set()  # type: set[str]
         skipped_tests = set()  # type: set[str]
-        import re
 
         # Compile regex patterns to match test statuses
         passed_pattern = re.compile(r"^(.*?)\s+\.\.\.\s+ok$")

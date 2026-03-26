@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -222,7 +221,6 @@ class LIGHTNING_THUNDER_802_TO_577(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Remove ANSI color codes (handles complex codes like \x1b[31m, \x1b[0m)
         log_clean = re.sub(r"\x1b\[[0-9;]*m", "", log)

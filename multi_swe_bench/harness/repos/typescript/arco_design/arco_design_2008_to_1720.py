@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -196,7 +195,6 @@ class ARCO_DESIGN_2008_TO_1720(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Extract passed tests using regex pattern
         pass_pattern = re.compile(r"PASS\s+([^\s(]+)")

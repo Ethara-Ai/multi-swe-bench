@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -241,7 +240,6 @@ class DSL_359_TO_283(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Extract passed tests: pattern matches "tests/.../test.py::test_name PASSED [percentage]"
         passed_pattern = r"(tests/.*?)\s+PASSED"

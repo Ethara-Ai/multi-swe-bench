@@ -1,4 +1,3 @@
-import re
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -134,7 +133,7 @@ set -e
 
 echo "ERROR: xdp-for-windows is a Windows-only project and cannot be built on Linux"
 exit 1
-""".format(pr=self.pr),
+""".format(),
             ),
             File(
                 ".",

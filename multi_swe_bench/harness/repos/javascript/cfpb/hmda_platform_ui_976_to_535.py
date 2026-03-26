@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -178,7 +177,6 @@ class HMDA_PLATFORM_UI_976_TO_535(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Remove ANSI escape codes
         log_clean = re.sub(r"\x1b[\[(][0-9;]*[a-zA-Z]", "", log)

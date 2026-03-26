@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -173,8 +172,6 @@ class PARTICULA_600_TO_388(Instance):
         passed_tests = set[str]()
         failed_tests = set[str]()
         skipped_tests = set[str]()
-        import re
-        import json
 
         # TODO: Implement the log parsing logic here
         # Regex patterns for test statuses

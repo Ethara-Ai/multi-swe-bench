@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -171,8 +170,6 @@ class PYLINT_4398_TO_4185(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
-        import json
 
         # TODO: Implement the parse_log function
         passed_pattern = re.compile(r"^PASSED\s+(.*)$")

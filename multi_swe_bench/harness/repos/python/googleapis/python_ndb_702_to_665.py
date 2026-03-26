@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -182,7 +181,6 @@ class PYTHON_NDB_702_TO_665(Instance):
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        import re
 
         # Pattern for individual test lines (e.g., "tests/... PASSED [  0%]")
         test_line_pattern = re.compile(

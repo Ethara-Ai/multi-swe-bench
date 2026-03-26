@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -191,8 +190,6 @@ class SIMDJSON_1674_TO_1534(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
-        import json
 
         passed_pattern = re.compile(r"Test #\d+: (.*) \.+   Passed")
         failed_pattern = re.compile(r"\t \d+ - (.*) \(Failed\)")

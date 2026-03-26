@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -186,7 +185,6 @@ class ANT_DESIGN_40759_TO_39919(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
 
         # Pattern for passed tests: matches lines like "  ✓ test name (123 ms)" (exact 2-space indent)
         passed_pattern = re.compile(

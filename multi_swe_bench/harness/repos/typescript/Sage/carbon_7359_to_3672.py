@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -206,8 +205,6 @@ class CARBON_7359_TO_3672(Instance):
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        import re
-        import json
 
         # Extract passed tests (✓)
         passed_pattern = re.compile(r"^\s+✓\s+(.*)$", re.MULTILINE)

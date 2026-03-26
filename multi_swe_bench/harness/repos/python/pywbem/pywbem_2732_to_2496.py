@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -178,7 +177,6 @@ class PYWBEM_2732_TO_2496(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Regex pattern to match test lines with status
         pattern = r"^(PASSED|FAILED|SKIPPED) (tests/.*)$|^(tests/.*?) (PASSED|FAILED|SKIPPED) \[\s*\d+%\]$"

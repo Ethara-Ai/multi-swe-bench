@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -176,7 +175,6 @@ class POLARIS_3959_TO_2246(Instance):
         passed_tests = set[str]()
         failed_tests = set[str]()
         skipped_tests = set[str]()
-        import re
 
         # Parse PASS tests (suite paths)
         pass_pattern = re.compile(r"^PASS (.*?) \(\d+ MB heap size\)$", re.MULTILINE)

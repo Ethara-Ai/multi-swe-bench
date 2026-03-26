@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -183,7 +182,6 @@ class PRIVACYIDEA_4478_TO_4020(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Pattern for test lines with status (e.g., 'tests/... PASSED [  0%]')
         test_line_pattern = re.compile(

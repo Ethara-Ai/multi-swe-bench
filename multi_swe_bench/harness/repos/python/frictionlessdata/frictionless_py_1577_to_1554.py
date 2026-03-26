@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -212,8 +211,6 @@ class FRICTIONLESS_PY_1577_TO_1554(Instance):
         passed_tests = set()  # Tests that passed successfully
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
-        import re
-        import json
 
         # Define pattern for test names (handles parameters and special characters)
         test_name_pattern = r"tests/[\w/\\]+\.py::[\w-]+(?:\[.*?\])?"
@@ -225,7 +222,7 @@ class FRICTIONLESS_PY_1577_TO_1554(Instance):
             rf"({test_name_pattern})\s+FAILED|FAILED\s+({test_name_pattern})"
         )
         skipped_pattern = re.compile(
-            rf"\[\s*\d+\s*\]\s+SKIPPED\s+\[\d+\]\s+(tests/[\w/\\]+\.py:\d+)"
+            r"\[\s*\d+\s*\]\s+SKIPPED\s+\[\d+\]\s+(tests/[\w/\\]+\.py:\d+)"
         )
         # Extract passed tests
         for match in passed_pattern.findall(log):

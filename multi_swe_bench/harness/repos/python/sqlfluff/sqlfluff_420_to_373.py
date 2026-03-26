@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -175,8 +174,6 @@ class SQLFLUFF_420_TO_373(Instance):
         passed_tests: set[str] = set()  # Tests that passed successfully
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
-        import json
 
         # Parse lines where test name is followed by status
         matches1 = re.findall(r"(test/.*?)\s+(PASSED|FAILED|SKIPPED)\s+\[", log)

@@ -2,7 +2,7 @@ import json
 import re
 from typing import Optional, Dict, List
 
-from multi_swe_bench.harness.image import Config, Image, SWEImageDefault, File
+from multi_swe_bench.harness.image import Config, Image, File
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 from multi_swe_bench.harness.test_result import TestStatus, mapping_to_testresult

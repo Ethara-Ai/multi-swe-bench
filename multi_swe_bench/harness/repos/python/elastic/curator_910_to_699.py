@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -194,7 +193,6 @@ class CURATOR_910_TO_699(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
 
         # Regex pattern to match test lines with status (PASSED/FAILED/SKIPPED)
         pattern = re.compile(

@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -172,8 +171,6 @@ class ANT_DESIGN_39883_TO_35706(Instance):
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
-        import re
-        import json
 
         # Extract passed tests
         passed_pattern = re.compile(r"PASS\s+([^\s\(]+)")

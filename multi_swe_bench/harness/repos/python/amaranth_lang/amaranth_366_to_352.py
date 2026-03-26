@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -228,7 +227,6 @@ class AMARANTH_366_TO_352(Instance):
         passed_tests: set[str] = set()  # Tests that passed successfully
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
 
         # Regex pattern to match test names (e.g., nmigen/test/compat/test_coding.py::EncCase::test_run_sequence)
         test_name_pattern = re.compile(r"[\w\/]+\.py::\w+::\w+")
