@@ -47,51 +47,21 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls
-###ACTION_DELIMITER###
-ls requirements
-###ACTION_DELIMITER###
-pip install -r requirements/test_requirements.txt
-###ACTION_DELIMITER###
-echo 'pytest --no-header -rA --tb=no -p no:cacheprovider -v' > test_commands.sh
-###ACTION_DELIMITER###
-cat test_commands.sh
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
+                """#!/bin/bash
+set -e
+
+pip install --upgrade 'pip<24' 'setuptools<71' wheel
+
+pip install numpy==1.23.0 scipy==1.9.3 matplotlib scikit-image networkx h5py jsonschema pandas 'numba==0.60.0' 'llvmlite==0.43.0' transforms3d flatdict gitpython unyt terminaltables sympy docrep==0.2.7
+
+pip install pytest pytest-cov testfixtures nbval jupyter
+
 pip install -e .
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-cat requirements/pip_requirements.txt
-###ACTION_DELIMITER###
-echo 'pytest tests/ --no-header -rA --tb=no -p no:cacheprovider -v' > test_commands.sh
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-pip install -r requirements/pip_requirements.txt
-###ACTION_DELIMITER###
-python -c 'import openpnm; print("Import successful")'
-###ACTION_DELIMITER###
-pip install scipy==1.7.3
-###ACTION_DELIMITER###
-pip install scipy==1.9.3 numpy==1.23.0
-###ACTION_DELIMITER###
-sed -i 's/from scipy import pi as _pi/from scipy.constants import pi as _pi/' openpnm/models/physics/flow_shape_factors.py
-###ACTION_DELIMITER###
-python -c 'import openpnm; print("Import successful")'
-###ACTION_DELIMITER###
-pip install --force-reinstall docrep
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-pip install --upgrade docrep
-###ACTION_DELIMITER###
-pip install docrep==0.2.7
-###ACTION_DELIMITER###
-python -c 'import openpnm; print("Import successful")'
-###ACTION_DELIMITER###
-bash test_commands.sh""",
+
+sed -i 's/from scipy import pi as _pi/from scipy.constants import pi as _pi/' openpnm/models/physics/flow_shape_factors.py 2>/dev/null || true
+
+python -c 'import openpnm; print("openpnm imported successfully")'
+""",
             ),
             File(
                 ".",

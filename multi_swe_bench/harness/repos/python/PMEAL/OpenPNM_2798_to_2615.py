@@ -47,69 +47,37 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls
-###ACTION_DELIMITER###
+                """#!/bin/bash
+set -e
+
 apt-get update
-###ACTION_DELIMITER###
-apt-get install -y python3 python3-pip
-###ACTION_DELIMITER###
-pip install -r requirements.txt
-###ACTION_DELIMITER###
+apt-get install -y python3 python3-pip python3.12-venv gfortran libopenblas-dev pkg-config
+
 python3 -m venv venv
-###ACTION_DELIMITER###
-apt-get install -y python3.12-venv
-###ACTION_DELIMITER###
-python3 -m venv venv
-###ACTION_DELIMITER###
 source venv/bin/activate
-###ACTION_DELIMITER###
-pip install -r requirements.txt
-###ACTION_DELIMITER###
-echo 'venv/bin/pytest -v -rA tests/' > test_commands.sh
-###ACTION_DELIMITER###
-cat test_commands.sh
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install pytest
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install matplotlib==3.5.3
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install scipy==1.7.3
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install scipy==1.9.3
-###ACTION_DELIMITER###
-apt-get install -y gfortran
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install scipy==1.11.0
-###ACTION_DELIMITER###
-apt-get install -y libopenblas-dev
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install scipy==1.11.0
-###ACTION_DELIMITER###
-apt-get install -y pkg-config
-###ACTION_DELIMITER###
-source venv/bin/activate && export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig/ && pip install scipy==1.11.0
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install scipy==1.12.0
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install porespy
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install chemicals==1.2.0
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install thermo==0.3.0
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install ipython
-###ACTION_DELIMITER###
-bash test_commands.sh""",
+
+pip install --upgrade pip setuptools wheel
+
+pip install 'numpy<2' 'scipy<1.14' 'matplotlib<3.8' pandas networkx sympy h5py jsonschema 'scikit-image<0.23'
+pip install 'numba==0.60.0' 'llvmlite==0.43.0' pyamg tqdm transforms3d rich docrep
+pip install chemicals thermo porespy
+pip install pytest ipython
+
+mkdir -p /tmp/pypardiso_stub
+cat > /tmp/pypardiso_stub/setup.py << 'STUBEOF'
+from setuptools import setup
+setup(name="pypardiso", version="0.0.0", py_modules=["pypardiso"])
+STUBEOF
+cat > /tmp/pypardiso_stub/pypardiso.py << 'STUBEOF'
+def spsolve(A, b):
+    raise RuntimeError("pypardiso not available (mkl not supported on this platform)")
+STUBEOF
+pip install /tmp/pypardiso_stub
+
+pip install --no-deps -e .
+
+python -c 'import openpnm; print("openpnm imported successfully")'
+""",
             ),
             File(
                 ".",
