@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "ubuntu:latest"
+        return "node:10"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -48,39 +48,15 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls
+                """node -v
 ###ACTION_DELIMITER###
-node -v
-###ACTION_DELIMITER###
-apt-get update
-###ACTION_DELIMITER###
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-###ACTION_DELIMITER###
-apt-get install -y curl
-###ACTION_DELIMITER###
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-###ACTION_DELIMITER###
-export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-###ACTION_DELIMITER###
-nvm install 10
-###ACTION_DELIMITER###
-npm install -g yarn
-###ACTION_DELIMITER###
-yarn install
+npm install -g yarn rimraf lerna
 ###ACTION_DELIMITER###
 yarn install --ignore-engines
 ###ACTION_DELIMITER###
-echo 'yarn test -- --verbose' > test_commands.sh
+lerna bootstrap --ignore-engines || true
 ###ACTION_DELIMITER###
-cat test_commands.sh
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-npx lerna bootstrap
-###ACTION_DELIMITER###
-yarn build
-###ACTION_DELIMITER###
-bash test_commands.sh""",
+yarn build""",
             ),
             File(
                 ".",
@@ -130,15 +106,17 @@ yarn test -- --verbose
 
 # Choose an appropriate base image based on the project's requirements - replace ubuntu:latest with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM ubuntu:latest
+FROM node:10
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Fix for deprecated Debian Stretch repositories (node:10 is based on Stretch)
+RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \
+    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
+    sed -i '/stretch-updates/d' /etc/apt/sources.list
+
 # Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
 RUN apt-get update && apt-get install -y git
 
 # Ensure bash is available

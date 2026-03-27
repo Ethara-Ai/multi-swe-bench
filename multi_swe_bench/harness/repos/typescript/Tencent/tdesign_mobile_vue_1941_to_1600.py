@@ -147,6 +147,7 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh > /dev/null 2>&1 || true
 """
         return dockerfile_content.format(pr=self.pr)
 

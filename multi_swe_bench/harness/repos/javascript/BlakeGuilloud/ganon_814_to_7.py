@@ -100,25 +100,16 @@ npm test -- --verbose
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        dockerfile_content = """FROM ubuntu:22.04
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM ubuntu:22.04
-
-## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+RUN apt-get update && apt-get install -y git curl ca-certificates gnupg && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_16.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -128,6 +119,7 @@ RUN git clone https://github.com/BlakeGuilloud/ganon.git /home/ganon
 WORKDIR /home/ganon
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN npm install
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -135,6 +127,7 @@ RUN git checkout {pr.base.sha}
         return dockerfile_content.format(pr=self.pr)
 
 
+@Instance.register("BlakeGuilloud", "ganon")
 @Instance.register("BlakeGuilloud", "ganon_814_to_7")
 class GANON_814_TO_7(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):

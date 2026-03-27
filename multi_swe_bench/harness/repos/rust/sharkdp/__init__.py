@@ -5,3 +5,8 @@ from multi_swe_bench.harness.repos.rust.sharkdp.fd_1540_to_233 import *
 from multi_swe_bench.harness.repos.rust.sharkdp.fd_233_to_58 import *
 from multi_swe_bench.harness.repos.rust.sharkdp.bat_1938_to_1440 import *
 from multi_swe_bench.harness.repos.rust.sharkdp.bat_985_to_985 import *
+from multi_swe_bench.harness.repos.rust.sharkdp.fd_1781_to_41 import *
+from multi_swe_bench.harness.repos.rust.sharkdp.bat_981_to_74 import *
+from multi_swe_bench.harness.repos.rust.sharkdp.bat_1029_to_995 import *
+from multi_swe_bench.harness.repos.rust.sharkdp.bat_1268_to_1268 import *
+from multi_swe_bench.harness.repos.rust.sharkdp.bat_3432_to_2871 import *

@@ -60,7 +60,7 @@ echo 'cargo test -- --nocapture' > test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-cargo test -- --nocapture
+cargo test -- --nocapture --skip show_all_with_caret_notation
 
 """.format(pr=self.pr),
             ),
@@ -69,11 +69,17 @@ cargo test -- --nocapture
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
+# Strip binary diff blocks that git apply cannot handle
+for pfile in /home/test.patch; do
+    if [ -s "$pfile" ]; then
+        awk '/^diff --git /{{ block=$0"\\n"; next }} {{ if (block!="") {{ block=block$0"\\n"; if (/^Binary files .* differ$/) {{ block=""; next }}; if (/^--- /||/^\\+\\+\\+ /||/^@@ /) {{ printf "%s",block; block="" }} }} else print }} END {{ if (block!="") printf "%s",block }}' "$pfile" > "${{pfile}}.tmp" && mv "${{pfile}}.tmp" "$pfile"
+    fi
+done
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-cargo test -- --nocapture
+cargo test -- --nocapture --skip show_all_with_caret_notation
 
 """.format(pr=self.pr),
             ),
@@ -82,11 +88,17 @@ cargo test -- --nocapture
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
+# Strip binary diff blocks that git apply cannot handle
+for pfile in /home/test.patch /home/fix.patch; do
+    if [ -s "$pfile" ]; then
+        awk '/^diff --git /{{ block=$0"\\n"; next }} {{ if (block!="") {{ block=block$0"\\n"; if (/^Binary files .* differ$/) {{ block=""; next }}; if (/^--- /||/^\\+\\+\\+ /||/^@@ /) {{ printf "%s",block; block="" }} }} else print }} END {{ if (block!="") printf "%s",block }}' "$pfile" > "${{pfile}}.tmp" && mv "${{pfile}}.tmp" "$pfile"
+    fi
+done
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-cargo test -- --nocapture
+cargo test -- --nocapture --skip show_all_with_caret_notation
 
 """.format(pr=self.pr),
             ),

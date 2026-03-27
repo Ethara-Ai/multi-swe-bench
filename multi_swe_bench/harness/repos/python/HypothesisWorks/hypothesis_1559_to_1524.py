@@ -222,6 +222,15 @@ RUN git clone https://github.com/HypothesisWorks/hypothesis.git /home/hypothesis
 WORKDIR /home/hypothesis
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+RUN apt-get update && apt-get install -y wget curl build-essential zlib1g-dev libssl-dev libreadline-dev libsqlite3-dev libbz2-dev libffi-dev
+RUN sed -i 's/3.6.5/3.6.15/g' build.sh tooling/scripts/ensure-python.sh && \
+    sed -i 's/markupsafe==1.0/markupsafe>=1.0/g' requirements/tools.txt && \
+    sed -i 's/pygithub==1.40/pygithub>=1.43/g' requirements/tools.txt
+RUN ./build.sh test || true
+RUN bash -c 'source /tmp/.hypothesis-runtimes/virtualenvs/build-efbe04e210/bin/activate && \
+    pip install -e hypothesis-python && \
+    pip install numpy==1.19.5 faker --no-cache-dir'
 """
         dockerfile_content += f"""
 {copy_commands}

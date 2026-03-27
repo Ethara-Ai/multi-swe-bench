@@ -79,8 +79,18 @@ poetry run pytest -v tests docs/examples
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
+set -eo pipefail
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
+# Strip binary hunks from patches before applying
+python3 -c "
+import re, sys
+for f in sys.argv[1:]:
+    c = open(f).read()
+    c = re.sub(r'diff --git[^\\n]*\\n(?:(?:(?!diff --git).)*)GIT binary patch.*?(?=diff --git|\\Z)', '', c, flags=re.DOTALL)
+    c = re.sub(r'diff --git[^\\n]*\\n(?:(?:(?!diff --git).)*)Binary files[^\\n]*differ\\n?(?:(?:(?!diff --git).)*)(?=diff --git|\\Z)', '', c, flags=re.DOTALL)
+    open(f, 'w').write(c)
+" /home/test.patch
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='*.lock' /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
@@ -92,8 +102,18 @@ poetry run pytest -v tests docs/examples
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
+set -eo pipefail
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+# Strip binary hunks from patches before applying
+python3 -c "
+import re, sys
+for f in sys.argv[1:]:
+    c = open(f).read()
+    c = re.sub(r'diff --git[^\\n]*\\n(?:(?:(?!diff --git).)*)GIT binary patch.*?(?=diff --git|\\Z)', '', c, flags=re.DOTALL)
+    c = re.sub(r'diff --git[^\\n]*\\n(?:(?:(?!diff --git).)*)Binary files[^\\n]*differ\\n?(?:(?:(?!diff --git).)*)(?=diff --git|\\Z)', '', c, flags=re.DOTALL)
+    open(f, 'w').write(c)
+" /home/test.patch /home/fix.patch
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='*.lock' /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi

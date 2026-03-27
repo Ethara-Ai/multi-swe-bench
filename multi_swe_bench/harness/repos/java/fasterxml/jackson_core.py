@@ -8,6 +8,8 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 class JacksonCoreImageBase(Image):
+    """Base image for jackson-core v2.x PRs (JDK 8, Maven)."""
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -60,7 +62,64 @@ RUN apt-get install -y maven
 """
 
 
+class JacksonCoreImageBaseJDK17(Image):
+    """Base image for jackson-core v3.x PRs (JDK 17, Maven)."""
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return "ubuntu:22.04"
+
+    def image_tag(self) -> str:
+        return "base-jdk-17"
+
+    def workdir(self) -> str:
+        return "base-jdk-17"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        return f"""FROM {image_name}
+
+{self.global_env}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+WORKDIR /home/
+RUN apt-get update && apt-get install -y git openjdk-17-jdk
+RUN apt-get install -y maven
+
+{code}
+
+{self.clear_env}
+
+"""
+
+
 class JacksonCoreImageDefault(Image):
+    """PR image for jackson-core. Routes to JDK 8 or JDK 17 based on version."""
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -73,7 +132,24 @@ class JacksonCoreImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
+    def _parse_major_version(self) -> int:
+        """Extract major version from base.label.
+
+        Examples:
+            'jackson-core-2.16.1..jackson-core-2.16.2' -> 2
+            'jackson-core-3.0.1..jackson-core-3.0.2' -> 3
+            'jackson-core-2.9.0.pr4..jackson-core-2.9.1' -> 2
+        """
+        label = self.pr.base.label
+        m = re.search(r"jackson-core-(\d+)\.", label)
+        if m:
+            return int(m.group(1))
+        return 2  # default to v2.x
+
     def dependency(self) -> Image | None:
+        major = self._parse_major_version()
+        if major >= 3:
+            return JacksonCoreImageBaseJDK17(self.pr, self._config)
         return JacksonCoreImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -81,42 +157,6 @@ class JacksonCoreImageDefault(Image):
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
-
-    def old_version(self) -> str:
-        old_versions: dict[int, str] = {
-            729: "2.14.0-SNAPSHOT",
-            891: "2.15.0-SNAPSHOT",
-            922: "2.15.0-SNAPSHOT",
-            980: "2.15.0-rc3-SNAPSHOT",
-            1016: "2.16.0-SNAPSHOT",
-            1053: "2.16.0-SNAPSHOT",
-            1172: "2.17.0-SNAPSHOT",
-            1182: "2.17.0-SNAPSHOT",
-            1204: "2.17.0-SNAPSHOT",
-            1208: "2.17.0-SNAPSHOT",
-            1263: "2.18.0-SNAPSHOT",
-            1309: "2.17.2-SNAPSHOT",
-        }
-
-        return old_versions.get(self.pr.number, "2.15.0-rc2-SNAPSHOT")
-
-    def new_version(self) -> str:
-        new_versions: dict[int, str] = {
-            729: "2.14.4-SNAPSHOT",
-            891: "2.15.5-SNAPSHOT",
-            922: "2.15.5-SNAPSHOT",
-            980: "2.15.5-SNAPSHOT",
-            1016: "2.16.3-SNAPSHOT",
-            1053: "2.16.3-SNAPSHOT",
-            1172: "2.17.4-SNAPSHOT",
-            1182: "2.17.4-SNAPSHOT",
-            1204: "2.17.4-SNAPSHOT",
-            1208: "2.17.4-SNAPSHOT",
-            1263: "2.18.5-SNAPSHOT",
-            1309: "2.17.4-SNAPSHOT",
-        }
-
-        return new_versions.get(self.pr.number, "2.15.5-SNAPSHOT")
 
     def files(self) -> list[File]:
         return [
@@ -163,16 +203,9 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-file="/home/{pr.repo}/pom.xml"
-old_version="{old_version}"
-new_version="{new_version}"
-sed -i "s/$old_version/$new_version/g" "$file"
-
 mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false || true
 """.format(
                     pr=self.pr,
-                    old_version=self.old_version(),
-                    new_version=self.new_version(),
                 ),
             ),
             File(
@@ -287,205 +320,7 @@ mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false
 """
 
 
-class JacksonCoreImage980(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image | None:
-        return JacksonCoreImageBase(self.pr, self._config)
-
-    def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def old_version(self) -> str:
-        return "2.15.0-rc3-SNAPSHOT"
-
-    def new_version(self) -> str:
-        return "2.15.5-SNAPSHOT"
-
-    def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-file="/home/{pr.repo}/pom.xml"
-old_version="{old_version}"
-new_version="{new_version}"
-sed -i "s/$old_version/$new_version/g" "$file"
-
-mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false || true
-""".format(
-                    pr=self.pr,
-                    old_version=self.old_version(),
-                    new_version=self.new_version(),
-                ),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.fasterxml.jackson.failing.PerfBigDecimalToInteger968 -DfailIfNoTests=false -am
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.fasterxml.jackson.failing.PerfBigDecimalToInteger968 -DfailIfNoTests=false -am
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.fasterxml.jackson.failing.PerfBigDecimalToInteger968 -DfailIfNoTests=false -am
-
-""".format(pr=self.pr),
-            ),
-        ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
-
-        if self.global_env:
-            # Extract proxy host and port
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                RUN mkdir -p ~/.m2 && \\
-                    if [ ! -f ~/.m2/settings.xml ]; then \\
-                        echo '<?xml version="1.0" encoding="UTF-8"?>' > ~/.m2/settings.xml && \\
-                        echo '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"' >> ~/.m2/settings.xml && \\
-                        echo '          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"' >> ~/.m2/settings.xml && \\
-                        echo '          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">' >> ~/.m2/settings.xml && \\
-                        echo '</settings>' >> ~/.m2/settings.xml; \\
-                    fi && \\
-                    sed -i '$d' ~/.m2/settings.xml && \\
-                    echo '<proxies>' >> ~/.m2/settings.xml && \\
-                    echo '    <proxy>' >> ~/.m2/settings.xml && \\
-                    echo '        <id>example-proxy</id>' >> ~/.m2/settings.xml && \\
-                    echo '        <active>true</active>' >> ~/.m2/settings.xml && \\
-                    echo '        <protocol>http</protocol>' >> ~/.m2/settings.xml && \\
-                    echo '        <host>{proxy_host}</host>' >> ~/.m2/settings.xml && \\
-                    echo '        <port>{proxy_port}</port>' >> ~/.m2/settings.xml && \\
-                    echo '        <username></username>' >> ~/.m2/settings.xml && \\
-                    echo '        <password></password>' >> ~/.m2/settings.xml && \\
-                    echo '        <nonProxyHosts></nonProxyHosts>' >> ~/.m2/settings.xml && \\
-                    echo '    </proxy>' >> ~/.m2/settings.xml && \\
-                    echo '</proxies>' >> ~/.m2/settings.xml && \\
-                    echo '</settings>' >> ~/.m2/settings.xml
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN sed -i '/<proxies>/,/<\\/proxies>/d' ~/.m2/settings.xml
-                """
-                )
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{proxy_setup}
-
-{copy_commands}
-
-{prepare_commands}
-
-{proxy_cleanup}
-
-{self.clear_env}
-
-"""
-
-
-@Instance.register("fasterxml", "jackson-core")
+@Instance.register("FasterXML", "jackson-core")
 class JacksonCore(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -497,9 +332,6 @@ class JacksonCore(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        if self.pr.number == 980:
-            return JacksonCoreImage980(self.pr, self._config)
-
         return JacksonCoreImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:

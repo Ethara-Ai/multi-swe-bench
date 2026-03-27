@@ -24,7 +24,7 @@ class ImageDefault(Image):
         return "ubuntu:latest"
 
     def image_prefix(self) -> str:
-        return "envagent"
+        return "mswebench"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -153,8 +153,6 @@ pytest -v
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
 FROM ubuntu:latest
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
 
 # Install basic requirements
 # For example: RUN apt-get update && apt-get install -y git
@@ -176,6 +174,7 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh; exit 0
 """
         return dockerfile_content.format(pr=self.pr)
 

@@ -53,7 +53,7 @@ RUN npm install -g pnpm
 RUN apt-get update && \
     apt-get install -y gnupg curl wget ca-certificates lsb-release && \
     wget -qO - https://pgp.mongodb.com/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" \
+    echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" \
     > /etc/apt/sources.list.d/mongodb-org-7.0.list && \
     apt-get update && \
     apt-get install -y mongodb-org && \
@@ -189,6 +189,120 @@ exit 0
             ),
             File(
                 ".",
+                "strip_binary_diffs.py",
+                """#!/usr/bin/env python3
+\"\"\"Strip binary diffs from a patch file so git apply doesn't choke on them.\"\"\"
+import re
+import sys
+
+def strip_binary_diffs(patch_path):
+    with open(patch_path, 'r', errors='replace') as f:
+        content = f.read()
+
+    # Split into per-file diffs
+    diffs = re.split(r'(?=^diff --git )', content, flags=re.MULTILINE)
+    text_diffs = []
+    for diff in diffs:
+        if not diff.strip():
+            continue
+        # Skip diffs that contain binary markers
+        if 'Binary files' in diff or 'GIT binary patch' in diff:
+            continue
+        text_diffs.append(diff)
+
+    with open(patch_path, 'w') as f:
+        f.write('\\n'.join(text_diffs))
+
+if __name__ == '__main__':
+    for path in sys.argv[1:]:
+        strip_binary_diffs(path)
+""",
+            ),
+            File(
+                ".",
+                "start-mongo.sh",
+                """#!/bin/bash
+# Start MongoDB as a single-node replica set for integration tests.
+# The Payload int tests expect: mongodb://payload:payload@localhost:27018/payload?authSource=admin&directConnection=true&replicaSet=rs0
+
+set -e
+
+MONGO_PORT=27018
+MONGO_DB_PATH=/data/db
+MONGO_LOG=/var/log/mongod.log
+
+mkdir -p "$MONGO_DB_PATH"
+
+# Start mongod without auth first to create the user
+mongod --replSet rs0 --port $MONGO_PORT --dbpath "$MONGO_DB_PATH" --fork --logpath "$MONGO_LOG" --bind_ip_all --noauth
+
+# Wait for mongod to be ready
+for i in $(seq 1 30); do
+    if mongosh --port $MONGO_PORT --eval "db.runCommand({ping: 1})" > /dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+# Initiate replica set
+mongosh --port $MONGO_PORT --eval "
+try {
+    rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:$MONGO_PORT'}]});
+} catch(e) {
+    // Already initiated
+    print('Replica set already initiated or error: ' + e);
+}
+"
+
+# Wait for replica set to be ready
+for i in $(seq 1 30); do
+    if mongosh --port $MONGO_PORT --eval "rs.status().ok" 2>/dev/null | grep -q "1"; then
+        break
+    fi
+    sleep 1
+done
+
+# Create auth user
+mongosh --port $MONGO_PORT --eval "
+try {
+    db.getSiblingDB('admin').createUser({
+        user: 'payload',
+        pwd: 'payload',
+        roles: [{role: 'root', db: 'admin'}]
+    });
+} catch(e) {
+    // User might already exist
+    print('User creation: ' + e);
+}
+"
+
+# Restart with auth enabled
+mongosh --port $MONGO_PORT admin --eval "db.shutdownServer({force: true})" 2>/dev/null || true
+sleep 2
+
+mongod --replSet rs0 --port $MONGO_PORT --dbpath "$MONGO_DB_PATH" --fork --logpath "$MONGO_LOG" --bind_ip_all --auth --keyFile /dev/null 2>/dev/null || \
+mongod --replSet rs0 --port $MONGO_PORT --dbpath "$MONGO_DB_PATH" --fork --logpath "$MONGO_LOG" --bind_ip_all
+
+# Wait for mongod to be ready again
+for i in $(seq 1 15); do
+    if mongosh --port $MONGO_PORT -u payload -p payload --authenticationDatabase admin --eval "db.runCommand({ping: 1})" > /dev/null 2>&1; then
+        echo "MongoDB ready with auth on port $MONGO_PORT"
+        exit 0
+    fi
+    # Try without auth too (some versions don't support keyFile /dev/null)
+    if mongosh --port $MONGO_PORT --eval "db.runCommand({ping: 1})" > /dev/null 2>&1; then
+        echo "MongoDB ready (no auth) on port $MONGO_PORT"
+        exit 0
+    fi
+    sleep 1
+done
+
+echo "MongoDB started on port $MONGO_PORT (auth may not be enforced)"
+exit 0
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
@@ -205,6 +319,9 @@ nvm install || true
 nvm use || true
 pnpm install || true
 
+# Pre-build packages needed for integration tests
+pnpm build || true
+
 """.format(pr=self.pr),
             ),
             File(
@@ -215,10 +332,24 @@ set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
+# Start MongoDB for integration tests
+bash /home/start-mongo.sh || true
+
 cd /home/{pr.repo}
 nvm use || true
 pnpm install || true
-pnpm test:unit
+
+# Run unit tests
+pnpm test:unit || true
+
+# Run integration tests (MongoDB)
+export DISABLE_LOGGING=true
+export NODE_OPTIONS="--no-deprecation --no-experimental-strip-types"
+export NODE_NO_WARNINGS=1
+pnpm vitest run --project int 2>/dev/null || true
+
+# Ensure at least one test suite produced output
+echo "=== Test run complete ==="
 """.format(pr=self.pr),
             ),
             File(
@@ -229,11 +360,31 @@ set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
+# Start MongoDB for integration tests
+bash /home/start-mongo.sh || true
+
 cd /home/{pr.repo}
+
+# Strip binary diffs from patches before applying
+python3 /home/strip_binary_diffs.py /home/test.patch
+
 git apply --whitespace=nowarn /home/test.patch
 nvm use || true
 pnpm install || true
-pnpm test:unit
+
+# Rebuild after applying test patch (int tests need compiled packages)
+pnpm build || true
+
+# Run unit tests
+pnpm test:unit || true
+
+# Run integration tests (MongoDB)
+export DISABLE_LOGGING=true
+export NODE_OPTIONS="--no-deprecation --no-experimental-strip-types"
+export NODE_NO_WARNINGS=1
+pnpm vitest run --project int 2>/dev/null || true
+
+echo "=== Test run complete ==="
 """.format(pr=self.pr),
             ),
             File(
@@ -244,11 +395,31 @@ set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
+# Start MongoDB for integration tests
+bash /home/start-mongo.sh || true
+
 cd /home/{pr.repo}
+
+# Strip binary diffs from patches before applying
+python3 /home/strip_binary_diffs.py /home/test.patch /home/fix.patch
+
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 nvm use || true
 pnpm install || true
-pnpm test:unit
+
+# Rebuild after applying patches (int tests need compiled packages)
+pnpm build || true
+
+# Run unit tests
+pnpm test:unit || true
+
+# Run integration tests (MongoDB)
+export DISABLE_LOGGING=true
+export NODE_OPTIONS="--no-deprecation --no-experimental-strip-types"
+export NODE_NO_WARNINGS=1
+pnpm vitest run --project int 2>/dev/null || true
+
+echo "=== Test run complete ==="
 """.format(pr=self.pr),
             ),
         ]

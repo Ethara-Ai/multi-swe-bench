@@ -139,6 +139,8 @@ WORKDIR /home/farmblocks
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
 RUN yarn install
+RUN npx lerna bootstrap --no-ci || true
+RUN npx lerna run build || true
 """
         dockerfile_content += f"""
 {copy_commands}

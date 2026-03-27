@@ -121,6 +121,14 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
+# If go.mod does not exist (pre-module era), initialize Go modules
+if [ ! -f go.mod ]; then
+    echo "No go.mod found, initializing Go modules..."
+    go mod init github.com/labstack/echo
+    go get ./... || true
+    go mod tidy || true
+fi
+
 go test -v -count=1 ./... || true
 
 """.format(pr=self.pr),
@@ -132,7 +140,7 @@ go test -v -count=1 ./... || true
 set -e
 
 cd /home/{pr.repo}
-go test -v -count=1 ./...
+timeout --signal=KILL 540 go test -v -count=1 -timeout 240s ./...
 
 """.format(pr=self.pr),
             ),
@@ -143,8 +151,8 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
-go test -v -count=1 ./...
+git apply --3way --whitespace=nowarn /home/test.patch
+timeout --signal=KILL 540 go test -v -count=1 -timeout 240s ./...
 
 """.format(pr=self.pr),
             ),
@@ -155,8 +163,8 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
-go test -v -count=1 ./...
+git apply --3way --whitespace=nowarn /home/test.patch /home/fix.patch
+timeout --signal=KILL 540 go test -v -count=1 -timeout 240s ./...
 
 """.format(pr=self.pr),
             ),

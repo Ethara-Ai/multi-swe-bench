@@ -117,13 +117,7 @@ FROM ubuntu:latest
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+RUN apt-get update && apt-get install -y git nodejs npm
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -133,6 +127,7 @@ RUN git clone https://github.com/iamkun/dayjs.git /home/dayjs
 WORKDIR /home/dayjs
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN npm install --legacy-peer-deps || npm install --force || true
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -209,6 +204,8 @@ class DAYJS_766_TO_259(Instance):
             "failed_tests": failed_tests,
             "skipped_tests": skipped_tests,
         }
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

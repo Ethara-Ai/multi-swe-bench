@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.9-slim"
+        return "python:3.11-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -48,43 +48,19 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -la
-###ACTION_DELIMITER###
-make install
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y make
-###ACTION_DELIMITER###
-make install
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y python3.10 python3.10-dev python3.10-pip
-###ACTION_DELIMITER###
-echo 'deb http://deb.debian.org/debian bullseye-backports main' >> /etc/apt/sources.list && apt-get update && apt-get install -y -t bullseye-backports python3.10 python3.10-dev python3.10-pip
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y python3.11 python3.11-dev python3.11-pip
-###ACTION_DELIMITER###
-sed -i '/bullseye-backports/d' /etc/apt/sources.list && apt-get update && apt-get install -y python3.11 python3.11-dev python3.11-pip
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y python3.11 python3.11-dev && python3.11 -m ensurepip --upgrade
-###ACTION_DELIMITER###
-apt-get install -y python3.11-venv && python3.11 -m ensurepip --upgrade
-###ACTION_DELIMITER###
-apt-get install -y python3-pip
-###ACTION_DELIMITER###
-pip3.11 install -e .[dev]
-###ACTION_DELIMITER###
-python3.11 -m venv venv && source venv/bin/activate && pip install -e .[dev]
-###ACTION_DELIMITER###
-echo -e '#!/bin/bash
+                """#!/bin/bash
+set -e
+apt-get update && apt-get install -y gcc g++ make python3-dev
+python3 -m venv venv
 source venv/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install -e .[dev]
+pip install coverage pytest
+echo '#!/bin/bash
+source /home/policyengine-us/venv/bin/activate
 coverage run -a --branch -m policyengine_core.scripts.policyengine_command test policyengine_us/tests/policy/ -c policyengine_us
 coverage xml -i
-pytest -v policyengine_us/tests/ --maxfail=0' > test_commands.sh && chmod +x test_commands.sh
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-source venv/bin/activate && pip install coverage
-###ACTION_DELIMITER###
-bash test_commands.sh""",
+pytest -v policyengine_us/tests/ --maxfail=0' > test_commands.sh && chmod +x test_commands.sh""",
             ),
             File(
                 ".",
@@ -146,16 +122,13 @@ pytest -v policyengine_us/tests/ --maxfail=0
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git libhdf5-dev
+RUN apt-get update && apt-get install -y git libhdf5-dev gcc g++ make python3-dev
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi

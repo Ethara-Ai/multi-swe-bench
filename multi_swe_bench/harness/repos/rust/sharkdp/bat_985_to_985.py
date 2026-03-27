@@ -79,6 +79,12 @@ cargo test --verbose
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
+# Strip binary diff blocks that git apply cannot handle
+for pfile in /home/test.patch; do
+    if [ -s "$pfile" ]; then
+        awk '/^diff --git /{{ block=$0"\\n"; next }} {{ if (block!="") {{ block=block$0"\\n"; if (/^Binary files .* differ$/) {{ block=""; next }}; if (/^--- /||/^\\+\\+\\+ /||/^@@ /) {{ printf "%s",block; block="" }} }} else print }} END {{ if (block!="") printf "%s",block }}' "$pfile" > "${{pfile}}.tmp" && mv "${{pfile}}.tmp" "$pfile"
+    fi
+done
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
@@ -92,6 +98,12 @@ cargo test --verbose
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
+# Strip binary diff blocks that git apply cannot handle
+for pfile in /home/test.patch /home/fix.patch; do
+    if [ -s "$pfile" ]; then
+        awk '/^diff --git /{{ block=$0"\\n"; next }} {{ if (block!="") {{ block=block$0"\\n"; if (/^Binary files .* differ$/) {{ block=""; next }}; if (/^--- /||/^\\+\\+\\+ /||/^@@ /) {{ printf "%s",block; block="" }} }} else print }} END {{ if (block!="") printf "%s",block }}' "$pfile" > "${{pfile}}.tmp" && mv "${{pfile}}.tmp" "$pfile"
+    fi
+done
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
@@ -122,7 +134,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # For example: RUN apt-get update && apt-get install -y git
 # For example: RUN yum install -y git
 # For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
+RUN apt-get update && apt-get install -y git libclang-dev
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi

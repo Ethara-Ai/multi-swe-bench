@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.9-slim"
+        return "python:3.11-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -48,34 +48,11 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -la
-###ACTION_DELIMITER###
-make install
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y make
-###ACTION_DELIMITER###
-make install
-###ACTION_DELIMITER###
-make test
-###ACTION_DELIMITER###
-pip install matplotlib
-###ACTION_DELIMITER###
-make test
-###ACTION_DELIMITER###
-pip install taxcalc
-###ACTION_DELIMITER###
-pip install numpy==1.24.4
-###ACTION_DELIMITER###
-pip install --upgrade policyengine-core
-###ACTION_DELIMITER###
-pip install taxcalc==5.0.0
-###ACTION_DELIMITER###
-make test
-###ACTION_DELIMITER###
-pip install taxcalc==4.0.0
-###ACTION_DELIMITER###
-make test
-###ACTION_DELIMITER###
+                """#!/bin/bash
+set -e
+pip install --upgrade pip setuptools wheel
+pip install -e .[dev]
+pip install 'numpy<2.0' behresp coverage pytest matplotlib taxcalc
 echo -e '#!/bin/bash
 set -e
 coverage run -a --branch -m policyengine_core.scripts.policyengine_command test policyengine_us/tests/policy/ -c policyengine_us
@@ -142,16 +119,13 @@ pytest policyengine_us/tests/ --maxfail=0 -v -rA --no-header
 
 # Choose an appropriate base image based on the project's requirements - replace python:3.9-slim with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
+RUN apt-get update && apt-get install -y git gcc g++ make python3-dev libhdf5-dev
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi

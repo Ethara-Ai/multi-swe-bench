@@ -141,6 +141,8 @@ RUN git checkout {pr.base.sha}
 RUN apt-get update && apt-get install -y nodejs npm curl
 RUN npm install -g yarn
 RUN yarn install
+RUN npx lerna bootstrap --no-ci || true
+RUN npx lerna run build || true
 """
         dockerfile_content += f"""
 {copy_commands}

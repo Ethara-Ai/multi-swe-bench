@@ -63,7 +63,6 @@ from multi_swe_bench.harness.repos.python.beetbox import *
 from multi_swe_bench.harness.repos.python.planetlabs import *
 from multi_swe_bench.harness.repos.python.Textualize import *
 from multi_swe_bench.harness.repos.python.pints_team import *
-from multi_swe_bench.harness.repos.python.psf import *
 from multi_swe_bench.harness.repos.python.getsentry import *
 from multi_swe_bench.harness.repos.python.python_cmd2 import *
 from multi_swe_bench.harness.repos.python.UXARRAY import *
@@ -95,7 +94,6 @@ from multi_swe_bench.harness.repos.python.nipy import *
 from multi_swe_bench.harness.repos.python.BoboTiG import *
 from multi_swe_bench.harness.repos.python.hdmf_dev import *
 from multi_swe_bench.harness.repos.python.astropy import *
-from multi_swe_bench.harness.repos.python.google import *
 from multi_swe_bench.harness.repos.python.sanic_org import *
 from multi_swe_bench.harness.repos.python.All_Hands_AI import *
 from multi_swe_bench.harness.repos.python.huggingface import *
@@ -157,7 +155,6 @@ from multi_swe_bench.harness.repos.python.shakenfist import *
 from multi_swe_bench.harness.repos.python.stac_utils import *
 from multi_swe_bench.harness.repos.python.streamlit import *
 from multi_swe_bench.harness.repos.python.statsmodels import *
-from multi_swe_bench.harness.repos.python.dask import *
 from multi_swe_bench.harness.repos.python.pybamm_team import *
 from multi_swe_bench.harness.repos.python.nilearn import *
 from multi_swe_bench.harness.repos.python.ibis_project import *
@@ -193,9 +190,7 @@ from multi_swe_bench.harness.repos.python.PyCQA import *
 from multi_swe_bench.harness.repos.python.PrefectHQ import *
 from multi_swe_bench.harness.repos.python.Ouranosinc import *
 from multi_swe_bench.harness.repos.python.DataBiosphere import *
-from multi_swe_bench.harness.repos.python.mne_tools import *
 from multi_swe_bench.harness.repos.python.catalystneuro import *
-from multi_swe_bench.harness.repos.python.Qiskit import *
 from multi_swe_bench.harness.repos.python.amaranth_lang import *
 from multi_swe_bench.harness.repos.python.ManimCommunity import *
 from multi_swe_bench.harness.repos.python.cal_itp import *
@@ -206,7 +201,6 @@ from multi_swe_bench.harness.repos.python.SatelliteQE import *
 from multi_swe_bench.harness.repos.python.sql_machine_learning import *
 from multi_swe_bench.harness.repos.python.theupdateframework import *
 from multi_swe_bench.harness.repos.python.buildbot import *
-from multi_swe_bench.harness.repos.python.cal_itp import *
 from multi_swe_bench.harness.repos.python.exercism import *
 from multi_swe_bench.harness.repos.python.fonttools import *
 from multi_swe_bench.harness.repos.python.fetchai import *
@@ -223,7 +217,6 @@ from multi_swe_bench.harness.repos.python.privacyidea import *
 from multi_swe_bench.harness.repos.python.PyGithub import *
 from multi_swe_bench.harness.repos.python.pywbem import *
 from multi_swe_bench.harness.repos.python.ReliaQualAssociates import *
-from multi_swe_bench.harness.repos.python.SciTools import *
 from multi_swe_bench.harness.repos.python.sourmash_bio import *
 from multi_swe_bench.harness.repos.python.sul_dlss import *
 from multi_swe_bench.harness.repos.python.dstackai import *
@@ -233,10 +226,8 @@ from multi_swe_bench.harness.repos.python.oceanprotocol import *
 from multi_swe_bench.harness.repos.python.pytroll import *
 from multi_swe_bench.harness.repos.python.camel_ai import *
 from multi_swe_bench.harness.repos.python.cobbler import *
-from multi_swe_bench.harness.repos.python.alteryx import *
 from multi_swe_bench.harness.repos.python.enthought import *
 from multi_swe_bench.harness.repos.python.databrickslabs import *
-from multi_swe_bench.harness.repos.python.bigchaindb import *
 from multi_swe_bench.harness.repos.python.DiamondLightSource import *
 from multi_swe_bench.harness.repos.python.distributed_system_analysis import *
 from multi_swe_bench.harness.repos.python.networktocode import *
@@ -257,8 +248,6 @@ from multi_swe_bench.harness.repos.python.kids_first import *
 from multi_swe_bench.harness.repos.python.OCR_D import *
 from multi_swe_bench.harness.repos.python.pyca import *
 from multi_swe_bench.harness.repos.python.open_formulieren import *
-from multi_swe_bench.harness.repos.python.fecgov import *
-from multi_swe_bench.harness.repos.python.kserve import *
 from multi_swe_bench.harness.repos.python.OpenMDAO import *
 from multi_swe_bench.harness.repos.python.saleor import *
 from multi_swe_bench.harness.repos.python.django_cms import *
@@ -270,35 +259,21 @@ from multi_swe_bench.harness.repos.python.pyodide import *
 from multi_swe_bench.harness.repos.python.griptape_ai import *
 from multi_swe_bench.harness.repos.python.conda import *
 from multi_swe_bench.harness.repos.python.jazzband import *
-from multi_swe_bench.harness.repos.python.griptape_ai import *
 from multi_swe_bench.harness.repos.python.chainer import *
 from multi_swe_bench.harness.repos.python.keephq import *
-from multi_swe_bench.harness.repos.python.distributed_system_analysis import *
-from multi_swe_bench.harness.repos.python.bcgov import *
-from multi_swe_bench.harness.repos.python.ethyca import *
-from multi_swe_bench.harness.repos.python.fetchai import *
 from multi_swe_bench.harness.repos.python.cogent3 import *
-from multi_swe_bench.harness.repos.python.cobbler import *
 from multi_swe_bench.harness.repos.python.JustFixNYC import *
 from multi_swe_bench.harness.repos.python.mitodl import *
 from multi_swe_bench.harness.repos.python.pyinstaller import *
 from multi_swe_bench.harness.repos.python.aeon_toolkit import *
 from multi_swe_bench.harness.repos.python.dandi import *
-from multi_swe_bench.harness.repos.python.keephq import *
 from multi_swe_bench.harness.repos.python.natcap import *
 from multi_swe_bench.harness.repos.python.celery import *
 from multi_swe_bench.harness.repos.python.catalyst_cooperative import *
-from multi_swe_bench.harness.repos.python.jazzband import *
-from multi_swe_bench.harness.repos.python.mitodl import *
 from multi_swe_bench.harness.repos.python.mindsdb import *
-from multi_swe_bench.harness.repos.python.allenai import *
 from multi_swe_bench.harness.repos.python.fractal_analytics_platform import *
-from multi_swe_bench.harness.repos.python.freedomofpress import *
-from multi_swe_bench.harness.repos.python.opensafely_core import *
 from multi_swe_bench.harness.repos.python.OpenSlides import *
-from multi_swe_bench.harness.repos.python.Qiskit import *
 from multi_swe_bench.harness.repos.python.secdev import *
-from multi_swe_bench.harness.repos.python.silx_kit import *
 from multi_swe_bench.harness.repos.python.Theano import *
 from multi_swe_bench.harness.repos.python.databricks import *
 from multi_swe_bench.harness.repos.python.cta_observatory import *
@@ -308,5 +283,10 @@ from multi_swe_bench.harness.repos.python.scottcjn import *
 from multi_swe_bench.harness.repos.python.commaai import *
 from multi_swe_bench.harness.repos.python.fastapi import *
 from multi_swe_bench.harness.repos.python.explosion import *
+from multi_swe_bench.harness.repos.python.locustio import *
+from multi_swe_bench.harness.repos.python.nedbat import *
 from multi_swe_bench.harness.repos.python.pandas_dev import *
+from multi_swe_bench.harness.repos.python.litestar_org import *
+
+# from multi_swe_bench.harness.repos.python.pandas_dev import *  # directory missing
 from multi_swe_bench.harness.repos.python.locustio import *

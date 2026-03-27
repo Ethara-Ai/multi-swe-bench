@@ -7,7 +7,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -24,7 +24,62 @@ class ImageDefault(Image):
         return "python:3.11-slim"
 
     def image_prefix(self) -> str:
-        return "envagent"
+        return "mswebench"
+
+    def image_tag(self) -> str:
+        return "base-py311"
+
+    def workdir(self) -> str:
+        return "base-py311"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        return f"""FROM {image_name}
+
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
+RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y --no-install-recommends bash && rm -rf /var/lib/apt/lists/*;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+
+WORKDIR /home/
+
+{self.global_env}
+
+{code}
+
+{self.clear_env}
+
+"""
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Optional[Image]:
+        return ImageBase(self.pr, self.config)
+
+    def image_prefix(self) -> str:
+        return "mswebench"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -47,7 +102,11 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls
+                """git reset --hard
+###ACTION_DELIMITER###
+git checkout {pr.base.sha}
+###ACTION_DELIMITER###
+ls
 ###ACTION_DELIMITER###
 pip install -r test_requirements.txt
 ###ACTION_DELIMITER###
@@ -61,7 +120,7 @@ pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
 pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
 coverage report' > test_commands.sh
 ###ACTION_DELIMITER###
-bash test_commands.sh""",
+bash test_commands.sh""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -113,43 +172,27 @@ coverage report
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        prepare_commands = "RUN bash /home/prepare.sh"
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.11-slim
+        return f"""FROM {name}:{tag}
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
+{self.global_env}
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/psf/black.git /home/black
-
-WORKDIR /home/black
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+
+{prepare_commands}
+
+{self.clear_env}
+
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("psf", "black_4680_to_2690")

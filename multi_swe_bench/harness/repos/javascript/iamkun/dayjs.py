@@ -138,7 +138,7 @@ npm install --legacy-peer-deps || npm install --force || true
 set -e
 
 cd /home/{pr.repo}
-npm test -- --verbose && codecov 
+npm test -- --verbose
 """.format(pr=self.pr),
             ),
             File(
@@ -149,7 +149,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-npm test -- --verbose && codecov 
+npm test -- --verbose
 
 """.format(pr=self.pr),
             ),
@@ -161,7 +161,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-npm test -- --verbose && codecov 
+npm test -- --verbose 
 
 """.format(pr=self.pr),
             ),
@@ -266,6 +266,8 @@ class Dayjs(Instance):
 
                 test = f"{current_suite}:{fail_test_match.group(1)}"
                 failed_tests.add(test)
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

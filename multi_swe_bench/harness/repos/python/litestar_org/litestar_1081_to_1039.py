@@ -1,0 +1,266 @@
+import re
+import json
+from typing import Optional, Union
+
+from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.instance import Instance, TestResult
+from multi_swe_bench.harness.pull_request import PullRequest
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        return "python:3.10-slim"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def files(self) -> list[File]:
+        repo_name = self.pr.repo
+        return [
+            File(
+                ".",
+                "fix.patch",
+                f"{self.pr.fix_patch}",
+            ),
+            File(
+                ".",
+                "test.patch",
+                f"{self.pr.test_patch}",
+            ),
+            File(
+                ".",
+                "prepare.sh",
+                """ls -la
+###ACTION_DELIMITER###
+pip install poetry
+###ACTION_DELIMITER###
+poetry lock || true
+###ACTION_DELIMITER###
+poetry install --with dev
+###ACTION_DELIMITER###
+echo 'poetry run pytest -v' > test_commands.sh
+###ACTION_DELIMITER###
+echo -e '#!/bin/bash
+poetry run pytest -v --no-header -rA --tb=no -p no:cacheprovider' > test_commands.sh
+###ACTION_DELIMITER###
+chmod +x test_commands.sh""",
+            ),
+            File(
+                ".",
+                "run.sh",
+                """#!/bin/bash
+set -eo pipefail
+cd /home/[[REPO_NAME]]
+poetry run pytest -v --no-header -rA --tb=no -p no:cacheprovider
+
+""".replace("[[REPO_NAME]]", repo_name),
+            ),
+            File(
+                ".",
+                "test-run.sh",
+                """#!/bin/bash
+set -eo pipefail
+cd /home/[[REPO_NAME]]
+# Strip binary hunks from patches before applying
+python3 -c "
+import re, sys
+for f in sys.argv[1:]:
+    c = open(f).read()
+    c = re.sub(r'diff --git[^\\n]*\\n(?:(?:(?!diff --git).)*)GIT binary patch.*?(?=diff --git|\\Z)', '', c, flags=re.DOTALL)
+    c = re.sub(r'diff --git[^\\n]*\\n(?:(?:(?!diff --git).)*)Binary files[^\\n]*differ\\n?(?:(?:(?!diff --git).)*)(?=diff --git|\\Z)', '', c, flags=re.DOTALL)
+    open(f, 'w').write(c)
+" /home/test.patch
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='*.lock' /home/test.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1  
+fi
+poetry run pytest -v --no-header -rA --tb=no -p no:cacheprovider
+
+""".replace("[[REPO_NAME]]", repo_name),
+            ),
+            File(
+                ".",
+                "fix-run.sh",
+                """#!/bin/bash
+set -eo pipefail
+cd /home/[[REPO_NAME]]
+# Strip binary hunks from patches before applying
+python3 -c "
+import re, sys
+for f in sys.argv[1:]:
+    c = open(f).read()
+    c = re.sub(r'diff --git[^\\n]*\\n(?:(?:(?!diff --git).)*)GIT binary patch.*?(?=diff --git|\\Z)', '', c, flags=re.DOTALL)
+    c = re.sub(r'diff --git[^\\n]*\\n(?:(?:(?!diff --git).)*)Binary files[^\\n]*differ\\n?(?:(?:(?!diff --git).)*)(?=diff --git|\\Z)', '', c, flags=re.DOTALL)
+    open(f, 'w').write(c)
+" /home/test.patch /home/fix.patch
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='*.lock' /home/test.patch /home/fix.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1  
+fi
+poetry run pytest -v --no-header -rA --tb=no -p no:cacheprovider
+
+""".replace("[[REPO_NAME]]", repo_name),
+            ),
+        ]
+
+    def dockerfile(self) -> str:
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
+
+        dockerfile_content = """
+# This is a template for creating a Dockerfile to test patches
+# LLM should fill in the appropriate values based on the context
+
+# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
+# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
+FROM python:3.10-slim
+
+## Set noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install basic requirements
+# For example: RUN apt-get update && apt-get install -y git
+# For example: RUN yum install -y git
+# For example: RUN apk add --no-cache git
+RUN apt-get update && apt-get install -y git build-essential cmake
+
+# Ensure bash is available
+RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+
+WORKDIR /home/
+COPY fix.patch /home/
+COPY test.patch /home/
+RUN git clone https://github.com/litestar-org/litestar.git /home/litestar
+
+WORKDIR /home/litestar
+RUN git reset --hard
+RUN git checkout {pr.base.sha}
+
+# Install dependencies
+RUN pip install poetry
+RUN poetry lock || true
+RUN poetry install --with dev
+"""
+        dockerfile_content += f"""
+{copy_commands}
+"""
+        return dockerfile_content.format(pr=self.pr)
+
+
+@Instance.register("litestar-org", "litestar_1081_to_1039")
+class LITESTAR_1081_TO_1039(Instance):
+    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
+        super().__init__()
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    def dependency(self) -> Optional[Image]:
+        return ImageDefault(self.pr, self._config)
+
+    def run(self, run_cmd: str = "") -> str:
+        if run_cmd:
+            return run_cmd
+
+        return "bash /home/run.sh"
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+        if test_patch_run_cmd:
+            return test_patch_run_cmd
+
+        return "bash /home/test-run.sh"
+
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+        if fix_patch_run_cmd:
+            return fix_patch_run_cmd
+
+        return "bash /home/fix-run.sh"
+
+    def parse_log(self, test_log: str) -> TestResult:
+        log = test_log
+        # Parse the log content and extract test execution results.
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
+        passed_tests = set()  # Tests that passed successfully
+        failed_tests = set()  # Tests that failed
+        skipped_tests = set()  # Tests that were skipped
+
+        # Regex patterns to match test cases and their statuses (captures full test names)
+        # Pattern 1: Test name followed by status (e.g., "tests/...py::... PASSED [  0%]")
+        pattern_test_first = re.compile(
+            r"(tests/.*?\.py::[^\s]+)\s+(PASSED|FAILED|SKIPPED|XFAIL|ERROR).*"
+        )
+        # Pattern 2: Status followed by test name (e.g., "PASSED tests/...py::...")
+        pattern_status_first = re.compile(
+            r"(PASSED|FAILED|SKIPPED|XFAIL|ERROR).*?\s+(tests/.*?\.py::[^\s]+).*"
+        )
+        # Pattern 3: Collection errors (e.g., "ERROR tests/...py - ...")
+        pattern_collection_error = re.compile(
+            r"ERROR\s+(tests/.*?\.py)(?:\s+-\s+.*)?$"
+        )
+        # Split the log into lines
+        lines = log.split("\n")
+        for line in lines:
+            line = line.strip()
+            # Check for test name first pattern
+            for match in pattern_test_first.findall(line):
+                test_name, status = match
+                if test_name.startswith("tests/"):
+                    if status == "PASSED":
+                        passed_tests.add(test_name)
+                    elif status in ("FAILED", "ERROR"):
+                        failed_tests.add(test_name)
+                    elif status == "SKIPPED":
+                        skipped_tests.add(test_name)
+            # Check for status first pattern
+            for match in pattern_status_first.findall(line):
+                status, test_name = match
+                if test_name.startswith("tests/"):
+                    if status == "PASSED":
+                        passed_tests.add(test_name)
+                    elif status in ("FAILED", "ERROR"):
+                        failed_tests.add(test_name)
+                    elif status == "SKIPPED":
+                        skipped_tests.add(test_name)
+            # Check for collection errors (ERROR tests/foo.py - SomeError)
+            match = pattern_collection_error.match(line)
+            if match:
+                test_name = match.group(1)
+                if test_name.startswith("tests/"):
+                    failed_tests.add(test_name)
+        passed_tests -= failed_tests
+        parsed_results = {
+            "passed_tests": passed_tests,
+            "failed_tests": failed_tests,
+            "skipped_tests": skipped_tests,
+        }
+
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
+        )

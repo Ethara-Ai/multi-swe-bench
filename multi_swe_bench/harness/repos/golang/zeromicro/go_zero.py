@@ -132,6 +132,7 @@ go test -v -count=1 ./... || true
 set -e
 
 cd /home/{pr.repo}
+go mod tidy
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -143,7 +144,8 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --exclude='doc/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.pdf' /home/test.patch
+go mod tidy
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -155,7 +157,8 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --exclude='doc/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.pdf' /home/test.patch /home/fix.patch
+go mod tidy
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -243,31 +246,38 @@ class GoZero(Instance):
                 pass_match = re_pass_test.match(line)
                 if pass_match:
                     test_name = pass_match.group(1)
-                    if test_name in failed_tests:
+                    base_name = get_base_name(test_name)
+                    if base_name in failed_tests:
                         continue
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    passed_tests.add(get_base_name(test_name))
+                    if base_name in skipped_tests:
+                        skipped_tests.remove(base_name)
+                    passed_tests.add(base_name)
 
             for re_fail_test in re_fail_tests:
                 fail_match = re_fail_test.match(line)
                 if fail_match:
                     test_name = fail_match.group(1)
-                    if test_name in passed_tests:
-                        passed_tests.remove(test_name)
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    failed_tests.add(get_base_name(test_name))
+                    base_name = get_base_name(test_name)
+                    if base_name in passed_tests:
+                        passed_tests.remove(base_name)
+                    if base_name in skipped_tests:
+                        skipped_tests.remove(base_name)
+                    failed_tests.add(base_name)
 
             for re_skip_test in re_skip_tests:
                 skip_match = re_skip_test.match(line)
                 if skip_match:
                     test_name = skip_match.group(1)
-                    if test_name in passed_tests:
+                    base_name = get_base_name(test_name)
+                    if base_name in passed_tests:
                         continue
-                    if test_name not in failed_tests:
+                    if base_name not in failed_tests:
                         continue
-                    skipped_tests.add(get_base_name(test_name))
+                    skipped_tests.add(base_name)
+
+        # Safety net: if a test appears in both passed and failed (e.g. same
+        # test name in different packages), prefer the failure signal.
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

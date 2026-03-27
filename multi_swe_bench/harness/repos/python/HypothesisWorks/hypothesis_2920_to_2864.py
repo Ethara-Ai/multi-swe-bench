@@ -130,6 +130,9 @@ RUN git clone https://github.com/HypothesisWorks/hypothesis.git /home/hypothesis
 WORKDIR /home/hypothesis
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+RUN pip install -e ./hypothesis-python[all] && \
+    pip install pexpect fakeredis 'numpy<2.0'
 """
         dockerfile_content += f"""
 {copy_commands}

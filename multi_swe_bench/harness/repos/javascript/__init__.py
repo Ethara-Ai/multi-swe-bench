@@ -2,6 +2,7 @@ from multi_swe_bench.harness.repos.javascript.anuraghazra import *
 from multi_swe_bench.harness.repos.javascript.Automattic import *
 from multi_swe_bench.harness.repos.javascript.axios import *
 from multi_swe_bench.harness.repos.javascript.caolan import *
+from multi_swe_bench.harness.repos.javascript.chaijs import *
 from multi_swe_bench.harness.repos.javascript.expressjs import *
 from multi_swe_bench.harness.repos.javascript.fastify import *
 from multi_swe_bench.harness.repos.javascript.google import *
@@ -82,6 +83,8 @@ from multi_swe_bench.harness.repos.javascript.webpack.webpack import *
 from multi_swe_bench.harness.repos.javascript.alam00000 import *
 from multi_swe_bench.harness.repos.javascript.exercism import *
 from multi_swe_bench.harness.repos.javascript.jsx_eslint import *
+from multi_swe_bench.harness.repos.javascript.koajs import *
 from multi_swe_bench.harness.repos.javascript.markedjs import *
 from multi_swe_bench.harness.repos.javascript.acornjs import *
 from multi_swe_bench.harness.repos.javascript.videojs import *
+from multi_swe_bench.harness.repos.javascript.hapijs import *

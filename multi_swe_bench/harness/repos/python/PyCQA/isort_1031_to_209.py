@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.10-slim"
+        return "python:3.9-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -47,7 +47,8 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls
+                """export SETUPTOOLS_USE_DISTUTILS=stdlib
+ls
 ###ACTION_DELIMITER###
 pip install -r requirements.txt
 ###ACTION_DELIMITER###
@@ -113,10 +114,11 @@ pytest -v
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.10-slim
+FROM python:3.9-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
+ENV SETUPTOOLS_USE_DISTUTILS=stdlib
 
 # Install basic requirements
 # For example: RUN apt-get update && apt-get install -y git
@@ -183,9 +185,9 @@ class ISORT_1031_TO_209(Instance):
         import json
 
         # Use regex to find test cases and their statuses
-        pattern_exec = re.compile(r"test_isort\.py::(test_\w+) (PASSED|FAILED|SKIPPED)")
+        pattern_exec = re.compile(r"test_isort\.py::(test_\w+(?:\[.*?\])?) (PASSED|FAILED|SKIPPED)")
         pattern_summary = re.compile(
-            r"(PASSED|FAILED|SKIPPED) test_isort\.py::(test_\w+)"
+            r"(PASSED|FAILED|SKIPPED) test_isort\.py::(test_\w+(?:\[.*?\])?)"
         )
         # Process execution lines
         matches_exec = pattern_exec.findall(log)
