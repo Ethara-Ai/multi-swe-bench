@@ -1,6 +1,6 @@
 import re
 import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -21,16 +21,16 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.11-slim"
+        return "ubuntu:22.04"
 
     def image_prefix(self) -> str:
         return "mswebench"
 
     def image_tag(self) -> str:
-        return "base-py311"
+        return "base-ubuntu22"
 
     def workdir(self) -> str:
-        return "base-py311"
+        return "base-ubuntu22"
 
     def files(self) -> list[File]:
         return []
@@ -47,7 +47,7 @@ class ImageBase(Image):
 
         return f"""FROM {image_name}
 
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git python3-pip && rm -rf /var/lib/apt/lists/*
 
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y --no-install-recommends bash && rm -rf /var/lib/apt/lists/*;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
 
@@ -106,19 +106,11 @@ class ImageDefault(Image):
 ###ACTION_DELIMITER###
 git checkout {pr.base.sha}
 ###ACTION_DELIMITER###
-ls
+pip3 install -e . || true
 ###ACTION_DELIMITER###
-pip install -r test_requirements.txt
+pip3 install pytest || true
 ###ACTION_DELIMITER###
-pip install -e .[d]
-###ACTION_DELIMITER###
-pip install -e .[jupyter]
-###ACTION_DELIMITER###
-echo -e '#!/bin/bash
-coverage erase
-pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
-pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
-coverage report' > test_commands.sh
+echo 'python3 -m pytest tests/test_black.py -v --no-header -rA --tb=no' > test_commands.sh
 ###ACTION_DELIMITER###
 bash test_commands.sh""".format(pr=self.pr),
             ),
@@ -126,12 +118,9 @@ bash test_commands.sh""".format(pr=self.pr),
                 ".",
                 "run.sh",
                 """#!/bin/bash
+export CI=true
 cd /home/{pr.repo}
-#!/bin/bash
-coverage erase
-pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
-pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
-coverage report
+python3 -m pytest tests/test_black.py -v --no-header -rA --tb=no
 
 """.format(pr=self.pr),
             ),
@@ -139,16 +128,13 @@ coverage report
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
+export CI=true
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-#!/bin/bash
-coverage erase
-pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
-pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
-coverage report
+python3 -m pytest tests/test_black.py -v --no-header -rA --tb=no
 
 """.format(pr=self.pr),
             ),
@@ -156,16 +142,13 @@ coverage report
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
+export CI=true
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-#!/bin/bash
-coverage erase
-pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
-pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
-coverage report
+python3 -m pytest tests/test_black.py -v --no-header -rA --tb=no
 
 """.format(pr=self.pr),
             ),
@@ -195,8 +178,8 @@ coverage report
 """
 
 
-@Instance.register("psf", "black_4680_to_2690")
-class BLACK_4680_TO_2690(Instance):
+@Instance.register("psf", "black_74_to_12")
+class BLACK_74_TO_12(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -233,33 +216,45 @@ class BLACK_4680_TO_2690(Instance):
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
         import re
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
-        # Track the latest status of each test using a dictionary
-        test_status = {}
-        # Regex pattern to match test results (captures status and test name)
-        pattern = re.compile(
-            r"\[gw\d+\]\s+\[\s*\d+%\]\s+(PASSED|SKIPPED|FAILED)\s+(tests/.*?)\s*$"
+        # Regex patterns to identify test cases and their statuses
+        # Pattern 1: Matches lines like "tests/...::... PASSED [  0%]"
+        pattern1 = re.compile(
+            r"^(tests/[\w\/\.\-::\[\]]+)\s+"  # Test name (includes tests/, colons, brackets)
+            r"(passed|failed|skipped|xfailed|xfail) "  # Status (case-insensitive)
+            r"\s*\[.+\]$",  # Percentage in brackets
+            re.MULTILINE | re.IGNORECASE,
         )
-        # Process each line to update the latest status
-        for line in log.split("\n"):
-            match = pattern.search(line)
-            if match:
-                status = match.group(1)
-                test_name = match.group(2).strip()
-                test_status[test_name] = status  # Overwrite with latest status
-        # Populate sets based on the latest status
-        for test, status in test_status.items():
-            if status == "PASSED":
-                passed_tests.add(test)
-            elif status == "SKIPPED":
-                skipped_tests.add(test)
-            elif status == "FAILED":
-                failed_tests.add(test)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+        # Pattern 2: Matches summary lines like "FAILED tests/...::..."
+        pattern2 = re.compile(
+            r"(passed|failed|skipped|xfailed|xfail) "  # Status (case-insensitive)
+            r"(tests/[\w\/\.\-::\[\]]+)",  # Test name
+            re.MULTILINE | re.IGNORECASE,
+        )
+        # Process matches from pattern1
+        for match in pattern1.finditer(log):
+            test_name = match.group(1)
+            status = match.group(2)
+            if status.upper() == "PASSED":
+                passed_tests.add(test_name)
+            elif status.upper() == "FAILED":
+                failed_tests.add(test_name)
+            elif status.upper() in ("SKIPPED", "XFAILED", "XFAIL"):
+                skipped_tests.add(test_name)
+        # Process matches from pattern2
+        for match in pattern2.finditer(log):
+            status = match.group(1)
+            test_name = match.group(2)
+            if status.upper() == "PASSED":
+                passed_tests.add(test_name)
+            elif status.upper() == "FAILED":
+                failed_tests.add(test_name)
+            elif status.upper() in ("SKIPPED", "XFAILED", "XFAIL"):
+                skipped_tests.add(test_name)
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        failed_tests -= skipped_tests
 
         return TestResult(
             passed_count=len(passed_tests),

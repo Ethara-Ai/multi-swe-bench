@@ -1,5 +1,4 @@
 import re
-import json
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -20,17 +19,14 @@ class ImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.11-slim"
-
-    def image_prefix(self) -> str:
-        return "mswebench"
+    def dependency(self) -> Union[str, "Image"]:
+        return "node:18"
 
     def image_tag(self) -> str:
-        return "base-py311"
+        return "base-v5"
 
     def workdir(self) -> str:
-        return "base-py311"
+        return "base-v5"
 
     def files(self) -> list[File]:
         return []
@@ -47,13 +43,9 @@ class ImageBase(Image):
 
         return f"""FROM {image_name}
 
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y --no-install-recommends bash && rm -rf /var/lib/apt/lists/*;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+{self.global_env}
 
 WORKDIR /home/
-
-{self.global_env}
 
 {code}
 
@@ -75,11 +67,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Optional[Image]:
-        return ImageBase(self.pr, self.config)
-
-    def image_prefix(self) -> str:
-        return "mswebench"
+    def dependency(self) -> Image | None:
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -101,37 +90,49 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""".format(),
+            ),
+            File(
+                ".",
                 "prepare.sh",
-                """git reset --hard
-###ACTION_DELIMITER###
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+git reset --hard
+bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
-###ACTION_DELIMITER###
-ls
-###ACTION_DELIMITER###
-pip install -r test_requirements.txt
-###ACTION_DELIMITER###
-pip install -e .[d]
-###ACTION_DELIMITER###
-pip install -e .[jupyter]
-###ACTION_DELIMITER###
-echo -e '#!/bin/bash
-coverage erase
-pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
-pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
-coverage report' > test_commands.sh
-###ACTION_DELIMITER###
-bash test_commands.sh""".format(pr=self.pr),
+bash /home/check_git_changes.sh
+
+npm install || true
+./node_modules/.bin/esbuild --bundle --format=esm --keep-names --outfile=chai.js index.js
+""".format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
+set -e
+
 cd /home/{pr.repo}
-#!/bin/bash
-coverage erase
-pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
-pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
-coverage report
+./node_modules/.bin/mocha --require ./test/bootstrap/index.js test/*.js
 
 """.format(pr=self.pr),
             ),
@@ -139,16 +140,13 @@ coverage report
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
+set -e
+
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-#!/bin/bash
-coverage erase
-pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
-pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
-coverage report
+git apply --exclude package-lock.json --whitespace=nowarn /home/test.patch
+npm install || true
+./node_modules/.bin/esbuild --bundle --format=esm --keep-names --outfile=chai.js index.js
+./node_modules/.bin/mocha --require ./test/bootstrap/index.js test/*.js
 
 """.format(pr=self.pr),
             ),
@@ -156,16 +154,13 @@ coverage report
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
+set -e
+
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-#!/bin/bash
-coverage erase
-pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
-pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
-coverage report
+git apply --exclude package-lock.json --whitespace=nowarn /home/test.patch /home/fix.patch
+npm install || true
+./node_modules/.bin/esbuild --bundle --format=esm --keep-names --outfile=chai.js index.js
+./node_modules/.bin/mocha --require ./test/bootstrap/index.js test/*.js
 
 """.format(pr=self.pr),
             ),
@@ -195,8 +190,8 @@ coverage report
 """
 
 
-@Instance.register("psf", "black_4680_to_2690")
-class BLACK_4680_TO_2690(Instance):
+@Instance.register("chaijs", "chai_1671_to_1583")
+class Chai(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -227,39 +222,58 @@ class BLACK_4680_TO_2690(Instance):
 
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
-        import re
+    def parse_log(self, test_log: str) -> TestResult:
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
 
-        # Track the latest status of each test using a dictionary
-        test_status = {}
-        # Regex pattern to match test results (captures status and test name)
-        pattern = re.compile(
-            r"\[gw\d+\]\s+\[\s*\d+%\]\s+(PASSED|SKIPPED|FAILED)\s+(tests/.*?)\s*$"
-        )
-        # Process each line to update the latest status
-        for line in log.split("\n"):
-            match = pattern.search(line)
-            if match:
-                status = match.group(1)
-                test_name = match.group(2).strip()
-                test_status[test_name] = status  # Overwrite with latest status
-        # Populate sets based on the latest status
-        for test, status in test_status.items():
-            if status == "PASSED":
-                passed_tests.add(test)
-            elif status == "SKIPPED":
-                skipped_tests.add(test)
-            elif status == "FAILED":
-                failed_tests.add(test)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+
+        lines = test_log.splitlines()
+        current_path = []
+        indentation_to_level = {}
+
+        for line in lines:
+            line = ansi_escape.sub("", line)
+
+            match = re.match(
+                r"^(\s*)(?:([✓✔]|[0-9]+\))\s+)?(.*?)(?:\s+\([0-9]+ms\))?$", line
+            )
+
+            if not match or not match.group(3).strip():
+                continue
+
+            spaces, status, name = match.groups()
+            name = name.strip()
+            indent = len(spaces)
+
+            if indent not in indentation_to_level:
+                if not indentation_to_level:
+                    indentation_to_level[indent] = 0
+                else:
+                    prev_indents = sorted(
+                        [i for i in indentation_to_level.keys() if i < indent]
+                    )
+                    if prev_indents:
+                        closest_indent = prev_indents[-1]
+                        indentation_to_level[indent] = (
+                            indentation_to_level[closest_indent] + 1
+                        )
+                    else:
+                        indentation_to_level[indent] = 0
+
+            level = indentation_to_level[indent]
+            current_path = current_path[:level]
+            current_path.append(name)
+
+            if status:
+                full_path = ":".join(current_path)
+                if status in ("✓", "✔"):
+                    passed_tests.add(full_path)
+                elif status.endswith(")"):
+                    failed_tests.add(full_path)
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

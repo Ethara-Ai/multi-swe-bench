@@ -1,6 +1,6 @@
 import re
 import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -21,16 +21,16 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.11-slim"
+        return "python:3.13-slim"
 
     def image_prefix(self) -> str:
         return "mswebench"
 
     def image_tag(self) -> str:
-        return "base-py311"
+        return "base-py313"
 
     def workdir(self) -> str:
-        return "base-py311"
+        return "base-py313"
 
     def files(self) -> list[File]:
         return []
@@ -106,13 +106,9 @@ class ImageDefault(Image):
 ###ACTION_DELIMITER###
 git checkout {pr.base.sha}
 ###ACTION_DELIMITER###
-ls
+pip install coverage pytest 'pytest-xdist>=3.0.2' 'pytest-cov>=4.1.0' || true
 ###ACTION_DELIMITER###
-pip install -r test_requirements.txt
-###ACTION_DELIMITER###
-pip install -e .[d]
-###ACTION_DELIMITER###
-pip install -e .[jupyter]
+pip install -e .[d] || true
 ###ACTION_DELIMITER###
 echo -e '#!/bin/bash
 coverage erase
@@ -126,8 +122,8 @@ bash test_commands.sh""".format(pr=self.pr),
                 ".",
                 "run.sh",
                 """#!/bin/bash
+export CI=true
 cd /home/{pr.repo}
-#!/bin/bash
 coverage erase
 pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
 pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
@@ -139,12 +135,12 @@ coverage report
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
+export CI=true
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-#!/bin/bash
 coverage erase
 pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
 pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
@@ -156,12 +152,12 @@ coverage report
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
+export CI=true
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-#!/bin/bash
 coverage erase
 pytest tests --run-optional no_jupyter --numprocesses auto --cov -v
 pytest tests --run-optional jupyter -m jupyter --numprocesses auto --cov --cov-append -v
@@ -195,8 +191,8 @@ coverage report
 """
 
 
-@Instance.register("psf", "black_4680_to_2690")
-class BLACK_4680_TO_2690(Instance):
+@Instance.register("psf", "black_5046_to_4884")
+class BLACK_5046_TO_4884(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -228,26 +224,22 @@ class BLACK_4680_TO_2690(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
         import re
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
-        # Track the latest status of each test using a dictionary
         test_status = {}
-        # Regex pattern to match test results (captures status and test name)
         pattern = re.compile(
             r"\[gw\d+\]\s+\[\s*\d+%\]\s+(PASSED|SKIPPED|FAILED)\s+(tests/.*?)\s*$"
         )
-        # Process each line to update the latest status
         for line in log.split("\n"):
             match = pattern.search(line)
             if match:
                 status = match.group(1)
                 test_name = match.group(2).strip()
-                test_status[test_name] = status  # Overwrite with latest status
-        # Populate sets based on the latest status
+                test_status[test_name] = status
         for test, status in test_status.items():
             if status == "PASSED":
                 passed_tests.add(test)
@@ -255,11 +247,9 @@ class BLACK_4680_TO_2690(Instance):
                 skipped_tests.add(test)
             elif status == "FAILED":
                 failed_tests.add(test)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        failed_tests -= skipped_tests
 
         return TestResult(
             passed_count=len(passed_tests),
