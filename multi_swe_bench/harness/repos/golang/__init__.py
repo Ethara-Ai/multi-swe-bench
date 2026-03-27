@@ -46,3 +46,4 @@ from multi_swe_bench.harness.repos.golang.ignite import *
 from multi_swe_bench.harness.repos.golang.kyverno import *
 from multi_swe_bench.harness.repos.golang.thanos_io import *
 from multi_swe_bench.harness.repos.golang.tektoncd import *
+from multi_swe_bench.harness.repos.golang.crossplane import *

@@ -208,7 +208,22 @@ class RxJavaImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def _gradle_jvmargs(self) -> str:
+        """Inject org.gradle.jvmargs into gradle.properties to set daemon heap.
+
+        GRADLE_OPTS only affects the Gradle client/wrapper process.
+        The daemon JVM args come from org.gradle.jvmargs in gradle.properties.
+        RxJava's gradle.properties does NOT have this line by default,
+        so we append it. Following elasticsearch.py pattern.
+        """
+        return (
+            'sed -i "/^org.gradle.jvmargs=/d" gradle.properties 2>/dev/null || true\n'
+            'echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m" >> gradle.properties'
+        )
+
     def files(self) -> list[File]:
+        gradle_jvmargs = self._gradle_jvmargs()
+
         if self.pr.number <= 7205:
             return [
                 File(
@@ -253,10 +268,47 @@ git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
-sed -i '/repositories {{/a \    maven \{{ url "https://oss.jfrog.org/artifactory/oss-release-local/" \}}' build.gradle
-sed -i '/repositories {{/a \    maven \{{ url "https://groovy.jfrog.io/artifactory/libs-release/" \}}' build.gradle
-./gradlew clean test --max-workers 2 --continue || true
-""".format(pr=self.pr),
+{gradle_jvmargs}
+mkdir -p ~/.gradle && cat <<'INITGRADLE' > ~/.gradle/init.gradle
+allprojects {{
+    buildscript {{
+        repositories {{
+            maven {{ url 'https://maven.aliyun.com/repository/public/' }}
+            maven {{ url 'https://maven.aliyun.com/repository/jcenter/' }}
+            maven {{ url 'https://maven.aliyun.com/repository/google/' }}
+            maven {{ url 'https://plugins.gradle.org/m2/' }}
+            mavenCentral()
+        }}
+    }}
+
+    repositories {{
+        maven {{ url 'https://maven.aliyun.com/repository/public/' }}
+        maven {{ url 'https://maven.aliyun.com/repository/jcenter/' }}
+        maven {{ url 'https://maven.aliyun.com/repository/google/' }}
+        mavenCentral()
+    }}
+}}
+INITGRADLE
+# Detect nebula-based build BEFORE stripping (1.x + early 2.x)
+HAS_NEBULA=$(grep -c "nebula.rxjava-project" build.gradle || true)
+# Strip dead plugin references (all branches)
+sed -i "/nebula.rxjava-project/d" build.gradle || true
+sed -i "/gradle-rxjava-project-plugin/d" build.gradle || true
+sed -i "/com.jfrog.bintray/d" build.gradle || true
+sed -i "/gradle-bintray-plugin/d" build.gradle || true
+sed -i "/com.jfrog.artifactory/d" build.gradle || true
+sed -i "/build-info-extractor-gradle/d" build.gradle || true
+sed -i "/oss.jfrog.org/d" build.gradle || true
+sed -i "/groovy.jfrog.io/d" build.gradle || true
+# Strip nebula-dependent blocks (only present in 1.x and early 2.x)
+if [ "$HAS_NEBULA" -gt 0 ]; then
+    sed -i '/^nebulaRelease {{/,/^}}/d' build.gradle || true
+    sed -i '/perfCompile/d' build.gradle || true
+    sed -i '/release.useLastTag/,/^}}/d' build.gradle || true
+    sed -i '/^license {{/,/^}}/d' build.gradle || true
+fi
+./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue || true
+""".format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
                 ),
                 File(
                     ".",
@@ -265,8 +317,9 @@ sed -i '/repositories {{/a \    maven \{{ url "https://groovy.jfrog.io/artifacto
 set -e
 
 cd /home/{pr.repo}
-./gradlew clean test --max-workers 2 --continue
-""".format(pr=self.pr),
+{gradle_jvmargs}
+./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue
+""".format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
                 ),
                 File(
                     ".",
@@ -276,9 +329,10 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-./gradlew clean test --max-workers 2 --continue
+{gradle_jvmargs}
+./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
                 ),
                 File(
                     ".",
@@ -288,9 +342,10 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-./gradlew clean test --max-workers 2 --continue
+{gradle_jvmargs}
+./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
                 ),
             ]
         return [
@@ -336,8 +391,37 @@ git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
-./gradlew clean test --max-workers 2 --continue || true
-""".format(pr=self.pr),
+{gradle_jvmargs}
+mkdir -p ~/.gradle && cat <<'INITGRADLE' > ~/.gradle/init.gradle
+allprojects {{
+    buildscript {{
+        repositories {{
+            maven {{ url 'https://maven.aliyun.com/repository/public/' }}
+            maven {{ url 'https://maven.aliyun.com/repository/jcenter/' }}
+            maven {{ url 'https://maven.aliyun.com/repository/google/' }}
+            maven {{ url 'https://plugins.gradle.org/m2/' }}
+            mavenCentral()
+        }}
+    }}
+
+    repositories {{
+        maven {{ url 'https://maven.aliyun.com/repository/public/' }}
+        maven {{ url 'https://maven.aliyun.com/repository/jcenter/' }}
+        maven {{ url 'https://maven.aliyun.com/repository/google/' }}
+        mavenCentral()
+    }}
+}}
+INITGRADLE
+sed -i "/nebula.rxjava-project/d" build.gradle || true
+sed -i "/gradle-rxjava-project-plugin/d" build.gradle || true
+sed -i "/com.jfrog.bintray/d" build.gradle || true
+sed -i "/gradle-bintray-plugin/d" build.gradle || true
+sed -i "/com.jfrog.artifactory/d" build.gradle || true
+sed -i "/build-info-extractor-gradle/d" build.gradle || true
+sed -i "/oss.jfrog.org/d" build.gradle || true
+sed -i "/groovy.jfrog.io/d" build.gradle || true
+./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue || true
+""".format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
             ),
             File(
                 ".",
@@ -346,8 +430,9 @@ bash /home/check_git_changes.sh
 set -e
 
 cd /home/{pr.repo}
-./gradlew clean test --max-workers 2 --continue
-""".format(pr=self.pr),
+{gradle_jvmargs}
+./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue
+""".format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
             ),
             File(
                 ".",
@@ -357,9 +442,10 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-./gradlew clean test --max-workers 2 --continue
+{gradle_jvmargs}
+./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
             ),
             File(
                 ".",
@@ -369,9 +455,10 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-./gradlew clean test --max-workers 2 --continue
+{gradle_jvmargs}
+./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
             ),
         ]
 
@@ -478,20 +565,29 @@ class RxJava(Instance):
         skipped_tests = set()
 
         passed_res = [
+            # New Gradle (6+): "> Task :taskName"
             re.compile(r"^> Task :(\S+)$"),
             re.compile(r"^> Task :(\S+) UP-TO-DATE$"),
             re.compile(r"^> Task :(\S+) FROM-CACHE$"),
+            # Old Gradle (2.x-4.x): ":taskName"
+            re.compile(r"^:(\S+)$"),
+            re.compile(r"^:(\S+) UP-TO-DATE$"),
+            re.compile(r"^:(\S+) FROM-CACHE$"),
+            # Individual test method results (same format in all Gradle versions)
             re.compile(r"^(.+ > .+) PASSED$"),
         ]
 
         failed_res = [
             re.compile(r"^> Task :(\S+) FAILED$"),
+            re.compile(r"^:(\S+) FAILED$"),
             re.compile(r"^(.+ > .+) FAILED$"),
         ]
 
         skipped_res = [
             re.compile(r"^> Task :(\S+) SKIPPED$"),
             re.compile(r"^> Task :(\S+) NO-SOURCE$"),
+            re.compile(r"^:(\S+) SKIPPED$"),
+            re.compile(r"^:(\S+) NO-SOURCE$"),
             re.compile(r"^(.+ > .+) SKIPPED$"),
         ]
 
@@ -512,6 +608,12 @@ class RxJava(Instance):
                 m = skipped_re.match(line)
                 if m:
                     skipped_tests.add(m.group(1))
+
+        # Clean up overlaps to avoid ValueError in TestResult.__post_init__
+        # (can occur with malformed logs from daemon crashes or truncation)
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
