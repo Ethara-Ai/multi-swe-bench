@@ -57,3 +57,4 @@ from multi_swe_bench.harness.repos.golang.pingcap import *
 from multi_swe_bench.harness.repos.golang.securego import *
 from multi_swe_bench.harness.repos.golang.oauth2_proxy import *
 from multi_swe_bench.harness.repos.golang.influxdata import *
+from multi_swe_bench.harness.repos.golang.urfave import *
