@@ -287,6 +287,7 @@ from multi_swe_bench.harness.repos.python.locustio import *
 from multi_swe_bench.harness.repos.python.nedbat import *
 from multi_swe_bench.harness.repos.python.pandas_dev import *
 from multi_swe_bench.harness.repos.python.litestar_org import *
+from multi_swe_bench.harness.repos.python.giampaolo import *
 
 # from multi_swe_bench.harness.repos.python.pandas_dev import *  # directory missing
 from multi_swe_bench.harness.repos.python.locustio import *
