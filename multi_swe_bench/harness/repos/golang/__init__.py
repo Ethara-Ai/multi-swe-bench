@@ -3,6 +3,7 @@ from multi_swe_bench.harness.repos.golang.caddyserver import *
 from multi_swe_bench.harness.repos.golang.evanw import *
 from multi_swe_bench.harness.repos.golang.cli import *
 from multi_swe_bench.harness.repos.golang.etcd_io import *
+from multi_swe_bench.harness.repos.golang.fluxcd import *
 from multi_swe_bench.harness.repos.golang.fatedier import *
 from multi_swe_bench.harness.repos.golang.gin_gonic import *
 from multi_swe_bench.harness.repos.golang.go_gorm import *
