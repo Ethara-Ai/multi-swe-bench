@@ -2,6 +2,7 @@ from multi_swe_bench.harness.repos.c.curl import *
 from multi_swe_bench.harness.repos.c.facebook import *
 from multi_swe_bench.harness.repos.c.fluent import *
 from multi_swe_bench.harness.repos.c.jqlang import *
+from multi_swe_bench.harness.repos.c.libarchive import *
 from multi_swe_bench.harness.repos.c.libgit2 import *
 from multi_swe_bench.harness.repos.c.libsdlorg import *
 from multi_swe_bench.harness.repos.c.mruby import *
