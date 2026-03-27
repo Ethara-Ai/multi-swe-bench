@@ -20,3 +20,4 @@ from multi_swe_bench.harness.repos.cpp.msgpack import *
 from multi_swe_bench.harness.repos.cpp.duckdb import *
 from multi_swe_bench.harness.repos.cpp.microsoft import *
 from multi_swe_bench.harness.repos.cpp.ericniebler import *
+from multi_swe_bench.harness.repos.cpp.uNetworking import *
