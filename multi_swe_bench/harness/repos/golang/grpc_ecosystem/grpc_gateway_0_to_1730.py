@@ -7,39 +7,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-_START_DBS_SH = r"""#!/bin/bash
-# Start MariaDB on port 9910 (gorm default)
-mkdir -p /run/mysqld && chown mysql:mysql /run/mysqld 2>/dev/null
-if command -v mariadbd &>/dev/null; then
-  mariadbd --user=mysql --skip-grant-tables --port=9910 --socket=/run/mysqld/mysqld.sock &
-  sleep 3
-  mariadb --socket=/run/mysqld/mysqld.sock -e \
-    "FLUSH PRIVILEGES; CREATE DATABASE IF NOT EXISTS gorm; \
-     DROP USER IF EXISTS 'gorm'@'localhost'; \
-     CREATE USER 'gorm'@'localhost' IDENTIFIED BY 'gorm'; \
-     GRANT ALL ON gorm.* TO 'gorm'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null
-fi
-
-# Start Postgres on port 9920 (gorm default)
-if command -v initdb &>/dev/null || ls /usr/lib/postgresql/*/bin/initdb 2>/dev/null; then
-  PG_VER=$(ls /etc/postgresql/ 2>/dev/null | head -1)
-  if [ -n "$PG_VER" ]; then
-    mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql 2>/dev/null
-    rm -rf /tmp/pgdata
-    su postgres -c "/usr/lib/postgresql/$PG_VER/bin/initdb -D /tmp/pgdata" >/dev/null 2>&1
-    su postgres -c "/usr/lib/postgresql/$PG_VER/bin/pg_ctl -D /tmp/pgdata start -l /tmp/pg.log \
-      -o '-c listen_addresses=localhost -c port=9920'" >/dev/null 2>&1
-    sleep 2
-    su postgres -c "/usr/lib/postgresql/$PG_VER/bin/psql -p 9920 \
-      -c \"CREATE USER gorm WITH PASSWORD 'gorm' CREATEDB;\"" >/dev/null 2>&1
-    su postgres -c "/usr/lib/postgresql/$PG_VER/bin/psql -p 9920 \
-      -c \"CREATE DATABASE gorm OWNER gorm;\"" >/dev/null 2>&1
-  fi
-fi
-"""
-
-
-class GormImageBase(Image):
+class GrpcGatewayV1ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -56,10 +24,10 @@ class GormImageBase(Image):
         return "golang:latest"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-v1"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-v1"
 
     def files(self) -> list[File]:
         return []
@@ -87,7 +55,7 @@ WORKDIR /home/
 """
 
 
-class GormImageDefault(Image):
+class GrpcGatewayV1ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -101,7 +69,7 @@ class GormImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return GormImageBase(self.pr, self.config)
+        return GrpcGatewayV1ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -144,18 +112,9 @@ exit 0
             ),
             File(
                 ".",
-                "start_dbs.sh",
-                _START_DBS_SH,
-            ),
-            File(
-                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
-
-apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sqlite3 mariadb-server postgresql >/dev/null 2>&1
-rm -rf /var/lib/apt/lists/*
 
 cd /home/{pr.repo}
 git reset --hard
@@ -163,16 +122,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-go mod download || true
 go test -v -count=1 ./... || true
-
-if [ -d tests ]; then
-  cd tests
-  go get -t ./... || true
-  go mod tidy || true
-  go test -v -count=1 ./... || true
-  cd ..
-fi
 
 """.format(pr=self.pr),
             ),
@@ -182,17 +132,8 @@ fi
                 """#!/bin/bash
 set -e
 
-bash /home/start_dbs.sh
-
 cd /home/{pr.repo}
 go test -v -count=1 ./...
-
-if [ -d tests ]; then
-  cd tests
-  GORM_DIALECT=sqlite go test -v -count=1 ./... 2>&1 | sed 's/--- \\(PASS\\|FAIL\\|SKIP\\): /--- \\1: sqlite\\//'
-  GORM_DIALECT=mysql GORM_DSN="gorm:gorm@unix(/run/mysqld/mysqld.sock)/gorm?charset=utf8&parseTime=True" go test -v -count=1 ./... 2>&1 | sed 's/--- \\(PASS\\|FAIL\\|SKIP\\): /--- \\1: mysql\\//' || true
-  cd ..
-fi
 
 """.format(pr=self.pr),
             ),
@@ -202,20 +143,9 @@ fi
                 """#!/bin/bash
 set -e
 
-bash /home/start_dbs.sh
-
 cd /home/{pr.repo}
 git apply /home/test.patch
 go test -v -count=1 ./...
-
-if [ -d tests ]; then
-  cd tests
-  go get -t ./... || true
-  go mod tidy || true
-  GORM_DIALECT=sqlite go test -v -count=1 ./... 2>&1 | sed 's/--- \\(PASS\\|FAIL\\|SKIP\\): /--- \\1: sqlite\\//'
-  GORM_DIALECT=mysql GORM_DSN="gorm:gorm@unix(/run/mysqld/mysqld.sock)/gorm?charset=utf8&parseTime=True" go test -v -count=1 ./... 2>&1 | sed 's/--- \\(PASS\\|FAIL\\|SKIP\\): /--- \\1: mysql\\//' || true
-  cd ..
-fi
 
 """.format(pr=self.pr),
             ),
@@ -225,20 +155,9 @@ fi
                 """#!/bin/bash
 set -e
 
-bash /home/start_dbs.sh
-
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
 go test -v -count=1 ./...
-
-if [ -d tests ]; then
-  cd tests
-  go get -t ./... || true
-  go mod tidy || true
-  GORM_DIALECT=sqlite go test -v -count=1 ./... 2>&1 | sed 's/--- \\(PASS\\|FAIL\\|SKIP\\): /--- \\1: sqlite\\//'
-  GORM_DIALECT=mysql GORM_DSN="gorm:gorm@unix(/run/mysqld/mysqld.sock)/gorm?charset=utf8&parseTime=True" go test -v -count=1 ./... 2>&1 | sed 's/--- \\(PASS\\|FAIL\\|SKIP\\): /--- \\1: mysql\\//' || true
-  cd ..
-fi
 
 """.format(pr=self.pr),
             ),
@@ -268,8 +187,8 @@ fi
 """
 
 
-@Instance.register("go-gorm", "gorm")
-class Gorm(Instance):
+@Instance.register("grpc-ecosystem", "grpc_gateway_0_to_1730")
+class GRPC_GATEWAY_0_TO_1730(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -280,7 +199,7 @@ class Gorm(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return GormImageDefault(self.pr, self._config)
+        return GrpcGatewayV1ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -308,8 +227,15 @@ class Gorm(Instance):
         re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
         re_fail_tests = [
             re.compile(r"--- FAIL: (\S+)"),
+            re.compile(r"FAIL:?\s?(.+?)\s"),
         ]
         re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
+
+        def get_base_name(test_name: str) -> str:
+            index = test_name.rfind("/")
+            if index == -1:
+                return test_name
+            return test_name[:index]
 
         for line in test_log.splitlines():
             line = line.strip()
