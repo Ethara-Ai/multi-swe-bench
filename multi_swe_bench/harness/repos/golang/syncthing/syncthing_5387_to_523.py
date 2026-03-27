@@ -6,7 +6,14 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class SyncthingImageBase(Image):
+class ImageBase(Image):
+    """Base image for GOPATH-era syncthing PRs (#523-#5387).
+
+    Uses golang:1.11 with GOPATH layout.  Pre-module syncthing used either
+    Godeps (PR ~#523-#2696) or vendor/ (PR ~#2834-#5387).  golang:1.11
+    supports both workflows with GO111MODULE=off.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +27,13 @@ class SyncthingImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+        return "golang:1.11"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-gopath"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-gopath"
 
     def files(self) -> list[File]:
         return []
@@ -36,12 +43,29 @@ class SyncthingImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        # golang:1.11 is based on Debian Stretch (EOL) — need archive repos
+        # Clone into GOPATH-compatible location
+        gopath = "/home/go"
+        repo_path = f"{gopath}/src/github.com/{self.pr.org}/{self.pr.repo}"
+
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git {repo_path}"
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {self.pr.repo} {repo_path}"
 
         return f"""FROM {image_name}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Debian Stretch is EOL — switch to archive.debian.org
+RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' /etc/apt/sources.list && \
+    sed -i '/stretch-updates/d' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y git
+
+ENV GOPATH={gopath}
+ENV GO111MODULE=off
+ENV PATH=$GOPATH/bin:$PATH
 
 {self.global_env}
 
@@ -49,12 +73,22 @@ WORKDIR /home/
 
 {code}
 
+# Create symlink at /home/syncthing for compatibility with script paths
+RUN ln -sfn {repo_path} /home/{self.pr.repo}
+
+# Restore vendored dependencies (Godeps or vendor)
+RUN cd {repo_path} && \
+    if [ -d "Godeps/_workspace" ]; then \
+        echo "Restoring Godeps..."; \
+        cp -r Godeps/_workspace/src/* "$GOPATH/src/" 2>/dev/null || true; \
+    fi
+
 {self.clear_env}
 
 """
 
 
-class SyncthingImageDefault(Image):
+class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -68,7 +102,10 @@ class SyncthingImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return SyncthingImageBase(self.pr, self.config)
+        return ImageBase(self.pr, self.config)
+
+    def image_prefix(self) -> str:
+        return "mswebench"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -77,6 +114,9 @@ class SyncthingImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        gopath = "/home/go"
+        repo_path = f"{gopath}/src/github.com/{self.pr.org}/{self.pr.repo}"
+
         return [
             File(
                 ".",
@@ -115,12 +155,20 @@ exit 0
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+REPO_PATH="{repo_path}"
+
+cd "$REPO_PATH"
 git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
+# Re-restore Godeps after checkout (different commit may have different deps)
+if [ -d "Godeps/_workspace" ]; then
+    cp -r Godeps/_workspace/src/* "$GOPATH/src/" 2>/dev/null || true
+fi
+
+# Extract packages affected by patches for targeted testing
 PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
 if [ -z "$PKGS" ]; then
     PKGS="./..."
@@ -128,7 +176,7 @@ fi
 
 go test -v -count=1 -timeout 15m $PKGS || true
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, repo_path=repo_path),
             ),
             File(
                 ".",
@@ -136,14 +184,17 @@ go test -v -count=1 -timeout 15m $PKGS || true
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+REPO_PATH="{repo_path}"
+cd "$REPO_PATH"
+
+# Extract packages affected by patches
 PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
 if [ -z "$PKGS" ]; then
     PKGS="./..."
 fi
 go test -v -count=1 -timeout 15m $PKGS
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, repo_path=repo_path),
             ),
             File(
                 ".",
@@ -151,15 +202,19 @@ go test -v -count=1 -timeout 15m $PKGS
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+REPO_PATH="{repo_path}"
+cd "$REPO_PATH"
+
 git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+
+# Extract packages affected by patches
 PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
 if [ -z "$PKGS" ]; then
     PKGS="./..."
 fi
 go test -v -count=1 -timeout 15m $PKGS
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, repo_path=repo_path),
             ),
             File(
                 ".",
@@ -167,15 +222,19 @@ go test -v -count=1 -timeout 15m $PKGS
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+REPO_PATH="{repo_path}"
+cd "$REPO_PATH"
+
 git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+
+# Extract packages affected by patches
 PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
 if [ -z "$PKGS" ]; then
     PKGS="./..."
 fi
 go test -v -count=1 -timeout 15m $PKGS
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, repo_path=repo_path),
             ),
         ]
 
@@ -203,9 +262,8 @@ go test -v -count=1 -timeout 15m $PKGS
 """
 
 
-@Instance.register("syncthing", "syncthing_10576_to_9342")
-@Instance.register("syncthing", "syncthing")
-class Syncthing(Instance):
+@Instance.register("syncthing", "syncthing_5387_to_523")
+class Syncthing_5387_to_523(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -216,7 +274,7 @@ class Syncthing(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return SyncthingImageDefault(self.pr, self._config)
+        return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

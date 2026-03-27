@@ -6,7 +6,14 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class SyncthingImageBase(Image):
+class ImageBase_9314_to_9094(Image):
+    """Base image for syncthing PRs (#9094-#9314).
+
+    Uses golang:1.22 — compatible with quic-go v0.39-v0.40 (qtls-go1-20),
+    and go 1.20-1.22 go.mod directives.
+    golang:1.22 is based on Debian Bookworm (current).
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +27,13 @@ class SyncthingImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+        return "golang:1.22"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-go1_22"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-go1_22"
 
     def files(self) -> list[File]:
         return []
@@ -54,7 +61,7 @@ WORKDIR /home/
 """
 
 
-class SyncthingImageDefault(Image):
+class ImageDefault_9314_to_9094(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -68,7 +75,7 @@ class SyncthingImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return SyncthingImageBase(self.pr, self.config)
+        return ImageBase_9314_to_9094(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -203,9 +210,8 @@ go test -v -count=1 -timeout 15m $PKGS
 """
 
 
-@Instance.register("syncthing", "syncthing_10576_to_9342")
-@Instance.register("syncthing", "syncthing")
-class Syncthing(Instance):
+@Instance.register("syncthing", "syncthing_9314_to_9094")
+class Syncthing_9314_to_9094(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -216,7 +222,7 @@ class Syncthing(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return SyncthingImageDefault(self.pr, self._config)
+        return ImageDefault_9314_to_9094(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

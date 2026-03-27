@@ -6,7 +6,13 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class SyncthingImageBase(Image):
+class ImageBase_6876_to_5398(Image):
+    """Base image for early go.mod syncthing PRs (#5398-#6876).
+
+    Uses golang:1.14 — compatible with quic-go ≤v0.17 (qtls-go1-13/14).
+    golang:1.14 is based on Debian Buster (EOL) — needs archive repos.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +26,13 @@ class SyncthingImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+        return "golang:1.14"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-go1_14"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-go1_14"
 
     def files(self) -> list[File]:
         return []
@@ -43,6 +49,14 @@ class SyncthingImageBase(Image):
 
         return f"""FROM {image_name}
 
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Debian Buster is EOL — switch to archive.debian.org
+RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' /etc/apt/sources.list && \
+    sed -i '/buster-updates/d' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y git
+
 {self.global_env}
 
 WORKDIR /home/
@@ -54,7 +68,7 @@ WORKDIR /home/
 """
 
 
-class SyncthingImageDefault(Image):
+class ImageDefault_6876_to_5398(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -68,7 +82,7 @@ class SyncthingImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return SyncthingImageBase(self.pr, self.config)
+        return ImageBase_6876_to_5398(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -203,9 +217,8 @@ go test -v -count=1 -timeout 15m $PKGS
 """
 
 
-@Instance.register("syncthing", "syncthing_10576_to_9342")
-@Instance.register("syncthing", "syncthing")
-class Syncthing(Instance):
+@Instance.register("syncthing", "syncthing_6876_to_5398")
+class Syncthing_6876_to_5398(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -216,7 +229,7 @@ class Syncthing(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return SyncthingImageDefault(self.pr, self._config)
+        return ImageDefault_6876_to_5398(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
