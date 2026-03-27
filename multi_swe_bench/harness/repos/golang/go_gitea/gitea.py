@@ -132,6 +132,7 @@ go test -v -count=1 ./... || true
 set -e
 
 cd /home/{pr.repo}
+go mod tidy
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -143,7 +144,8 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --exclude='doc/*' --exclude='integrations/*' --exclude='tests/gitea-repositories-meta/*' --exclude='modules/git/tests/repos/*' --exclude='routers/*/tests/repos/*' --exclude='services/*/testdata/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.pdf' --exclude='*.gz' --exclude='*.idx' --exclude='*.pack' /home/test.patch
+go mod tidy
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -155,7 +157,8 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --exclude='doc/*' --exclude='integrations/*' --exclude='tests/gitea-repositories-meta/*' --exclude='modules/git/tests/repos/*' --exclude='routers/*/tests/repos/*' --exclude='services/*/testdata/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.pdf' --exclude='*.gz' --exclude='*.idx' --exclude='*.pack' /home/test.patch /home/fix.patch
+go mod tidy
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -262,9 +265,11 @@ class Gitea(Instance):
                     test_name = skip_match.group(1)
                     if test_name in passed_tests:
                         continue
-                    if test_name not in failed_tests:
+                    if test_name in failed_tests:
                         continue
                     skipped_tests.add(get_base_name(test_name))
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
