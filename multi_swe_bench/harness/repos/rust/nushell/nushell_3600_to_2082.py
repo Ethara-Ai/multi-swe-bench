@@ -49,49 +49,23 @@ class ImageDefault(Image):
                 "prepare.sh",
                 """ls -F
 ###ACTION_DELIMITER###
-apt-get update && apt-get install -y libxcb-composite0-dev libx11-dev python3
+apt-get update && apt-get install -y libxcb-composite0-dev libx11-dev python3 curl pkg-config libssl-dev ca-certificates
 ###ACTION_DELIMITER###
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ###ACTION_DELIMITER###
-apt-get install -y curl
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source /root/.cargo/env && rustup install 1.43.0 && rustup default 1.43.0
 ###ACTION_DELIMITER###
 source /root/.cargo/env && cargo build --workspace --features=extra
 ###ACTION_DELIMITER###
-source /root/.cargo/env && cargo update
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo search s3handler
-###ACTION_DELIMITER###
-sed -i 's/s3handler = "0.5.0"/s3handler = "0.9.0"/' crates/nu_plugin_s3/Cargo.toml
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo update
+source /root/.cargo/env && rustup install 1.47.0 && rustup default 1.47.0
 ###ACTION_DELIMITER###
 source /root/.cargo/env && cargo build --workspace --features=extra
 ###ACTION_DELIMITER###
-git reset --hard
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y libxcb-composite0-dev libx11-dev python3 curl
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source /root/.cargo/env && rustup install 1.56.0 && rustup default 1.56.0
 ###ACTION_DELIMITER###
 source /root/.cargo/env && cargo build --workspace --features=extra
 ###ACTION_DELIMITER###
 source /root/.cargo/env && cargo build --workspace
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.41.0
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo build --workspace --features=extra
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y libxcb-composite0-dev libx11-dev python3 curl
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo test --workspace --no-run
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.42.0
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.43.0
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo build --workspace --features=extra
 ###ACTION_DELIMITER###
 source /root/.cargo/env && cargo test --workspace --features=extra -- --nocapture
 ###ACTION_DELIMITER###
@@ -164,7 +138,7 @@ RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then 
 # Install Rust toolchain for human_mode=true compatibility
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:$PATH"
-RUN rustup install 1.47.0 && rustup default 1.47.0
+RUN rustup install 1.56.0 && rustup default 1.56.0
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -181,8 +155,8 @@ RUN git checkout {pr.base.sha}
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("nushell", "nushell_2489_to_2225")
-class NUSHELL_2489_TO_2225(Instance):
+@Instance.register("nushell", "nushell_3600_to_2082")
+class NUSHELL_3600_TO_2082(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -214,34 +188,37 @@ class NUSHELL_2489_TO_2225(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
         import re
-        import json
 
-        passed_pattern = re.compile(r"test (.*) ... ok")
-        failed_pattern = re.compile(r"^\s+(.+)$")
-        lines = log.splitlines()
-        in_failures_section = False
-        for line in lines:
-            if "failures:" in line:
-                in_failures_section = True
+        test_result_pattern = re.compile(r"test (.*) \.\.\. (ok|FAILED|ignored)")
+        in_failures_block = False
+        for line in log.splitlines():
+            if line.strip() == "failures:":
+                in_failures_block = True
                 continue
-            if in_failures_section and line.strip() and "test result:" not in line:
-                # Check if the line is not empty and not the summary line
-                if line.strip():
-                    failed_tests.add(line.strip())
-            else:
-                match = passed_pattern.search(line)
-                if match:
-                    passed_tests.add(match.group(1))
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+            if in_failures_block:
+                if (
+                    line.strip()
+                    and not line.strip().startswith("====")
+                    and not line.strip().startswith("failures")
+                ):
+                    failed_tests.add(line.strip().split(" ")[0])
+                else:
+                    in_failures_block = False
+            match = test_result_pattern.search(line)
+            if match:
+                test_name = match.group(1).strip()
+                status = match.group(2)
+                if status == "ok":
+                    passed_tests.add(test_name)
+                elif status == "FAILED":
+                    failed_tests.add(test_name)
+                elif status == "ignored":
+                    skipped_tests.add(test_name)
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

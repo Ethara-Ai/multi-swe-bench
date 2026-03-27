@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "ubuntu:18.04"
+        return "rust:1.77.0"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -49,62 +49,24 @@ class ImageDefault(Image):
                 "prepare.sh",
                 """ls -F
 ###ACTION_DELIMITER###
-apt-get update && apt-get install -y libxcb-composite0-dev libx11-dev python3
+cargo test --workspace --profile ci --exclude nu_plugin_*
 ###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+mkdir -p /home/nushell/target/debug
 ###ACTION_DELIMITER###
-apt-get install -y curl
+cargo test --workspace --profile ci --exclude nu_plugin_*
 ###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+cargo build
 ###ACTION_DELIMITER###
-source /root/.cargo/env && cargo build --workspace --features=extra
+cargo test --workspace --profile ci --exclude nu_plugin_*
 ###ACTION_DELIMITER###
-source /root/.cargo/env && cargo update
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo search s3handler
-###ACTION_DELIMITER###
-sed -i 's/s3handler = "0.5.0"/s3handler = "0.9.0"/' crates/nu_plugin_s3/Cargo.toml
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo update
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo build --workspace --features=extra
-###ACTION_DELIMITER###
-git reset --hard
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y libxcb-composite0-dev libx11-dev python3 curl
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo build --workspace --features=extra
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo build --workspace
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.41.0
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo build --workspace --features=extra
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y libxcb-composite0-dev libx11-dev python3 curl
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo test --workspace --no-run
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.42.0
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.43.0
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo build --workspace --features=extra
-###ACTION_DELIMITER###
-source /root/.cargo/env && cargo test --workspace --features=extra -- --nocapture
-###ACTION_DELIMITER###
-echo 'source /root/.cargo/env && cargo test --workspace --features=extra -- --nocapture' > /home/nushell/test_commands.sh
-###ACTION_DELIMITER###
-""",
+echo "cargo test --workspace --profile ci --exclude nu_plugin_*" > test_commands.sh""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-source /root/.cargo/env && cargo test --workspace --features=extra -- --nocapture
+cargo test --workspace --profile ci --exclude nu_plugin_*
 
 """.format(pr=self.pr),
             ),
@@ -117,7 +79,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-source /root/.cargo/env && cargo test --workspace --features=extra -- --nocapture
+cargo test --workspace --profile ci --exclude nu_plugin_*
 
 """.format(pr=self.pr),
             ),
@@ -130,7 +92,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-source /root/.cargo/env && cargo test --workspace --features=extra -- --nocapture
+cargo test --workspace --profile ci --exclude nu_plugin_*
 
 """.format(pr=self.pr),
             ),
@@ -147,7 +109,7 @@ source /root/.cargo/env && cargo test --workspace --features=extra -- --nocaptur
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM ubuntu:18.04
+FROM rust:1.77.0
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -156,15 +118,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 # For example: RUN apt-get update && apt-get install -y git
 # For example: RUN yum install -y git
 # For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git libssl-dev pkg-config libxcb-composite0-dev libx11-dev python3 curl ca-certificates
+RUN apt-get update && apt-get install -y git
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-# Install Rust toolchain for human_mode=true compatibility
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:$PATH"
-RUN rustup install 1.47.0 && rustup default 1.47.0
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -181,8 +138,8 @@ RUN git checkout {pr.base.sha}
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("nushell", "nushell_2489_to_2225")
-class NUSHELL_2489_TO_2225(Instance):
+@Instance.register("nushell", "nushell_17118_to_12234")
+class NUSHELL_17118_TO_12234(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -219,24 +176,34 @@ class NUSHELL_2489_TO_2225(Instance):
         failed_tests = set()
         skipped_tests = set()
         import re
-        import json
 
-        passed_pattern = re.compile(r"test (.*) ... ok")
-        failed_pattern = re.compile(r"^\s+(.+)$")
-        lines = log.splitlines()
-        in_failures_section = False
-        for line in lines:
-            if "failures:" in line:
-                in_failures_section = True
-                continue
-            if in_failures_section and line.strip() and "test result:" not in line:
-                # Check if the line is not empty and not the summary line
+        # Pattern for lines like: test path::to::test ... ok
+        test_status_pattern = re.compile(r"^test (.*?) \.\.\. (ok|FAILED|ignored)$")
+        # Pattern for the failures block.
+        failures_block_pattern = re.compile(
+            r"^failures:\s*\n((?:    .*\n)+)", re.MULTILINE
+        )
+        # Pattern for panicked threads
+        panicked_pattern = re.compile(r"thread '(.*)' panicked at")
+        for line in log.splitlines():
+            match = test_status_pattern.match(line)
+            if match:
+                test_name, status = match.groups()
+                if status == "ok":
+                    passed_tests.add(test_name.strip())
+                elif status == "FAILED":
+                    failed_tests.add(test_name.strip())
+                elif status == "ignored":
+                    skipped_tests.add(test_name.strip())
+            match = panicked_pattern.search(line)
+            if match:
+                failed_tests.add(match.group(1).strip())
+        for match in failures_block_pattern.finditer(log):
+            for line in match.group(1).splitlines():
+                # The line can be blank
                 if line.strip():
                     failed_tests.add(line.strip())
-            else:
-                match = passed_pattern.search(line)
-                if match:
-                    passed_tests.add(match.group(1))
+        passed_tests -= failed_tests
         parsed_results = {
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,

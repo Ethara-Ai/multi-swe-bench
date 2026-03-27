@@ -168,10 +168,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # For example: RUN apt-get update && apt-get install -y git
 # For example: RUN yum install -y git
 # For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
+RUN apt-get update && apt-get install -y git pkg-config libssl-dev curl ca-certificates
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+
+# Install Rust toolchain for human_mode=true compatibility
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:$PATH"
+RUN rustup install 1.45.0 && rustup default 1.45.0
 
 WORKDIR /home/
 COPY fix.patch /home/
