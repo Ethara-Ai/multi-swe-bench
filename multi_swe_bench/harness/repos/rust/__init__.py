@@ -21,6 +21,7 @@ from multi_swe_bench.harness.repos.rust.serde_rs import *
 from multi_swe_bench.harness.repos.rust.sharkdp import *
 from multi_swe_bench.harness.repos.rust.starship import *
 from multi_swe_bench.harness.repos.rust.tailcallhq import *
+from multi_swe_bench.harness.repos.rust.tauri_apps import *
 from multi_swe_bench.harness.repos.rust.tokio_rs import *
 from multi_swe_bench.harness.repos.rust.unicode_org import *
 from multi_swe_bench.harness.repos.rust.actix import *
