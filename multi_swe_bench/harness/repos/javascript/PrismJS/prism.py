@@ -51,12 +51,22 @@ ENV TZ=Etc/UTC
 
 RUN apt update && apt install -y libxkbfile-dev pkg-config build-essential python3 libkrb5-dev libxss1 xvfb libgtk-3-0 libgbm1
 
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
-        fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \
-        --no-install-recommends \
+RUN DPKG_ARCH=$(dpkg --print-architecture) && \
+    if [ "$DPKG_ARCH" = "amd64" ]; then \
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+        && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
+        && apt-get update \
+        && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
+            fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \
+            --no-install-recommends; \
+    else \
+        apt-get update \
+        && apt-get install -y chromium fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
+            fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \
+            --no-install-recommends \
+        && ln -sf /usr/bin/chromium /usr/bin/google-chrome-stable \
+        && ln -sf /usr/bin/chromium /usr/bin/google-chrome; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \
