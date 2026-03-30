@@ -62,3 +62,4 @@ from multi_swe_bench.harness.repos.golang.urfave import *
 from multi_swe_bench.harness.repos.golang.cilium import *
 from multi_swe_bench.harness.repos.golang.minio import *
 from multi_swe_bench.harness.repos.golang.argoproj import *
+from multi_swe_bench.harness.repos.golang.cockroachdb import *
