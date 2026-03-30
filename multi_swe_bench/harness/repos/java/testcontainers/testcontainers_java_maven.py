@@ -1,9 +1,11 @@
 import re
-from typing import Optional
+from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+REPO_DIR = "testcontainers-java"
 
 FILTER_SCRIPT = """\
 import sys
@@ -39,6 +41,74 @@ with open(output_file, 'w') as f:
 """
 
 
+class ImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return "ubuntu:22.04"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base_testcontainers_java_maven"
+
+    def workdir(self) -> str:
+        return "base_testcontainers_java_maven"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{REPO_DIR}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{REPO_DIR}"
+
+        dockerfile_content = """\
+FROM {image_name}
+
+{global_env}
+
+WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git curl python3 ca-certificates docker.io openjdk-8-jdk maven \\
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-$TARGETARCH
+ENV PATH=$JAVA_HOME/bin:$PATH
+
+{code}
+
+WORKDIR /home/{repo_dir}
+RUN mvn dependency:resolve -B 2>/dev/null || true
+
+{clear_env}
+
+"""
+        return dockerfile_content.format(
+            image_name=image_name,
+            global_env=self.global_env,
+            code=code,
+            repo_dir=REPO_DIR,
+            clear_env=self.clear_env,
+        )
+
+
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -52,11 +122,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "ubuntu:22.04"
-
-    def image_prefix(self) -> str:
-        return "envagent"
+    def dependency(self) -> Image | None:
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -65,27 +132,64 @@ class ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        repo_name = self.pr.repo
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
             File(".", "filter_binary_patch.py", FILTER_SCRIPT),
             File(
                 ".",
+                "check_git_changes.sh",
+                """\
+#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+""",
+            ),
+            File(
+                ".",
+                "prepare.sh",
+                """\
+#!/bin/bash
+set -e
+
+cd /home/{repo_dir}
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+git checkout {sha}
+bash /home/check_git_changes.sh
+""".format(repo_dir=REPO_DIR, sha=self.pr.base.sha),
+            ),
+            File(
+                ".",
                 "run.sh",
-                """#!/bin/bash
-cd /home/{repo}
+                """\
+#!/bin/bash
+cd /home/{repo_dir}
 export TESTCONTAINERS_RYUK_DISABLED=true
 export TESTCONTAINERS_CHECKS_DISABLE=true
 export DOCKER_HOST=unix:///var/run/docker.sock
 mvn test -B -Dsurefire.useFile=false -DfailIfNoTests=false -pl core 2>&1 || true
-""".format(repo=repo_name),
+""".format(repo_dir=REPO_DIR),
             ),
             File(
                 ".",
                 "test-run.sh",
-                """#!/bin/bash
-cd /home/{repo}
+                """\
+#!/bin/bash
+cd /home/{repo_dir}
 
 python3 /home/filter_binary_patch.py /home/test.patch /tmp/test_filtered.patch
 
@@ -99,13 +203,14 @@ export TESTCONTAINERS_RYUK_DISABLED=true
 export TESTCONTAINERS_CHECKS_DISABLE=true
 export DOCKER_HOST=unix:///var/run/docker.sock
 mvn test -B -Dsurefire.useFile=false -DfailIfNoTests=false -pl core 2>&1 || true
-""".format(repo=repo_name),
+""".format(repo_dir=REPO_DIR),
             ),
             File(
                 ".",
                 "fix-run.sh",
-                """#!/bin/bash
-cd /home/{repo}
+                """\
+#!/bin/bash
+cd /home/{repo_dir}
 
 python3 /home/filter_binary_patch.py /home/test.patch /tmp/test_filtered.patch
 python3 /home/filter_binary_patch.py /home/fix.patch /tmp/fix_filtered.patch
@@ -126,87 +231,41 @@ export TESTCONTAINERS_RYUK_DISABLED=true
 export TESTCONTAINERS_CHECKS_DISABLE=true
 export DOCKER_HOST=unix:///var/run/docker.sock
 mvn test -B -Dsurefire.useFile=false -DfailIfNoTests=false -pl core 2>&1 || true
-""".format(repo=repo_name),
+""".format(repo_dir=REPO_DIR),
             ),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        prepare_commands = "RUN bash /home/prepare.sh"
+
         dockerfile_content = """\
-# syntax=docker/dockerfile:1.6
-FROM ubuntu:22.04
+FROM {name}:{tag}
 
-ARG TARGETARCH
-ARG REPO_URL="https://github.com/{pr.org}/{pr.repo}.git"
-ARG BASE_COMMIT
-ARG http_proxy=""
-ARG https_proxy=""
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG no_proxy="localhost,127.0.0.1,::1"
-ARG NO_PROXY="localhost,127.0.0.1,::1"
-ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
-ARG JDK_PKG="openjdk-8-jdk"
-ARG BUILD_TOOL="maven"
-
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC \\
-    http_proxy=${{http_proxy}} \\
-    https_proxy=${{https_proxy}} \\
-    HTTP_PROXY=${{HTTP_PROXY}} \\
-    HTTPS_PROXY=${{HTTPS_PROXY}} \\
-    no_proxy=${{no_proxy}} \\
-    NO_PROXY=${{NO_PROXY}} \\
-    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
-    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8" \\
-    TESTCONTAINERS_RYUK_DISABLED=true \\
-    TESTCONTAINERS_CHECKS_DISABLE=true \\
-    DOCKER_HOST=unix:///var/run/docker.sock
-
-LABEL org.opencontainers.image.title="{pr.org}/{pr.repo}" \\
-      org.opencontainers.image.description="{pr.org}/{pr.repo} Docker image" \\
-      org.opencontainers.image.source="https://github.com/{pr.org}/{pr.repo}" \\
-      org.opencontainers.image.authors="https://www.ethara.ai/"
-
-RUN mkdir -p /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git curl python3 ca-certificates docker.io ${{JDK_PKG}} ${{BUILD_TOOL}} \\
-    && rm -rf /var/lib/apt/lists/*
-
-ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-${{TARGETARCH}}
-ENV PATH=$JAVA_HOME/bin:$PATH
-RUN ln -sf /usr/lib/jvm/java-8-openjdk-$(dpkg --print-architecture) /usr/lib/jvm/java-8-openjdk-${{TARGETARCH}} 2>/dev/null || true
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone "${{REPO_URL}}" /home/{pr.repo}
-
-WORKDIR /home/{pr.repo}
-RUN git reset --hard
-RUN git fetch origin ${{BASE_COMMIT}} 2>/dev/null || git fetch --unshallow 2>/dev/null || true
-RUN git checkout ${{BASE_COMMIT}}
-
-RUN mvn dependency:resolve -B 2>/dev/null || true
+{global_env}
 
 {copy_commands}
-CMD ["/bin/bash"]
+
+{prepare_commands}
+
+{clear_env}
+
 """
-        return dockerfile_content.format(pr=self.pr, copy_commands=copy_commands)
+        return dockerfile_content.format(
+            name=name,
+            tag=tag,
+            global_env=self.global_env,
+            copy_commands=copy_commands,
+            prepare_commands=prepare_commands,
+            clear_env=self.clear_env,
+        )
 
 
 @Instance.register("testcontainers", "testcontainers_java_maven")
@@ -249,12 +308,9 @@ class TESTCONTAINERS_JAVA_MAVEN(Instance):
         ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
         test_log = ansi_escape.sub("", test_log)
 
-        # Maven Surefire format 1 (newer): "Tests run: X, ... Time elapsed: N.NNs - in TestClass"
         pattern_new = re.compile(
             r"Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+).*?- in (.+)"
         )
-        # Maven Surefire format 2 (older): "Tests run: X, ... Time elapsed: N.NNN sec"
-        # Class name appears on previous line as "Running TestClass"
         pattern_old = re.compile(
             r"Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+), Time elapsed: [\d.]+ sec"
         )
@@ -264,12 +320,10 @@ class TESTCONTAINERS_JAVA_MAVEN(Instance):
         for line in test_log.splitlines():
             line = line.strip()
 
-            # Track current test class
             rm = running_pattern.search(line)
             if rm:
                 current_class = rm.group(1).strip()
 
-            # Try new format first
             m = pattern_new.search(line)
             if m:
                 tests_run = int(m.group(1))
@@ -289,7 +343,6 @@ class TESTCONTAINERS_JAVA_MAVEN(Instance):
                     skipped_tests.add(test_class)
                 continue
 
-            # Try old format
             m = pattern_old.search(line)
             if m:
                 tests_run = int(m.group(1))
