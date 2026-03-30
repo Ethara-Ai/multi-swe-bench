@@ -21,9 +21,7 @@ from typing import Optional, Union
 
 import docker
 
-docker_client = docker.from_env(timeout=3600)
-
-BUILDX_BUILDER = "pr-eval-multiarch"
+docker_client = docker.from_env(timeout=600)
 
 
 def exists(image_name: str) -> bool:
@@ -64,7 +62,7 @@ def build(
             platform=platform,
             output_tar=abs_output_tar,
             base_image_context=base_image_context,
-            )
+        )
     else:
         # --- Legacy single-arch path: use Python Docker SDK (unchanged) ---
         _build_with_sdk(
@@ -200,8 +198,6 @@ def _build_with_buildx(
         "--sbom=false",
     ]
 
-    cmd.extend(["--builder", BUILDX_BUILDER])
-
     # Add build arguments
     for key, value in (buildargs or {}).items():
         cmd.extend(["--build-arg", f"{key}={value}"])
@@ -261,38 +257,14 @@ def _build_with_buildx(
             "--provenance=false",
             "--sbom=false",
         ]
-        load_cmd.extend(["--builder", BUILDX_BUILDER])
         for key, value in (buildargs or {}).items():
             load_cmd.extend(["--build-arg", f"{key}={value}"])
         if base_image_context:
             load_cmd.extend(["--build-context", base_image_context])
         load_cmd.append("--load")
         load_cmd.append(".")
-
-        import time
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                _run_buildx(load_cmd, workdir, logger, label="load native")
-                logger.info(f"Native platform image loaded into daemon: {image_full_name}")
-                break
-            except RuntimeError as e:
-                logger.warning(f"Load attempt {attempt}/{max_retries} failed: {e}")
-                if attempt < max_retries:
-                    daemon_check = subprocess.run(
-                        ["docker", "info"],
-                        capture_output=True,
-                    )
-                    if daemon_check.returncode != 0:
-                        logger.info("Docker daemon is down. Restarting...")
-                        subprocess.run(["systemctl", "restart", "docker"], check=True)
-                        time.sleep(5)
-                    else:
-                        logger.info("Docker daemon is alive. Retrying after short sleep...")
-                        time.sleep(3)
-                else:
-                    logger.error("All load attempts failed.")
-                    raise
+        _run_buildx(load_cmd, workdir, logger, label="load native")
+        logger.info(f"Native platform image loaded into daemon: {image_full_name}")
 
 
 def run(
