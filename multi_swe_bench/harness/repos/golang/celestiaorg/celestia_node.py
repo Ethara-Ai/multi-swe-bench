@@ -247,7 +247,7 @@ class CelestiaNode(Instance):
                         continue
                     if test_name in skipped_tests:
                         skipped_tests.remove(test_name)
-                    passed_tests.add(get_base_name(test_name))
+                    passed_tests.add(test_name)
 
             for re_fail_test in re_fail_tests:
                 fail_match = re_fail_test.match(line)
@@ -257,7 +257,7 @@ class CelestiaNode(Instance):
                         passed_tests.remove(test_name)
                     if test_name in skipped_tests:
                         skipped_tests.remove(test_name)
-                    failed_tests.add(get_base_name(test_name))
+                    failed_tests.add(test_name)
 
             for re_skip_test in re_skip_tests:
                 skip_match = re_skip_test.match(line)
