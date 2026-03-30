@@ -23,3 +23,5 @@ from multi_swe_bench.harness.repos.cpp.ericniebler import *
 from multi_swe_bench.harness.repos.cpp.uNetworking import *
 from multi_swe_bench.harness.repos.cpp.doctest import *
 from multi_swe_bench.harness.repos.cpp.danmar import *
+from multi_swe_bench.harness.repos.cpp.MariaDB import *
+from multi_swe_bench.harness.repos.cpp.Neargye import *
