@@ -144,3 +144,4 @@ from multi_swe_bench.harness.repos.typescript.payloadcms import *
 from multi_swe_bench.harness.repos.typescript.SBoudrias import *
 from multi_swe_bench.harness.repos.typescript.refined_github import *
 from multi_swe_bench.harness.repos.typescript.vega import *
+from multi_swe_bench.harness.repos.typescript.storybookjs import *
