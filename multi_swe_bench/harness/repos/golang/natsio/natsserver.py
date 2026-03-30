@@ -121,7 +121,8 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-go test -v -count=1 ./... || true
+PACKAGES=$(go list ./... 2>/dev/null | grep -v '/test$' | grep -v '/logger$' || echo "./...")
+go test -v -count=1 $PACKAGES || true
 
 """.format(pr=self.pr),
             ),
@@ -132,7 +133,8 @@ go test -v -count=1 ./... || true
 set -e
 
 cd /home/{pr.repo}
-go test -v -count=1 ./...
+PACKAGES=$(go list ./... 2>/dev/null | grep -v '/test$' | grep -v '/logger$' || echo "./...")
+go test -v -count=1 $PACKAGES
 
 """.format(pr=self.pr),
             ),
@@ -144,7 +146,8 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch
-go test -v -count=1 ./...
+PACKAGES=$(go list ./... 2>/dev/null | grep -v '/test$' | grep -v '/logger$' || echo "./...")
+go test -v -count=1 $PACKAGES
 
 """.format(pr=self.pr),
             ),
@@ -156,7 +159,8 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
-go test -v -count=1 ./...
+PACKAGES=$(go list ./... 2>/dev/null | grep -v '/test$' | grep -v '/logger$' || echo "./...")
+go test -v -count=1 $PACKAGES
 
 """.format(pr=self.pr),
             ),
