@@ -9,10 +9,7 @@ from multi_swe_bench.harness.repos.python.All_Hands_AI import *
 from multi_swe_bench.harness.repos.python.allenai import *
 from multi_swe_bench.harness.repos.python.alteryx import *
 from multi_swe_bench.harness.repos.python.amaranth_lang import *
-<<<<<<< Updated upstream
-=======
 from multi_swe_bench.harness.repos.python.arrow_py import *
->>>>>>> Stashed changes
 from multi_swe_bench.harness.repos.python.asdf_format import *
 from multi_swe_bench.harness.repos.python.astropy import *
 from multi_swe_bench.harness.repos.python.aws import *
@@ -307,7 +304,6 @@ from multi_swe_bench.harness.repos.python.fastapi import *
 from multi_swe_bench.harness.repos.python.explosion import *
 from multi_swe_bench.harness.repos.python.yt_dlp import *
 from multi_swe_bench.harness.repos.python.jcrist import *
-=======
 from multi_swe_bench.harness.repos.python.explosion import *
 from multi_swe_bench.harness.repos.python.F5Networks import *
 from multi_swe_bench.harness.repos.python.facebookresearch import *
@@ -526,4 +522,3 @@ from multi_swe_bench.harness.repos.python.xCDAT import *
 from multi_swe_bench.harness.repos.python.xonsh import *
 from multi_swe_bench.harness.repos.python.zarr_developers import *
 from multi_swe_bench.harness.repos.python.zulip import *
->>>>>>> Stashed changes
