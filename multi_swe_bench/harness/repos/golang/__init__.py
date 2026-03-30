@@ -61,3 +61,4 @@ from multi_swe_bench.harness.repos.golang.influxdata import *
 from multi_swe_bench.harness.repos.golang.urfave import *
 from multi_swe_bench.harness.repos.golang.cilium import *
 from multi_swe_bench.harness.repos.golang.minio import *
+from multi_swe_bench.harness.repos.golang.argoproj import *
