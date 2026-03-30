@@ -28,3 +28,4 @@ from multi_swe_bench.harness.repos.rust.actix import *
 from multi_swe_bench.harness.repos.rust.hyperium import *
 from multi_swe_bench.harness.repos.rust.seanmonstar import *
 from multi_swe_bench.harness.repos.rust.astral_sh import *
+from multi_swe_bench.harness.repos.rust.ratatui import *
