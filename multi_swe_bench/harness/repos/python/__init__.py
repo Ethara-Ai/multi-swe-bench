@@ -287,3 +287,16 @@ from multi_swe_bench.harness.repos.python.xCDAT import *
 from multi_swe_bench.harness.repos.python.xonsh import *
 from multi_swe_bench.harness.repos.python.zarr_developers import *
 from multi_swe_bench.harness.repos.python.zulip import *
+from multi_swe_bench.harness.repos.python.Qiskit import *
+from multi_swe_bench.harness.repos.python.secdev import *
+from multi_swe_bench.harness.repos.python.silx_kit import *
+from multi_swe_bench.harness.repos.python.Theano import *
+from multi_swe_bench.harness.repos.python.databricks import *
+from multi_swe_bench.harness.repos.python.cta_observatory import *
+from multi_swe_bench.harness.repos.python.gwastro import *
+from multi_swe_bench.harness.repos.python.thenewboston_blockchain import *
+from multi_swe_bench.harness.repos.python.scottcjn import *
+from multi_swe_bench.harness.repos.python.commaai import *
+from multi_swe_bench.harness.repos.python.fastapi import *
+from multi_swe_bench.harness.repos.python.explosion import *
+# from multi_swe_bench.harness.repos.python.pandas_dev import *  # missing module
