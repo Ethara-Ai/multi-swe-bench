@@ -22,3 +22,4 @@ from multi_swe_bench.harness.repos.cpp.microsoft import *
 from multi_swe_bench.harness.repos.cpp.ericniebler import *
 from multi_swe_bench.harness.repos.cpp.uNetworking import *
 from multi_swe_bench.harness.repos.cpp.doctest import *
+from multi_swe_bench.harness.repos.cpp.danmar import *
