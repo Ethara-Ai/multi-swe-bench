@@ -271,6 +271,7 @@ from multi_swe_bench.harness.repos.python.Theano import *
 from multi_swe_bench.harness.repos.python.thenewboston_blockchain import *
 from multi_swe_bench.harness.repos.python.theupdateframework import *
 from multi_swe_bench.harness.repos.python.tornadoweb import *
+from multi_swe_bench.harness.repos.python.tortoise import *
 from multi_swe_bench.harness.repos.python.twisted import *
 from multi_swe_bench.harness.repos.python.ubclaunchpad import *
 from multi_swe_bench.harness.repos.python.uncscode import *
