@@ -86,3 +86,4 @@ from multi_swe_bench.harness.repos.javascript.webpack.webpack import *
 from multi_swe_bench.harness.repos.javascript.nock import *
 from multi_swe_bench.harness.repos.javascript.stdlib_js import *
 from multi_swe_bench.harness.repos.javascript.postcss import *
+from multi_swe_bench.harness.repos.javascript.websockets import *

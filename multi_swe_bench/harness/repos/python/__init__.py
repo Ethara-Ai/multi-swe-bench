@@ -300,5 +300,5 @@ from multi_swe_bench.harness.repos.python.scottcjn import *
 from multi_swe_bench.harness.repos.python.commaai import *
 from multi_swe_bench.harness.repos.python.fastapi import *
 from multi_swe_bench.harness.repos.python.explosion import *
-# from multi_swe_bench.harness.repos.python.pandas_dev import *  # missing module
 from multi_swe_bench.harness.repos.python.yt_dlp import *
+from multi_swe_bench.harness.repos.python.jcrist import *
