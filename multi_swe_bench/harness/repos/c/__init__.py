@@ -15,3 +15,4 @@ from multi_swe_bench.harness.repos.c.valkey_io import *
 from multi_swe_bench.harness.repos.c.Mbed_TLS import *
 from multi_swe_bench.harness.repos.c.awslabs import *
 from multi_swe_bench.harness.repos.cpp.danmar import *
+from multi_swe_bench.harness.repos.c.c_ares import *
