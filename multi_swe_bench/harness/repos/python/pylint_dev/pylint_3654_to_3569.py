@@ -21,16 +21,16 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "python:3.10.0-alpine3.15"
+        return "python:3.9"
 
     def image_prefix(self) -> str:
         return "envagent"
 
     def image_tag(self) -> str:
-        return "base_python310_alpine"
+        return "base_python39"
 
     def workdir(self) -> str:
-        return "base_python310_alpine"
+        return "base_python39"
 
     def files(self) -> list[File]:
         return []
@@ -50,7 +50,7 @@ class ImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-RUN apk add --no-cache git bash gcc musl-dev linux-headers
+RUN apt-get update && apt-get install -y --no-install-recommends git bash build-essential && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -132,6 +132,7 @@ git clean -fdx
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
+sed -i 's/python_requires=">=3\\.5\\.\\*"/python_requires=">=3.5"/' setup.py 2>/dev/null || true
 
 pip install --no-build-isolation -e ".[testutils]" || pip install --no-build-isolation -e . || pip install -e . || python setup.py develop || true
 
@@ -142,7 +143,7 @@ pip install --no-build-isolation -e ".[testutils]" || pip install --no-build-iso
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
+pytest --no-header -rA --tb=no -p no:cacheprovider
 
 """.format(pr=self.pr),
             ),
@@ -155,7 +156,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
+pytest --no-header -rA --tb=no -p no:cacheprovider
 
 """.format(pr=self.pr),
             ),
@@ -168,7 +169,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
+pytest --no-header -rA --tb=no -p no:cacheprovider
 
 """.format(pr=self.pr),
             ),
@@ -198,8 +199,8 @@ pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
 """
 
 
-@Instance.register("pylint-dev", "pylint_5891_to_5688")
-class PYLINT_5891_TO_5688(Instance):
+@Instance.register("pylint-dev", "pylint_3654_to_3569")
+class PYLINT_3654_TO_3569(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -232,28 +233,34 @@ class PYLINT_5891_TO_5688(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
         import re
 
+        # Pattern for lines starting with PASSED, FAILED, SKIPPED, or ERROR
+        # - Summary:
+        # E = ERROR, F = FAILED, s = skipped, . = passed
+        # FAILED|PASSED|ERROR followed by test name
+        # SKIPPED followed by `[test name]: reason`
         for line in log.splitlines():
-            if line.startswith("PASSED"):
-                match = re.search(r"PASSED (.*)", line)
-                if match:
-                    passed_tests.add(match.group(1).strip())
-            elif line.startswith("FAILED"):
-                match = re.search(r"FAILED (.*)", line)
-                if match:
-                    failed_tests.add(match.group(1).split("-")[0].strip())
+            line = line.strip()
+            if line.startswith("FAILED"):
+                test_name = line.split(" ", 1)[1]
+                if " - " in test_name:
+                    test_name = test_name.split(" - ")[0]
+                failed_tests.add(test_name)
+            elif line.startswith("PASSED"):
+                test_name = line.split(" ", 1)[1]
+                passed_tests.add(test_name)
+            elif line.startswith("ERROR"):
+                test_name = line.split(" ", 1)[1]
+                failed_tests.add(test_name)
             elif line.startswith("SKIPPED"):
-                match = re.search(r"SKIPPED.*(tests/.*)", line)
+                match = re.search(r"SKIPPED \[(\d+)\] (.+?):", line)
                 if match:
-                    skipped_tests.add(match.group(1).split(":")[0].strip())
-            elif line.startswith("XFAIL"):
-                match = re.search(r"XFAIL (.*)", line)
-                if match:
-                    skipped_tests.add(match.group(1).split("-")[0].strip())
+                    test_name = match.group(2)
+                    skipped_tests.add(test_name)
         parsed_results = {
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,

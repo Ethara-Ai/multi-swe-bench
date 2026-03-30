@@ -21,16 +21,16 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "python:3.10.0-alpine3.15"
+        return "python:3.6"
 
     def image_prefix(self) -> str:
         return "envagent"
 
     def image_tag(self) -> str:
-        return "base_python310_alpine"
+        return "base_python36"
 
     def workdir(self) -> str:
-        return "base_python310_alpine"
+        return "base_python36"
 
     def files(self) -> list[File]:
         return []
@@ -50,7 +50,7 @@ class ImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-RUN apk add --no-cache git bash gcc musl-dev linux-headers
+RUN apt-get update && apt-get install -y --no-install-recommends git bash build-essential && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -142,7 +142,7 @@ pip install --no-build-isolation -e ".[testutils]" || pip install --no-build-iso
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
+pytest --no-header -rA --tb=no -p no:cacheprovider pylint/test/
 
 """.format(pr=self.pr),
             ),
@@ -155,7 +155,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
+pytest --no-header -rA --tb=no -p no:cacheprovider pylint/test/
 
 """.format(pr=self.pr),
             ),
@@ -168,7 +168,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
+pytest --no-header -rA --tb=no -p no:cacheprovider pylint/test/
 
 """.format(pr=self.pr),
             ),
@@ -198,8 +198,8 @@ pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
 """
 
 
-@Instance.register("pylint-dev", "pylint_5891_to_5688")
-class PYLINT_5891_TO_5688(Instance):
+@Instance.register("pylint-dev", "pylint_2630_to_1842")
+class PYLINT_2630_TO_1842(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -232,28 +232,22 @@ class PYLINT_5891_TO_5688(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
         import re
+        import json
 
+        passed_pattern = re.compile(r"^PASSED\s+(.*)$")
+        failed_pattern = re.compile(r"^FAILED\s+(.*?)(?:\s+-.*)?$")
+        skipped_pattern = re.compile(r"^SKIPPED\s+\[\d+\]\s+(.*):.*$")
         for line in log.splitlines():
-            if line.startswith("PASSED"):
-                match = re.search(r"PASSED (.*)", line)
-                if match:
-                    passed_tests.add(match.group(1).strip())
-            elif line.startswith("FAILED"):
-                match = re.search(r"FAILED (.*)", line)
-                if match:
-                    failed_tests.add(match.group(1).split("-")[0].strip())
-            elif line.startswith("SKIPPED"):
-                match = re.search(r"SKIPPED.*(tests/.*)", line)
-                if match:
-                    skipped_tests.add(match.group(1).split(":")[0].strip())
-            elif line.startswith("XFAIL"):
-                match = re.search(r"XFAIL (.*)", line)
-                if match:
-                    skipped_tests.add(match.group(1).split("-")[0].strip())
+            if passed_match := passed_pattern.match(line):
+                passed_tests.add(passed_match.group(1).strip())
+            elif failed_match := failed_pattern.match(line):
+                failed_tests.add(failed_match.group(1).strip())
+            elif skipped_match := skipped_pattern.match(line):
+                skipped_tests.add(skipped_match.group(1).strip())
         parsed_results = {
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,

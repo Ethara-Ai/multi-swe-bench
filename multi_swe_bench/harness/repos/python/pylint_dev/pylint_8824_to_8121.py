@@ -7,6 +7,64 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+class ImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return "python:3.11"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base_python311"
+
+    def workdir(self) -> str:
+        return "base_python311"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        return f"""FROM {image_name}
+
+{self.global_env}
+
+WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends git bash build-essential && rm -rf /var/lib/apt/lists/*
+
+{code}
+
+RUN pip install --upgrade pip setuptools wheel || true
+RUN pip install --no-build-isolation -e ".[testutils]" || pip install --no-build-isolation -e . || pip install -e . || python setup.py develop || true
+RUN grep -v '^-e' requirements_test.txt > /tmp/req.txt 2>/dev/null && pip install -r /tmp/req.txt || true
+RUN grep -v '^-e' requirements_test_min.txt > /tmp/req_min.txt 2>/dev/null && pip install -r /tmp/req_min.txt || true
+RUN pip install pytest || true
+
+{self.clear_env}
+
+"""
+
+
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -20,11 +78,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.11"
-
-    def image_prefix(self) -> str:
-        return "envagent"
+    def dependency(self) -> Image | None:
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -46,14 +101,41 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""".format(),
+            ),
+            File(
+                ".",
                 "prepare.sh",
-                """ls -F
-###ACTION_DELIMITER###
-pip install -r requirements_test.txt
-###ACTION_DELIMITER###
-pytest --benchmark-disable tests/ -v
-###ACTION_DELIMITER###
-echo 'pytest --benchmark-disable tests/ -v' > test_commands.sh""",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
+
+pip install --no-build-isolation -e ".[testutils]" || pip install --no-build-isolation -e . || pip install -e . || python setup.py develop || true
+
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -93,43 +175,27 @@ pytest --benchmark-disable tests/ -v
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        prepare_commands = "RUN bash /home/prepare.sh"
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.11
+        return f"""FROM {name}:{tag}
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
+{self.global_env}
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/pylint-dev/pylint.git /home/pylint
-
-WORKDIR /home/pylint
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+
+{prepare_commands}
+
+{self.clear_env}
+
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("pylint-dev", "pylint_8824_to_8121")

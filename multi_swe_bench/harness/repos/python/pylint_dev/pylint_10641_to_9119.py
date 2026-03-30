@@ -21,16 +21,16 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "python:3.10.0-alpine3.15"
+        return "python:3.11"
 
     def image_prefix(self) -> str:
         return "envagent"
 
     def image_tag(self) -> str:
-        return "base_python310_alpine"
+        return "base_python311"
 
     def workdir(self) -> str:
-        return "base_python310_alpine"
+        return "base_python311"
 
     def files(self) -> list[File]:
         return []
@@ -50,7 +50,7 @@ class ImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-RUN apk add --no-cache git bash gcc musl-dev linux-headers
+RUN apt-get update && apt-get install -y --no-install-recommends git bash build-essential && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -142,7 +142,7 @@ pip install --no-build-isolation -e ".[testutils]" || pip install --no-build-iso
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
+pytest --benchmark-disable tests/ -v
 
 """.format(pr=self.pr),
             ),
@@ -155,7 +155,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
+pytest --benchmark-disable tests/ -v
 
 """.format(pr=self.pr),
             ),
@@ -168,7 +168,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
+pytest --benchmark-disable tests/ -v
 
 """.format(pr=self.pr),
             ),
@@ -198,8 +198,8 @@ pytest --no-header -rA --tb=no -p no:cacheprovider --benchmark-disable tests/
 """
 
 
-@Instance.register("pylint-dev", "pylint_5891_to_5688")
-class PYLINT_5891_TO_5688(Instance):
+@Instance.register("pylint-dev", "pylint_10641_to_9119")
+class PYLINT_10641_TO_9119(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -232,28 +232,39 @@ class PYLINT_5891_TO_5688(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
         import re
+        import json
 
+        # Regex to capture test status and name
+        # accounts for statuses appearing before or after the test name
+        # and for different formatting of the test name
+        # Pattern for lines where status is at the end (e.g., PASSED, SKIPPED)
+        # Example: tests/test_check_parallel.py::TestCheckParallelFramework::test_worker_initialize PASSED [  0%]
+        pattern_status_after = re.compile(r"^(tests/.*)::(.*) (PASSED|SKIPPED|XFAIL)")
+        # Pattern for lines with FAILED status, which appears at the beginning
+        # Example: FAILED tests/pyreverse/test_writer.py::test_type_check_imports_dot_files[packages_type_check_imports.dot]
+        pattern_failed = re.compile(r"^FAILED (tests/.*)::(.*)")
         for line in log.splitlines():
-            if line.startswith("PASSED"):
-                match = re.search(r"PASSED (.*)", line)
-                if match:
-                    passed_tests.add(match.group(1).strip())
-            elif line.startswith("FAILED"):
-                match = re.search(r"FAILED (.*)", line)
-                if match:
-                    failed_tests.add(match.group(1).split("-")[0].strip())
-            elif line.startswith("SKIPPED"):
-                match = re.search(r"SKIPPED.*(tests/.*)", line)
-                if match:
-                    skipped_tests.add(match.group(1).split(":")[0].strip())
-            elif line.startswith("XFAIL"):
-                match = re.search(r"XFAIL (.*)", line)
-                if match:
-                    skipped_tests.add(match.group(1).split("-")[0].strip())
+            match_status_after = pattern_status_after.match(line)
+            if match_status_after:
+                test_path = match_status_after.group(1)
+                test_name = match_status_after.group(2)
+                status = match_status_after.group(3)
+                full_test_name = f"{test_path}::{test_name}"
+                if status == "PASSED":
+                    passed_tests.add(full_test_name)
+                elif status == "SKIPPED" or status == "XFAIL":
+                    skipped_tests.add(full_test_name)
+                continue
+            match_failed = pattern_failed.match(line)
+            if match_failed:
+                test_path = match_failed.group(1)
+                test_name = match_failed.group(2)
+                full_test_name = f"{test_path}::{test_name}"
+                failed_tests.add(full_test_name)
         parsed_results = {
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,
