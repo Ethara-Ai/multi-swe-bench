@@ -56,6 +56,7 @@ from multi_swe_bench.harness.repos.typescript.grafana import *
 from multi_swe_bench.harness.repos.typescript.Hacker0x01 import *
 from multi_swe_bench.harness.repos.typescript.hasadna import *
 from multi_swe_bench.harness.repos.typescript.highcharts import *
+from multi_swe_bench.harness.repos.typescript.honojs import *
 from multi_swe_bench.harness.repos.typescript.HospitalRun import *
 from multi_swe_bench.harness.repos.typescript.HoudiniGraphql import *
 from multi_swe_bench.harness.repos.typescript.IgniteUI import *
