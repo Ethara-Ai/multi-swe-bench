@@ -127,3 +127,4 @@ from multi_swe_bench.harness.repos.typescript.webdriverio import *
 from multi_swe_bench.harness.repos.typescript.website import *
 from multi_swe_bench.harness.repos.typescript.withastro import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
+from multi_swe_bench.harness.repos.typescript.nocodb import *
