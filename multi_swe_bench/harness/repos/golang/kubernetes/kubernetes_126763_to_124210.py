@@ -121,8 +121,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("kubernetes", "kubernetes_126387_to_124210")
-class Kubernetes_126387_to_124210(Instance):
+@Instance.register("kubernetes", "kubernetes_126763_to_124210")
+class Kubernetes_126763_to_124210(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

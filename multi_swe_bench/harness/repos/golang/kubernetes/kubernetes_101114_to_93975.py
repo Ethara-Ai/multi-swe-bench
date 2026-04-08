@@ -20,7 +20,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "golang:1.17"
+        return "golang:1.15"
 
     def image_prefix(self) -> str:
         return "mswebench"
@@ -99,11 +99,15 @@ go test -v -count=1 ./...
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM golang:1.17
+        return f"""FROM golang:1.15
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y git
+# golang:1.15 is based on Debian buster whose repos have been archived
+RUN sed -i 's|deb.debian.org/debian |archive.debian.org/debian |g' /etc/apt/sources.list && \
+    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
+    sed -i '/buster-updates/d' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y git
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -121,8 +125,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("kubernetes", "kubernetes_108995_to_107329")
-class Kubernetes_108995_to_107329(Instance):
+@Instance.register("kubernetes", "kubernetes_101114_to_93975")
+class Kubernetes_101114_to_93975(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

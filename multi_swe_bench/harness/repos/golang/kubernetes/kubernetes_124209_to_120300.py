@@ -20,7 +20,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "golang:1.12"
+        return "golang:1.21"
 
     def image_prefix(self) -> str:
         return "mswebench"
@@ -99,7 +99,7 @@ go test -v -count=1 ./...
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM golang:1.12
+        return f"""FROM golang:1.21
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -121,8 +121,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("kubernetes", "kubernetes_81742_to_78819")
-class Kubernetes_81742_to_78819(Instance):
+@Instance.register("kubernetes", "kubernetes_124209_to_120300")
+class Kubernetes_124209_to_120300(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
