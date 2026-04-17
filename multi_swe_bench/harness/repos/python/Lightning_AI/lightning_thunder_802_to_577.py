@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.9-slim"
+        return "python:3.10-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -156,7 +156,7 @@ THUNDER_DRIVER=nvfuser pytest thunder/tests -v
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
+FROM python:3.10-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -181,6 +181,10 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN pip install --upgrade pip "setuptools<71" wheel
+RUN pip install -r requirements/devel.txt || pip install -r requirements/test.txt || true
+RUN pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
+RUN pip install --no-build-isolation -e .
 """
         return dockerfile_content.format(pr=self.pr)
 

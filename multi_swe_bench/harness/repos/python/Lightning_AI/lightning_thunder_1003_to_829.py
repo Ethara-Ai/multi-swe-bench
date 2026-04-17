@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "ubuntu:latest"
+        return "python:3.10-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -172,7 +172,7 @@ venv/bin/python -m coverage run --source thunder -m pytest thunder/tests/ --igno
 
 # Choose an appropriate base image based on the project's requirements - replace ubuntu:latest with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM ubuntu:latest
+FROM python:3.10-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -197,6 +197,11 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN python -m venv venv
+RUN venv/bin/pip install "setuptools<71" wheel pytest coverage pytest-benchmark
+RUN venv/bin/pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
+RUN venv/bin/pip install -r requirements/test.txt || true
+RUN venv/bin/pip install --no-build-isolation -e .
 """
         return dockerfile_content.format(pr=self.pr)
 

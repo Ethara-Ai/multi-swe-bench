@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.9-slim"
+        return "python:3.10-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -176,7 +176,7 @@ fi
 
 # Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
+FROM python:3.10-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -201,6 +201,14 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN mkdir -p /miniconda/envs/py310 && ln -s /usr/local/bin /miniconda/envs/py310/bin && ln -s /usr/local/lib /miniconda/envs/py310/lib
+RUN pip install --upgrade pip "setuptools<66" wheel
+RUN sed -i 's/bitsandbytes<0.45,>=0.44/bitsandbytes>=0.42/; s/bitsandbytes.*/bitsandbytes>=0.42/' requirements/test.txt requirements/base.txt || true
+RUN pip install -r requirements/base.txt || true
+RUN pip install -r requirements/test.txt || true
+RUN pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
+RUN sed -i 's/^license = "Apache-2.0"/license = {{{{text = "Apache-2.0"}}}}/' pyproject.toml || true
+RUN pip install --no-build-isolation -e .
 """
         return dockerfile_content.format(pr=self.pr)
 
