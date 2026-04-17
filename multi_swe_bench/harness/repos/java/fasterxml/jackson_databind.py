@@ -50,10 +50,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 WORKDIR /home/
-RUN apt-get update && apt-get install -y git openjdk-8-jdk
+RUN apt-get update && apt-get install -y git openjdk-8-jdk openjdk-17-jdk
 RUN apt-get install -y maven
 
 {code}
+
+RUN git clone https://github.com/FasterXML/jackson-bom.git /home/jackson-bom
+RUN git clone https://github.com/FasterXML/jackson-parent.git /home/jackson-parent
+RUN git clone https://github.com/FasterXML/jackson-core.git /home/jackson-core
+RUN git clone https://github.com/FasterXML/jackson-annotations.git /home/jackson-annotations
 
 {self.clear_env}
 
@@ -209,6 +214,259 @@ exit 0
             ),
             File(
                 ".",
+                "install_parent_poms.sh",
+                r"""#!/bin/bash
+# Install jackson-bom/jackson-base/jackson-parent POMs into local Maven repo
+# so that jackson-databind SNAPSHOT builds can resolve their parent chain.
+set -e
+
+REPO_POM="$1"  # path to jackson-databind's pom.xml
+
+if [ ! -f "$REPO_POM" ]; then
+    echo "install_parent_poms: pom.xml not found at $REPO_POM"
+    exit 1
+fi
+
+# Extract parent artifactId and version from jackson-databind pom.xml
+PARENT_ARTIFACT=$(grep -A 10 '<parent>' "$REPO_POM" | grep '<artifactId>' | head -1 | sed 's/.*<artifactId>//;s/<.*//')
+PARENT_VERSION=$(grep -A 10 '<parent>' "$REPO_POM" | grep '<version>' | head -1 | sed 's/.*<version>//;s/<.*//')
+
+if [ -z "$PARENT_VERSION" ]; then
+    echo "install_parent_poms: Could not extract parent version"
+    exit 0
+fi
+
+echo "install_parent_poms: parent=$PARENT_ARTIFACT version=$PARENT_VERSION"
+
+# Check if it's a SNAPSHOT — if not, Maven Central should have it
+if [[ "$PARENT_VERSION" != *-SNAPSHOT ]]; then
+    echo "install_parent_poms: Parent is a release version, should resolve from Maven Central"
+    exit 0
+fi
+
+# Determine the minor version branch (e.g., 2.18.5-SNAPSHOT -> 2.18, 3.1.0-SNAPSHOT -> 3.1)
+MINOR_VERSION=$(echo "$PARENT_VERSION" | sed 's/\([0-9]*\.[0-9]*\).*/\1/')
+echo "install_parent_poms: minor version branch: $MINOR_VERSION"
+
+# ---- Helper: compute nearest release version for dependency overrides ----
+compute_release_version() {
+    local VER="$1"
+    # Strip -SNAPSHOT suffix
+    local BASE_VER=$(echo "$VER" | sed 's/-SNAPSHOT//')
+
+    # Handle 3.0.0-rc*-SNAPSHOT: use previous rc (e.g., rc3 -> rc2, rc2 -> rc1)
+    if [[ "$VER" =~ ^3\.0\.0-rc([0-9]+)-SNAPSHOT$ ]]; then
+        local RC_NUM="${BASH_REMATCH[1]}"
+        if [ "$RC_NUM" -gt 1 ]; then
+            echo "3.0.0-rc$((RC_NUM - 1))"
+        else
+            echo "3.0.0-rc1"
+        fi
+        return
+    fi
+
+    # Handle other rc-SNAPSHOT (e.g., 2.15.0-rc2-SNAPSHOT -> previous minor's latest)
+    if [[ "$VER" == *-rc*-SNAPSHOT ]]; then
+        local MM=$(echo "$BASE_VER" | sed 's/-rc.*//' | sed 's/\.[0-9]*$//')
+        local MINOR_NUM=$(echo "$MM" | awk -F. '{print $2}')
+        local MAJOR_NUM=$(echo "$MM" | awk -F. '{print $1}')
+        if [ "$MINOR_NUM" -gt 0 ]; then
+            echo "${MAJOR_NUM}.$((MINOR_NUM - 1)).3"
+        else
+            echo "${MM}.0"
+        fi
+        return
+    fi
+
+    # Handle 3.0.0-SNAPSHOT: no released 3.0.0 yet, use 3.0.0-rc1
+    if [[ "$VER" == "3.0.0-SNAPSHOT" ]]; then
+        echo "3.0.0-rc1"
+        return
+    fi
+
+    # Handle 3.1.0-SNAPSHOT: use latest 3.x release
+    if [[ "$VER" =~ ^3\.[0-9]+\.0-SNAPSHOT$ ]]; then
+        echo "3.0.0-rc4"
+        return
+    fi
+
+    # Regular X.Y.Z-SNAPSHOT
+    local MAJOR_MINOR=$(echo "$BASE_VER" | sed 's/\.[0-9]*$//')
+    local PATCH=$(echo "$BASE_VER" | grep -oE '[0-9]+$')
+
+    if [ "$PATCH" -gt 0 ] 2>/dev/null; then
+        echo "${MAJOR_MINOR}.$((PATCH - 1))"
+    else
+        # X.Y.0-SNAPSHOT: use previous minor's latest
+        local MAJOR_NUM=$(echo "$MAJOR_MINOR" | awk -F. '{print $1}')
+        local MINOR_NUM=$(echo "$MAJOR_MINOR" | awk -F. '{print $2}')
+        if [ "$MINOR_NUM" -gt 0 ]; then
+            echo "${MAJOR_NUM}.$((MINOR_NUM - 1)).0"
+        else
+            echo "${MAJOR_MINOR}.0"
+        fi
+    fi
+}
+
+RELEASE_VERSION=$(compute_release_version "$PARENT_VERSION")
+echo "install_parent_poms: nearest release for deps: $RELEASE_VERSION"
+
+# ---- Handle jackson-parent (old 2.8/2.9 PRs use jackson-parent directly) ----
+if [[ "$PARENT_ARTIFACT" == "jackson-parent" ]]; then
+    echo "install_parent_poms: Parent is jackson-parent (not jackson-base)"
+    PARENT_DIR="/home/jackson-parent"
+    if [ ! -d "$PARENT_DIR" ]; then
+        echo "install_parent_poms: jackson-parent not found at $PARENT_DIR, skipping"
+        exit 0
+    fi
+    cd "$PARENT_DIR"
+    git reset --hard 2>/dev/null || true
+    if ! git checkout "$MINOR_VERSION" 2>/dev/null; then
+        git checkout "2.x" 2>/dev/null || { echo "install_parent_poms: No branch for $MINOR_VERSION"; exit 1; }
+    fi
+    # Rewrite version to match what jackson-databind expects
+    CURRENT_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+    echo "install_parent_poms: jackson-parent branch version: $CURRENT_VERSION -> rewriting to $PARENT_VERSION"
+    sed -i "s|<version>${CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" pom.xml
+    mvn install -N -q -DskipTests -Denforcer.skip=true 2>&1 || echo "install_parent_poms: WARNING - jackson-parent install failed"
+    git checkout -- . 2>/dev/null || true
+    echo "install_parent_poms: jackson-parent Done"
+    exit 0
+fi
+
+# ---- Standard path: jackson-base -> jackson-bom chain ----
+BOM_DIR="/home/jackson-bom"
+if [ ! -d "$BOM_DIR" ]; then
+    echo "install_parent_poms: jackson-bom not found at $BOM_DIR"
+    exit 1
+fi
+
+cd "$BOM_DIR"
+git reset --hard 2>/dev/null || true
+
+# Checkout the right branch
+if ! git checkout "$MINOR_VERSION" 2>/dev/null; then
+    if [[ "$MINOR_VERSION" == 3.* ]]; then
+        git checkout "3.x" 2>/dev/null || { echo "install_parent_poms: No branch for $MINOR_VERSION"; exit 1; }
+    else
+        git checkout "2.x" 2>/dev/null || { echo "install_parent_poms: No branch for $MINOR_VERSION"; exit 1; }
+    fi
+fi
+
+# Get the current version on this branch
+BOM_CURRENT_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+echo "install_parent_poms: Branch tip version: $BOM_CURRENT_VERSION -> rewriting to $PARENT_VERSION"
+
+# Rewrite version in jackson-bom pom.xml
+sed -i "s|<version>${BOM_CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" pom.xml
+sed -i "s|<jackson.version>${BOM_CURRENT_VERSION}</jackson.version>|<jackson.version>${PARENT_VERSION}</jackson.version>|g" pom.xml
+
+# Rewrite version in jackson-base pom.xml
+if [ -f base/pom.xml ]; then
+    sed -i "s|<version>${BOM_CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" base/pom.xml
+fi
+
+# For 3.x SNAPSHOT: build jackson-core from source instead of using release override
+# For 2.x: override to nearest release (as before)
+if [[ "$PARENT_VERSION" == 3.*-SNAPSHOT ]]; then
+    echo "install_parent_poms: 3.x SNAPSHOT detected — will build jackson-core from source"
+    # Don't override jackson.version.core for 3.x — we'll install SNAPSHOT jar from source
+    # Still override annotations since jackson-annotations 3.x uses release versions
+    sed -i "s|<jackson.version.annotations>\${jackson.version}</jackson.version.annotations>|<jackson.version.annotations>${RELEASE_VERSION}</jackson.version.annotations>|" pom.xml
+else
+    # 2.x: override both to nearest release
+    sed -i "s|<jackson.version.annotations>\${jackson.version}</jackson.version.annotations>|<jackson.version.annotations>${RELEASE_VERSION}</jackson.version.annotations>|" pom.xml
+    sed -i "s|<jackson.version.core>\${jackson.version}</jackson.version.core>|<jackson.version.core>${RELEASE_VERSION}</jackson.version.core>|" pom.xml
+fi
+
+# Install jackson-bom POM to local repo
+mvn install -N -q -DskipTests -Denforcer.skip=true 2>&1 || echo "install_parent_poms: WARNING - jackson-bom install failed"
+
+# Install jackson-base POM to local repo
+if [ -f base/pom.xml ]; then
+    cd base
+    mvn install -N -q -DskipTests -Denforcer.skip=true 2>&1 || echo "install_parent_poms: WARNING - jackson-base install failed"
+    cd ..
+fi
+
+# Reset to clean state
+git checkout -- . 2>/dev/null || true
+
+# ---- Build jackson-core from source for 3.x SNAPSHOT ----
+if [[ "$PARENT_VERSION" == 3.*-SNAPSHOT ]]; then
+    CORE_DIR="/home/jackson-core"
+    if [ -d "$CORE_DIR" ]; then
+        echo "install_parent_poms: Building jackson-core from source for $PARENT_VERSION"
+        cd "$CORE_DIR"
+        git reset --hard 2>/dev/null || true
+
+        # Checkout the matching branch (3.0 for 3.0.x, 3.1 for 3.1.x, etc.)
+        if ! git checkout "$MINOR_VERSION" 2>/dev/null; then
+            git checkout "3.x" 2>/dev/null || { echo "install_parent_poms: No jackson-core branch for $MINOR_VERSION"; }
+        fi
+
+        # Get jackson-core's current version on this branch
+        CORE_CURRENT_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+        echo "install_parent_poms: jackson-core branch version: $CORE_CURRENT_VERSION -> rewriting to $PARENT_VERSION"
+
+        # Rewrite jackson-core version to match what jackson-databind expects
+        sed -i "s|<version>${CORE_CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" pom.xml
+
+        # Also rewrite parent version reference in jackson-core pom
+        CORE_PARENT_VERSION=$(grep -A 10 '<parent>' pom.xml | grep '<version>' | head -1 | sed 's/.*<version>//;s/<.*//')
+        if [ -n "$CORE_PARENT_VERSION" ] && [ "$CORE_PARENT_VERSION" != "$PARENT_VERSION" ]; then
+            sed -i "0,/<version>${CORE_PARENT_VERSION}<\/version>/s|<version>${CORE_PARENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|" pom.xml
+        fi
+
+        # Use Java 17 for 3.x builds
+        export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+        export PATH="$JAVA_HOME/bin:$PATH"
+
+        # Build and install jackson-core (skip tests for speed)
+        mvn install -DskipTests -Denforcer.skip=true -q 2>&1 || echo "install_parent_poms: WARNING - jackson-core build failed"
+
+        # Reset
+        git checkout -- . 2>/dev/null || true
+        echo "install_parent_poms: jackson-core build complete"
+    else
+        echo "install_parent_poms: jackson-core not found at $CORE_DIR, falling back to release version"
+    fi
+
+    # Also build jackson-annotations from source if needed
+    ANNOT_DIR="/home/jackson-annotations"
+    if [ -d "$ANNOT_DIR" ]; then
+        echo "install_parent_poms: Building jackson-annotations from source for $PARENT_VERSION"
+        cd "$ANNOT_DIR"
+        git reset --hard 2>/dev/null || true
+
+        if ! git checkout "$MINOR_VERSION" 2>/dev/null; then
+            git checkout "3.x" 2>/dev/null || { echo "install_parent_poms: No jackson-annotations branch for $MINOR_VERSION"; }
+        fi
+
+        ANNOT_CURRENT_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+        echo "install_parent_poms: jackson-annotations branch version: $ANNOT_CURRENT_VERSION"
+
+        # Only build if it's a SNAPSHOT (some branches use release versions like 3.0-NEVER-SNAPSHOT)
+        if [[ "$ANNOT_CURRENT_VERSION" == *SNAPSHOT* ]] && [[ "$ANNOT_CURRENT_VERSION" != *NEVER* ]]; then
+            sed -i "s|<version>${ANNOT_CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" pom.xml
+            ANNOT_PARENT_VERSION=$(grep -A 10 '<parent>' pom.xml | grep '<version>' | head -1 | sed 's/.*<version>//;s/<.*//')
+            if [ -n "$ANNOT_PARENT_VERSION" ] && [ "$ANNOT_PARENT_VERSION" != "$PARENT_VERSION" ]; then
+                sed -i "0,/<version>${ANNOT_PARENT_VERSION}<\/version>/s|<version>${ANNOT_PARENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|" pom.xml
+            fi
+            mvn install -DskipTests -Denforcer.skip=true -q 2>&1 || echo "install_parent_poms: WARNING - jackson-annotations build failed"
+        else
+            echo "install_parent_poms: jackson-annotations uses release version ($ANNOT_CURRENT_VERSION), skipping source build"
+        fi
+
+        git checkout -- . 2>/dev/null || true
+    fi
+fi
+
+echo "install_parent_poms: Done"
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
@@ -224,7 +482,18 @@ old_version="{old_version}"
 new_version="{new_version}"
 sed -i "s/$old_version/$new_version/g" "$file"
 
-mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false || true
+# Install parent POMs (jackson-bom, jackson-base, jackson-parent) into local Maven repo
+bash /home/install_parent_poms.sh "$file"
+
+# Select Java version based on jackson major version
+JACKSON_VERSION=$(grep '<version>' "$file" | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+if [[ "$JACKSON_VERSION" == 3.* ]]; then
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+    export PATH="$JAVA_HOME/bin:$PATH"
+    echo "prepare: Using Java 17 for jackson 3.x"
+fi
+
+mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false -Denforcer.skip=true || true
 """.format(
                     pr=self.pr,
                     old_version=self.old_version(),
@@ -238,7 +507,15 @@ mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false || true
 set -e
 
 cd /home/{pr.repo}
-mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false
+
+# Select Java version based on jackson major version
+JACKSON_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+if [[ "$JACKSON_VERSION" == 3.* ]]; then
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
+
+mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false -Denforcer.skip=true
 """.format(pr=self.pr),
             ),
             File(
@@ -249,7 +526,15 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false
+
+# Select Java version based on jackson major version
+JACKSON_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+if [[ "$JACKSON_VERSION" == 3.* ]]; then
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
+
+mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false -Denforcer.skip=true
 
 """.format(pr=self.pr),
             ),
@@ -261,7 +546,15 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false
+
+# Select Java version based on jackson major version
+JACKSON_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+if [[ "$JACKSON_VERSION" == 3.* ]]; then
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
+
+mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false -Denforcer.skip=true
 
 """.format(pr=self.pr),
             ),
@@ -406,6 +699,227 @@ exit 0
             ),
             File(
                 ".",
+                "install_parent_poms.sh",
+                r"""#!/bin/bash
+# Install jackson-bom/jackson-base/jackson-parent POMs into local Maven repo
+# so that jackson-databind SNAPSHOT builds can resolve their parent chain.
+set -e
+
+REPO_POM="$1"  # path to jackson-databind's pom.xml
+
+if [ ! -f "$REPO_POM" ]; then
+    echo "install_parent_poms: pom.xml not found at $REPO_POM"
+    exit 1
+fi
+
+# Extract parent artifactId and version from jackson-databind pom.xml
+PARENT_ARTIFACT=$(grep -A 10 '<parent>' "$REPO_POM" | grep '<artifactId>' | head -1 | sed 's/.*<artifactId>//;s/<.*//')
+PARENT_VERSION=$(grep -A 10 '<parent>' "$REPO_POM" | grep '<version>' | head -1 | sed 's/.*<version>//;s/<.*//')
+
+if [ -z "$PARENT_VERSION" ]; then
+    echo "install_parent_poms: Could not extract parent version"
+    exit 0
+fi
+
+echo "install_parent_poms: parent=$PARENT_ARTIFACT version=$PARENT_VERSION"
+
+# Check if it's a SNAPSHOT — if not, Maven Central should have it
+if [[ "$PARENT_VERSION" != *-SNAPSHOT ]]; then
+    echo "install_parent_poms: Parent is a release version, should resolve from Maven Central"
+    exit 0
+fi
+
+# Determine the minor version branch (e.g., 2.18.5-SNAPSHOT -> 2.18, 3.1.0-SNAPSHOT -> 3.1)
+MINOR_VERSION=$(echo "$PARENT_VERSION" | sed 's/\([0-9]*\.[0-9]*\).*/\1/')
+echo "install_parent_poms: minor version branch: $MINOR_VERSION"
+
+# ---- Helper: compute nearest release version for dependency overrides ----
+compute_release_version() {
+    local VER="$1"
+    local BASE_VER=$(echo "$VER" | sed 's/-SNAPSHOT//')
+
+    if [[ "$VER" =~ ^3\.0\.0-rc([0-9]+)-SNAPSHOT$ ]]; then
+        local RC_NUM="${BASH_REMATCH[1]}"
+        if [ "$RC_NUM" -gt 1 ]; then
+            echo "3.0.0-rc$((RC_NUM - 1))"
+        else
+            echo "3.0.0-rc1"
+        fi
+        return
+    fi
+
+    if [[ "$VER" == *-rc*-SNAPSHOT ]]; then
+        local MM=$(echo "$BASE_VER" | sed 's/-rc.*//' | sed 's/\.[0-9]*$//')
+        local MINOR_NUM=$(echo "$MM" | awk -F. '{print $2}')
+        local MAJOR_NUM=$(echo "$MM" | awk -F. '{print $1}')
+        if [ "$MINOR_NUM" -gt 0 ]; then
+            echo "${MAJOR_NUM}.$((MINOR_NUM - 1)).3"
+        else
+            echo "${MM}.0"
+        fi
+        return
+    fi
+
+    if [[ "$VER" == "3.0.0-SNAPSHOT" ]]; then
+        echo "3.0.0-rc1"
+        return
+    fi
+
+    if [[ "$VER" =~ ^3\.[0-9]+\.0-SNAPSHOT$ ]]; then
+        echo "3.0.0-rc4"
+        return
+    fi
+
+    local MAJOR_MINOR=$(echo "$BASE_VER" | sed 's/\.[0-9]*$//')
+    local PATCH=$(echo "$BASE_VER" | grep -oE '[0-9]+$')
+
+    if [ "$PATCH" -gt 0 ] 2>/dev/null; then
+        echo "${MAJOR_MINOR}.$((PATCH - 1))"
+    else
+        local MAJOR_NUM=$(echo "$MAJOR_MINOR" | awk -F. '{print $1}')
+        local MINOR_NUM=$(echo "$MAJOR_MINOR" | awk -F. '{print $2}')
+        if [ "$MINOR_NUM" -gt 0 ]; then
+            echo "${MAJOR_NUM}.$((MINOR_NUM - 1)).0"
+        else
+            echo "${MAJOR_MINOR}.0"
+        fi
+    fi
+}
+
+RELEASE_VERSION=$(compute_release_version "$PARENT_VERSION")
+echo "install_parent_poms: nearest release for deps: $RELEASE_VERSION"
+
+# ---- Handle jackson-parent (old 2.8/2.9 PRs use jackson-parent directly) ----
+if [[ "$PARENT_ARTIFACT" == "jackson-parent" ]]; then
+    echo "install_parent_poms: Parent is jackson-parent (not jackson-base)"
+    PARENT_DIR="/home/jackson-parent"
+    if [ ! -d "$PARENT_DIR" ]; then
+        echo "install_parent_poms: jackson-parent not found at $PARENT_DIR, skipping"
+        exit 0
+    fi
+    cd "$PARENT_DIR"
+    git reset --hard 2>/dev/null || true
+    if ! git checkout "$MINOR_VERSION" 2>/dev/null; then
+        git checkout "2.x" 2>/dev/null || { echo "install_parent_poms: No branch for $MINOR_VERSION"; exit 1; }
+    fi
+    CURRENT_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+    echo "install_parent_poms: jackson-parent branch version: $CURRENT_VERSION -> rewriting to $PARENT_VERSION"
+    sed -i "s|<version>${CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" pom.xml
+    mvn install -N -q -DskipTests -Denforcer.skip=true 2>&1 || echo "install_parent_poms: WARNING - jackson-parent install failed"
+    git checkout -- . 2>/dev/null || true
+    echo "install_parent_poms: jackson-parent Done"
+    exit 0
+fi
+
+# ---- Standard path: jackson-base -> jackson-bom chain ----
+BOM_DIR="/home/jackson-bom"
+if [ ! -d "$BOM_DIR" ]; then
+    echo "install_parent_poms: jackson-bom not found at $BOM_DIR"
+    exit 1
+fi
+
+cd "$BOM_DIR"
+git reset --hard 2>/dev/null || true
+
+if ! git checkout "$MINOR_VERSION" 2>/dev/null; then
+    if [[ "$MINOR_VERSION" == 3.* ]]; then
+        git checkout "3.x" 2>/dev/null || { echo "install_parent_poms: No branch for $MINOR_VERSION"; exit 1; }
+    else
+        git checkout "2.x" 2>/dev/null || { echo "install_parent_poms: No branch for $MINOR_VERSION"; exit 1; }
+    fi
+fi
+
+BOM_CURRENT_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+echo "install_parent_poms: Branch tip version: $BOM_CURRENT_VERSION -> rewriting to $PARENT_VERSION"
+
+sed -i "s|<version>${BOM_CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" pom.xml
+sed -i "s|<jackson.version>${BOM_CURRENT_VERSION}</jackson.version>|<jackson.version>${PARENT_VERSION}</jackson.version>|g" pom.xml
+
+if [ -f base/pom.xml ]; then
+    sed -i "s|<version>${BOM_CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" base/pom.xml
+fi
+
+if [[ "$PARENT_VERSION" == 3.*-SNAPSHOT ]]; then
+    echo "install_parent_poms: 3.x SNAPSHOT detected — will build jackson-core from source"
+    sed -i "s|<jackson.version.annotations>\${jackson.version}</jackson.version.annotations>|<jackson.version.annotations>${RELEASE_VERSION}</jackson.version.annotations>|" pom.xml
+else
+    sed -i "s|<jackson.version.annotations>\${jackson.version}</jackson.version.annotations>|<jackson.version.annotations>${RELEASE_VERSION}</jackson.version.annotations>|" pom.xml
+    sed -i "s|<jackson.version.core>\${jackson.version}</jackson.version.core>|<jackson.version.core>${RELEASE_VERSION}</jackson.version.core>|" pom.xml
+fi
+
+mvn install -N -q -DskipTests -Denforcer.skip=true 2>&1 || echo "install_parent_poms: WARNING - jackson-bom install failed"
+
+if [ -f base/pom.xml ]; then
+    cd base
+    mvn install -N -q -DskipTests -Denforcer.skip=true 2>&1 || echo "install_parent_poms: WARNING - jackson-base install failed"
+    cd ..
+fi
+
+git checkout -- . 2>/dev/null || true
+
+if [[ "$PARENT_VERSION" == 3.*-SNAPSHOT ]]; then
+    CORE_DIR="/home/jackson-core"
+    if [ -d "$CORE_DIR" ]; then
+        echo "install_parent_poms: Building jackson-core from source for $PARENT_VERSION"
+        cd "$CORE_DIR"
+        git reset --hard 2>/dev/null || true
+
+        if ! git checkout "$MINOR_VERSION" 2>/dev/null; then
+            git checkout "3.x" 2>/dev/null || { echo "install_parent_poms: No jackson-core branch for $MINOR_VERSION"; }
+        fi
+
+        CORE_CURRENT_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+        echo "install_parent_poms: jackson-core branch version: $CORE_CURRENT_VERSION -> rewriting to $PARENT_VERSION"
+
+        sed -i "s|<version>${CORE_CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" pom.xml
+
+        CORE_PARENT_VERSION=$(grep -A 10 '<parent>' pom.xml | grep '<version>' | head -1 | sed 's/.*<version>//;s/<.*//')
+        if [ -n "$CORE_PARENT_VERSION" ] && [ "$CORE_PARENT_VERSION" != "$PARENT_VERSION" ]; then
+            sed -i "0,/<version>${CORE_PARENT_VERSION}<\/version>/s|<version>${CORE_PARENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|" pom.xml
+        fi
+
+        export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+        export PATH="$JAVA_HOME/bin:$PATH"
+
+        mvn install -DskipTests -Denforcer.skip=true -q 2>&1 || echo "install_parent_poms: WARNING - jackson-core build failed"
+
+        git checkout -- . 2>/dev/null || true
+        echo "install_parent_poms: jackson-core build complete"
+    fi
+
+    ANNOT_DIR="/home/jackson-annotations"
+    if [ -d "$ANNOT_DIR" ]; then
+        echo "install_parent_poms: Building jackson-annotations from source for $PARENT_VERSION"
+        cd "$ANNOT_DIR"
+        git reset --hard 2>/dev/null || true
+
+        if ! git checkout "$MINOR_VERSION" 2>/dev/null; then
+            git checkout "3.x" 2>/dev/null || { echo "install_parent_poms: No jackson-annotations branch for $MINOR_VERSION"; }
+        fi
+
+        ANNOT_CURRENT_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+        echo "install_parent_poms: jackson-annotations branch version: $ANNOT_CURRENT_VERSION"
+
+        if [[ "$ANNOT_CURRENT_VERSION" == *SNAPSHOT* ]] && [[ "$ANNOT_CURRENT_VERSION" != *NEVER* ]]; then
+            sed -i "s|<version>${ANNOT_CURRENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|g" pom.xml
+            ANNOT_PARENT_VERSION=$(grep -A 10 '<parent>' pom.xml | grep '<version>' | head -1 | sed 's/.*<version>//;s/<.*//')
+            if [ -n "$ANNOT_PARENT_VERSION" ] && [ "$ANNOT_PARENT_VERSION" != "$PARENT_VERSION" ]; then
+                sed -i "0,/<version>${ANNOT_PARENT_VERSION}<\/version>/s|<version>${ANNOT_PARENT_VERSION}</version>|<version>${PARENT_VERSION}</version>|" pom.xml
+            fi
+            mvn install -DskipTests -Denforcer.skip=true -q 2>&1 || echo "install_parent_poms: WARNING - jackson-annotations build failed"
+        else
+            echo "install_parent_poms: jackson-annotations uses release version ($ANNOT_CURRENT_VERSION), skipping source build"
+        fi
+
+        git checkout -- . 2>/dev/null || true
+    fi
+fi
+
+echo "install_parent_poms: Done"
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
@@ -421,7 +935,18 @@ old_version="{old_version}"
 new_version="{new_version}"
 sed -i "s/$old_version/$new_version/g" "$file"
 
-mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false || true
+# Install parent POMs (jackson-bom, jackson-base, jackson-parent) into local Maven repo
+bash /home/install_parent_poms.sh "$file"
+
+# Select Java version based on jackson major version
+JACKSON_VERSION=$(grep '<version>' "$file" | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+if [[ "$JACKSON_VERSION" == 3.* ]]; then
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+    export PATH="$JAVA_HOME/bin:$PATH"
+    echo "prepare: Using Java 17 for jackson 3.x"
+fi
+
+mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false -Denforcer.skip=true || true
 """.format(
                     pr=self.pr,
                     old_version=self.old_version(),
@@ -435,7 +960,15 @@ mvn clean test -Dmaven.test.skip=false -DfailIfNoTests=false || true
 set -e
 
 cd /home/{pr.repo}
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566 -DfailIfNoTests=false -am
+
+# Select Java version based on jackson major version
+JACKSON_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+if [[ "$JACKSON_VERSION" == 3.* ]]; then
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
+
+mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566 -DfailIfNoTests=false -Denforcer.skip=true -am
 """.format(pr=self.pr),
             ),
             File(
@@ -446,7 +979,15 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566 -DfailIfNoTests=false -am
+
+# Select Java version based on jackson major version
+JACKSON_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+if [[ "$JACKSON_VERSION" == 3.* ]]; then
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
+
+mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566 -DfailIfNoTests=false -Denforcer.skip=true -am
 
 """.format(pr=self.pr),
             ),
@@ -458,7 +999,15 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566 -DfailIfNoTests=false -am
+
+# Select Java version based on jackson major version
+JACKSON_VERSION=$(grep '<version>' pom.xml | head -2 | tail -1 | sed 's/.*<version>//;s/<.*//')
+if [[ "$JACKSON_VERSION" == 3.* ]]; then
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)
+    export PATH="$JAVA_HOME/bin:$PATH"
+fi
+
+mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566 -DfailIfNoTests=false -Denforcer.skip=true -am
 
 """.format(pr=self.pr),
             ),
