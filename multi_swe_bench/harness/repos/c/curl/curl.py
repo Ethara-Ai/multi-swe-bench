@@ -15,7 +15,8 @@ def _parse_curl_version(base_label: str) -> tuple[int, int, int]:
     m = re.match(r"curl-(\d+)_(\d+)", first_tag)
     if m:
         return (int(m.group(1)), int(m.group(2)), 0)
-    raise ValueError(f"Cannot parse curl version from base.label: {base_label}")
+    # Fallback for branch-based labels like 'curl:master', 'curl:HTTPS-proxy' — assume latest version
+    return (8, 19, 0)
 
 
 _VERSION_TO_IMAGE = [
@@ -83,16 +84,17 @@ class ImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 RUN apt-get update && \\
-    apt-get install -y \\
+    apt-get install -y --no-install-recommends \\
+    ca-certificates \\
     build-essential autoconf automake libtool git make gcc g++ \\
     pkg-config perl python3 \\
     libssl-dev libpsl-dev libnghttp2-dev zlib1g-dev \\
+    libbrotli-dev libzstd-dev libidn2-dev \\
+    libssh2-1-dev libldap2-dev libkrb5-dev librtmp-dev \\
     stunnel4 \\
-    && apt-get clean
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -125,17 +127,35 @@ class ImageDefault(Image):
 
     def _build_commands(self) -> str:
         version = _parse_curl_version(self.pr.base.label)
+        base_flags = (
+            "--with-openssl --enable-debug "
+            "--with-brotli --with-zstd --with-libidn2 "
+            "--with-libssh2 --with-gssapi --with-librtmp"
+        )
+        configure_flags_ldap = f"{base_flags} --with-ldap"
+        configure_flags_noldap = f"{base_flags} --without-ldap"
+
         if _use_autoreconf(version):
-            return (
-                "autoreconf -fi\n"
-                "./configure --with-openssl\n"
-                "make clean\n"
-                "make -j$(nproc)"
-            )
-        return "./buildconf\n./configure --with-openssl\nmake clean\nmake -j$(nproc)"
+            bootstrap = "autoreconf -fi"
+        else:
+            bootstrap = "./buildconf"
+
+        # Try building with --with-ldap first; if make fails (old curl versions
+        # have a static ldap_connect that conflicts with system libldap headers),
+        # fall back to --without-ldap automatically.
+        return (
+            f"{bootstrap}\n"
+            f"./configure {configure_flags_ldap}\n"
+            "make clean\n"
+            "if ! make -j$(nproc) 2>&1; then\n"
+            f"  ./configure {configure_flags_noldap}\n"
+            "  make clean\n"
+            "  make -j$(nproc)\n"
+            "fi"
+        )
 
     def _test_command(self) -> str:
-        return "cd tests && perl runtests.pl -a -p -n"
+        return "cd tests && make && perl runtests.pl -a -p -n"
 
     def files(self) -> list[File]:
         build_cmds = self._build_commands()
@@ -287,32 +307,47 @@ class Curl(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        # runtests.pl output: "test NNNN..OK", "test NNNN..FAILED", "test NNNN..SKIPPED"
-        re_ok = re.compile(r"^test (\d+)\.\.*\s*OK")
-        re_fail = re.compile(r"^test (\d+)\.\.*\s*FAILED")
-        re_skip = re.compile(r"^test (\d+)\.\.*\s*SKIPPED")
+        # runtests.pl outputs TWO lines per test:
+        #   Line 1: "test 0019...[description]"          (has test number)
+        #   Line 2: "-------e--- OK (19 out of 1667)"    (has result, no test number)
+        # SKIPPED is single-line: "test 0064 SKIPPED: reason"
+
+        re_test_start = re.compile(r"^test (\d+)")
+        re_ok = re.compile(r"^\-*[a-z\-]*\-*\s*OK")
+        re_fail = re.compile(r"^\-*[a-z\-]*\-*\s*FAILED")
+        re_skip = re.compile(r"^test (\d+)\s+SKIPPED")
+
+        current_test_id = None
 
         for line in test_log.splitlines():
             line = line.strip()
             if not line:
                 continue
 
-            ok_match = re_ok.match(line)
-            if ok_match:
-                test_id = ok_match.group(1)
-                passed_tests.add(test_id)
-                continue
-
-            fail_match = re_fail.match(line)
-            if fail_match:
-                test_id = fail_match.group(1)
-                failed_tests.add(test_id)
-                continue
-
+            # Check single-line SKIPPED first
             skip_match = re_skip.match(line)
             if skip_match:
                 test_id = skip_match.group(1)
                 skipped_tests.add(test_id)
+                current_test_id = None
+                continue
+
+            # Check if line starts a new test
+            test_start = re_test_start.match(line)
+            if test_start:
+                current_test_id = test_start.group(1)
+                continue
+
+            # Check result line (OK/FAILED) and associate with current test
+            if current_test_id:
+                if re_ok.match(line):
+                    passed_tests.add(current_test_id)
+                    current_test_id = None
+                    continue
+                if re_fail.match(line):
+                    failed_tests.add(current_test_id)
+                    current_test_id = None
+                    continue
 
         return TestResult(
             passed_count=len(passed_tests),

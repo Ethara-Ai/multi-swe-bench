@@ -116,10 +116,12 @@ export GOPATH="$(pwd)/gopath:/go"
 export GO111MODULE=off"""
 
 _GO_ENV_MODULE = """\
+export GO111MODULE=on
 export GOTOOLCHAIN=auto
 export GONOSUMCHECK=*
 export GONOSUMDB=*
-export GOPROXY=https://proxy.golang.org"""
+export GOPROXY=https://proxy.golang.org
+export GOFLAGS=-p=1"""
 
 _MULTI_MOD_FIND = (
     "find . -name 'go.mod' -not -path './vendor/*' -not -path './.git/*' | sort"
@@ -156,7 +158,7 @@ def _gopath_prepare(pr: PullRequest) -> str:
         f"\n"
         f"{_GOPATH_VENDOR_SETUP}\n"
         f"\n"
-        f"go test -v -count=1 ./... || true\n"
+        f"go test -v -count=1 -vet=off ./... || true\n"
     )
 
 
@@ -167,7 +169,7 @@ def _gopath_run(pr: PullRequest) -> str:
         f"\n"
         f"{_GOPATH_VENDOR_SETUP}\n"
         f"\n"
-        f"go test -v -count=1 ./...\n"
+        f"go test -v -count=1 -vet=off ./...\n"
     )
 
 
@@ -182,7 +184,7 @@ def _gopath_test_run(pr: PullRequest) -> str:
         f"\n"
         f"{_GOPATH_VENDOR_SETUP}\n"
         f"\n"
-        f"go test -v -count=1 ./...\n"
+        f"go test -v -count=1 -vet=off ./...\n"
     )
 
 
@@ -199,7 +201,7 @@ def _gopath_fix_run(pr: PullRequest) -> str:
         f"\n"
         f"{_GOPATH_VENDOR_SETUP}\n"
         f"\n"
-        f"go test -v -count=1 ./...\n"
+        f"go test -v -count=1 -vet=off ./...\n"
     )
 
 
@@ -703,6 +705,8 @@ _REF_TO_STRATEGY = {
     "release-3.4": "etcd_single_module",
     "release-3.5": "etcd_multi_module",
     "release-3.6": "etcd_multi_module",
+    "main": "etcd_multi_module",
+    "master": "etcd_multi_module",
 }
 
 

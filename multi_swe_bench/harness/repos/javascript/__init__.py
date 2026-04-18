@@ -78,6 +78,7 @@ from multi_swe_bench.harness.repos.javascript.sveltejs import *
 from multi_swe_bench.harness.repos.javascript.swaggerapi import *
 from multi_swe_bench.harness.repos.javascript.terser import *
 from multi_swe_bench.harness.repos.javascript.tj import *
+from multi_swe_bench.harness.repos.javascript.trekhleb import *
 from multi_swe_bench.harness.repos.javascript.TryGhost import *
 from multi_swe_bench.harness.repos.javascript.vercel.next_js import *
 from multi_swe_bench.harness.repos.javascript.videojs import *

@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "ubuntu:22.04"
+        return "node:18"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -48,33 +48,16 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls
-###ACTION_DELIMITER###
-apt-get update
-###ACTION_DELIMITER###
-apt-get install -y openjdk-11-jre
-###ACTION_DELIMITER###
+                """#!/bin/bash
+set -e
+
+cd /home/{repo}
+git reset --hard
+git checkout {base_sha}
+
+npm install -g yarn --force 2>/dev/null || true
 yarn install
-###ACTION_DELIMITER###
-npm install -g yarn
-###ACTION_DELIMITER###
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && apt-get install -y nodejs
-###ACTION_DELIMITER###
-apt-get install -y curl
-###ACTION_DELIMITER###
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && apt-get install -y nodejs
-###ACTION_DELIMITER###
-apt-get remove -y libnode72 nodejs
-###ACTION_DELIMITER###
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && apt-get install -y nodejs
-###ACTION_DELIMITER###
-node -v
-###ACTION_DELIMITER###
-npm install -g yarn
-###ACTION_DELIMITER###
-yarn install
-###ACTION_DELIMITER###
-echo 'yarn test' > test_commands.sh""",
+""".format(repo=repo_name, base_sha=self.pr.base.sha),
             ),
             File(
                 ".",
@@ -118,39 +101,25 @@ yarn test
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        dockerfile_content = """FROM node:18
 
-# Choose an appropriate base image based on the project's requirements - replace ubuntu:22.04 with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM ubuntu:22.04
-
-## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
 RUN apt-get update && apt-get install -y git
 
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
 WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
 RUN git clone https://github.com/Real-Dev-Squad/website-backend.git /home/website-backend
 
 WORKDIR /home/website-backend
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
+
 {copy_commands}
+
+RUN bash /home/prepare.sh
+
 """
-        return dockerfile_content.format(pr=self.pr)
+        return dockerfile_content.format(
+            copy_commands=copy_commands,
+        )
 
 
 @Instance.register("Real-Dev-Squad", "website_backend_1425_to_1031")
