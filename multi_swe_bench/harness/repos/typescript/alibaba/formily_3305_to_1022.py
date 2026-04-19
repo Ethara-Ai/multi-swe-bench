@@ -1,6 +1,5 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -21,10 +20,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "node:10"
-
-    def image_prefix(self) -> str:
-        return "envagent"
+        return "node:16-bullseye"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -48,93 +44,84 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """node -v
-###ACTION_DELIMITER###
-npm install -g yarn rimraf lerna
-###ACTION_DELIMITER###
-yarn install --ignore-engines
-###ACTION_DELIMITER###
-lerna bootstrap --ignore-engines || true
-###ACTION_DELIMITER###
-yarn build""",
+                """#!/bin/bash
+set -eo pipefail
+export NODE_OPTIONS=--max_old_space_size=4096
+npm install -g lerna@4 || true
+cd /home/{repo}
+sed -i 's|https://registry.npm.taobao.org/[^"]*|https://registry.yarnpkg.com/|g' yarn.lock 2>/dev/null || true
+sed -i 's|https://registry.npmmirror.com/[^"]*|https://registry.yarnpkg.com/|g' yarn.lock 2>/dev/null || true
+yarn install --ignore-engines || true
+lerna bootstrap || true
+yarn build || true
+""".format(repo=repo_name),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-cd /home/[[REPO_NAME]]
-yarn test -- --verbose
-
-""".replace("[[REPO_NAME]]", repo_name),
+set -eo pipefail
+export NODE_OPTIONS=--max_old_space_size=4096
+cd /home/{repo}
+./node_modules/.bin/jest --coverage --verbose
+""".format(repo=repo_name),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-yarn test -- --verbose
-
-""".replace("[[REPO_NAME]]", repo_name),
+set -eo pipefail
+export NODE_OPTIONS=--max_old_space_size=4096
+cd /home/{repo}
+git apply --whitespace=nowarn /home/test.patch
+./node_modules/.bin/jest --coverage --verbose
+""".format(repo=repo_name),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-yarn test -- --verbose
-
-""".replace("[[REPO_NAME]]", repo_name),
+set -eo pipefail
+export NODE_OPTIONS=--max_old_space_size=4096
+cd /home/{repo}
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+./node_modules/.bin/jest --coverage --verbose
+""".format(repo=repo_name),
             ),
         ]
 
     def dockerfile(self) -> str:
+        repo_name = self.pr.repo
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        return """
+FROM node:16-bullseye
 
-# Choose an appropriate base image based on the project's requirements - replace ubuntu:latest with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM node:10
-
-## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Fix for deprecated Debian Stretch repositories (node:10 is based on Stretch)
-RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
-    sed -i '/stretch-updates/d' /etc/apt/sources.list
-
-# Install basic requirements
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+RUN apt-get update && apt-get install -y --no-install-recommends git jq && rm -rf /var/lib/apt/lists/*
+RUN npm install -g lerna@4
 
 WORKDIR /home/
 COPY fix.patch /home/
 COPY test.patch /home/
-RUN git clone https://github.com/alibaba/formily.git /home/formily
+RUN git clone https://github.com/{org}/{repo}.git /home/{repo}
 
-WORKDIR /home/formily
+WORKDIR /home/{repo}
 RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
+RUN git checkout {base_sha}
+
 {copy_commands}
-"""
-        return dockerfile_content.format(pr=self.pr)
+
+RUN bash /home/prepare.sh
+""".format(
+            org=self.pr.org,
+            repo=repo_name,
+            base_sha=self.pr.base.sha,
+            copy_commands=copy_commands,
+        )
 
 
 @Instance.register("alibaba", "formily_3305_to_1022")
@@ -154,42 +141,79 @@ class FORMILY_3305_TO_1022(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
-        import re
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
 
-        # Regex patterns to match test cases
-        passed_pattern = re.compile(r"\s+✓ (.*?)(?: \(\d+ ms\))?$", re.MULTILINE)
-        failed_pattern = re.compile(r"\s+✕ (.*?)(?: \(\d+ ms\))?$", re.MULTILINE)
-        skipped_pattern = re.compile(
-            r"\s+- ([a-zA-Z0-9_ -]+?)(?: \(\d+ ms\))?$", re.MULTILINE
-        )
-        passed_tests = set(passed_pattern.findall(log))
-        failed_tests = set(failed_pattern.findall(log))
-        skipped_tests = set(skipped_pattern.findall(log))
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+        ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+        current_file = ""
+        describe_stack = []
+
+        for line in log.splitlines():
+            raw = ansi_re.sub("", line)
+            clean = raw.strip()
+            if not clean:
+                continue
+
+            # Track current test file: PASS/FAIL packages/core/...spec.ts
+            file_match = re.match(r"(?:PASS|FAIL)\s+(.+\.(?:ts|tsx|js|jsx))", clean)
+            if file_match:
+                current_file = file_match.group(1).strip()
+                describe_stack = []
+                continue
+
+            # Track describe blocks by indentation level
+            indent = len(raw) - len(raw.lstrip())
+
+            # Jest verbose: ✓ test name (X ms)
+            pass_match = re.match(r"[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", clean)
+            if pass_match:
+                test_name = pass_match.group(1).strip()
+                full_name = " > ".join(describe_stack + [test_name]) if describe_stack else test_name
+                if current_file:
+                    full_name = current_file + " > " + full_name
+                passed_tests.add(full_name)
+                continue
+
+            # Jest verbose: ✕ test name (X ms)
+            fail_match = re.match(r"[✕✗×]\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", clean)
+            if fail_match:
+                test_name = fail_match.group(1).strip()
+                full_name = " > ".join(describe_stack + [test_name]) if describe_stack else test_name
+                if current_file:
+                    full_name = current_file + " > " + full_name
+                failed_tests.add(full_name)
+                continue
+
+            # Jest verbose: ○ skipped test name
+            skip_match = re.match(r"[○]\s+skipped\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", clean)
+            if skip_match:
+                test_name = skip_match.group(1).strip()
+                full_name = " > ".join(describe_stack + [test_name]) if describe_stack else test_name
+                if current_file:
+                    full_name = current_file + " > " + full_name
+                skipped_tests.add(full_name)
+                continue
+
+            # Describe block: indented text without test markers
+            if indent >= 2 and not re.match(r"(PASS|FAIL|Test Suites:|Tests:|Snapshots:|Time:|Ran all)", clean):
+                if not re.match(r"[✓✔✕✗×○●]", clean) and not re.match(r"\d+\)", clean):
+                    level = (indent - 2) // 2
+                    describe_stack = describe_stack[:level]
+                    describe_stack.append(clean)
 
         return TestResult(
             passed_count=len(passed_tests),
