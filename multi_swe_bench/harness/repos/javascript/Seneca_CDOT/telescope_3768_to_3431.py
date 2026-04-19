@@ -73,7 +73,7 @@ bash test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-pnpm turbo run test -- --verbose
+pnpm turbo run test -- --verbose || npx jest --verbose
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -82,11 +82,11 @@ pnpm turbo run test -- --verbose
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --3way --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pnpm turbo run test -- --verbose
+pnpm turbo run test -- --verbose || npx jest --verbose
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -95,11 +95,15 @@ pnpm turbo run test -- --verbose
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
+if ! git -C /home/[[REPO_NAME]] apply --3way --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply test.patch failed" >&2
     exit 1  
 fi
-pnpm turbo run test -- --verbose
+if ! git -C /home/[[REPO_NAME]] apply --3way --whitespace=nowarn /home/fix.patch; then
+    echo "Error: git apply fix.patch failed" >&2
+    exit 1  
+fi
+pnpm turbo run test -- --verbose || npx jest --verbose
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -116,7 +120,7 @@ pnpm turbo run test -- --verbose
 
 # Choose an appropriate base image based on the project's requirements - replace node:20-bullseye with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM node:20-bullseye
+FROM node:16-bullseye
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -138,6 +142,8 @@ RUN git clone https://github.com/Seneca-CDOT/telescope.git /home/telescope
 WORKDIR /home/telescope
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN npm install -g pnpm@6.32.13 turbo
+RUN pnpm install --no-frozen-lockfile --ignore-scripts
 """
         dockerfile_content += f"""
 {copy_commands}

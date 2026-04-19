@@ -101,7 +101,7 @@ bash test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-npm test -- --verbose --testPathIgnorePatterns=node_modules/@senecacdot/satellite --updateSnapshot --runInBand --testTimeout=30000
+npx jest --verbose --testPathIgnorePatterns=node_modules/@senecacdot/satellite --updateSnapshot --runInBand --testTimeout=30000
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -110,11 +110,11 @@ npm test -- --verbose --testPathIgnorePatterns=node_modules/@senecacdot/satellit
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --3way --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-npm test -- --verbose --testPathIgnorePatterns=node_modules/@senecacdot/satellite --updateSnapshot --runInBand --testTimeout=30000
+npx jest --verbose --testPathIgnorePatterns=node_modules/@senecacdot/satellite --updateSnapshot --runInBand --testTimeout=30000
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -123,11 +123,15 @@ npm test -- --verbose --testPathIgnorePatterns=node_modules/@senecacdot/satellit
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
+if ! git -C /home/[[REPO_NAME]] apply --3way --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply test.patch failed" >&2
     exit 1  
 fi
-npm test -- --verbose --testPathIgnorePatterns=node_modules/@senecacdot/satellite --updateSnapshot --runInBand --testTimeout=30000
+if ! git -C /home/[[REPO_NAME]] apply --3way --whitespace=nowarn /home/fix.patch; then
+    echo "Error: git apply fix.patch failed" >&2
+    exit 1  
+fi
+npx jest --verbose --testPathIgnorePatterns=node_modules/@senecacdot/satellite --updateSnapshot --runInBand --testTimeout=30000
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -166,6 +170,7 @@ RUN git clone https://github.com/Seneca-CDOT/telescope.git /home/telescope
 WORKDIR /home/telescope
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN npm install --ignore-scripts || true
 """
         dockerfile_content += f"""
 {copy_commands}

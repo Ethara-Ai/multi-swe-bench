@@ -63,7 +63,7 @@ cat test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-npm test -- --verbose
+npx jest --verbose
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -72,11 +72,11 @@ npm test -- --verbose
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --3way --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-npm test -- --verbose
+npx jest --verbose
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -85,11 +85,15 @@ npm test -- --verbose
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
+if ! git -C /home/[[REPO_NAME]] apply --3way --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply test.patch failed" >&2
     exit 1  
 fi
-npm test -- --verbose
+if ! git -C /home/[[REPO_NAME]] apply --3way --whitespace=nowarn /home/fix.patch; then
+    echo "Error: git apply fix.patch failed" >&2
+    exit 1  
+fi
+npx jest --verbose
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
