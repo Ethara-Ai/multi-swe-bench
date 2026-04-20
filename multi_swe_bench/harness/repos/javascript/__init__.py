@@ -24,6 +24,7 @@ from multi_swe_bench.harness.repos.javascript.carbon_design_system import *
 from multi_swe_bench.harness.repos.javascript.carbondesignsystem import *
 from multi_swe_bench.harness.repos.javascript.cfpb import *
 from multi_swe_bench.harness.repos.javascript.chaijs import *
+from multi_swe_bench.harness.repos.javascript.codemirror import *
 from multi_swe_bench.harness.repos.javascript.chartjs import *
 from multi_swe_bench.harness.repos.javascript.City_of_Helsinki import *
 from multi_swe_bench.harness.repos.javascript.codeceptjs import *
