@@ -110,6 +110,31 @@ CMD ["pnpm", "playwright", "install", "chromium"]
 """
 
 
+def _test_script(repo: str, patches: list[str] | None = None) -> str:
+    """Generate a test runner script that detects package manager from lockfile."""
+    patch_cmds = ""
+    if patches:
+        patch_files = " ".join(patches)
+        patch_cmds = f"git apply --whitespace=nowarn {patch_files}\n"
+
+    return f"""#!/bin/bash
+set -e
+
+cd /home/{repo}
+{patch_cmds}
+if [ -f pnpm-lock.yaml ]; then
+  pnpm test -- --reporter verbose
+elif [ -f package-lock.json ]; then
+  npm test -- --verbose
+elif [ -f yarn.lock ]; then
+  npm test -- --verbose
+else
+  npm test -- --verbose
+fi
+
+"""
+
+
 class SvelteImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -174,50 +199,38 @@ exit 0
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout {sha}
 bash /home/check_git_changes.sh
 
-pnpm install --frozen-lockfile || true
+if [ -f pnpm-lock.yaml ]; then
+  pnpm install --frozen-lockfile || true
+elif [ -f package-lock.json ]; then
+  npm install
+elif [ -f yarn.lock ]; then
+  npm install
+else
+  npm install
+fi
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, sha=self.pr.base.sha),
             ),
             File(
                 ".",
                 "run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-pnpm test -- --reporter verbose
-
-""".format(pr=self.pr),
+                _test_script(self.pr.repo),
             ),
             File(
                 ".",
                 "test-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-pnpm test -- --reporter verbose 
-
-""".format(pr=self.pr),
+                _test_script(self.pr.repo, patches=["/home/test.patch"]),
             ),
             File(
                 ".",
                 "fix-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-pnpm test -- --reporter verbose 
-
-""".format(pr=self.pr),
+                _test_script(self.pr.repo, patches=["/home/test.patch", "/home/fix.patch"]),
             ),
         ]
 
@@ -282,23 +295,103 @@ class Svelte(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_test = re.compile(r"^✓ (.+?)(?:\s*\d*\.?\d+\s*(?:ms|s|m))?$")
-        re_fail_test = re.compile(r"^× (.+?)(?:\s*\d*\.?\d+\s*(?:ms|s|m))?$")
+        # Vitest patterns (used by newer Svelte PRs)
+        re_vitest_pass = re.compile(r"^✓ (.+?)(?:\s*\d*\.?\d+\s*(?:ms|s|m))?$")
+        re_vitest_fail = re.compile(r"^× (.+?)(?:\s*\d*\.?\d+\s*(?:ms|s|m))?$")
 
-        for line in test_log.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        # Mocha patterns (used by older Svelte PRs)
+        # Suite headers: lines with NO leading marker (✓, ×, -, N)) that are not blank
+        # Test markers: ✓ (pass), - (skip), N) (inline fail marker in suite listing)
+        # "N passing", "N pending", "N failing" are summary lines
+        re_mocha_summary = re.compile(r"^\d+ (?:passing|pending|failing)")
+        re_mocha_inline_fail = re.compile(r"^\d+\)\s+(.+)")
+        # Error details section: "  N) suite-name\n       test-name:\n     Error: ..."
+        re_error_number = re.compile(r"^\d+\)\s+(.+)")
 
-            pass_test_match = re_pass_test.match(line)
-            if pass_test_match:
-                test = pass_test_match.group(1)
-                passed_tests.add(test)
+        # Detect mocha vs vitest by scanning for mocha summary lines
+        lines = test_log.splitlines()
+        is_mocha = any(re_mocha_summary.match(l.strip()) for l in lines)
 
-            fail_test_match = re_fail_test.match(line)
-            if fail_test_match:
-                test = fail_test_match.group(1)
-                failed_tests.add(test)
+        if not is_mocha:
+            # Vitest mode: simple pass/fail, no suite disambiguation needed
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("✓"):
+                    match = re_vitest_pass.match(line)
+                    if match:
+                        passed_tests.add(match.group(1))
+                    else:
+                        passed_tests.add(line.replace("✓", "").strip())
+                    continue
+                fail_match = re_vitest_fail.match(line)
+                if fail_match:
+                    failed_tests.add(fail_match.group(1))
+        else:
+            # Mocha mode: track current suite to prefix test names
+            # Suite detection: a line with lower indent than test lines, no marker
+            current_suite = ""
+            in_summary = False
+
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+
+                # After "N passing/pending/failing" lines, we're in error details
+                if re_mocha_summary.match(stripped):
+                    in_summary = True
+                    continue
+
+                if in_summary:
+                    # In error details: parse "N) suite-name" + "test-name:" pairs
+                    # Format: "  N) suite-name\n       test-name:"
+                    error_match = re_error_number.match(stripped)
+                    if error_match:
+                        # This is the suite name line like "1) custom-elements"
+                        current_suite = error_match.group(1)
+                        continue
+                    # Test name line ends with ":"
+                    if stripped.endswith(":") and current_suite:
+                        test_name = stripped.rstrip(":")
+                        failed_tests.add(f"{current_suite} > {test_name}")
+                        continue
+                    continue
+
+                # Regular test output section
+                # Detect suite headers: lines that don't start with ✓, -, × or N)
+                # and have less indentation than test lines
+                raw_indent = len(line) - len(line.lstrip())
+
+                if stripped.startswith("✓"):
+                    match = re_vitest_pass.match(stripped)
+                    name = match.group(1) if match else stripped.replace("✓", "").strip()
+                    qualified = f"{current_suite} > {name}" if current_suite else name
+                    passed_tests.add(qualified)
+                    continue
+
+                if stripped.startswith("- "):
+                    name = stripped[2:].strip()
+                    qualified = f"{current_suite} > {name}" if current_suite else name
+                    skipped_tests.add(qualified)
+                    continue
+
+                if re_mocha_inline_fail.match(stripped):
+                    # Inline fail marker like "1) test-name" within suite listing
+                    # Don't add to failed here; real failures come from error details
+                    continue
+
+                # Likely a suite header if indentation is low (2 spaces typical)
+                # and doesn't match test patterns or noise (warnings, build output)
+                if raw_indent <= 4 and not stripped.startswith("(") and not stripped.startswith("Error"):
+                    # Filter out build output, warnings, etc.
+                    if not any(c in stripped for c in [":", "/", "→", "!", ">"]):
+                        current_suite = stripped
+
+        # Resolve overlaps: failed > passed > skipped
+        passed_tests -= failed_tests
+        skipped_tests -= passed_tests | failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
