@@ -19,5 +19,9 @@ from multi_swe_bench.harness.repos.java.JodaOrg import *
 from multi_swe_bench.harness.repos.java.micronautprojects import *
 from multi_swe_bench.harness.repos.java.opentracing import *
 from multi_swe_bench.harness.repos.java.springprojects import *
+<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.java.TheAlgorithms import *
 from multi_swe_bench.harness.repos.java.YunaiV import *
+=======
+from multi_swe_bench.harness.repos.java.halodev import *
+>>>>>>> Stashed changes
