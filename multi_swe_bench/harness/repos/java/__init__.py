@@ -6,22 +6,19 @@ from multi_swe_bench.harness.repos.java.elastic import *
 from multi_swe_bench.harness.repos.java.fasterxml import *
 from multi_swe_bench.harness.repos.java.google import *
 from multi_swe_bench.harness.repos.java.googlecontainertools import *
+from multi_swe_bench.harness.repos.java.Graylog2 import *
+from multi_swe_bench.harness.repos.java.halodev import *
+from multi_swe_bench.harness.repos.java.JodaOrg import *
 from multi_swe_bench.harness.repos.java.junitteam import *
 from multi_swe_bench.harness.repos.java.keycloak import *
+from multi_swe_bench.harness.repos.java.micronautprojects import *
 from multi_swe_bench.harness.repos.java.mockito import *
+from multi_swe_bench.harness.repos.java.OpenRefine import *
+from multi_swe_bench.harness.repos.java.opentracing import *
 from multi_swe_bench.harness.repos.java.pmd import *
+from multi_swe_bench.harness.repos.java.provectus import *
 from multi_swe_bench.harness.repos.java.ReactiveX import *
 from multi_swe_bench.harness.repos.java.spotbugs import *
-from multi_swe_bench.harness.repos.java.provectus import *
-from multi_swe_bench.harness.repos.java.OpenRefine import *
-from multi_swe_bench.harness.repos.java.Graylog2 import *
-from multi_swe_bench.harness.repos.java.JodaOrg import *
-from multi_swe_bench.harness.repos.java.micronautprojects import *
-from multi_swe_bench.harness.repos.java.opentracing import *
 from multi_swe_bench.harness.repos.java.springprojects import *
-<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.java.TheAlgorithms import *
 from multi_swe_bench.harness.repos.java.YunaiV import *
-=======
-from multi_swe_bench.harness.repos.java.halodev import *
->>>>>>> Stashed changes
