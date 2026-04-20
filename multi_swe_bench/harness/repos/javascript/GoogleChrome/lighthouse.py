@@ -51,10 +51,8 @@ ENV TZ=Etc/UTC
 
 RUN apt update && apt install -y libxkbfile-dev pkg-config build-essential python3 libkrb5-dev libxss1 xvfb libgtk-3-0 libgbm1
 
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
+RUN apt-get update \
+    && apt-get install -y chromium fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
         fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \
         --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
@@ -139,14 +137,14 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-nvm install 16 || true
-nvm use 16 || true
+nvm install 22 || true
+nvm use 22 || true
 corepack enable || true
 yes | yarn -v || true
 yarn || true
 """.format(pr=self.pr),
             ),
-            File(
+             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
@@ -155,17 +153,20 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 cd /home/{pr.repo}
 
-nvm use 16 || true
+nvm use 22 || true
 corepack enable || true
 yarn || true
 yarn build-all || true
+# Force mocha spec reporter so individual test names are printed with checkmarks
+find . -name "run-mocha.sh" -exec sed -i 's/--reporter dot/--reporter spec/g' {{}} \\;
+sed -i 's/mocha --reporter dot/mocha --reporter spec/g' package.json || true
 Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
-CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/google-chrome --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn test || true
-CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/google-chrome --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn mocha || true
+CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/chromium --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && export CHROME_BIN && yarn unit || true
+CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/chromium --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && export CHROME_BIN && yarn mocha || true
 """.format(pr=self.pr),
             ),
-            File(
+             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
@@ -175,18 +176,21 @@ export NVM_DIR="$HOME/.nvm"
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
 
-nvm use 16 || true
+nvm use 22 || true
 corepack enable || true
 yarn || true
 yarn build-all || true
+# Force mocha spec reporter so individual test names are printed with checkmarks
+find . -name "run-mocha.sh" -exec sed -i 's/--reporter dot/--reporter spec/g' {{}} \\;
+sed -i 's/mocha --reporter dot/mocha --reporter spec/g' package.json || true
 Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
-CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/google-chrome --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn test || true
-CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/google-chrome --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn mocha || true
+CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/chromium --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && export CHROME_BIN && yarn unit || true
+CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/chromium --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && export CHROME_BIN && yarn mocha || true
 
 """.format(pr=self.pr),
             ),
-            File(
+             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
@@ -196,14 +200,17 @@ export NVM_DIR="$HOME/.nvm"
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
-nvm use 16 || true
+nvm use 22 || true
 corepack enable || true
 yarn || true
 yarn build-all || true
+# Force mocha spec reporter so individual test names are printed with checkmarks
+find . -name "run-mocha.sh" -exec sed -i 's/--reporter dot/--reporter spec/g' {{}} \\;
+sed -i 's/mocha --reporter dot/mocha --reporter spec/g' package.json || true
 Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
-CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/google-chrome --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn test || true
-CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/google-chrome --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && CHROME_BIN=$CHROME_BIN yarn mocha || true
+CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/chromium --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && export CHROME_BIN && yarn unit || true
+CHROME_BIN=$(mktemp) && echo '#!/bin/bash' > $CHROME_BIN && echo 'exec /usr/bin/chromium --no-sandbox "$@"' >> $CHROME_BIN && chmod +x $CHROME_BIN && export CHROME_BIN && yarn mocha || true
 """.format(pr=self.pr),
             ),
         ]
