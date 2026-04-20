@@ -121,7 +121,26 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-npm install --ignore-scripts || true
+# Detect tap major version and unit script from package.json
+TAP_MAJOR=$(node -e "try{{let t=require('./package.json').devDependencies.tap||'0';console.log(t.replace(/[^0-9.]/g,'').split('.')[0])}}catch(e){{console.log('0')}}")
+UNIT_CMD=$(node -e "try{{console.log(require('./package.json').scripts.unit||'')}}catch(e){{console.log('')}}")
+
+# tap@12-15 loads esm by default which crashes on Node 18+.
+# PRs that pass --no-esm to tap are safe on Node 22.
+if [ "$TAP_MAJOR" -ge 12 ] 2>/dev/null && [ "$TAP_MAJOR" -le 15 ] 2>/dev/null; then
+    if echo "$UNIT_CMD" | grep -qv -- '--no-esm'; then
+        echo "prepare.sh: tap@$TAP_MAJOR without --no-esm detected, installing Node 16"
+        curl -fsSL https://deb.nodesource.com/setup_16.x | bash -
+        apt-get install -y --allow-downgrades nodejs
+        # Override Node 22 in /usr/local/bin with newly installed Node 16
+        ln -sf /usr/bin/node /usr/local/bin/node
+        ln -sf /usr/bin/npm /usr/local/bin/npm
+        hash -r
+        echo "prepare.sh: Node version now $(node --version)"
+    fi
+fi
+
+npm install --legacy-peer-deps || npm install --legacy-peer-deps --ignore-scripts || true
 """.format(pr=self.pr),
             ),
             File(
@@ -131,7 +150,11 @@ npm install --ignore-scripts || true
 set -e
 
 cd /home/{pr.repo}
-npm run unit -- --reporter=spec
+if node -e "process.exit(require('./package.json').scripts.unit ? 0 : 1)" 2>/dev/null; then
+    npm run unit -- --reporter=spec
+else
+    npx tap test/*.test.js test/*/*.test.js --reporter=spec
+fi
 """.format(pr=self.pr),
             ),
             File(
@@ -142,7 +165,11 @@ set -e
 
 cd /home/{pr.repo}
 git apply  --exclude package.json --whitespace=nowarn /home/test.patch
-npm run unit -- --reporter=spec
+if node -e "process.exit(require('./package.json').scripts.unit ? 0 : 1)" 2>/dev/null; then
+    npm run unit -- --reporter=spec
+else
+    npx tap test/*.test.js test/*/*.test.js --reporter=spec
+fi
 
 """.format(pr=self.pr),
             ),
@@ -154,7 +181,11 @@ set -e
 
 cd /home/{pr.repo}
 git apply  --exclude package.json --whitespace=nowarn /home/test.patch /home/fix.patch
-npm run unit -- --reporter=spec
+if node -e "process.exit(require('./package.json').scripts.unit ? 0 : 1)" 2>/dev/null; then
+    npm run unit -- --reporter=spec
+else
+    npx tap test/*.test.js test/*/*.test.js --reporter=spec
+fi
 
 
 """.format(pr=self.pr),
@@ -218,13 +249,22 @@ class Fastify(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        re_pass = re.compile(r"\d*\/\d* *Test *#\d*: *(.*?) *\.* *Passed")
-        re_fail = re.compile(r"\d*\/\d* *Test *#\d*: *(.*?) *\.* *Failed")
-        re_skip = re.compile(r"\d*\/\d* *Test *#\d*: *(.*?) *\.* *Skipped")
+        if "borp" in test_log[:500]:
+            return self._parse_borp(test_log)
+        # TAP v14 emits top-level "ok N - ..." lines; mocha-spec does not.
+        if re.search(r"^ok \d+ - ", test_log, re.MULTILINE):
+            return self._parse_tap(test_log)
+        return self._parse_mocha_spec(test_log)
 
-        passed_tests = re_pass.findall(test_log)
-        failed_tests = re_fail.findall(test_log)
-        skipped_tests = re_skip.findall(test_log)
+    def _parse_tap(self, test_log: str) -> TestResult:
+        """Parse TAP v14 output from `tap --reporter=spec`."""
+        re_skip = re.compile(r"^ok \d+ - (.+?)\s+# (?:SKIP|skip|TODO|todo).*$", re.MULTILINE)
+        re_pass = re.compile(r"^ok \d+ - (.+?)(?:\s+#.*)?$", re.MULTILINE)
+        re_fail = re.compile(r"^not ok \d+ - (.+?)(?:\s+#.*)?$", re.MULTILINE)
+
+        skipped_tests = set(re_skip.findall(test_log))
+        passed_tests = set(re_pass.findall(test_log)) - skipped_tests
+        failed_tests = set(re_fail.findall(test_log))
 
         return TestResult(
             passed_count=len(passed_tests),
@@ -233,4 +273,52 @@ class Fastify(Instance):
             passed_tests=passed_tests,
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
+        )
+
+    def _parse_borp(self, test_log: str) -> TestResult:
+        """Parse borp --reporter=spec output (Node test runner)."""
+        re_pass = re.compile(r"^\s*✔ (.+?)\s+\([\d.]+m?s\)\s*$", re.MULTILINE)
+        re_fail = re.compile(r"^\s*✖ (.+?)\s+\([\d.]+m?s\)\s*$", re.MULTILINE)
+        re_skip = re.compile(r"^\s*﹣ (.+?)(?:\s+\([\d.]+m?s\))?\s*(?:# SKIP)?\s*$", re.MULTILINE)
+
+        passed_tests = set(re_pass.findall(test_log))
+        failed_tests = set(re_fail.findall(test_log))
+        skipped_tests = set(re_skip.findall(test_log))
+
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
+        )
+
+    def _parse_mocha_spec(self, test_log: str) -> TestResult:
+        """Parse mocha-spec output from older tap versions.
+
+        Format: file names at column 0 (``test/foo.test.js``), indented
+        checkmarks for passes, numbered failures referencing file names
+        (``  N) test/foo.test.js ...``).  Granularity is per-file — the
+        same level used by TAP v14 and borp parsers.
+        """
+        re_all_files = re.compile(
+            r"^(test/\S+\.(?:test\.js|test\.mjs|test\.cjs))$", re.MULTILINE
+        )
+        re_fail_files = re.compile(
+            r"^\s+\d+\)\s+(test/\S+\.(?:test\.js|test\.mjs|test\.cjs))\s",
+            re.MULTILINE,
+        )
+
+        all_files = set(re_all_files.findall(test_log))
+        failed_tests = set(re_fail_files.findall(test_log))
+        passed_tests = all_files - failed_tests
+
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=0,
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=set(),
         )
