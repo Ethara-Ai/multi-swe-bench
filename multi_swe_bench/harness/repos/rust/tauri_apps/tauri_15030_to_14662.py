@@ -42,23 +42,19 @@ class ImageBase15030to14662(Image):
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
+{(chr(10) + self.global_env + chr(10)*2) if self.global_env else chr(10)}WORKDIR /home/
 
 RUN apt-get update && \
-    apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev
+    apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y nodejs && \
+RUN ARCH=$(uname -m) && case "$ARCH" in x86_64) NODE_ARCH=x64;; aarch64) NODE_ARCH=arm64;; *) exit 1;; esac && \
+    curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1 && \
     corepack enable && \
     corepack prepare pnpm@10.16.0 --activate
 
 {code}
-
-{self.clear_env}
-
+{(chr(10) + self.clear_env) if self.clear_env else ""}
 """
 
 
@@ -131,8 +127,8 @@ bash /home/check_git_changes.sh
 
 pnpm install || true
 cargo test -p tauri || true
-
-""".format(pr=self.pr),
+{extra_prepare}
+""".format(pr=self.pr, extra_prepare="cargo check -p tauri-utils || true" if self.pr.number == 14662 else ""),
             ),
             File(
                 ".",
@@ -142,8 +138,8 @@ set -e
 
 cd /home/{pr.repo}
 cargo test -p tauri
-
-""".format(pr=self.pr),
+{extra_test}
+""".format(pr=self.pr, extra_test="cargo test -p tauri-utils" if self.pr.number == 14662 else ""),
             ),
             File(
                 ".",
@@ -154,8 +150,8 @@ set -e
 cd /home/{pr.repo}
 git apply /home/test.patch
 cargo test -p tauri
-
-""".format(pr=self.pr),
+{extra_test}
+""".format(pr=self.pr, extra_test="cargo test -p tauri-utils" if self.pr.number == 14662 else ""),
             ),
             File(
                 ".",
@@ -166,8 +162,8 @@ set -e
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
 cargo test -p tauri
-
-""".format(pr=self.pr),
+{extra_test}
+""".format(pr=self.pr, extra_test="cargo test -p tauri-utils" if self.pr.number == 14662 else ""),
             ),
         ]
 
@@ -183,15 +179,10 @@ cargo test -p tauri
         prepare_commands = "RUN bash /home/prepare.sh"
 
         return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
+{(chr(10) + self.global_env + chr(10)*2) if self.global_env else chr(10)}{copy_commands}
 
 {prepare_commands}
-
-{self.clear_env}
-
+{(chr(10) + self.clear_env) if self.clear_env else ""}
 """
 
 

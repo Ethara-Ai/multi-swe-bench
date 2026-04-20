@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageBase11329to11191(Image):
+class ImageBase14925to9687(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +20,13 @@ class ImageBase11329to11191(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "rust:1.78.0"
+        return "rust:1.77.2"
 
     def image_tag(self) -> str:
-        return "base-rust1780"
+        return "base-rust1772-v2pnpm"
 
     def workdir(self) -> str:
-        return "base-rust1780"
+        return "base-rust1772-v2pnpm"
 
     def files(self) -> list[File]:
         return []
@@ -51,14 +51,14 @@ RUN apt-get update && \
 RUN ARCH=$(uname -m) && case "$ARCH" in x86_64) NODE_ARCH=x64;; aarch64) NODE_ARCH=arm64;; *) exit 1;; esac && \
     curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1 && \
     corepack enable && \
-    corepack prepare pnpm@9.9.0 --activate
+    corepack prepare pnpm@10.12.1 --activate
 
 {code}
 {(chr(10) + self.clear_env) if self.clear_env else ""}
 """
 
 
-class ImageDefault11329to11191(Image):
+class ImageDefault14925to9687(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -72,7 +72,7 @@ class ImageDefault11329to11191(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return ImageBase11329to11191(self.pr, self.config)
+        return ImageBase14925to9687(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -122,6 +122,7 @@ set -e
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
+git fetch origin {pr.base.sha} || true
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
@@ -186,8 +187,8 @@ cargo test -p tauri
 """
 
 
-@Instance.register("tauri-apps", "tauri_11329_to_11191")
-class Tauri11329to11191(Instance):
+@Instance.register("tauri-apps", "tauri_14925_to_9687")
+class Tauri14925to9687(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -198,7 +199,7 @@ class Tauri11329to11191(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return ImageDefault11329to11191(self.pr, self._config)
+        return ImageDefault14925to9687(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

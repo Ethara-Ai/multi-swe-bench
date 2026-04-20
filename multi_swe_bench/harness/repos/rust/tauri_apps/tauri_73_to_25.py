@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageBase11329to11191(Image):
+class ImageBase73to25(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +20,13 @@ class ImageBase11329to11191(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "rust:1.78.0"
+        return "rust:1.39.0"
 
     def image_tag(self) -> str:
-        return "base-rust1780"
+        return "base-rust1390-prerust"
 
     def workdir(self) -> str:
-        return "base-rust1780"
+        return "base-rust1390-prerust"
 
     def files(self) -> list[File]:
         return []
@@ -44,21 +44,41 @@ class ImageBase11329to11191(Image):
         return f"""FROM {image_name}
 {(chr(10) + self.global_env + chr(10)*2) if self.global_env else chr(10)}WORKDIR /home/
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev && \
+RUN echo 'deb http://archive.debian.org/debian buster main' > /etc/apt/sources.list && \
+    apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends --allow-unauthenticated git && \
     rm -rf /var/lib/apt/lists/*
 
-RUN ARCH=$(uname -m) && case "$ARCH" in x86_64) NODE_ARCH=x64;; aarch64) NODE_ARCH=arm64;; *) exit 1;; esac && \
-    curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1 && \
-    corepack enable && \
-    corepack prepare pnpm@9.9.0 --activate
+RUN git clone --bare https://github.com/rust-lang/crates.io-index.git /opt/crates-index.git && \
+    cd /opt/crates-index.git && \
+    git clone . /tmp/idx && cd /tmp/idx && \
+    head -89 ti/me/time > ti/me/time.tmp && mv ti/me/time.tmp ti/me/time && \
+    rm -f ti/me/time-core && touch ti/me/time-core && \
+    grep -v '"vers":"2.14.0"' in/de/indexmap > in/de/indexmap.tmp && mv in/de/indexmap.tmp in/de/indexmap && \
+    rm -f se/rd/serde_spanned && touch se/rd/serde_spanned && \
+    rm -f to/ml/toml_datetime && touch to/ml/toml_datetime && \
+    head -50 on/ce/once_cell > on/ce/once_cell.tmp && mv on/ce/once_cell.tmp on/ce/once_cell && \
+    head -102 an/yh/anyhow > an/yh/anyhow.tmp && mv an/yh/anyhow.tmp an/yh/anyhow && \
+    rm -f ad/le/adler2 && touch ad/le/adler2 && \
+    head -35 mi/ni/miniz_oxide > mi/ni/miniz_oxide.tmp && mv mi/ni/miniz_oxide.tmp mi/ni/miniz_oxide && \
+    head -30 ei/th/either > ei/th/either.tmp && mv ei/th/either.tmp ei/th/either && \
+    head -31 nu/m-/num-traits > nu/m-/num-traits.tmp && mv nu/m-/num-traits.tmp nu/m-/num-traits && \
+    head -20 un/ic/unicode-ident > un/ic/unicode-ident.tmp && mv un/ic/unicode-ident.tmp un/ic/unicode-ident && \
+    head -47 te/mp/tempfile > te/mp/tempfile.tmp && mv te/mp/tempfile.tmp te/mp/tempfile && \
+    rm -f se/rd/serde_repr && touch se/rd/serde_repr && \
+    rm -f th/is/thiserror-impl && touch th/is/thiserror-impl && \
+    git add -A && git -c user.email=f@l -c user.name=f commit -m f --allow-empty && \
+    cd / && rm -rf /opt/crates-index.git && \
+    mkdir -p $CARGO_HOME && \
+    printf '[source.crates-io]\\nreplace-with = "filtered"\\n[source.filtered]\\nregistry = "file:///tmp/idx"\\n' > $CARGO_HOME/config.toml
+
 
 {code}
 {(chr(10) + self.clear_env) if self.clear_env else ""}
 """
 
 
-class ImageDefault11329to11191(Image):
+class ImageDefault73to25(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -72,7 +92,7 @@ class ImageDefault11329to11191(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return ImageBase11329to11191(self.pr, self.config)
+        return ImageBase73to25(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -122,11 +142,11 @@ set -e
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
+git fetch origin {pr.base.sha} || true
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-pnpm install || true
-cargo test -p tauri || true
+cargo test || true
 
 """.format(pr=self.pr),
             ),
@@ -137,7 +157,7 @@ cargo test -p tauri || true
 set -e
 
 cd /home/{pr.repo}
-cargo test -p tauri
+cargo test
 
 """.format(pr=self.pr),
             ),
@@ -149,7 +169,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch
-cargo test -p tauri
+cargo test
 
 """.format(pr=self.pr),
             ),
@@ -161,7 +181,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
-cargo test -p tauri
+cargo test
 
 """.format(pr=self.pr),
             ),
@@ -186,8 +206,8 @@ cargo test -p tauri
 """
 
 
-@Instance.register("tauri-apps", "tauri_11329_to_11191")
-class Tauri11329to11191(Instance):
+@Instance.register("tauri-apps", "tauri_73_to_25")
+class Tauri73to25(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -198,7 +218,7 @@ class Tauri11329to11191(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return ImageDefault11329to11191(self.pr, self._config)
+        return ImageDefault73to25(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

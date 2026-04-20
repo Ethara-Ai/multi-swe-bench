@@ -42,21 +42,17 @@ class ImageBase13454to3934(Image):
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
+{(chr(10) + self.global_env + chr(10)*2) if self.global_env else chr(10)}WORKDIR /home/
 
 RUN apt-get update && \
-    apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+    apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs
+RUN ARCH=$(uname -m) && case "$ARCH" in x86_64) NODE_ARCH=x64;; aarch64) NODE_ARCH=arm64;; *) exit 1;; esac && \
+    curl -fsSL https://nodejs.org/dist/v18.20.8/node-v18.20.8-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1
 
 {code}
-
-{self.clear_env}
-
+{(chr(10) + self.clear_env) if self.clear_env else ""}
 """
 
 
@@ -181,15 +177,10 @@ cargo test -p tauri
         prepare_commands = "RUN bash /home/prepare.sh"
 
         return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
+{(chr(10) + self.global_env + chr(10)*2) if self.global_env else chr(10)}{copy_commands}
 
 {prepare_commands}
-
-{self.clear_env}
-
+{(chr(10) + self.clear_env) if self.clear_env else ""}
 """
 
 

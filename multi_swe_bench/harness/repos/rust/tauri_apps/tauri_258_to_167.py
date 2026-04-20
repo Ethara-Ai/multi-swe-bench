@@ -42,19 +42,15 @@ class ImageBase258to167(Image):
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
+{(chr(10) + self.global_env + chr(10)*2) if self.global_env else chr(10)}WORKDIR /home/
 
 RUN echo 'deb http://archive.debian.org/debian buster main' > /etc/apt/sources.list && \
     apt-get -o Acquire::Check-Valid-Until=false update && \
-    apt-get install -y --allow-unauthenticated git
+    apt-get install -y --no-install-recommends --allow-unauthenticated git && \
+    rm -rf /var/lib/apt/lists/*
 
 {code}
-
-{self.clear_env}
-
+{(chr(10) + self.clear_env) if self.clear_env else ""}
 """
 
 
@@ -178,15 +174,10 @@ cargo test
         prepare_commands = "RUN bash /home/prepare.sh"
 
         return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
+{(chr(10) + self.global_env + chr(10)*2) if self.global_env else chr(10)}{copy_commands}
 
 {prepare_commands}
-
-{self.clear_env}
-
+{(chr(10) + self.clear_env) if self.clear_env else ""}
 """
 
 
