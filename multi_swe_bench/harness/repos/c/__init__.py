@@ -16,3 +16,4 @@ from multi_swe_bench.harness.repos.c.Mbed_TLS import *
 from multi_swe_bench.harness.repos.c.awslabs import *
 from multi_swe_bench.harness.repos.c.c_ares import *
 from multi_swe_bench.harness.repos.c.mpv_player import *
+from multi_swe_bench.harness.repos.c.Genymobile import *
