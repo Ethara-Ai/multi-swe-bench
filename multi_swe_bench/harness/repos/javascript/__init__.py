@@ -49,6 +49,7 @@ from multi_swe_bench.harness.repos.javascript.GoogleChrome import *
 from multi_swe_bench.harness.repos.javascript.grommet import *
 from multi_swe_bench.harness.repos.javascript.gsd_build import *
 from multi_swe_bench.harness.repos.javascript.HabitRPG import *
+from multi_swe_bench.harness.repos.javascript.hakimel import *
 from multi_swe_bench.harness.repos.javascript.hapijs import *
 from multi_swe_bench.harness.repos.javascript.highlightjs import *
 from multi_swe_bench.harness.repos.javascript.iamkun import *
