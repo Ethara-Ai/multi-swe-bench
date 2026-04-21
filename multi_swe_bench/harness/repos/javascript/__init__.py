@@ -13,11 +13,8 @@ from multi_swe_bench.harness.repos.javascript.aodn import *
 from multi_swe_bench.harness.repos.javascript.Automattic import *
 from multi_swe_bench.harness.repos.javascript.avajs import *
 from multi_swe_bench.harness.repos.javascript.axios import *
-<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.javascript.badges import *
-=======
 from multi_swe_bench.harness.repos.javascript.bvaughn import *
->>>>>>> Stashed changes
 from multi_swe_bench.harness.repos.javascript.BlakeGuilloud import *
 from multi_swe_bench.harness.repos.javascript.bpmn_io import *
 from multi_swe_bench.harness.repos.javascript.bpmnio import *
