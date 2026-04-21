@@ -7,7 +7,89 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class DubboImageBase(Image):
+# Top-level directories that are NOT Maven reactor modules.
+# Including them in -pl causes "Could not find the selected project in the reactor" errors.
+_NON_MODULE_DIRS = frozenset({
+    ".mvn", ".github", ".gitignore", ".gitattributes", ".git",
+    "codestyle", ".editorconfig", ".licenserc.yaml",
+})
+
+# Directories that are grouping parents (multi-module aggregators).
+# The root pom.xml references their children directly (e.g. dubbo-plugin/dubbo-qos).
+# Including e.g. "dubbo-plugin" alone in -pl builds only the parent POM — no tests run.
+# We need the two-segment path (e.g. dubbo-registry/dubbo-registry-api) to target the
+# actual sub-module that contains source code and tests.
+_GROUPING_DIRS = frozenset({
+    "dubbo-config",
+    "dubbo-configcenter",
+    "dubbo-container",
+    "dubbo-demo",
+    "dubbo-dependencies",
+    "dubbo-distribution",
+    "dubbo-filter",
+    "dubbo-metadata",
+    "dubbo-metadata-report",
+    "dubbo-metrics",
+    "dubbo-monitor",
+    "dubbo-plugin",
+    "dubbo-registry",
+    "dubbo-remoting",
+    "dubbo-rpc",
+    "dubbo-serialization",
+    "dubbo-simple",
+    "dubbo-spring-boot",
+    "dubbo-spring-boot-project",
+    "dubbo-test",
+})
+
+
+def _extract_modules_from_patch(patch_text: str) -> set[str]:
+    """Extract Maven module paths from a unified diff.
+
+    For files under grouping directories (e.g. dubbo-plugin/dubbo-qos/src/...),
+    returns the two-segment module path (dubbo-plugin/dubbo-qos) matching how
+    the root pom.xml declares them.
+
+    For files under direct reactor modules (e.g. dubbo-common/src/...),
+    returns the single-segment name.
+
+    Filters out non-module directories (.mvn, .github, codestyle, etc.).
+    """
+    modules = set()
+    for line in patch_text.split("\n"):
+        if line.startswith("diff --git"):
+            parts = line.split()
+            if len(parts) >= 3:
+                path = parts[2].lstrip("a/")
+                segments = path.split("/")
+                if len(segments) < 2:
+                    continue
+                top = segments[0]
+                # Skip non-module dirs
+                if top in _NON_MODULE_DIRS:
+                    continue
+                # For grouping dirs, use two-segment path (e.g. dubbo-plugin/dubbo-qos)
+                if top in _GROUPING_DIRS:
+                    if len(segments) >= 3:
+                        modules.add(f"{segments[0]}/{segments[1]}")
+                    # If only 2 segments, it's a file directly in the grouping dir
+                    # (e.g. dubbo-plugin/pom.xml) — skip, not a buildable module
+                    continue
+                modules.add(top)
+    return modules
+
+
+def _build_pl_flag(pr) -> str:
+    all_modules = _extract_modules_from_patch(pr.fix_patch) | _extract_modules_from_patch(pr.test_patch)
+    # Filter out root-level files that aren't modules
+    all_modules.discard("pom.xml")
+    all_modules.discard("")
+    if not all_modules:
+        return ""
+    return "-pl " + ",".join(sorted(all_modules)) + " -am"
+
+
+class DubboJdk8ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -24,10 +106,10 @@ class DubboImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-jdk8"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-jdk8"
 
     def files(self) -> list[File]:
         return []
@@ -50,8 +132,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 WORKDIR /home/
-RUN apt-get update && apt-get install -y git openjdk-17-jdk
-RUN apt-get install -y maven
+RUN apt-get update && apt-get install -y git openjdk-8-jdk maven
+
+RUN ln -s /usr/lib/jvm/java-8-openjdk-$(dpkg --print-architecture) /usr/lib/jvm/java-8-openjdk
+ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk
 
 {code}
 
@@ -60,7 +144,7 @@ RUN apt-get install -y maven
 """
 
 
-class DubboImageDefault(Image):
+class DubboJdk8ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -74,7 +158,7 @@ class DubboImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return DubboImageBase(self.pr, self._config)
+        return DubboJdk8ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -83,6 +167,9 @@ class DubboImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        pl_flag = _build_pl_flag(self.pr)
+        mvn_base = "mvn clean test -fn -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false"
+        mvn_cmd = f"{mvn_base} {pl_flag}" if pl_flag else mvn_base
         return [
             File(
                 ".",
@@ -121,14 +208,14 @@ exit 0
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout {sha}
 bash /home/check_git_changes.sh
 
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false || true
-""".format(pr=self.pr),
+{mvn_cmd} || true
+""".format(repo=self.pr.repo, sha=self.pr.base.sha, mvn_cmd=mvn_cmd),
             ),
             File(
                 ".",
@@ -136,9 +223,9 @@ mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false
-""".format(pr=self.pr),
+cd /home/{repo}
+{mvn_cmd} || true
+""".format(repo=self.pr.repo, mvn_cmd=mvn_cmd),
             ),
             File(
                 ".",
@@ -146,11 +233,11 @@ mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false
+{mvn_cmd} || true
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, mvn_cmd=mvn_cmd),
             ),
             File(
                 ".",
@@ -158,11 +245,11 @@ mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false
+{mvn_cmd} || true
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, mvn_cmd=mvn_cmd),
             ),
         ]
 
@@ -242,8 +329,8 @@ mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=
 """
 
 
-@Instance.register("apache", "dubbo")
-class Dubbo(Instance):
+@Instance.register("apache", "dubbo_0_to_6278")
+class DubboJdk8(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -254,7 +341,7 @@ class Dubbo(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return DubboImageDefault(self.pr, self._config)
+        return DubboJdk8ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -288,7 +375,6 @@ class Dubbo(Instance):
         # Surefire 3.x: "[INFO] Tests run: 5, ... Time elapsed: 1.23 s -- in com.foo.BarTest"
         # Surefire 2.x: "Tests run: 5, ... Time elapsed: 0.203 sec" (no class name suffix)
         # Use "Running <class>" line to capture test name, then match "Tests run:" line below.
-        # This handles both formats robustly.
         re_pass_tests = [
             re.compile(
                 r"Running\s+(.+?)\s*\n(?:(?!.*Tests run:).*\n)*.*?Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)"
