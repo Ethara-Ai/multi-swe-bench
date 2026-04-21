@@ -153,6 +153,7 @@ from multi_swe_bench.harness.repos.python.NCAS_CMS import *
 from multi_swe_bench.harness.repos.python.nedbat import *
 from multi_swe_bench.harness.repos.python.networktocode import *
 from multi_swe_bench.harness.repos.python.networkx import *
+from multi_swe_bench.harness.repos.python.NousResearch import *
 from multi_swe_bench.harness.repos.python.NeurodataWithoutBorders import *
 from multi_swe_bench.harness.repos.python.nextstrain import *
 from multi_swe_bench.harness.repos.python.nilearn import *
