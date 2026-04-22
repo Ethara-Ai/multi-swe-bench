@@ -51,6 +51,7 @@ from multi_swe_bench.harness.repos.typescript.facebook import *
 from multi_swe_bench.harness.repos.typescript.firecrawl import *
 from multi_swe_bench.harness.repos.typescript.gitcoinco import *
 from multi_swe_bench.harness.repos.typescript.GMOD import *
+from multi_swe_bench.harness.repos.typescript.giselles_ai import *
 from multi_swe_bench.harness.repos.typescript.google_gemini import *
 from multi_swe_bench.harness.repos.typescript.grafana import *
 from multi_swe_bench.harness.repos.typescript.Hacker0x01 import *
@@ -63,9 +64,12 @@ from multi_swe_bench.harness.repos.typescript.IgniteUI import *
 from multi_swe_bench.harness.repos.typescript.jestjs import *
 from multi_swe_bench.harness.repos.typescript.JoshuaKGoldberg import *
 from multi_swe_bench.harness.repos.typescript.Joystream import *
+from multi_swe_bench.harness.repos.typescript.keyshade_xyz import *
 from multi_swe_bench.harness.repos.typescript.latticexyz import *
 from multi_swe_bench.harness.repos.typescript.League_of_Foundry_Developers import *
+from multi_swe_bench.harness.repos.typescript.mastra_ai import *
 from multi_swe_bench.harness.repos.typescript.markedjs import *
+from multi_swe_bench.harness.repos.typescript.mattermost_community import *
 from multi_swe_bench.harness.repos.typescript.MetaMask import *
 from multi_swe_bench.harness.repos.typescript.microsoft import *
 from multi_swe_bench.harness.repos.typescript.MTES_MCT import *
@@ -85,6 +89,7 @@ from multi_swe_bench.harness.repos.typescript.PrismJS import *
 from multi_swe_bench.harness.repos.typescript.puppeteer import *
 from multi_swe_bench.harness.repos.typescript.reacthookform import *
 from multi_swe_bench.harness.repos.typescript.realm import *
+from multi_swe_bench.harness.repos.typescript.redwoodjs import *
 from multi_swe_bench.harness.repos.typescript.reduxjs import *
 from multi_swe_bench.harness.repos.typescript.refined_github import *
 from multi_swe_bench.harness.repos.typescript.refinedev import *
@@ -128,3 +133,4 @@ from multi_swe_bench.harness.repos.typescript.website import *
 from multi_swe_bench.harness.repos.typescript.withastro import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
 from multi_swe_bench.harness.repos.typescript.nocodb import *
+from multi_swe_bench.harness.repos.typescript.web3ui import *
