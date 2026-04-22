@@ -290,6 +290,7 @@ from multi_swe_bench.harness.repos.python.wagtail import *
 from multi_swe_bench.harness.repos.python.wemake_services import *
 from multi_swe_bench.harness.repos.python.xCDAT import *
 from multi_swe_bench.harness.repos.python.xonsh import *
+from multi_swe_bench.harness.repos.python.ytdl_org import *
 from multi_swe_bench.harness.repos.python.yt_dlp import *
 from multi_swe_bench.harness.repos.python.zarr_developers import *
 from multi_swe_bench.harness.repos.python.zulip import *
