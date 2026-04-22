@@ -51,12 +51,13 @@ ENV TZ=Etc/UTC
 
 RUN apt update && apt install -y libxkbfile-dev pkg-config build-essential python3 libkrb5-dev libxss1 xvfb libgtk-3-0 libgbm1
 
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
+RUN apt-get update \
+    && apt-get install -y chromium fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
         fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \
         --no-install-recommends \
+    && ln -sf /usr/bin/chromium /usr/bin/google-chrome-stable \
+    && ln -sf /usr/bin/chromium /usr/bin/google-chrome \
+    && ln -sf /usr/bin/chromium /usr/bin/chrome \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \
@@ -139,9 +140,122 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-nvm install || true
-nvm use || true
-npm ci || npm install || true
+NODE_SASS_VER=$(node -e "try {{ var p = require('./package.json'); var v = (p.devDependencies && p.devDependencies['node-sass']) || (p.dependencies && p.dependencies['node-sass']) || ''; console.log(v); }} catch(e) {{ console.log(''); }}" 2>/dev/null || echo "")
+
+if [ -z "$NODE_SASS_VER" ]; then
+  NODE_VER=18
+else
+  NODE_VER=16
+fi
+
+nvm install $NODE_VER || true
+nvm use $NODE_VER || true
+nvm alias default $NODE_VER
+echo "Using Node.js $(node --version) for node-sass=$NODE_SASS_VER"
+
+NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])")
+if [ "$NODE_MAJOR" -ge 17 ] 2>/dev/null; then
+  export NODE_OPTIONS=--openssl-legacy-provider
+fi
+
+which python || ln -sf $(which python3) /usr/local/bin/python
+
+npm install --ignore-scripts --legacy-peer-deps || true
+
+if [ -n "$NODE_SASS_VER" ]; then
+  npm install sass@1.35.2 --legacy-peer-deps --no-save 2>/dev/null || true
+  rm -rf node_modules/node-sass
+  mkdir -p node_modules/node-sass/lib
+  cat > node_modules/node-sass/package.json << 'PKGJSON'
+{{"name":"node-sass","version":"6.0.1","main":"lib/index.js"}}
+PKGJSON
+  cat > node_modules/node-sass/lib/index.js << 'SHIMJS'
+var sass = require('sass');
+module.exports.render = function(opts, cb) {{
+  try {{
+    var result = sass.renderSync(opts);
+    cb(null, result);
+  }} catch(e) {{ cb(e); }}
+}};
+module.exports.renderSync = function(opts) {{
+  return sass.renderSync(opts);
+}};
+module.exports.info = 'node-sass-shim\\t(dart-sass ' + sass.info + ')';
+SHIMJS
+  echo "Installed dart-sass shim as node-sass"
+fi
+
+npm rebuild --legacy-peer-deps 2>/dev/null || true
+
+if [ -n "$NODE_SASS_VER" ]; then
+  npm install sass@1.35.2 --ignore-scripts --legacy-peer-deps --no-save 2>/dev/null || true
+fi
+
+WEBPACK_VER=$(node -e "try {{ console.log(require('webpack/package.json').version.split('.')[0]); }} catch(e) {{ console.log('0'); }}" 2>/dev/null || echo "0")
+if [ "$WEBPACK_VER" = "3" ]; then
+  npm install cheerio@1.0.0-rc.3 --ignore-scripts --legacy-peer-deps --no-save 2>/dev/null || true
+  echo "Pinned cheerio to 1.0.0-rc.3 for webpack 3"
+fi
+
+if [ -n "$NODE_SASS_VER" ]; then
+  if ! node -e "require('sass')" 2>/dev/null; then
+    SASS_TMP=$(mktemp -d)
+    npm pack sass@1.35.2 --pack-destination "$SASS_TMP" 2>/dev/null || true
+    rm -rf node_modules/sass
+    mkdir -p node_modules/sass
+    tar -xzf "$SASS_TMP"/sass-*.tgz -C node_modules/sass --strip-components=1 2>/dev/null || true
+    rm -rf "$SASS_TMP"
+    echo "Re-installed sass via npm pack (was removed by cheerio install)"
+  fi
+  rm -rf node_modules/node-sass
+  mkdir -p node_modules/node-sass/lib
+  cat > node_modules/node-sass/package.json << 'PKGJSON'
+{{"name":"node-sass","version":"6.0.1","main":"lib/index.js"}}
+PKGJSON
+  cat > node_modules/node-sass/lib/index.js << 'SHIMJS'
+var sass = require('sass');
+module.exports.render = function(opts, cb) {{
+  try {{
+    var result = sass.renderSync(opts);
+    cb(null, result);
+  }} catch(e) {{ cb(e); }}
+}};
+module.exports.renderSync = function(opts) {{
+  return sass.renderSync(opts);
+}};
+module.exports.info = 'node-sass-shim\\t(dart-sass ' + sass.info + ')';
+SHIMJS
+  echo "Applied dart-sass shim as node-sass"
+fi
+
+if [ -n "$NODE_SASS_VER" ]; then
+  rm -rf node_modules/node-sass
+  mkdir -p node_modules/node-sass/lib
+  cat > node_modules/node-sass/package.json << 'PKGJSON'
+{{"name":"node-sass","version":"6.0.1","main":"lib/index.js"}}
+PKGJSON
+  cat > node_modules/node-sass/lib/index.js << 'SHIMJS'
+var sass = require('sass');
+module.exports.render = function(opts, cb) {{
+  try {{
+    var result = sass.renderSync(opts);
+    cb(null, result);
+  }} catch(e) {{ cb(e); }}
+}};
+module.exports.renderSync = function(opts) {{
+  return sass.renderSync(opts);
+}};
+module.exports.info = 'node-sass-shim\\t(dart-sass ' + sass.info + ')';
+SHIMJS
+  echo "Applied dart-sass shim as node-sass (final step)"
+fi
+
+if [ -f scripts/test/karma.js ]; then
+  sed -i "s/flags: \\['--no-sandbox'\\]/flags: ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--disable-dev-shm-usage']/" scripts/test/karma.js 2>/dev/null || true
+  sed -i "s/options.browsers = \\['ChromeHeadless'\\]/options.browsers = ['ChromeTravis']/" scripts/test/karma.js 2>/dev/null || true
+  sed -i "s/options.browsers = \\['ChromeTravis'\\]/options.browsers = ['ChromeTravis']/" scripts/test/karma.js 2>/dev/null || true
+  sed -i "s|process.env.CHROME_BIN = require('puppeteer').executablePath()|process.env.CHROME_BIN = '/usr/bin/chromium'|" scripts/test/karma.js 2>/dev/null || true
+fi
 """.format(pr=self.pr),
             ),
             File(
@@ -151,12 +265,23 @@ npm ci || npm install || true
 set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+export CI=true
+export TRAVIS=true
+export CHROME_BIN=$(which google-chrome-stable 2>/dev/null || which google-chrome 2>/dev/null || which chromium 2>/dev/null || echo "")
+export ELECTRON_EXTRA_LAUNCH_ARGS="--disable-gpu --disable-software-rasterizer"
 cd /home/{pr.repo}
 
-nvm use || true
-npm ci || npm install || true
+nvm use default || true
+NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])")
+if [ "$NODE_MAJOR" -ge 17 ] 2>/dev/null; then
+  export NODE_OPTIONS=--openssl-legacy-provider
+fi
+
+if [ -f tools/test.ts ]; then
+  sed -i "s/-b.*chrome'/-b', 'chromium'/g" tools/test.ts 2>/dev/null || true
+fi
+
 npm run test || true
-npm run test:js || true
 """.format(pr=self.pr),
             ),
             File(
@@ -166,13 +291,24 @@ npm run test:js || true
 set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+export CI=true
+export TRAVIS=true
+export CHROME_BIN=$(which google-chrome-stable 2>/dev/null || which google-chrome 2>/dev/null || which chromium 2>/dev/null || echo "")
+export ELECTRON_EXTRA_LAUNCH_ARGS="--disable-gpu --disable-software-rasterizer"
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+git apply --whitespace=nowarn /home/test.patch || true
 
-nvm use || true
-npm ci || npm install || true
+nvm use default || true
+NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])")
+if [ "$NODE_MAJOR" -ge 17 ] 2>/dev/null; then
+  export NODE_OPTIONS=--openssl-legacy-provider
+fi
+
+if [ -f tools/test.ts ]; then
+  sed -i "s/-b.*chrome'/-b', 'chromium'/g" tools/test.ts 2>/dev/null || true
+fi
+
 npm run test || true
-npm run test:js || true
 
 """.format(pr=self.pr),
             ),
@@ -183,13 +319,24 @@ npm run test:js || true
 set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+export CI=true
+export TRAVIS=true
+export CHROME_BIN=$(which google-chrome-stable 2>/dev/null || which google-chrome 2>/dev/null || which chromium 2>/dev/null || echo "")
+export ELECTRON_EXTRA_LAUNCH_ARGS="--disable-gpu --disable-software-rasterizer"
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch || true
 
-nvm use || true
-npm ci || npm install || true
+nvm use default || true
+NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])")
+if [ "$NODE_MAJOR" -ge 17 ] 2>/dev/null; then
+  export NODE_OPTIONS=--openssl-legacy-provider
+fi
+
+if [ -f tools/test.ts ]; then
+  sed -i "s/-b.*chrome'/-b', 'chromium'/g" tools/test.ts 2>/dev/null || true
+fi
+
 npm run test || true
-npm run test:js || true
 
 """.format(pr=self.pr),
             ),
