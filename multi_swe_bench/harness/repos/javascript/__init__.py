@@ -53,6 +53,7 @@ from multi_swe_bench.harness.repos.javascript.gsd_build import *
 from multi_swe_bench.harness.repos.javascript.gulpjs import *
 from multi_swe_bench.harness.repos.javascript.HabitRPG import *
 from multi_swe_bench.harness.repos.javascript.hakimel import *
+from multi_swe_bench.harness.repos.javascript.handsontable import *
 from multi_swe_bench.harness.repos.javascript.hapijs import *
 from multi_swe_bench.harness.repos.javascript.highlightjs import *
 from multi_swe_bench.harness.repos.javascript.iamkun import *
