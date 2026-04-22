@@ -99,3 +99,4 @@ from multi_swe_bench.harness.repos.javascript.websockets import *
 from multi_swe_bench.harness.repos.javascript.gchq import *
 from multi_swe_bench.harness.repos.javascript.char0n import *
 from multi_swe_bench.harness.repos.javascript.downshift_js import *
+from multi_swe_bench.harness.repos.javascript.mattermost import *
