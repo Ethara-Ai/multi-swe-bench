@@ -295,3 +295,4 @@ from multi_swe_bench.harness.repos.python.yt_dlp import *
 from multi_swe_bench.harness.repos.python.zarr_developers import *
 from multi_swe_bench.harness.repos.python.zulip import *
 from multi_swe_bench.harness.repos.python.miurahr import *
+from multi_swe_bench.harness.repos.python.opsdroid import *
