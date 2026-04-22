@@ -301,3 +301,6 @@ from multi_swe_bench.harness.repos.python.xarray_contrib import *
 from multi_swe_bench.harness.repos.python.nvbn import *
 from multi_swe_bench.harness.repos.python.michaelhly import *
 from multi_swe_bench.harness.repos.python.rytilahti import *
+from multi_swe_bench.harness.repos.python.asottile.pyupgrade import *
+from multi_swe_bench.harness.repos.python.doorstop_dev.doorstop import *
+from multi_swe_bench.harness.repos.python.dry_python.returns import *

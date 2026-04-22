@@ -25,3 +25,5 @@ from multi_swe_bench.harness.repos.java.springprojects import *
 from multi_swe_bench.harness.repos.java.TheAlgorithms import *
 from multi_swe_bench.harness.repos.java.YunaiV import *
 from multi_swe_bench.harness.repos.java.openequella import *
+from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe import *
+from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe_5927_to_5927 import *

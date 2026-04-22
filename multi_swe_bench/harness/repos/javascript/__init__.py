@@ -103,24 +103,17 @@ from multi_swe_bench.harness.repos.javascript.vuejs import *
 from multi_swe_bench.harness.repos.javascript.webpack.webpack import *
 from multi_swe_bench.harness.repos.javascript.websockets import *
 from multi_swe_bench.harness.repos.javascript.gchq import *
-<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.javascript.char0n import *
 from multi_swe_bench.harness.repos.javascript.downshift_js import *
 from multi_swe_bench.harness.repos.javascript.mattermost import *
-<<<<<<< HEAD
 from multi_swe_bench.harness.repos.javascript.testing_library import *
-=======
 from multi_swe_bench.harness.repos.javascript.gchq import *
 from multi_swe_bench.harness.repos.javascript.sindresorhus import *
 from multi_swe_bench.harness.repos.javascript.json_editor import *
 from multi_swe_bench.harness.repos.javascript.neherlab import *
 from multi_swe_bench.harness.repos.javascript.zloirock import *
 from multi_swe_bench.harness.repos.javascript.nextcloud import *
-=======
-=======
 from multi_swe_bench.harness.repos.javascript.char0n import *
 from multi_swe_bench.harness.repos.javascript.downshift_js import *
 from multi_swe_bench.harness.repos.javascript.mattermost import *
 from multi_swe_bench.harness.repos.javascript.code_charity import *
->>>>>>> Stashed changes
->>>>>>> 3b6f04ee11c27aba88fadfcb3eda3858bfa7e167

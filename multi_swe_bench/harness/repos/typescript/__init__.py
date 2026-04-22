@@ -148,3 +148,4 @@ from multi_swe_bench.harness.repos.typescript.webdriverio import *
 from multi_swe_bench.harness.repos.typescript.heylinda import *
 from multi_swe_bench.harness.repos.typescript.kortina import *
 from multi_swe_bench.harness.repos.typescript.mswjs import *
+from multi_swe_bench.harness.repos.typescript.testing_library.eslint_plugin_testing_library import *
