@@ -96,3 +96,4 @@ from multi_swe_bench.harness.repos.javascript.videojs import *
 from multi_swe_bench.harness.repos.javascript.vuejs import *
 from multi_swe_bench.harness.repos.javascript.webpack.webpack import *
 from multi_swe_bench.harness.repos.javascript.websockets import *
+from multi_swe_bench.harness.repos.javascript.gchq import *
