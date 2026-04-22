@@ -108,3 +108,7 @@ from multi_swe_bench.harness.repos.javascript.downshift_js import *
 from multi_swe_bench.harness.repos.javascript.mattermost import *
 from multi_swe_bench.harness.repos.javascript.gchq import *
 from multi_swe_bench.harness.repos.javascript.sindresorhus import *
+from multi_swe_bench.harness.repos.javascript.json_editor import *
+from multi_swe_bench.harness.repos.javascript.neherlab import *
+from multi_swe_bench.harness.repos.javascript.zloirock import *
+from multi_swe_bench.harness.repos.javascript.nextcloud import *
