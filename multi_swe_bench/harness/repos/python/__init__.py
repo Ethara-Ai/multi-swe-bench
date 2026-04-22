@@ -298,3 +298,6 @@ from multi_swe_bench.harness.repos.python.miurahr import *
 from multi_swe_bench.harness.repos.python.opsdroid import *
 from multi_swe_bench.harness.repos.python.xarray_contrib import *
 
+from multi_swe_bench.harness.repos.python.nvbn import *
+from multi_swe_bench.harness.repos.python.michaelhly import *
+from multi_swe_bench.harness.repos.python.rytilahti import *
