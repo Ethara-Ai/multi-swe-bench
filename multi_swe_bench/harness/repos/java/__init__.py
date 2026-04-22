@@ -4,6 +4,7 @@ from multi_swe_bench.harness.repos.java.bazelbuild import *
 from multi_swe_bench.harness.repos.java.checkstyle import *
 from multi_swe_bench.harness.repos.java.eclipsevertx import *
 from multi_swe_bench.harness.repos.java.elastic import *
+from multi_swe_bench.harness.repos.java.FabLabsMC import *
 from multi_swe_bench.harness.repos.java.fasterxml import *
 from multi_swe_bench.harness.repos.java.google import *
 from multi_swe_bench.harness.repos.java.googlecontainertools import *

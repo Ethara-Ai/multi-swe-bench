@@ -1,4 +1,5 @@
 from multi_swe_bench.harness.repos.golang.cilium import *
+from multi_swe_bench.harness.repos.java.vavr_io import *
 from multi_swe_bench.harness.repos.javascript._4ian import *
 from multi_swe_bench.harness.repos.javascript.Accenture import *
 from multi_swe_bench.harness.repos.javascript.accordproject import *
@@ -15,21 +16,22 @@ from multi_swe_bench.harness.repos.javascript.Automattic import *
 from multi_swe_bench.harness.repos.javascript.avajs import *
 from multi_swe_bench.harness.repos.javascript.axios import *
 from multi_swe_bench.harness.repos.javascript.badges import *
-from multi_swe_bench.harness.repos.javascript.bvaughn import *
 from multi_swe_bench.harness.repos.javascript.BlakeGuilloud import *
 from multi_swe_bench.harness.repos.javascript.bpmn_io import *
 from multi_swe_bench.harness.repos.javascript.bpmnio import *
 from multi_swe_bench.harness.repos.javascript.brave import *
+from multi_swe_bench.harness.repos.javascript.bvaughn import *
 from multi_swe_bench.harness.repos.javascript.camunda import *
 from multi_swe_bench.harness.repos.javascript.caolan import *
 from multi_swe_bench.harness.repos.javascript.carbon_design_system import *
 from multi_swe_bench.harness.repos.javascript.carbondesignsystem import *
 from multi_swe_bench.harness.repos.javascript.cfpb import *
 from multi_swe_bench.harness.repos.javascript.chaijs import *
-from multi_swe_bench.harness.repos.javascript.codemirror import *
+from multi_swe_bench.harness.repos.javascript.char0n import *
 from multi_swe_bench.harness.repos.javascript.chartjs import *
 from multi_swe_bench.harness.repos.javascript.City_of_Helsinki import *
 from multi_swe_bench.harness.repos.javascript.codeceptjs import *
+from multi_swe_bench.harness.repos.javascript.codemirror import *
 from multi_swe_bench.harness.repos.javascript.commercetools import *
 from multi_swe_bench.harness.repos.javascript.compasjs import *
 from multi_swe_bench.harness.repos.javascript.CraveFood import *
@@ -40,12 +42,14 @@ from multi_swe_bench.harness.repos.javascript.DataDog import *
 from multi_swe_bench.harness.repos.javascript.decred import *
 from multi_swe_bench.harness.repos.javascript.DevExpress import *
 from multi_swe_bench.harness.repos.javascript.dinerojs import *
+from multi_swe_bench.harness.repos.javascript.downshift_js import *
 from multi_swe_bench.harness.repos.javascript.eslint import *
 from multi_swe_bench.harness.repos.javascript.exercism import *
 from multi_swe_bench.harness.repos.javascript.expressjs import *
 from multi_swe_bench.harness.repos.javascript.facebook import *
 from multi_swe_bench.harness.repos.javascript.fastify import *
 from multi_swe_bench.harness.repos.javascript.FlowFuse import *
+from multi_swe_bench.harness.repos.javascript.gchq import *
 from multi_swe_bench.harness.repos.javascript.google import *
 from multi_swe_bench.harness.repos.javascript.GoogleChrome import *
 from multi_swe_bench.harness.repos.javascript.grommet import *
@@ -66,6 +70,7 @@ from multi_swe_bench.harness.repos.javascript.Kong import *
 from multi_swe_bench.harness.repos.javascript.LiskHQ import *
 from multi_swe_bench.harness.repos.javascript.ManifoldScholar import *
 from multi_swe_bench.harness.repos.javascript.markedjs import *
+from multi_swe_bench.harness.repos.javascript.mattermost import *
 from multi_swe_bench.harness.repos.javascript.motdotla import *
 from multi_swe_bench.harness.repos.javascript.nasa import *
 from multi_swe_bench.harness.repos.javascript.nock import *
@@ -83,6 +88,7 @@ from multi_swe_bench.harness.repos.javascript.SchemaStore import *
 from multi_swe_bench.harness.repos.javascript.scratchfoundation import *
 from multi_swe_bench.harness.repos.javascript.Semantic_Org import *
 from multi_swe_bench.harness.repos.javascript.Seneca_CDOT import *
+from multi_swe_bench.harness.repos.javascript.sindresorhus import *
 from multi_swe_bench.harness.repos.javascript.sinonjs import *
 from multi_swe_bench.harness.repos.javascript.stdlib_js import *
 from multi_swe_bench.harness.repos.javascript.sveltejs import *
@@ -100,4 +106,13 @@ from multi_swe_bench.harness.repos.javascript.gchq import *
 from multi_swe_bench.harness.repos.javascript.char0n import *
 from multi_swe_bench.harness.repos.javascript.downshift_js import *
 from multi_swe_bench.harness.repos.javascript.mattermost import *
+<<<<<<< HEAD
 from multi_swe_bench.harness.repos.javascript.testing_library import *
+=======
+from multi_swe_bench.harness.repos.javascript.gchq import *
+from multi_swe_bench.harness.repos.javascript.sindresorhus import *
+from multi_swe_bench.harness.repos.javascript.json_editor import *
+from multi_swe_bench.harness.repos.javascript.neherlab import *
+from multi_swe_bench.harness.repos.javascript.zloirock import *
+from multi_swe_bench.harness.repos.javascript.nextcloud import *
+>>>>>>> 854d7cad736b1af59c023e69152d1e44946a0fbd

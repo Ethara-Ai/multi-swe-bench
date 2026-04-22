@@ -296,3 +296,5 @@ from multi_swe_bench.harness.repos.python.zarr_developers import *
 from multi_swe_bench.harness.repos.python.zulip import *
 from multi_swe_bench.harness.repos.python.miurahr import *
 from multi_swe_bench.harness.repos.python.opsdroid import *
+from multi_swe_bench.harness.repos.python.xarray_contrib import *
+
