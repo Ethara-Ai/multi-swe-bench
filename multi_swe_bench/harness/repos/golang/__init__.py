@@ -65,3 +65,4 @@ from multi_swe_bench.harness.repos.golang.argoproj import *
 from multi_swe_bench.harness.repos.golang.cockroachdb import *
 from multi_swe_bench.harness.repos.golang.jaegertracing import *
 from multi_swe_bench.harness.repos.golang.hashicorp import *
+from multi_swe_bench.harness.repos.golang.envoyproxy import *
