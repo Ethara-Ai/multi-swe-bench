@@ -124,6 +124,7 @@ from multi_swe_bench.harness.repos.typescript.SwissDataScienceCenter import *
 from multi_swe_bench.harness.repos.typescript.TanStack import *
 from multi_swe_bench.harness.repos.typescript.Tencent import *
 from multi_swe_bench.harness.repos.typescript.TerriaJS import *
+from multi_swe_bench.harness.repos.typescript.textlint import *
 from multi_swe_bench.harness.repos.typescript.thenewboston_blockchain import *
 from multi_swe_bench.harness.repos.typescript.tradingview import *
 from multi_swe_bench.harness.repos.typescript.trpc import *
@@ -141,6 +142,7 @@ from multi_swe_bench.harness.repos.typescript.web3ui import *
 from multi_swe_bench.harness.repos.typescript.webdriverio import *
 from multi_swe_bench.harness.repos.typescript.website import *
 from multi_swe_bench.harness.repos.typescript.withastro import *
+from multi_swe_bench.harness.repos.typescript.wulkano import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
 from multi_swe_bench.harness.repos.typescript.nocodb import *
 from multi_swe_bench.harness.repos.typescript.web3ui import *
