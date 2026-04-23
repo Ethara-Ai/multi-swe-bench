@@ -108,6 +108,8 @@ from multi_swe_bench.harness.repos.typescript.SAP import *
 from multi_swe_bench.harness.repos.typescript.SBoudrias import *
 from multi_swe_bench.harness.repos.typescript.Shopify import *
 from multi_swe_bench.harness.repos.typescript.sindresorhus import *
+from multi_swe_bench.harness.repos.typescript.silverbulletmd import *
+from multi_swe_bench.harness.repos.typescript.stoplightio import *
 from multi_swe_bench.harness.repos.typescript.Siteimprove import *
 from multi_swe_bench.harness.repos.typescript.SocialGouv import *
 from multi_swe_bench.harness.repos.typescript.sphinx_tribes_frontend import *
