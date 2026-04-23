@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.python.scrapy.scrapy_7395_to_6912 import *
 from multi_swe_bench.harness.repos.python.scrapy.scrapy_6911_to_6748 import *
 from multi_swe_bench.harness.repos.python.scrapy.scrapy_6618_to_6542 import *
 from multi_swe_bench.harness.repos.python.scrapy.scrapy_6542_to_6241 import *

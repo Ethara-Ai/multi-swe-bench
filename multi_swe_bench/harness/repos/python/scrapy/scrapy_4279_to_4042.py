@@ -207,6 +207,12 @@ RUN git clone https://github.com/scrapy/scrapy.git /home/scrapy
 WORKDIR /home/scrapy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN apt-get update && apt-get install -y software-properties-common
+RUN add-apt-repository -y ppa:deadsnakes/ppa && apt-get update
+RUN apt-get install -y python3.8 python3.8-venv python3.8-dev build-essential libssl-dev libffi-dev libxml2-dev libxslt1-dev zlib1g-dev
+RUN python3.8 -m venv venv
+RUN ./venv/bin/pip install --upgrade pip
+RUN ./venv/bin/pip install -e . pytest testfixtures pyOpenSSL==19.1.0 cryptography==3.4.8 pillow pytest-twisted pytest-xdist Twisted==20.3.0
 """
         dockerfile_content += f"""
 {copy_commands}

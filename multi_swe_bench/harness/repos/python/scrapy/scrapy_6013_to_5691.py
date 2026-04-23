@@ -153,6 +153,9 @@ RUN git clone https://github.com/scrapy/scrapy.git /home/scrapy
 WORKDIR /home/scrapy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN apt-get update && apt-get install -y gcc build-essential libssl-dev libbrotli-dev libzstd-dev libxml2-dev libxslt1-dev zlib1g-dev
+RUN pip install -r tests/requirements.txt cryptography==36.0.0 cssselect==0.9.1 h2==3.0 itemadapter==0.1.0 parsel==1.5.0 Protego==0.1.15 pyOpenSSL==21.0.0 queuelib==1.4.2 service_identity==18.1.0 'Twisted[http2]==18.9.0' w3lib==1.17.0 zope.interface==5.1.0 lxml
+RUN pip install -e .
 """
         dockerfile_content += f"""
 {copy_commands}

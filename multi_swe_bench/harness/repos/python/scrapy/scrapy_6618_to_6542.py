@@ -137,6 +137,7 @@ RUN git clone https://github.com/scrapy/scrapy.git /home/scrapy
 WORKDIR /home/scrapy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN pip install -e . attrs coverage>=7.4.0 pexpect>=4.8.0 pyftpdlib>=2.0.1 pygments 'pytest!=8.2.*' pytest-cov>=4.0.0 pytest-xdist 'sybil>=1.3.0' testfixtures
 """
         dockerfile_content += f"""
 {copy_commands}

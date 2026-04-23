@@ -153,6 +153,10 @@ RUN git clone https://github.com/scrapy/scrapy.git /home/scrapy
 WORKDIR /home/scrapy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN apt-get update && apt-get install -y build-essential python3-dev libssl-dev libffi-dev libxml2-dev libxslt1-dev zlib1g-dev
+RUN if [ -f requirements-py3.txt ]; then pip install -r requirements-py3.txt; fi
+RUN pip install pyOpenSSL==19.1.0 Twisted==19.10.0 cryptography==3.4.8 Pillow testfixtures w3lib==1.19.0 pytest
+RUN pip install -e .
 """
         dockerfile_content += f"""
 {copy_commands}

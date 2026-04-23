@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.9-slim"
+        return "python:3.11-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -47,33 +47,17 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """echo 'deb [trusted=yes] http://archive.debian.org/debian stretch main' >> /etc/apt/sources.list && apt-get update --allow-insecure-repositories
+                """ls
 ###ACTION_DELIMITER###
-apt-get install -y python2.7 python2.7-dev
+apt-get update && apt-get install -y libssl-dev libxml2-dev libxslt1-dev zlib1g-dev
 ###ACTION_DELIMITER###
-apt-get install -y python-pip
+pip install attrs coverage>=7.10.6 httpx pexpect>=4.8.0 pyftpdlib>=2.0.1 pygments pytest>=8.4.1 pytest-cov>=7.0.0 pytest-xdist sybil>=1.3.0 testfixtures pytest-twisted>=1.14.3
 ###ACTION_DELIMITER###
-pip2 install --upgrade pip
+pip install -e .
 ###ACTION_DELIMITER###
-pip2 install -r requirements.txt
+echo 'pytest -v --cov-config=pyproject.toml --cov=scrapy --cov-report= --cov-report=term-missing --cov-report=xml --junitxml=testenv.junit.xml -o junit_family=legacy --durations=10 scrapy tests --doctest-modules' > test_commands.sh
 ###ACTION_DELIMITER###
-pip2 install -r tests/requirements.txt
-###ACTION_DELIMITER###
-echo 'python2.7 -m pytest -v scrapy tests' > test_commands.sh && chmod +x test_commands.sh
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-pip2 install --upgrade py
-###ACTION_DELIMITER###
-pip2 install py==1.4.34
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-pip2 install pytest-twisted==1.6.0
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-pip2 install queuelib==1.5.0
+cat test_commands.sh
 ###ACTION_DELIMITER###
 bash test_commands.sh""",
             ),
@@ -82,7 +66,7 @@ bash test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-python2.7 -m pytest -v scrapy tests
+pytest -v --cov-config=pyproject.toml --cov=scrapy --cov-report= --cov-report=term-missing --cov-report=xml --junitxml=testenv.junit.xml -o junit_family=legacy --durations=10 scrapy tests --doctest-modules
 
 """.format(pr=self.pr),
             ),
@@ -95,7 +79,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-python2.7 -m pytest -v scrapy tests
+pytest -v --cov-config=pyproject.toml --cov=scrapy --cov-report= --cov-report=term-missing --cov-report=xml --junitxml=testenv.junit.xml -o junit_family=legacy --durations=10 scrapy tests --doctest-modules
 
 """.format(pr=self.pr),
             ),
@@ -108,7 +92,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-python2.7 -m pytest -v scrapy tests
+pytest -v --cov-config=pyproject.toml --cov=scrapy --cov-report= --cov-report=term-missing --cov-report=xml --junitxml=testenv.junit.xml -o junit_family=legacy --durations=10 scrapy tests --doctest-modules
 
 """.format(pr=self.pr),
             ),
@@ -123,9 +107,9 @@ python2.7 -m pytest -v scrapy tests
 # This is a template for creating a Dockerfile to test patches
 # LLM should fill in the appropriate values based on the context
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
+# Choose an appropriate base image based on the project's requirements - replace python:3.11-slim with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -147,13 +131,15 @@ RUN git clone https://github.com/scrapy/scrapy.git /home/scrapy
 WORKDIR /home/scrapy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
-RUN echo 'deb [trusted=yes] http://archive.debian.org/debian stretch main' >> /etc/apt/sources.list && apt-get update --allow-insecure-repositories
-RUN apt-get install -y python2.7 python2.7-dev python-pip
-RUN pip2 install --upgrade pip
-RUN pip2 install incremental
-RUN pip2 install -r requirements.txt
-RUN pip2 install -r tests/requirements.txt
-RUN pip2 install py==1.4.34 pytest-twisted==1.6.0 queuelib==1.5.0
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y libssl-dev libxml2-dev libxslt1-dev zlib1g-dev
+
+# Install test dependencies
+RUN pip install attrs coverage>=7.10.6 httpx pexpect>=4.8.0 pyftpdlib>=2.0.1 pygments pytest>=8.4.1 pytest-cov>=7.0.0 pytest-xdist sybil>=1.3.0 testfixtures pytest-twisted>=1.14.3
+
+# Install scrapy in editable mode
+RUN pip install -e .
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -161,8 +147,8 @@ RUN pip2 install py==1.4.34 pytest-twisted==1.6.0 queuelib==1.5.0
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("scrapy", "scrapy_1655_to_1603")
-class SCRAPY_1655_TO_1603(Instance):
+@Instance.register("scrapy", "scrapy_7395_to_6912")
+class SCRAPY_7395_TO_6912(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -195,29 +181,27 @@ class SCRAPY_1655_TO_1603(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.
-        passed_tests = set[str]()  # Tests that passed successfully
-        failed_tests = set[str]()  # Tests that failed
-        skipped_tests = set[str]()  # Tests that were skipped
+        passed_tests: set[str] = set()  # Tests that passed successfully
+        failed_tests: set[str] = set()  # Tests that failed
+        skipped_tests: set[str] = set()  # Tests that were skipped
         import re
-        import json
 
-        # Define regex pattern to match test lines with status
-        pattern = re.compile(r"^(.*?)\s+(PASSED|FAILED|SKIPPED|XFAILED)\s*$")
-        # Iterate over each line in the log
-        for line in log.split("\n"):
-            match = pattern.match(line)
-            if match:
-                test_part = match.group(1)
-                status = match.group(2)
-                # Extract test name by removing any trailing ' <- ...' part
-                test_name = test_part.split(" <- ")[0].strip()
-                # Add to the corresponding set
-                if status == "PASSED":
-                    passed_tests.add(test_name)
-                elif status in ("FAILED", "XFAILED"):
-                    failed_tests.add(test_name)
-                elif status == "SKIPPED":
-                    skipped_tests.add(test_name)
+        # Adjusted patterns with .+? to ensure test name capture
+        # Passed tests: (optional [line_num]) test_name PASSED [percentage]
+        passed_pattern = re.compile(
+            r"^(?:\[\s*\d+\]\s+)?(.+?)\s+PASSED\s+\[\s*\d+%\s*\]", re.MULTILINE
+        )
+        passed_tests.update(passed_pattern.findall(log))
+        # Failed tests: (optional [line_num]) FAILED test_name (ignore trailing content)
+        failed_pattern = re.compile(
+            r"^(?:\[\s*\d+\]\s+)?FAILED\s+(.+?)(?:\s+-.*)?$", re.MULTILINE
+        )
+        failed_tests.update(failed_pattern.findall(log))
+        # Skipped tests: (optional [line_num]) test_name SKIPPED [percentage]
+        skipped_pattern = re.compile(
+            r"^(?:\[\s*\d+\]\s+)?(.+?)\s+SKIPPED\s+\[\s*\d+%\s*\]", re.MULTILINE
+        )
+        skipped_tests.update(skipped_pattern.findall(log))
         parsed_results = {
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,

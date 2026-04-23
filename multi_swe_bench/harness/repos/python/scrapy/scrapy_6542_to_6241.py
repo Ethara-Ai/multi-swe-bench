@@ -147,6 +147,10 @@ RUN git clone https://github.com/scrapy/scrapy.git /home/scrapy
 WORKDIR /home/scrapy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN apt-get update && apt-get install -y python3-pip python3.12-venv
+RUN python3 -m venv venv
+RUN ./venv/bin/pip install --upgrade pip
+RUN ./venv/bin/pip install pytest pytest-cov==4.0.0 pytest-xdist pexpect>=4.8.0 pyftpdlib>=2.0.1 pygments sybil>=1.3.0 testfixtures attrs -e .
 """
         dockerfile_content += f"""
 {copy_commands}

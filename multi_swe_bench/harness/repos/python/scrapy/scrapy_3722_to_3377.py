@@ -169,6 +169,13 @@ RUN git clone https://github.com/scrapy/scrapy.git /home/scrapy
 WORKDIR /home/scrapy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN apt-get update && apt-get install -y curl software-properties-common
+RUN add-apt-repository -y ppa:deadsnakes/ppa && apt-get update
+RUN apt-get install -y python3.8 python3.8-venv python3.8-dev build-essential libssl-dev libxml2-dev libxslt1-dev zlib1g-dev
+RUN python3.8 -m venv venv38
+RUN ./venv38/bin/pip install --upgrade pip
+RUN if [ -f requirements-py3.txt ]; then ./venv38/bin/pip install -r requirements-py3.txt; fi
+RUN ./venv38/bin/pip install 'Twisted==21.7.0' 'pyOpenSSL==21.0.0' 'cryptography==3.4.8' testfixtures Pillow pytest pytest-twisted
 """
         dockerfile_content += f"""
 {copy_commands}

@@ -129,6 +129,8 @@ RUN git clone https://github.com/scrapy/scrapy.git /home/scrapy
 WORKDIR /home/scrapy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+RUN pip install -r tests/requirements.txt
+RUN pip install -e .
 """
         dockerfile_content += f"""
 {copy_commands}
