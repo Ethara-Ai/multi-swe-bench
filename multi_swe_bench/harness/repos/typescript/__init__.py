@@ -152,3 +152,4 @@ from multi_swe_bench.harness.repos.typescript.photoview import *from multi_swe_b
 from multi_swe_bench.harness.repos.typescript.kortina import *
 from multi_swe_bench.harness.repos.typescript.mswjs import *
 from multi_swe_bench.harness.repos.typescript.testing_library.eslint_plugin_testing_library import *
+from multi_swe_bench.harness.repos.typescript.yarnpkg import *
