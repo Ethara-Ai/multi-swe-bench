@@ -170,6 +170,7 @@ from multi_swe_bench.harness.repos.python.open_telemetry import *
 from multi_swe_bench.harness.repos.python.openmc_dev import *
 from multi_swe_bench.harness.repos.python.OpenMDAO import *
 from multi_swe_bench.harness.repos.python.OpenMined import *
+from multi_swe_bench.harness.repos.python.OpenHands import *
 from multi_swe_bench.harness.repos.python.opensafely_core import *
 from multi_swe_bench.harness.repos.python.OpenSlides import *
 from multi_swe_bench.harness.repos.python.optuna import *
