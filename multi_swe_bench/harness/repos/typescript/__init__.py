@@ -3,6 +3,7 @@ from multi_swe_bench.harness.repos.typescript.activist_org import *
 from multi_swe_bench.harness.repos.typescript.alibaba import *
 from multi_swe_bench.harness.repos.typescript.allure_framework import *
 from multi_swe_bench.harness.repos.typescript.Altinn import *
+from multi_swe_bench.harness.repos.typescript.Amsterdam import *
 from multi_swe_bench.harness.repos.typescript.angular import *
 from multi_swe_bench.harness.repos.typescript.angular_eslint import *
 from multi_swe_bench.harness.repos.typescript.ant_design import *
