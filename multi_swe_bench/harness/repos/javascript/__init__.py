@@ -88,6 +88,8 @@ from multi_swe_bench.harness.repos.javascript.SchemaStore import *
 from multi_swe_bench.harness.repos.javascript.scratchfoundation import *
 from multi_swe_bench.harness.repos.javascript.Semantic_Org import *
 from multi_swe_bench.harness.repos.javascript.Seneca_CDOT import *
+from multi_swe_bench.harness.repos.javascript.serverless import *
+from multi_swe_bench.harness.repos.javascript.serverless_operations import *
 from multi_swe_bench.harness.repos.javascript.sindresorhus import *
 from multi_swe_bench.harness.repos.javascript.sinonjs import *
 from multi_swe_bench.harness.repos.javascript.stdlib_js import *
@@ -119,3 +121,4 @@ from multi_swe_bench.harness.repos.javascript.mattermost import *
 from multi_swe_bench.harness.repos.javascript.code_charity import *
 from multi_swe_bench.harness.repos.javascript.webpack.webpack_cli import *
 from multi_swe_bench.harness.repos.javascript.neomjs import *
+from multi_swe_bench.harness.repos.javascript.webtorrent import *
