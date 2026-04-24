@@ -304,3 +304,5 @@ from multi_swe_bench.harness.repos.python.rytilahti import *
 from multi_swe_bench.harness.repos.python.asottile.pyupgrade import *
 from multi_swe_bench.harness.repos.python.doorstop_dev.doorstop import *
 from multi_swe_bench.harness.repos.python.dry_python.returns import *
+from multi_swe_bench.harness.repos.python.quantumlib import *
+
