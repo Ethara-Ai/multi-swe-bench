@@ -26,3 +26,4 @@ from multi_swe_bench.harness.repos.cpp.doctest import *
 from multi_swe_bench.harness.repos.cpp.MariaDB import *
 from multi_swe_bench.harness.repos.cpp.Neargye import *
 from multi_swe_bench.harness.repos.cpp.polybar import *
+from multi_swe_bench.harness.repos.cpp.lballabio import *
