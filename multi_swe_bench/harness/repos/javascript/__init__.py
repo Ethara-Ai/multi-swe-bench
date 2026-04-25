@@ -123,3 +123,4 @@ from multi_swe_bench.harness.repos.javascript.code_charity import *
 from multi_swe_bench.harness.repos.javascript.webpack.webpack_cli import *
 from multi_swe_bench.harness.repos.javascript.neomjs import *
 from multi_swe_bench.harness.repos.javascript.webtorrent import *
+from multi_swe_bench.harness.repos.javascript.DDDEastMidlandsLimited import *

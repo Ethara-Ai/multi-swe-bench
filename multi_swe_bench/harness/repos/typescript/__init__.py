@@ -159,3 +159,4 @@ from multi_swe_bench.harness.repos.typescript.mswjs import *
 from multi_swe_bench.harness.repos.typescript.testing_library.eslint_plugin_testing_library import *
 from multi_swe_bench.harness.repos.typescript.yarnpkg import *
 from multi_swe_bench.harness.repos.typescript.stenciljs import *
+from multi_swe_bench.harness.repos.typescript.lukasoppermann import *
