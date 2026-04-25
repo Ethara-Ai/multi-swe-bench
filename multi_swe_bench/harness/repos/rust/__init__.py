@@ -32,4 +32,8 @@ from multi_swe_bench.harness.repos.rust.ratatui import *
 from multi_swe_bench.harness.repos.rust.rustls import *
 from multi_swe_bench.harness.repos.rust.async_graphql import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
+<<<<<<< HEAD
 from multi_swe_bench.harness.repos.rust.tower_rs import *
+=======
+from multi_swe_bench.harness.repos.rust.bytecodealliance import *
+>>>>>>> 3860c968 (created registry for rust_lang)
