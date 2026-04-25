@@ -136,6 +136,7 @@ from multi_swe_bench.harness.repos.python.mandiant import *
 from multi_swe_bench.harness.repos.python.ManimCommunity import *
 from multi_swe_bench.harness.repos.python.mantidproject import *
 from multi_swe_bench.harness.repos.python.marimo_team import *
+from multi_swe_bench.harness.repos.python.marshmallow_code import *
 from multi_swe_bench.harness.repos.python.materialsproject import *
 from multi_swe_bench.harness.repos.python.matplotlib import *
 from multi_swe_bench.harness.repos.python.matrix_org import *
@@ -154,7 +155,6 @@ from multi_swe_bench.harness.repos.python.NCAS_CMS import *
 from multi_swe_bench.harness.repos.python.nedbat import *
 from multi_swe_bench.harness.repos.python.networktocode import *
 from multi_swe_bench.harness.repos.python.networkx import *
-from multi_swe_bench.harness.repos.python.NousResearch import *
 from multi_swe_bench.harness.repos.python.NeurodataWithoutBorders import *
 from multi_swe_bench.harness.repos.python.nextstrain import *
 from multi_swe_bench.harness.repos.python.nilearn import *
