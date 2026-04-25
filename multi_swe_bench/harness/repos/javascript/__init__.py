@@ -34,6 +34,7 @@ from multi_swe_bench.harness.repos.javascript.codeceptjs import *
 from multi_swe_bench.harness.repos.javascript.codemirror import *
 from multi_swe_bench.harness.repos.javascript.commercetools import *
 from multi_swe_bench.harness.repos.javascript.compasjs import *
+from multi_swe_bench.harness.repos.javascript.COVID_19_electronic_health_system import *
 from multi_swe_bench.harness.repos.javascript.CraveFood import *
 from multi_swe_bench.harness.repos.javascript.cuttle_cards import *
 from multi_swe_bench.harness.repos.javascript.CVEProject import *

@@ -133,6 +133,7 @@ from multi_swe_bench.harness.repos.typescript.tscircuit import *
 from multi_swe_bench.harness.repos.typescript.typeorm import *
 from multi_swe_bench.harness.repos.typescript.typescript_eslint import *
 from multi_swe_bench.harness.repos.typescript.TypeScriptToLua import *
+from multi_swe_bench.harness.repos.typescript.TypeStrong import *
 from multi_swe_bench.harness.repos.typescript.urql_graphql import *
 from multi_swe_bench.harness.repos.typescript.vega import *
 from multi_swe_bench.harness.repos.typescript.vendure_ecommerce import *
