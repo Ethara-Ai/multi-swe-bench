@@ -1,0 +1,185 @@
+import re
+from typing import Optional, Union
+
+from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.instance import Instance, TestResult
+from multi_swe_bench.harness.pull_request import PullRequest
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        return "rust:1.75"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def files(self) -> list[File]:
+        return [
+            File(
+                ".",
+                "fix.patch",
+                f"{self.pr.fix_patch}",
+            ),
+            File(
+                ".",
+                "test.patch",
+                f"{self.pr.test_patch}",
+            ),
+            File(
+                ".",
+                "prepare.sh",
+                """cd /home/{pr.repo}
+###ACTION_DELIMITER###
+git reset --hard
+###ACTION_DELIMITER###
+git checkout {pr.base.sha}
+###ACTION_DELIMITER###
+cargo test --tests || true""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "run.sh",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+cargo test --tests
+
+""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "test-run.sh",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+git apply /home/test.patch
+cargo test --tests
+
+""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "fix-run.sh",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+git apply /home/test.patch /home/fix.patch
+cargo test --tests
+
+""".format(pr=self.pr),
+            ),
+        ]
+
+    def dockerfile(self) -> str:
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
+
+        return """FROM rust:1.75
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y git
+
+WORKDIR /home/
+COPY fix.patch /home/
+COPY test.patch /home/
+RUN git clone https://github.com/{pr.org}/{pr.repo}.git /home/{pr.repo}
+
+WORKDIR /home/{pr.repo}
+RUN git reset --hard
+RUN git checkout {pr.base.sha}
+RUN cargo test --tests || true
+
+{copy_commands}
+""".format(pr=self.pr, copy_commands=copy_commands)
+
+
+@Instance.register("rust-ndarray", "ndarray_295_to_278")
+class Ndarray295To278(Instance):
+    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
+        super().__init__()
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    def dependency(self) -> Optional[Image]:
+        return ImageDefault(self.pr, self._config)
+
+    def run(self, run_cmd: str = "") -> str:
+        if run_cmd:
+            return run_cmd
+
+        return "bash /home/run.sh"
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+        if test_patch_run_cmd:
+            return test_patch_run_cmd
+
+        return "bash /home/test-run.sh"
+
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+        if fix_patch_run_cmd:
+            return fix_patch_run_cmd
+
+        return "bash /home/fix-run.sh"
+
+    def parse_log(self, test_log: str) -> TestResult:
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
+
+        re_pass_tests = [re.compile(r"test (\S+) ... ok")]
+        re_fail_tests = [re.compile(r"test (\S+) ... FAILED")]
+        re_skip_tests = [re.compile(r"test (\S+) ... ignored")]
+
+        for line in test_log.splitlines():
+            line = line.strip()
+
+            for re_pass in re_pass_tests:
+                match = re_pass.match(line)
+                if match:
+                    passed_tests.add(match.group(1))
+
+            for re_fail in re_fail_tests:
+                match = re_fail.match(line)
+                if match:
+                    failed_tests.add(match.group(1))
+
+            for re_skip in re_skip_tests:
+                match = re_skip.match(line)
+                if match:
+                    skipped_tests.add(match.group(1))
+
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
+        )
