@@ -32,8 +32,12 @@ from multi_swe_bench.harness.repos.rust.ratatui import *
 from multi_swe_bench.harness.repos.rust.rustls import *
 from multi_swe_bench.harness.repos.rust.async_graphql import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
+<<<<<<< Updated upstream
 <<<<<<< HEAD
 from multi_swe_bench.harness.repos.rust.tower_rs import *
 =======
 from multi_swe_bench.harness.repos.rust.bytecodealliance import *
 >>>>>>> 3860c968 (created registry for rust_lang)
+=======
+from multi_swe_bench.harness.repos.rust.FuelLabs import *
+>>>>>>> Stashed changes
