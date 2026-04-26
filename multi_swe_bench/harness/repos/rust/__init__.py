@@ -32,6 +32,10 @@ from multi_swe_bench.harness.repos.rust.ratatui import *
 from multi_swe_bench.harness.repos.rust.rustls import *
 from multi_swe_bench.harness.repos.rust.async_graphql import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
+<<<<<<< HEAD
 from multi_swe_bench.harness.repos.rust.tower_rs import *
 from multi_swe_bench.harness.repos.rust.bytecodealliance import *
 from multi_swe_bench.harness.repos.rust.FuelLabs import *
+=======
+from multi_swe_bench.harness.repos.rust.rust_ndarray import *
+>>>>>>> 6f469c80 (uploaded the updated rust global init file)
