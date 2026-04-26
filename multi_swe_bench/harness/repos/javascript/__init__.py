@@ -90,8 +90,11 @@ from multi_swe_bench.harness.repos.javascript.scratchfoundation import *
 from multi_swe_bench.harness.repos.javascript.Semantic_Org import *
 from multi_swe_bench.harness.repos.javascript.Seneca_CDOT import *
 from multi_swe_bench.harness.repos.javascript.serverless import *
+<<<<<<< HEAD
 from multi_swe_bench.harness.repos.javascript.serverless_operations import *
 from multi_swe_bench.harness.repos.javascript.sindresorhus import *
+=======
+>>>>>>> a1150819 (uploaded the updated javascript global init file)
 from multi_swe_bench.harness.repos.javascript.sinonjs import *
 from multi_swe_bench.harness.repos.javascript.stdlib_js import *
 from multi_swe_bench.harness.repos.javascript.sveltejs import *
