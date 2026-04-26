@@ -188,6 +188,20 @@ go test -v -count=1 ./...
 
 @Instance.register("gohugoio", "hugo")
 class Hugo(Instance):
+    # -vet=off: avoids go vet panics on older Hugo code (types.Object nil interface conversion)
+    # GOPATH fallback: pre-Go-modules Hugo PRs (before go.mod existed, PR <~5097) need GO111MODULE=off
+    _GO_TEST = (
+        "if [ -f go.mod ]; then "
+        "go test -vet=off -v -count=1 ./...; "
+        "else "
+        "export GOPATH=/go && "
+        "mkdir -p /go/src/github.com/gohugoio && "
+        "ln -sfn /home/hugo /go/src/github.com/gohugoio/hugo && "
+        "cd /go/src/github.com/gohugoio/hugo && "
+        "GO111MODULE=off go test -vet=off -v -count=1 ./...; "
+        "fi"
+    )
+
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -200,23 +214,56 @@ class Hugo(Instance):
     def dependency(self) -> Optional[Image]:
         return HugoImageDefault(self.pr, self._config)
 
-    def run(self, run_cmd: str = "") -> str:
+    def _wrap(self, cmd: str) -> list[str]:
+        """Wrap command for Docker SDK: returns ['bash', '-c', cmd] so shell builtins (cd) work."""
+        return ["bash", "-c", cmd]
+
+    def run(self, run_cmd: str = "") -> Union[str, list[str]]:
         if run_cmd:
             return run_cmd
+        return self._wrap(f"cd /home/hugo && {self._GO_TEST}")
 
-        return "bash /home/run.sh"
+    # Extract Go packages touched by both patches and run only those.
+    # test_patch alone often breaks compilation (references fix_patch APIs).
+    # Running per-package means: test stage → [setup failed] (NONE),
+    # fix stage → PASS → valid NONE→PASS transition detected.
+    _PKGS = (
+        "PKGS=$(cat /home/test.patch /home/fix.patch "
+        "| grep '^diff --git' | sed 's|diff --git a/.* b/||' "
+        "| xargs -I{} dirname {} | sort -u | sed 's|^|./|' | tr '\\n' ' ')"
+    )
 
-    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+    _GO_TEST_PKGS = (
+        "if [ -f go.mod ]; then "
+        "go test -vet=off -v -count=1 $PKGS; "
+        "else "
+        "export GOPATH=/go && "
+        "mkdir -p /go/src/github.com/gohugoio && "
+        "ln -sfn /home/hugo /go/src/github.com/gohugoio/hugo && "
+        "cd /go/src/github.com/gohugoio/hugo && "
+        "GO111MODULE=off go test -vet=off -v -count=1 $PKGS; "
+        "fi"
+    )
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> Union[str, list[str]]:
         if test_patch_run_cmd:
             return test_patch_run_cmd
+        return self._wrap(
+            f"cd /home/hugo && "
+            f"git apply /home/test.patch && "
+            f"{self._PKGS} && "
+            f"{self._GO_TEST_PKGS}"
+        )
 
-        return "bash /home/test-run.sh"
-
-    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> Union[str, list[str]]:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
-        return "bash /home/fix-run.sh"
+        return self._wrap(
+            f"cd /home/hugo && "
+            f"git apply /home/test.patch /home/fix.patch && "
+            f"{self._PKGS} && "
+            f"{self._GO_TEST_PKGS}"
+        )
 
     def parse_log(self, test_log: str) -> TestResult:
         passed_tests = set()
