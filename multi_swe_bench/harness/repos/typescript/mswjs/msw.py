@@ -38,6 +38,7 @@ class ImageBase18(Image):
 
     def dependency(self) -> Union[str, "Image"]:
         return "node:18"
+        return "node:22"
 
     def image_tag(self) -> str:
         return "base"
