@@ -6,7 +6,14 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class CoreImageBase(Image):
+# Era C (default): pnpm + vitest, node:20
+# pnpm-lock.yaml present, vitest (various versions)
+# Test output (vitest --reporter=verbose):
+#   ✓ filepath > suite > test name     — pass (U+2713)
+#   × filepath > suite > test name     — fail (U+00D7)
+
+
+class ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -47,7 +54,7 @@ class CoreImageBase(Image):
 
 WORKDIR /home/
 
-RUN apt update && apt install -y git 
+RUN apt update && apt install -y git
 RUN npm install -g pnpm
 
 {code}
@@ -57,7 +64,7 @@ RUN npm install -g pnpm
 """
 
 
-class CoreImageDefault(Image):
+class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -71,7 +78,7 @@ class CoreImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return CoreImageBase(self.pr, self.config)
+        return ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -124,7 +131,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-pnpm install || true
+pnpm install --no-frozen-lockfile || true
 
 """.format(pr=self.pr),
             ),
@@ -201,7 +208,7 @@ class Core(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return CoreImageDefault(self.pr, self._config)
+        return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -226,22 +233,23 @@ class Core(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_test = re.compile(r"^✓ (.+?)(?:\s*\d*\.?\d+\s*(?:ms|s|m))?$")
-        re_fail_test = re.compile(r"^× (.+?)(?:\s*\d*\.?\d+\s*(?:ms|s|m))?$")
+        # vitest --reporter=verbose: ✓ (U+2713) pass, × (U+00D7) fail
+        re_pass = re.compile(r"^\u2713 (.+?)(?:\s*\d*\.?\d+\s*(?:ms|s|m))?$")
+        re_fail = re.compile(r"^\u00d7 (.+?)(?:\s*\d*\.?\d+\s*(?:ms|s|m))?$")
 
         for line in test_log.splitlines():
             line = line.strip()
             if not line:
                 continue
 
-            pass_test_match = re_pass_test.match(line)
-            if pass_test_match:
-                test = pass_test_match.group(1)
+            pass_match = re_pass.match(line)
+            if pass_match:
+                test = pass_match.group(1)
                 passed_tests.add(test)
 
-            fail_test_match = re_fail_test.match(line)
-            if fail_test_match:
-                test = fail_test_match.group(1)
+            fail_match = re_fail.match(line)
+            if fail_match:
+                test = fail_match.group(1)
                 failed_tests.add(test)
 
         return TestResult(
