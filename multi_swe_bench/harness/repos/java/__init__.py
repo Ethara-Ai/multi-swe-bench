@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.java.reactor import *
 from multi_swe_bench.harness.repos.java.alibaba import *
 from multi_swe_bench.harness.repos.java.apache import *
 from multi_swe_bench.harness.repos.java.bazelbuild import *
