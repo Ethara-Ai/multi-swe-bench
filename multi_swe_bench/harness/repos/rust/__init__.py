@@ -56,3 +56,4 @@ from multi_swe_bench.harness.repos.rust.tower_rs import *
 from multi_swe_bench.harness.repos.rust.iced_rs import *
 from multi_swe_bench.harness.repos.rust.rustdesk import *
 from multi_swe_bench.harness.repos.rust.napi_rs import *
+from multi_swe_bench.harness.repos.rust.dandavison import *

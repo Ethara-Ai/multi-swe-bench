@@ -1,0 +1,206 @@
+from __future__ import annotations
+import re
+from typing import Optional, Union
+
+from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.instance import Instance, TestResult
+from multi_swe_bench.harness.pull_request import PullRequest
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        return "rust:1.86.0"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def files(self) -> list[File]:
+        return [
+            File(
+                ".",
+                "fix.patch",
+                f"{self.pr.fix_patch}",
+            ),
+            File(
+                ".",
+                "test.patch",
+                f"{self.pr.test_patch}",
+            ),
+            File(
+                ".",
+                "prepare.sh",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+
+# Pin home crate to avoid version requiring newer Rust
+cargo update home@0.5.12 --precise 0.5.11 2>/dev/null || true
+
+# Fix type ambiguity in de.rs for Rust 1.86+
+sed -i "s/env\\.as_ref()/env.as_str()/" src/cargo/util/config/de.rs 2>/dev/null || true
+
+cargo test || true
+
+""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "run.sh",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+cargo update home@0.5.12 --precise 0.5.11 2>/dev/null || true
+sed -i "s/env\\.as_ref()/env.as_str()/" src/cargo/util/config/de.rs 2>/dev/null || true
+cargo test
+
+""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "test-run.sh",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+cargo update home@0.5.12 --precise 0.5.11 2>/dev/null || true
+sed -i "s/env\\.as_ref()/env.as_str()/" src/cargo/util/config/de.rs 2>/dev/null || true
+git apply /home/test.patch
+cargo test
+
+""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "fix-run.sh",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+cargo update home@0.5.12 --precise 0.5.11 2>/dev/null || true
+sed -i "s/env\\.as_ref()/env.as_str()/" src/cargo/util/config/de.rs 2>/dev/null || true
+git apply /home/test.patch /home/fix.patch
+cargo test
+
+""".format(pr=self.pr),
+            ),
+        ]
+
+    def dockerfile(self) -> str:
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
+
+        dockerfile_content = """FROM rust:1.86.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y git
+
+WORKDIR /home/
+COPY fix.patch /home/
+COPY test.patch /home/
+RUN git clone https://github.com/{pr.org}/{pr.repo}.git /home/{pr.repo}
+
+WORKDIR /home/{pr.repo}
+RUN git reset --hard
+RUN git checkout {pr.base.sha}
+
+# Pin home crate to avoid version requiring newer Rust
+RUN cargo update home@0.5.12 --precise 0.5.11 2>/dev/null || true
+
+# Fix type ambiguity in de.rs for Rust 1.86+
+RUN sed -i "s/env\\.as_ref()/env.as_str()/" src/cargo/util/config/de.rs 2>/dev/null || true
+"""
+        dockerfile_content += f"""
+{copy_commands}
+"""
+        return dockerfile_content.format(pr=self.pr)
+
+
+@Instance.register("rust-lang", "cargo_7848_to_6772")
+class CARGO_7848_TO_6772(Instance):
+    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
+        super().__init__()
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    def dependency(self) -> Optional[Image]:
+        return ImageDefault(self.pr, self._config)
+
+    def run(self, run_cmd: str = "") -> str:
+        if run_cmd:
+            return run_cmd
+
+        return "bash /home/run.sh"
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+        if test_patch_run_cmd:
+            return test_patch_run_cmd
+
+        return "bash /home/test-run.sh"
+
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+        if fix_patch_run_cmd:
+            return fix_patch_run_cmd
+
+        return "bash /home/fix-run.sh"
+
+    def parse_log(self, test_log: str) -> TestResult:
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
+
+        re_pass_tests = [re.compile(r"test (\S+) ... ok")]
+        re_fail_tests = [re.compile(r"test (\S+) ... FAILED")]
+        re_skip_tests = [re.compile(r"test (\S+) ... ignored")]
+
+        for line in test_log.splitlines():
+            line = line.strip()
+
+            for re_pass in re_pass_tests:
+                match = re_pass.match(line)
+                if match:
+                    passed_tests.add(match.group(1))
+
+            for re_fail in re_fail_tests:
+                match = re_fail.match(line)
+                if match:
+                    failed_tests.add(match.group(1))
+
+            for re_skip in re_skip_tests:
+                match = re_skip.match(line)
+                if match:
+                    skipped_tests.add(match.group(1))
+
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
+        )
