@@ -4,7 +4,14 @@ from multi_swe_bench.harness.repos.python.pytest_dev.pytest_3642_to_2068 import 
 from multi_swe_bench.harness.repos.python.pytest_dev.pytest_6391_to_2619 import *
 from multi_swe_bench.harness.repos.python.pytest_dev.pytest_6234_to_5056 import *
 from multi_swe_bench.harness.repos.python.pytest_dev.pytest_8632_to_6311 import *
+from multi_swe_bench.harness.repos.python.pytest_dev.pytest_8632_to_8130 import *
 from multi_swe_bench.harness.repos.python.pytest_dev.pytest_7199_to_7199 import *
+from multi_swe_bench.harness.repos.python.pytest_dev.pytest_9056_to_9056 import *
+from multi_swe_bench.harness.repos.python.pytest_dev.pytest_9373_to_9373 import *
 from multi_swe_bench.harness.repos.python.pytest_dev.pytest_11546_to_9758 import *
+from multi_swe_bench.harness.repos.python.pytest_dev.pytest_11751_to_11751 import *
 from multi_swe_bench.harness.repos.python.pytest_dev.pytest_13533_to_11864 import *
+from multi_swe_bench.harness.repos.python.pytest_dev.pytest_13533_to_13469 import *
+from multi_swe_bench.harness.repos.python.pytest_dev.pytest_13694_to_13694 import *
 from multi_swe_bench.harness.repos.python.pytest_dev.pytest_13952_to_13878 import *
+from multi_swe_bench.harness.repos.python.pytest_dev.pytest_14366_to_14030 import *

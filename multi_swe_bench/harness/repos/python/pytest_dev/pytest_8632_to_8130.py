@@ -53,9 +53,11 @@ pip install tox
 ###ACTION_DELIMITER###
 python setup.py develop
 ###ACTION_DELIMITER###
-pip install --force-reinstall "attrs==19.1.0" "pluggy==0.13.1" "py==1.11.0" "six==1.17.0" "more-itertools==8.14.0" "atomicwrites==1.4.0" "importlib-metadata==3.7.3" "hypothesis==4.36.2" "xmlschema" "wcwidth==0.2.5" "packaging==20.9" "mock"
+pip install -e .
 ###ACTION_DELIMITER###
-echo 'python -m pytest -rA --tb=short -v testing/' > test_commands.sh
+pip install --force-reinstall "attrs==24.2.0" "iniconfig==2.0.0" "pluggy==0.12.0" "py==1.11.0" "importlib-metadata==3.7.3" "tomli==1.2.3" "exceptiongroup==1.3.0" "six==1.17.0" "more-itertools==8.14.0" "hypothesis==6.79.4" "xmlschema"
+###ACTION_DELIMITER###
+echo 'python -m pytest --no-header -rA --tb=short -v testing/' > test_commands.sh
 ###ACTION_DELIMITER###
 bash test_commands.sh""",
             ),
@@ -65,7 +67,7 @@ bash test_commands.sh""",
                 """#!/bin/bash
 set -eo pipefail
 cd /home/{pr.repo}
-python -m pytest -rA --tb=short -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -75,11 +77,13 @@ python -m pytest -rA --tb=short -v testing/
                 """#!/bin/bash
 set -eo pipefail
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
+if [ -s /home/test.patch ]; then
+    if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
+        echo "Error: git apply failed" >&2
+        exit 1
+    fi
 fi
-python -m pytest -rA --tb=short -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -89,11 +93,16 @@ python -m pytest -rA --tb=short -v testing/
                 """#!/bin/bash
 set -eo pipefail
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+PATCHES=""
+if [ -s /home/test.patch ]; then
+    PATCHES="/home/test.patch"
+fi
+PATCHES="$PATCHES /home/fix.patch"
+if ! git -C /home/{pr.repo} apply --whitespace=nowarn $PATCHES; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-python -m pytest -rA --tb=short -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -125,7 +134,8 @@ RUN git checkout {pr.base.sha}
 RUN pip install --upgrade pip setuptools
 RUN pip install tox
 RUN python setup.py develop || true
-RUN pip install --force-reinstall "attrs==19.1.0" "pluggy==0.13.1" "py==1.11.0" "six==1.17.0" "more-itertools==8.14.0" "atomicwrites==1.4.0" "importlib-metadata==3.7.3" "hypothesis==4.36.2" "xmlschema" "wcwidth==0.2.5" "packaging==20.9" "mock"
+RUN pip install -e . || true
+RUN pip install --force-reinstall "attrs==24.2.0" "iniconfig==2.0.0" "pluggy==0.12.0" "py==1.11.0" "importlib-metadata==3.7.3" "tomli==1.2.3" "exceptiongroup==1.3.0" "six==1.17.0" "more-itertools==8.14.0" "hypothesis==6.79.4" "xmlschema"
 
 RUN python -c "import pytest; print('pytest', pytest.__version__)" || echo "WARNING: pytest import check failed"
 """
@@ -138,8 +148,8 @@ CMD ["/bin/bash"]
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("pytest-dev", "pytest_6391_to_2619")
-class PYTEST_6391_TO_2619(Instance):
+@Instance.register("pytest-dev", "pytest_8632_to_8130")
+class PYTEST_8632_TO_8130(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

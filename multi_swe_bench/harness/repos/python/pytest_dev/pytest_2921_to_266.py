@@ -55,7 +55,9 @@ python setup.py develop
 ###ACTION_DELIMITER###
 pip install -e .
 ###ACTION_DELIMITER###
-echo 'python -m pytest -x -v testing/' > test_commands.sh
+pip install --force-reinstall "attrs==19.3.0" "iniconfig==2.0.0" "pluggy==0.7.1" "py==1.11.0" "importlib-metadata==3.7.3" "tomli==1.2.3" "exceptiongroup==1.3.0" "six==1.17.0" "more-itertools==8.14.0" "hypothesis==6.79.4" "xmlschema"
+###ACTION_DELIMITER###
+echo 'python -m pytest -rA --tb=short -v testing/' > test_commands.sh
 ###ACTION_DELIMITER###
 bash test_commands.sh""",
             ),
@@ -63,8 +65,9 @@ bash test_commands.sh""",
                 ".",
                 "run.sh",
                 """#!/bin/bash
+set -eo pipefail
 cd /home/{pr.repo}
-python -m pytest -x -v testing/
+python -m pytest -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -72,12 +75,13 @@ python -m pytest -x -v testing/
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
+set -eo pipefail
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-python -m pytest -x -v testing/
+python -m pytest -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -85,12 +89,13 @@ python -m pytest -x -v testing/
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
+set -eo pipefail
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-python -m pytest -x -v testing/
+python -m pytest -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -104,11 +109,10 @@ python -m pytest -x -v testing/
         dockerfile_content = """
 FROM python:3.7-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8
 
 RUN apt-get update && apt-get install -y git build-essential
-
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -117,10 +121,22 @@ RUN git clone https://github.com/pytest-dev/pytest.git /home/pytest
 
 WORKDIR /home/pytest
 RUN git reset --hard
+RUN git fetch origin {pr.base.sha} 2>/dev/null || git fetch --unshallow 2>/dev/null || true
 RUN git checkout {pr.base.sha}
+
+RUN pip install --upgrade pip setuptools
+RUN pip install tox
+RUN python setup.py develop || true
+RUN pip install -e . || true
+RUN pip install --force-reinstall "attrs==19.3.0" "iniconfig==2.0.0" "pluggy==0.7.1" "py==1.11.0" "importlib-metadata==3.7.3" "tomli==1.2.3" "exceptiongroup==1.3.0" "six==1.17.0" "more-itertools==8.14.0" "hypothesis==6.79.4" "xmlschema"
+
+RUN python -c "import pytest; print('pytest', pytest.__version__)" || echo "WARNING: pytest import check failed"
 """
         dockerfile_content += f"""
 {copy_commands}
+"""
+        dockerfile_content += """
+CMD ["/bin/bash"]
 """
         return dockerfile_content.format(pr=self.pr)
 
@@ -159,6 +175,9 @@ class PYTEST_2921_TO_266(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
+        # Strip ANSI escape codes before parsing
+        log = re.sub(r'\x1b\[[0-9;]*m', '', log)
+
         pattern = re.compile(
             r"^\s*(?:([^\s]+)\s+(PASSED|FAILED|SKIPPED)|(PASSED|FAILED|SKIPPED)\s+([^\s]+))(?:\s+\[.*?\])?\s*$",
             re.MULTILINE,
@@ -166,12 +185,18 @@ class PYTEST_2921_TO_266(Instance):
         for match in pattern.finditer(log):
             test_name = (match.group(1) or match.group(4)).strip()
             status = match.group(2) or match.group(3)
+            # Filter out inner subprocess test output — real tests start with "testing/"
+            if not test_name.startswith("testing/"):
+                continue
             if status == "PASSED":
                 passed_tests.add(test_name)
             elif status == "FAILED":
                 failed_tests.add(test_name)
             elif status == "SKIPPED":
                 skipped_tests.add(test_name)
+
+        # Deduplicate: if a test appears in both passed and failed, keep only failed
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

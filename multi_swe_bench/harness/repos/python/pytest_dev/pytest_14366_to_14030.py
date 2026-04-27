@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.7-slim"
+        return "python:3.10-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -51,11 +51,11 @@ class ImageDefault(Image):
 ###ACTION_DELIMITER###
 pip install tox
 ###ACTION_DELIMITER###
-python setup.py develop
+pip install -e .
 ###ACTION_DELIMITER###
-pip install --force-reinstall "attrs==19.1.0" "pluggy==0.13.1" "py==1.11.0" "six==1.17.0" "more-itertools==8.14.0" "atomicwrites==1.4.0" "importlib-metadata==3.7.3" "hypothesis==4.36.2" "xmlschema" "wcwidth==0.2.5" "packaging==20.9" "mock"
+pip install hypothesis xmlschema attrs
 ###ACTION_DELIMITER###
-echo 'python -m pytest -rA --tb=short -v testing/' > test_commands.sh
+echo 'python -m pytest --no-header -rA --tb=short -v testing/' > test_commands.sh
 ###ACTION_DELIMITER###
 bash test_commands.sh""",
             ),
@@ -65,7 +65,7 @@ bash test_commands.sh""",
                 """#!/bin/bash
 set -eo pipefail
 cd /home/{pr.repo}
-python -m pytest -rA --tb=short -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -79,7 +79,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-python -m pytest -rA --tb=short -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -93,7 +93,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix
     echo "Error: git apply failed" >&2
     exit 1
 fi
-python -m pytest -rA --tb=short -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -105,7 +105,7 @@ python -m pytest -rA --tb=short -v testing/
             copy_commands += f"COPY {file.name} /home/\n"
 
         dockerfile_content = """
-FROM python:3.7-slim
+FROM python:3.10-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8
@@ -122,10 +122,18 @@ RUN git reset --hard
 RUN git fetch origin {pr.base.sha} 2>/dev/null || git fetch --unshallow 2>/dev/null || true
 RUN git checkout {pr.base.sha}
 
-RUN pip install --upgrade pip setuptools
-RUN pip install tox
-RUN python setup.py develop || true
-RUN pip install --force-reinstall "attrs==19.1.0" "pluggy==0.13.1" "py==1.11.0" "six==1.17.0" "more-itertools==8.14.0" "atomicwrites==1.4.0" "importlib-metadata==3.7.3" "hypothesis==4.36.2" "xmlschema" "wcwidth==0.2.5" "packaging==20.9" "mock"
+RUN pip install --upgrade pip setuptools wheel
+RUN pip install "setuptools-scm[toml]>=6.2.3"
+RUN pip install tox virtualenv
+
+ENV VIRTUALENV_CREATE=false
+
+RUN pip install -e ".[testing]" || pip install -e .
+RUN pip install --no-cache-dir hypothesis pytest-json-report xmlschema attrs
+
+RUN pip install --no-cache-dir pytest-json-report \\
+    && printf '#!/bin/bash\\nexec python -m pytest "$@"\\n' > /usr/local/bin/pytest \\
+    && chmod +x /usr/local/bin/pytest
 
 RUN python -c "import pytest; print('pytest', pytest.__version__)" || echo "WARNING: pytest import check failed"
 """
@@ -138,8 +146,8 @@ CMD ["/bin/bash"]
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("pytest-dev", "pytest_6391_to_2619")
-class PYTEST_6391_TO_2619(Instance):
+@Instance.register("pytest-dev", "pytest_14366_to_14030")
+class PYTEST_14366_TO_14030(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

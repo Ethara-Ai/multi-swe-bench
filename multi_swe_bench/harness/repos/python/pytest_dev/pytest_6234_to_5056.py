@@ -55,7 +55,7 @@ python setup.py develop
 ###ACTION_DELIMITER###
 pip install -e .
 ###ACTION_DELIMITER###
-echo 'python -m pytest -x -v testing/' > test_commands.sh
+echo 'python -m pytest --no-header -rA --tb=short -v testing/' > test_commands.sh
 ###ACTION_DELIMITER###
 bash test_commands.sh""",
             ),
@@ -64,7 +64,7 @@ bash test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-python -m pytest -x -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -77,7 +77,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-python -m pytest -x -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),
@@ -90,7 +90,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix
     echo "Error: git apply failed" >&2
     exit 1
 fi
-python -m pytest -x -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
 """.format(pr=self.pr),
             ),

@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.7-slim"
+        return "ubuntu:22.04"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -47,15 +47,15 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """pip install --upgrade pip setuptools
+                """python -m pip install --upgrade pip setuptools
 ###ACTION_DELIMITER###
-pip install tox
+python -m pip install tox
 ###ACTION_DELIMITER###
-python setup.py develop
+python setup.py develop || true
 ###ACTION_DELIMITER###
-pip install --force-reinstall "attrs==19.1.0" "pluggy==0.13.1" "py==1.11.0" "six==1.17.0" "more-itertools==8.14.0" "atomicwrites==1.4.0" "importlib-metadata==3.7.3" "hypothesis==4.36.2" "xmlschema" "wcwidth==0.2.5" "packaging==20.9" "mock"
+python -m pip install -e .
 ###ACTION_DELIMITER###
-echo 'python -m pytest -rA --tb=short -v testing/' > test_commands.sh
+echo 'python -m pytest --no-header -rA --tb=short -v testing/' > test_commands.sh
 ###ACTION_DELIMITER###
 bash test_commands.sh""",
             ),
@@ -63,39 +63,36 @@ bash test_commands.sh""",
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -eo pipefail
-cd /home/{pr.repo}
-python -m pytest -rA --tb=short -v testing/
+cd /home/pytest
+python -m pytest --no-header -rA --tb=short -v testing/
 
-""".format(pr=self.pr),
+""",
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -eo pipefail
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
+cd /home/pytest
+if ! git -C /home/pytest apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-python -m pytest -rA --tb=short -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
-""".format(pr=self.pr),
+""",
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -eo pipefail
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+cd /home/pytest
+if ! git -C /home/pytest apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-python -m pytest -rA --tb=short -v testing/
+python -m pytest --no-header -rA --tb=short -v testing/
 
-""".format(pr=self.pr),
+""",
             ),
         ]
 
@@ -105,12 +102,43 @@ python -m pytest -rA --tb=short -v testing/
             copy_commands += f"COPY {file.name} /home/\n"
 
         dockerfile_content = """
-FROM python:3.7-slim
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8
 
-RUN apt-get update && apt-get install -y git build-essential
+# System packages + Python 3.5 via deadsnakes PPA
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    git \\
+    build-essential \\
+    curl \\
+    software-properties-common \\
+    gnupg \\
+    && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys F23C5A6CF475977595C89F51BA6932366A755776 \\
+    && add-apt-repository ppa:deadsnakes/ppa \\
+    && apt-get update \\
+    && apt-get install -y --no-install-recommends \\
+    python3.5 \\
+    python3.5-dev \\
+    python3.5-distutils \\
+    && rm -rf /var/lib/apt/lists/*
+
+# Set python3.5 as default python/python3
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.5 1 && \\
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.5 1
+
+# Install pip into python3.5 system-wide
+RUN curl -sS https://bootstrap.pypa.io/pip/3.5/get-pip.py | python3.5
+
+# Verify python and pip both point to 3.5
+RUN python --version && python -m pip --version
+
+# CA cert symlinks for broad SSL compatibility
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -122,12 +150,11 @@ RUN git reset --hard
 RUN git fetch origin {pr.base.sha} 2>/dev/null || git fetch --unshallow 2>/dev/null || true
 RUN git checkout {pr.base.sha}
 
-RUN pip install --upgrade pip setuptools
-RUN pip install tox
+# Baked-in prepare.sh steps
+RUN python -m pip install --upgrade pip setuptools
+RUN python -m pip install tox
 RUN python setup.py develop || true
-RUN pip install --force-reinstall "attrs==19.1.0" "pluggy==0.13.1" "py==1.11.0" "six==1.17.0" "more-itertools==8.14.0" "atomicwrites==1.4.0" "importlib-metadata==3.7.3" "hypothesis==4.36.2" "xmlschema" "wcwidth==0.2.5" "packaging==20.9" "mock"
-
-RUN python -c "import pytest; print('pytest', pytest.__version__)" || echo "WARNING: pytest import check failed"
+RUN python -m pip install -e .
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -138,8 +165,8 @@ CMD ["/bin/bash"]
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("pytest-dev", "pytest_6391_to_2619")
-class PYTEST_6391_TO_2619(Instance):
+@Instance.register("pytest-dev", "pytest_9373_to_9373")
+class PYTEST_9373_TO_9373(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -172,9 +199,6 @@ class PYTEST_6391_TO_2619(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Strip ANSI escape codes before parsing
-        log = re.sub(r'\x1b\[[0-9;]*m', '', log)
-
         pattern = re.compile(
             r"^\s*(?:([^\s]+)\s+(PASSED|FAILED|SKIPPED)|(PASSED|FAILED|SKIPPED)\s+([^\s]+))(?:\s+\[.*?\])?\s*$",
             re.MULTILINE,
@@ -182,18 +206,12 @@ class PYTEST_6391_TO_2619(Instance):
         for match in pattern.finditer(log):
             test_name = (match.group(1) or match.group(4)).strip()
             status = match.group(2) or match.group(3)
-            # Filter out inner subprocess test output — real tests start with "testing/"
-            if not test_name.startswith("testing/"):
-                continue
             if status == "PASSED":
                 passed_tests.add(test_name)
             elif status == "FAILED":
                 failed_tests.add(test_name)
             elif status == "SKIPPED":
                 skipped_tests.add(test_name)
-
-        # Deduplicate: if a test appears in both passed and failed, keep only failed
-        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
