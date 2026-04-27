@@ -65,10 +65,7 @@ from multi_swe_bench.harness.repos.golang.argoproj import *
 from multi_swe_bench.harness.repos.golang.cockroachdb import *
 from multi_swe_bench.harness.repos.golang.jaegertracing import *
 from multi_swe_bench.harness.repos.golang.hashicorp import *
-<<<<<<< HEAD
 from multi_swe_bench.harness.repos.golang.envoyproxy import *
 from multi_swe_bench.harness.repos.golang.ory import *
 from multi_swe_bench.harness.repos.golang.go_task import *
-=======
 from multi_swe_bench.harness.repos.golang.adguardteam import *
->>>>>>> 875ea4f3 (uploaded the updated golang global init file)
