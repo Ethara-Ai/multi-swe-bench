@@ -32,6 +32,7 @@ from multi_swe_bench.harness.repos.rust.ratatui import *
 from multi_swe_bench.harness.repos.rust.rustls import *
 from multi_swe_bench.harness.repos.rust.async_graphql import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
+<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.rust.tower_rs import *
 from multi_swe_bench.harness.repos.rust.bytecodealliance import *
 from multi_swe_bench.harness.repos.rust.FuelLabs import *
@@ -41,3 +42,6 @@ from multi_swe_bench.harness.repos.rust.servo import *
 from multi_swe_bench.harness.repos.rust.typst import *
 from multi_swe_bench.harness.repos.rust.yewstack import *
 from multi_swe_bench.harness.repos.rust.PyO3 import *
+=======
+from multi_swe_bench.harness.repos.rust.uutils import *
+>>>>>>> Stashed changes
