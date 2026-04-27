@@ -37,6 +37,7 @@ from multi_swe_bench.harness.repos.rust.bytecodealliance import *
 from multi_swe_bench.harness.repos.rust.FuelLabs import *
 from multi_swe_bench.harness.repos.rust.rust_ndarray import *
 from multi_swe_bench.harness.repos.rust.servo import *
-from multi_swe_bench.harness.repos.rust.swc_project import *
+#from multi_swe_bench.harness.repos.rust.swc_project import * #could not find registry 
 from multi_swe_bench.harness.repos.rust.typst import *
 from multi_swe_bench.harness.repos.rust.yewstack import *
+from multi_swe_bench.harness.repos.rust.PyO3 import *
