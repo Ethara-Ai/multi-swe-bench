@@ -69,3 +69,4 @@ from multi_swe_bench.harness.repos.golang.envoyproxy import *
 from multi_swe_bench.harness.repos.golang.ory import *
 from multi_swe_bench.harness.repos.golang.go_task import *
 from multi_swe_bench.harness.repos.golang.adguardteam import *
+from multi_swe_bench.harness.repos.golang.go_playground import *
