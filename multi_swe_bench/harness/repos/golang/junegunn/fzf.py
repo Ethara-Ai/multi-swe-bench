@@ -6,6 +6,44 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+def _extract_ruby_test_info(test_patch: str) -> dict[str, list[str]]:
+    """Extract test methods per Ruby file from a patch.
+
+    Returns dict mapping ruby filename to list of test method names.
+    Handles split-file structure (test_core.rb, test_layout.rb, etc.)
+    """
+    file_methods: dict[str, list[str]] = {}
+    current_file = ""
+    current_methods: set[str] = set()
+    in_ruby_file = False
+
+    for line in test_patch.split("\n"):
+        if line.startswith("diff --git"):
+            if in_ruby_file and current_methods:
+                file_methods[current_file] = sorted(current_methods)
+            in_ruby_file = line.endswith(".rb")
+            if in_ruby_file:
+                parts = line.split(" b/")
+                current_file = parts[-1] if len(parts) > 1 else ""
+                current_methods = set()
+            continue
+        if not in_ruby_file:
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            m = re.search(r"def (test_\w+)", line)
+            if m:
+                current_methods.add(m.group(1))
+        if line.startswith("@@"):
+            m = re.search(r"def (test_\w+)", line)
+            if m:
+                current_methods.add(m.group(1))
+
+    if in_ruby_file and current_methods:
+        file_methods[current_file] = sorted(current_methods)
+
+    return file_methods
+
+
 class FzfImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -20,7 +58,7 @@ class FzfImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+        return "golang:1.24"
 
     def image_tag(self) -> str:
         return "base"
@@ -42,6 +80,14 @@ class FzfImageBase(Image):
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         return f"""FROM {image_name}
+
+RUN apt-get update && apt-get install -y --no-install-recommends ruby ruby-dev build-essential tmux locales && \
+    sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+ENV TERM=xterm
 
 {self.global_env}
 
@@ -77,6 +123,36 @@ class FzfImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        ruby_info = _extract_ruby_test_info(self.pr.test_patch)
+        ruby_run = ""
+        bundle_setup = ""
+        if ruby_info:
+            has_split = any(
+                f != "test/test_go.rb" for f in ruby_info
+            )
+            if has_split:
+                bundle_setup = 'if [ -f Gemfile ]; then gem install bundler && bundle install; fi\n'
+            lines = [
+                f'cd /home/{self.pr.repo}',
+                'mkdir -p bin',
+                f'go build -o bin/fzf .',
+                'export PATH=$PWD/bin:$PATH',
+                'tmux new-session -d -s main 2>/dev/null || true',
+            ]
+            for ruby_file, methods in ruby_info.items():
+                pattern = "|".join(methods)
+                class_name = "TestGoFZF"
+                if "test_core" in ruby_file:
+                    class_name = "TestCore"
+                elif "test_layout" in ruby_file:
+                    class_name = "TestLayout"
+                elif "test_shell_integration" in ruby_file:
+                    class_name = "TestBash"
+                lines.append(
+                    f'ruby {ruby_file} --verbose --name "/^{class_name}#({pattern})$/" || true'
+                )
+            ruby_run = "\n".join(lines) + "\n"
+
         return [
             File(
                 ".",
@@ -121,9 +197,9 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-go test -v -count=1 ./... || true
+{bundle_setup}go test -v -count=1 ./... || true
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, bundle_setup=bundle_setup),
             ),
             File(
                 ".",
@@ -133,8 +209,8 @@ set -e
 
 cd /home/{pr.repo}
 go test -v -count=1 ./...
-
-""".format(pr=self.pr),
+{ruby_run}
+""".format(pr=self.pr, ruby_run=ruby_run),
             ),
             File(
                 ".",
@@ -145,8 +221,8 @@ set -e
 cd /home/{pr.repo}
 git apply /home/test.patch
 go test -v -count=1 ./...
-
-""".format(pr=self.pr),
+{ruby_run}
+""".format(pr=self.pr, ruby_run=ruby_run),
             ),
             File(
                 ".",
@@ -157,8 +233,8 @@ set -e
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
 go test -v -count=1 ./...
-
-""".format(pr=self.pr),
+{ruby_run}
+""".format(pr=self.pr, ruby_run=ruby_run),
             ),
         ]
 
@@ -230,6 +306,14 @@ class Fzf(Instance):
         ]
         re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
 
+        # Ruby minitest verbose format:
+        #   PASS: "TestGoFZF#test_name = 0.15 s = ."
+        #   FAIL summary: "TestGoFZF#test_name [test/test_go.rb:123]:" (after "N) Failure:")
+        #   ERROR summary: "TestGoFZF#test_name [test/test_go.rb:123]:" (after "N) Error:")
+        re_ruby_pass = re.compile(r"(\S+#test_\w+) = .* = \.")
+        re_ruby_fail = re.compile(r"(\S+#test_\w+) \[.+:\d+\]:")
+        re_ruby_error = re.compile(r"^(\S+#test_\w+):$")
+
         def get_base_name(test_name: str) -> str:
             return test_name
 
@@ -260,11 +344,26 @@ class Fzf(Instance):
                 skip_match = re_skip_test.match(line)
                 if skip_match:
                     test_name = skip_match.group(1)
-                    if test_name in passed_tests:
-                        continue
-                    if test_name not in failed_tests:
-                        continue
-                    skipped_tests.add(get_base_name(test_name))
+                    if test_name not in passed_tests and test_name not in failed_tests:
+                        skipped_tests.add(get_base_name(test_name))
+
+            m = re_ruby_pass.match(line)
+            if m:
+                name = m.group(1)
+                if name not in failed_tests:
+                    passed_tests.add(name)
+
+            m = re_ruby_fail.match(line)
+            if m:
+                name = m.group(1)
+                passed_tests.discard(name)
+                failed_tests.add(name)
+
+            m = re_ruby_error.match(line)
+            if m:
+                name = m.group(1)
+                passed_tests.discard(name)
+                failed_tests.add(name)
 
         return TestResult(
             passed_count=len(passed_tests),

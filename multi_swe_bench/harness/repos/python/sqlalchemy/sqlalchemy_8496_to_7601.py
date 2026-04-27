@@ -167,6 +167,14 @@ RUN git clone https://github.com/sqlalchemy/sqlalchemy.git /home/sqlalchemy
 WORKDIR /home/sqlalchemy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install dependencies for human_mode=True (no prepare.sh replay)
+RUN apt-get update && apt-get install -y python3 python3-pip python3-venv python3.12-venv build-essential python3-dev
+RUN python3 -m venv venv
+RUN ./venv/bin/pip install cython
+RUN ./venv/bin/pip install -e .
+RUN ./venv/bin/pip install 'pytest>=7.0.0rc1,<8' pytest-xdist
+RUN ./venv/bin/pip install -e ".[mypy]" || true
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -212,6 +220,7 @@ class SQLALCHEMY_8496_TO_7601(Instance):
         failed_tests: set[str] = set()  # Tests that failed
         skipped_tests: set[str] = set()  # Tests that were skipped
         import re
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
         # Parse the log content using regex
         pattern = re.compile(r"""(PASSED|FAILED|SKIPPED).*?(test/.*?)(?=\s|\()""")
@@ -228,6 +237,8 @@ class SQLALCHEMY_8496_TO_7601(Instance):
             "failed_tests": failed_tests,
             "skipped_tests": skipped_tests,
         }
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

@@ -137,6 +137,10 @@ RUN git clone https://github.com/sqlalchemy/sqlalchemy.git /home/sqlalchemy
 WORKDIR /home/sqlalchemy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install dependencies for human_mode=True (no prepare.sh replay)
+RUN pip install 'pytest>=7.0.0,<8.2' 'pytest-xdist!=3.3.0' && pip install .
+RUN pip install mypy types-greenlet
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -182,6 +186,7 @@ class SQLALCHEMY_11942_TO_8496(Instance):
         failed_tests = set()  # Tests that failed
         skipped_tests = set()  # Tests that were skipped
         import re
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
         # Implement the log parsing logic here
         # Regex pattern to match test status and name (handles SKIPPED in quotes and direct matches)
@@ -200,6 +205,8 @@ class SQLALCHEMY_11942_TO_8496(Instance):
             "failed_tests": failed_tests,
             "skipped_tests": skipped_tests,
         }
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

@@ -5,11 +5,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_GO_IMAGE = "golang:1.24"
-_TAG_SUFFIX = "default"
 
-
-class PipelineImageBase(Image):
+class ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -23,13 +20,13 @@ class PipelineImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return _GO_IMAGE
+        return "node:16-bookworm"
 
     def image_tag(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -40,23 +37,16 @@ class PipelineImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         return f"""FROM {image_name}
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GOTOOLCHAIN=auto
-
-RUN apt-get update && apt-get install -y git
-
 {self.global_env}
 
 WORKDIR /home/
+RUN apt update && apt install -y git jq
 
 {code}
 
@@ -65,7 +55,7 @@ WORKDIR /home/
 """
 
 
-class PipelineImageDefault(Image):
+class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -78,8 +68,8 @@ class PipelineImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Optional[Image]:
-        return PipelineImageBase(self.pr, self.config)
+    def dependency(self) -> Image | None:
+        return ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -131,8 +121,7 @@ git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
-
-go test -v -count=1 -mod=vendor ./... || true
+yarn install --frozen-lockfile || true
 
 """.format(pr=self.pr),
             ),
@@ -140,10 +129,12 @@ go test -v -count=1 -mod=vendor ./... || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+export CI=true
 cd /home/{pr.repo}
-go test -v -count=1 -mod=vendor ./...
+yarn build || true
+npx jest --verbose --testPathPattern='packages/'
 
 """.format(pr=self.pr),
             ),
@@ -151,11 +142,13 @@ go test -v -count=1 -mod=vendor ./...
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+export CI=true
 cd /home/{pr.repo}
-git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v -count=1 -mod=vendor ./...
+git apply --whitespace=nowarn /home/test.patch || true
+yarn build || true
+npx jest --verbose --testPathPattern='packages/'
 
 """.format(pr=self.pr),
             ),
@@ -163,11 +156,13 @@ go test -v -count=1 -mod=vendor ./...
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+export CI=true
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v -count=1 -mod=vendor ./...
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch || true
+yarn build || true
+npx jest --verbose --testPathPattern='packages/'
 
 """.format(pr=self.pr),
             ),
@@ -197,8 +192,8 @@ go test -v -count=1 -mod=vendor ./...
 """
 
 
-@Instance.register("tektoncd", "pipeline")
-class Pipeline(Instance):
+@Instance.register("remix-run", "remix")
+class Remix(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -209,7 +204,7 @@ class Pipeline(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return PipelineImageDefault(self.pr, self._config)
+        return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -234,48 +229,29 @@ class Pipeline(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
-        re_fail_tests = [
-            re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"FAIL:?\s?(.+?)\s"),
-        ]
-        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
+        # Strip ANSI escape codes first
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        def get_base_name(test_name: str) -> str:
-            return test_name
+        re_pass_suite = re.compile(r"^PASS (.+?)(?:\s\(\d*\.?\d+\s*\w+\))?$")
+        re_fail_suite = re.compile(r"^FAIL (.+?)(?:\s\(\d*\.?\d+\s*\w+\))?$")
 
         for line in test_log.splitlines():
             line = line.strip()
+            if not line:
+                continue
 
-            for re_pass_test in re_pass_tests:
-                pass_match = re_pass_test.match(line)
-                if pass_match:
-                    test_name = pass_match.group(1)
-                    if test_name in failed_tests:
-                        continue
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    passed_tests.add(get_base_name(test_name))
+            pass_match = re_pass_suite.match(line)
+            if pass_match:
+                current_suite = pass_match.group(1)
+                passed_tests.add(current_suite)
 
-            for re_fail_test in re_fail_tests:
-                fail_match = re_fail_test.match(line)
-                if fail_match:
-                    test_name = fail_match.group(1)
-                    if test_name in passed_tests:
-                        passed_tests.remove(test_name)
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    failed_tests.add(get_base_name(test_name))
+            fail_match = re_fail_suite.match(line)
+            if fail_match:
+                current_suite = fail_match.group(1)
+                failed_tests.add(current_suite)
 
-            for re_skip_test in re_skip_tests:
-                skip_match = re_skip_test.match(line)
-                if skip_match:
-                    test_name = skip_match.group(1)
-                    if test_name in passed_tests:
-                        continue
-                    if test_name not in failed_tests:
-                        continue
-                    skipped_tests.add(get_base_name(test_name))
+        # Deduplicate: a suite that failed takes precedence over passed
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

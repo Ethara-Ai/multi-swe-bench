@@ -155,8 +155,8 @@ RUN pip install "pytest>=7.0.0rc1,<8" pytest-xdist greenlet
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("sqlalchemy", "sqlalchemy_7601_to_7443")
-class SQLALCHEMY_7601_TO_7443(Instance):
+@Instance.register("sqlalchemy", "sqlalchemy_7443_to_7381")
+class SQLALCHEMY_7443_TO_7381(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

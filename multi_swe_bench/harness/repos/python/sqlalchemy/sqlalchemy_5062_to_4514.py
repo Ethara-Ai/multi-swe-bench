@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.9-slim"
+        return "ubuntu:latest"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -47,40 +47,27 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """grep -A 5 'extras_require' setup.py
+                """apt-get update && apt-get install -y software-properties-common && add-apt-repository -y ppa:deadsnakes/ppa && apt-get update && apt-get install -y python3.8 python3.8-venv python3.8-dev build-essential pkg-config libpq-dev default-libmysqlclient-dev unixodbc-dev libsqlite3-dev
 ###ACTION_DELIMITER###
-ls
+rm -rf venv && python3.8 -m venv venv
 ###ACTION_DELIMITER###
-grep -A 5 'extras_require' setup.cfg
+./venv/bin/pip install --upgrade pip
 ###ACTION_DELIMITER###
-cat README.unittests.rst
+./venv/bin/pip install -e . pytest==4.6.11 pytest-xdist==1.34.0 mock
 ###ACTION_DELIMITER###
-cat setup.py
-###ACTION_DELIMITER###
-cat tox.ini
-###ACTION_DELIMITER###
-apt-get update
-###ACTION_DELIMITER###
-cat pyproject.toml
-###ACTION_DELIMITER###
-pip install pytest>=7.0.0rc1,<8 pytest-xdist
-###ACTION_DELIMITER###
-pip install "pytest>=7.0.0rc1,<8" pytest-xdist
-###ACTION_DELIMITER###
-echo 'python -m pytest -v --rootdir . --log-info=sqlalchemy.testing -n4 ./test' > test_commands.sh
+echo './venv/bin/pytest -v -W ignore::DeprecationWarning -n4 --max-worker-restart=5 test/' > test_commands.sh
 ###ACTION_DELIMITER###
 bash test_commands.sh
 ###ACTION_DELIMITER###
-pip install greenlet
-###ACTION_DELIMITER###
-bash test_commands.sh""",
+""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-python -m pytest -v --rootdir . --log-info=sqlalchemy.testing -n4 ./test
+./venv/bin/pip install pytest==4.6.11 pytest-xdist==1.34.0 2>/dev/null
+./venv/bin/pytest -v -W ignore::DeprecationWarning -n4 --max-worker-restart=5 test/
 
 """.format(pr=self.pr),
             ),
@@ -89,11 +76,12 @@ python -m pytest -v --rootdir . --log-info=sqlalchemy.testing -n4 ./test
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
+./venv/bin/pip install pytest==4.6.11 pytest-xdist==1.34.0 2>/dev/null
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-python -m pytest -v --rootdir . --log-info=sqlalchemy.testing -n4 ./test
+./venv/bin/pytest -v -W ignore::DeprecationWarning -n4 --max-worker-restart=5 test/
 
 """.format(pr=self.pr),
             ),
@@ -102,11 +90,12 @@ python -m pytest -v --rootdir . --log-info=sqlalchemy.testing -n4 ./test
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
+./venv/bin/pip install pytest==4.6.11 pytest-xdist==1.34.0 2>/dev/null
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-python -m pytest -v --rootdir . --log-info=sqlalchemy.testing -n4 ./test
+./venv/bin/pytest -v -W ignore::DeprecationWarning -n4 --max-worker-restart=5 test/
 
 """.format(pr=self.pr),
             ),
@@ -121,9 +110,9 @@ python -m pytest -v --rootdir . --log-info=sqlalchemy.testing -n4 ./test
 # This is a template for creating a Dockerfile to test patches
 # LLM should fill in the appropriate values based on the context
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
+# Choose an appropriate base image based on the project's requirements - replace ubuntu:latest with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
+FROM ubuntu:latest
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -147,7 +136,10 @@ RUN git reset --hard
 RUN git checkout {pr.base.sha}
 
 # Install dependencies for human_mode=True (no prepare.sh replay)
-RUN pip install "pytest>=7.0.0rc1,<8" pytest-xdist greenlet
+RUN apt-get update && apt-get install -y software-properties-common && add-apt-repository -y ppa:deadsnakes/ppa && apt-get update && apt-get install -y python3.8 python3.8-venv python3.8-dev build-essential pkg-config libpq-dev default-libmysqlclient-dev unixodbc-dev libsqlite3-dev
+RUN python3.8 -m venv venv
+RUN ./venv/bin/pip install --upgrade pip
+RUN ./venv/bin/pip install -e . pytest==4.6.11 pytest-xdist==1.34.0 mock
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -155,8 +147,8 @@ RUN pip install "pytest>=7.0.0rc1,<8" pytest-xdist greenlet
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("sqlalchemy", "sqlalchemy_7601_to_7443")
-class SQLALCHEMY_7601_TO_7443(Instance):
+@Instance.register("sqlalchemy", "sqlalchemy_5062_to_4514")
+class SQLALCHEMY_5062_TO_4514(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -189,35 +181,25 @@ class SQLALCHEMY_7601_TO_7443(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.
-        passed_tests: set[str] = set()  # Tests that passed successfully
-        failed_tests: set[str] = set()  # Tests that failed
-        skipped_tests: set[str] = set()  # Tests that were skipped
+        passed_tests = set[str]()  # Tests that passed successfully
+        failed_tests = set[str]()  # Tests that failed
+        skipped_tests = set[str]()  # Tests that were skipped
         import re
+        import json
         log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
-        # Implement the log parsing logic here
-        # Pattern for passed tests (matches PASSED followed by test path)
-        passed_pattern = re.compile(r"PASSED\s+(test/[^ \n]+)", re.MULTILINE)
-        passed_tests.update(passed_pattern.findall(log))
-        # Pattern for failed tests (matches FAILED followed by test path)
-        failed_pattern = re.compile(
-            r"(?:\[\s*\d+\]\s*)?(?:\[gw\d+\]\s*\[\s*\d+%\]\s*)?FAILED\s+(test/[^ \n]+)",
-            re.MULTILINE,
-        )
-        failed_tests.update(failed_pattern.findall(log))
-        # Patterns for skipped tests (handles worker logs and summary logs)
-        skipped_pattern1 = re.compile(
-            r"(?:\[\s*\d+\]\s*)?\[gw\d+\]\s*\[\s*\d+%\]\s*SKIPPED\s+([^ \n]+)",
-            re.MULTILINE,
-        )
-        skipped_pattern2 = re.compile(r"SKIPPED \[\d+\] .*?: '(.*?)'")
-        skipped_matches = skipped_pattern1.findall(log) + skipped_pattern2.findall(log)
-        # Clean up (call) from skipped tests
-        cleaned_skipped = []
-        for test in skipped_matches:
-            cleaned = re.sub(r"\s*\(call\)$", "", test)
-            cleaned_skipped.append(cleaned)
-        skipped_tests.update(cleaned_skipped)
+        # Parse passed tests
+        passed_pattern = r"PASSED (test/.*?)(?=\s|$)"
+        passed_matches = re.findall(passed_pattern, log)
+        passed_tests.update(passed_matches)
+        # Parse failed tests
+        failed_pattern = r"FAILED (test/.*?)(?=\s|$)"
+        failed_matches = re.findall(failed_pattern, log)
+        failed_tests.update(failed_matches)
+        # Parse skipped tests
+        skipped_pattern = r"SKIPPED.*?: '(.*?)'"
+        skipped_matches = re.findall(skipped_pattern, log)
+        skipped_tests.update(skipped_matches)
         parsed_results = {
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,

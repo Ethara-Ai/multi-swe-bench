@@ -5,11 +5,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_GO_IMAGE = "golang:1.24"
-_TAG_SUFFIX = "default"
 
-
-class PipelineImageBase(Image):
+class NtfyImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -23,13 +20,13 @@ class PipelineImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return _GO_IMAGE
+        return "golang:latest"
 
     def image_tag(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -40,21 +37,15 @@ class PipelineImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         return f"""FROM {image_name}
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GOTOOLCHAIN=auto
-
-RUN apt-get update && apt-get install -y git
-
 {self.global_env}
+
+RUN apt-get update && apt-get install -y gcc && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/
 
@@ -65,7 +56,7 @@ WORKDIR /home/
 """
 
 
-class PipelineImageDefault(Image):
+class NtfyImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -78,8 +69,8 @@ class PipelineImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Optional[Image]:
-        return PipelineImageBase(self.pr, self.config)
+    def dependency(self) -> Image | None:
+        return NtfyImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -132,7 +123,15 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-go test -v -count=1 -mod=vendor ./... || true
+mkdir -p server/site server/docs server/templates
+touch server/site/placeholder server/docs/placeholder
+
+PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$') || true
+if [ -z "$PKGS" ]; then
+    PKGS="./..."
+fi
+
+CGO_ENABLED=1 go test -v -count=1 -timeout 10m $PKGS || true
 
 """.format(pr=self.pr),
             ),
@@ -140,10 +139,17 @@ go test -v -count=1 -mod=vendor ./... || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
-go test -v -count=1 -mod=vendor ./...
+mkdir -p server/site server/docs server/templates
+touch server/site/placeholder server/docs/placeholder
+
+PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$') || true
+if [ -z "$PKGS" ]; then
+    PKGS="./..."
+fi
+CGO_ENABLED=1 go test -v -count=1 -timeout 10m $PKGS
 
 """.format(pr=self.pr),
             ),
@@ -151,11 +157,18 @@ go test -v -count=1 -mod=vendor ./...
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
 git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v -count=1 -mod=vendor ./...
+mkdir -p server/site server/docs server/templates
+touch server/site/placeholder server/docs/placeholder
+
+PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$') || true
+if [ -z "$PKGS" ]; then
+    PKGS="./..."
+fi
+CGO_ENABLED=1 go test -v -count=1 -timeout 10m $PKGS
 
 """.format(pr=self.pr),
             ),
@@ -163,11 +176,18 @@ go test -v -count=1 -mod=vendor ./...
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v -count=1 -mod=vendor ./...
+mkdir -p server/site server/docs server/templates
+touch server/site/placeholder server/docs/placeholder
+
+PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$') || true
+if [ -z "$PKGS" ]; then
+    PKGS="./..."
+fi
+CGO_ENABLED=1 go test -v -count=1 -timeout 10m $PKGS
 
 """.format(pr=self.pr),
             ),
@@ -197,8 +217,8 @@ go test -v -count=1 -mod=vendor ./...
 """
 
 
-@Instance.register("tektoncd", "pipeline")
-class Pipeline(Instance):
+@Instance.register("binwiederhier", "ntfy")
+class Ntfy(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -209,7 +229,7 @@ class Pipeline(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return PipelineImageDefault(self.pr, self._config)
+        return NtfyImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -230,6 +250,8 @@ class Pipeline(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()

@@ -135,6 +135,7 @@ python -m pytest -v --tb=native test/
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
+git checkout -- tox.ini 2>/dev/null
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
@@ -148,6 +149,7 @@ python -m pytest -v --tb=native test/
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
+git checkout -- tox.ini 2>/dev/null
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
@@ -191,6 +193,12 @@ RUN git clone https://github.com/sqlalchemy/sqlalchemy.git /home/sqlalchemy
 WORKDIR /home/sqlalchemy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install dependencies for human_mode=True (no prepare.sh replay)
+RUN apt-get update && apt-get install -y build-essential python3-dev
+RUN pip install --upgrade pip
+RUN pip install -e . pytest==6.2.5 pytest-xdist==2.5.0 mock greenlet
+RUN pip install -e ".[aiosqlite]" || true
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -237,6 +245,7 @@ class SQLALCHEMY_7381_TO_5547(Instance):
         skipped_tests: set[str] = set()  # Tests that were skipped
         import re
         import json
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
         # Regex patterns for extracting test names and statuses
         # Passed tests patterns
@@ -274,6 +283,8 @@ class SQLALCHEMY_7381_TO_5547(Instance):
             "failed_tests": failed_tests,
             "skipped_tests": skipped_tests,
         }
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

@@ -102,8 +102,6 @@ from multi_swe_bench.harness.repos.python.haddocking import *
 from multi_swe_bench.harness.repos.python.hdmf_dev import *
 from multi_swe_bench.harness.repos.python.hgrecco import *
 from multi_swe_bench.harness.repos.python.hhursev import *
-from multi_swe_bench.harness.repos.python.hiyouga import *
-from multi_swe_bench.harness.repos.python.httpie import *
 from multi_swe_bench.harness.repos.python.huggingface import *
 from multi_swe_bench.harness.repos.python.hylang import *
 from multi_swe_bench.harness.repos.python.hyperspy import *
@@ -137,7 +135,6 @@ from multi_swe_bench.harness.repos.python.mandiant import *
 from multi_swe_bench.harness.repos.python.ManimCommunity import *
 from multi_swe_bench.harness.repos.python.mantidproject import *
 from multi_swe_bench.harness.repos.python.marimo_team import *
-from multi_swe_bench.harness.repos.python.marshmallow_code import *
 from multi_swe_bench.harness.repos.python.materialsproject import *
 from multi_swe_bench.harness.repos.python.matplotlib import *
 from multi_swe_bench.harness.repos.python.matrix_org import *
@@ -171,7 +168,6 @@ from multi_swe_bench.harness.repos.python.open_telemetry import *
 from multi_swe_bench.harness.repos.python.openmc_dev import *
 from multi_swe_bench.harness.repos.python.OpenMDAO import *
 from multi_swe_bench.harness.repos.python.OpenMined import *
-from multi_swe_bench.harness.repos.python.OpenHands import *
 from multi_swe_bench.harness.repos.python.opensafely_core import *
 from multi_swe_bench.harness.repos.python.OpenSlides import *
 from multi_swe_bench.harness.repos.python.optuna import *
@@ -230,6 +226,7 @@ from multi_swe_bench.harness.repos.python.pyvista import *
 from multi_swe_bench.harness.repos.python.pywbem import *
 from multi_swe_bench.harness.repos.python.qiboteam import *
 from multi_swe_bench.harness.repos.python.qiskit import *
+from multi_swe_bench.harness.repos.python.ranaroussi import *
 from multi_swe_bench.harness.repos.python.randovania import *
 from multi_swe_bench.harness.repos.python.RasaHQ import *
 from multi_swe_bench.harness.repos.python.RDFLib import *
@@ -292,20 +289,6 @@ from multi_swe_bench.harness.repos.python.wagtail import *
 from multi_swe_bench.harness.repos.python.wemake_services import *
 from multi_swe_bench.harness.repos.python.xCDAT import *
 from multi_swe_bench.harness.repos.python.xonsh import *
-from multi_swe_bench.harness.repos.python.ytdl_org import *
 from multi_swe_bench.harness.repos.python.yt_dlp import *
 from multi_swe_bench.harness.repos.python.zarr_developers import *
 from multi_swe_bench.harness.repos.python.zulip import *
-from multi_swe_bench.harness.repos.python.miurahr import *
-from multi_swe_bench.harness.repos.python.opsdroid import *
-from multi_swe_bench.harness.repos.python.xarray_contrib import *
-
-from multi_swe_bench.harness.repos.python.nvbn import *
-from multi_swe_bench.harness.repos.python.michaelhly import *
-from multi_swe_bench.harness.repos.python.rytilahti import *
-from multi_swe_bench.harness.repos.python.asottile.pyupgrade import *
-from multi_swe_bench.harness.repos.python.doorstop_dev.doorstop import *
-from multi_swe_bench.harness.repos.python.dry_python.returns import *
-from multi_swe_bench.harness.repos.python.quantumlib import *
-from multi_swe_bench.harness.repos.python.pretalx import *
-from multi_swe_bench.harness.repos.python.mkdocs import *

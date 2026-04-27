@@ -175,6 +175,12 @@ RUN git clone https://github.com/sqlalchemy/sqlalchemy.git /home/sqlalchemy
 WORKDIR /home/sqlalchemy
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install dependencies for human_mode=True (no prepare.sh replay)
+RUN apt-get update && apt-get install -y software-properties-common && add-apt-repository -y ppa:deadsnakes/ppa && apt-get update && apt-get install -y python3.8 python3.8-venv python3.8-dev build-essential pkg-config libpq-dev default-libmysqlclient-dev unixodbc-dev libsqlite3-dev
+RUN python3.8 -m venv venv
+RUN ./venv/bin/pip install --upgrade pip
+RUN ./venv/bin/pip install -e . pytest==6.0.0 pytest-xdist==1.34.0 mock
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -221,6 +227,7 @@ class SQLALCHEMY_5232_TO_5062(Instance):
         skipped_tests = set[str]()  # Tests that were skipped
         import re
         import json
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
         # Parse passed tests
         passed_pattern = r"PASSED (test/.*?)(?=\s|$)"
@@ -239,6 +246,8 @@ class SQLALCHEMY_5232_TO_5062(Instance):
             "failed_tests": failed_tests,
             "skipped_tests": skipped_tests,
         }
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
