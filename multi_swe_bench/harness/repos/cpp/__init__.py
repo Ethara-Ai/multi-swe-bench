@@ -29,4 +29,5 @@ from multi_swe_bench.harness.repos.cpp.polybar import *
 from multi_swe_bench.harness.repos.cpp.lballabio import *
 from multi_swe_bench.harness.repos.cpp.Z3Prover import *
 from multi_swe_bench.harness.repos.cpp.NVIDIA import *
-from multi_swe_bench.harness.repos.cpp.aristocratos import *
+#from multi_swe_bench.harness.repos.cpp.aristocratos import *
+from multi_swe_bench.harness.repos.cpp.facebookresearch import *
