@@ -54,3 +54,4 @@ from multi_swe_bench.harness.repos.rust.async_graphql import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
 from multi_swe_bench.harness.repos.rust.tower_rs import *
 from multi_swe_bench.harness.repos.rust.iced_rs import *
+from multi_swe_bench.harness.repos.rust.rustdesk import *
