@@ -1,1 +1,1 @@
-from multi_swe_bench.harness.repos.go.argoproj.argo_cd import *
+from multi_swe_bench.harness.repos.golang.argoproj.argo_cd import *
