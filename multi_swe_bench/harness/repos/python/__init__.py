@@ -103,6 +103,7 @@ from multi_swe_bench.harness.repos.python.hdmf_dev import *
 from multi_swe_bench.harness.repos.python.hgrecco import *
 from multi_swe_bench.harness.repos.python.hhursev import *
 from multi_swe_bench.harness.repos.python.hiyouga import *
+from multi_swe_bench.harness.repos.python.httpie import *
 from multi_swe_bench.harness.repos.python.huggingface import *
 from multi_swe_bench.harness.repos.python.hylang import *
 from multi_swe_bench.harness.repos.python.hyperspy import *
