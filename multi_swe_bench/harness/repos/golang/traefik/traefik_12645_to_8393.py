@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TraefikV3ImageBase(Image):
+class Traefik12645To8393ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -54,7 +54,7 @@ WORKDIR /home/
 """
 
 
-class TraefikV3ImageDefault(Image):
+class Traefik12645To8393ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -68,7 +68,7 @@ class TraefikV3ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return TraefikV3ImageBase(self.pr, self.config)
+        return Traefik12645To8393ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -186,8 +186,8 @@ go test -v -count=1 ./...
 """
 
 
-@Instance.register("traefik", "traefik_v3")
-class TraefikV3(Instance):
+@Instance.register("traefik", "traefik_12645_to_8393")
+class Traefik12645To8393(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -198,7 +198,7 @@ class TraefikV3(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return TraefikV3ImageDefault(self.pr, self._config)
+        return Traefik12645To8393ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

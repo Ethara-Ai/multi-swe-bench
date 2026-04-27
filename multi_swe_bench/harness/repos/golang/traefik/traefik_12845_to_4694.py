@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TraefikV1ImageBase(Image):
+class Traefik12845To4694ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +20,13 @@ class TraefikV1ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:1.13"
+        return "golang:1.25"
 
     def image_tag(self) -> str:
-        return "base-v1"
+        return "base-v2"
 
     def workdir(self) -> str:
-        return "base-v1"
+        return "base-v2"
 
     def files(self) -> list[File]:
         return []
@@ -45,23 +45,16 @@ class TraefikV1ImageBase(Image):
 
 {self.global_env}
 
-ENV GO111MODULE=off
-ENV GOPATH=/go
-
 WORKDIR /home/
 
 {code}
-
-RUN mkdir -p /go/src/github.com/containous && ln -s /home/{self.pr.repo} /go/src/github.com/containous/{self.pr.repo}
-
-RUN go get -u github.com/jteeuwen/go-bindata/...
 
 {self.clear_env}
 
 """
 
 
-class TraefikV1ImageDefault(Image):
+class Traefik12845To4694ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -75,7 +68,7 @@ class TraefikV1ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return TraefikV1ImageBase(self.pr, self.config)
+        return Traefik12845To4694ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -122,7 +115,7 @@ exit 0
                 """#!/bin/bash
 set -e
 
-cd /go/src/github.com/containous/{pr.repo}
+cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
@@ -138,7 +131,7 @@ go generate || true
                 """#!/bin/bash
 set -e
 
-cd /go/src/github.com/containous/{pr.repo}
+cd /home/{pr.repo}
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -149,7 +142,7 @@ go test -v -count=1 ./...
                 """#!/bin/bash
 set -e
 
-cd /go/src/github.com/containous/{pr.repo}
+cd /home/{pr.repo}
 git apply /home/test.patch
 go test -v -count=1 ./...
 
@@ -161,7 +154,7 @@ go test -v -count=1 ./...
                 """#!/bin/bash
 set -e
 
-cd /go/src/github.com/containous/{pr.repo}
+cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
 go test -v -count=1 ./...
 
@@ -193,8 +186,8 @@ go test -v -count=1 ./...
 """
 
 
-@Instance.register("traefik", "traefik_v1")
-class TraefikV1(Instance):
+@Instance.register("traefik", "traefik_12845_to_4694")
+class Traefik12845To4694(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -205,7 +198,7 @@ class TraefikV1(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return TraefikV1ImageDefault(self.pr, self._config)
+        return Traefik12845To4694ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
