@@ -32,6 +32,7 @@ from multi_swe_bench.harness.repos.rust.ratatui import *
 from multi_swe_bench.harness.repos.rust.rustls import *
 from multi_swe_bench.harness.repos.rust.async_graphql import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
+<<<<<<< Updated upstream
 <<<<<<< HEAD
 from multi_swe_bench.harness.repos.rust.tower_rs import *
 from multi_swe_bench.harness.repos.rust.bytecodealliance import *
@@ -39,3 +40,9 @@ from multi_swe_bench.harness.repos.rust.FuelLabs import *
 =======
 from multi_swe_bench.harness.repos.rust.rust_ndarray import *
 >>>>>>> 6f469c80 (uploaded the updated rust global init file)
+=======
+from multi_swe_bench.harness.repos.rust.servo import *
+from multi_swe_bench.harness.repos.rust.swc_project import *
+from multi_swe_bench.harness.repos.rust.typst import *
+from multi_swe_bench.harness.repos.rust.yewstack import *
+>>>>>>> Stashed changes
