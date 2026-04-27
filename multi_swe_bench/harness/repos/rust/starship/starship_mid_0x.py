@@ -8,7 +8,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class StarshipImageBase(Image):
+class StarshipMid0xImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -21,58 +21,11 @@ class StarshipImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "rust:latest"
+    def dependency(self) -> str:
+        return "rust:1.56.0"
 
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-RUN apt update && apt install -y cmake pkg-config libssl-dev
-
-{self.global_env}
-
-WORKDIR /home/
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class StarshipImageDefault(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image | None:
-        return StarshipImageBase(self.pr, self.config)
+    def image_prefix(self) -> str:
+        return "envagent"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -94,47 +47,19 @@ class StarshipImageDefault(Image):
             ),
             File(
                 ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
                 "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-cargo test || true
-
-""".format(pr=self.pr),
+                """ls -F
+###ACTION_DELIMITER###
+cargo build
+###ACTION_DELIMITER###
+cargo test
+###ACTION_DELIMITER###
+echo 'cargo test' > /home/starship/test_commands.sh""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
-
 cd /home/{pr.repo}
 cargo test
 
@@ -144,10 +69,11 @@ cargo test
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
-
 cd /home/{pr.repo}
-git apply /home/test.patch
+if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1  
+fi
 cargo test
 
 """.format(pr=self.pr),
@@ -156,10 +82,11 @@ cargo test
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
-
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1  
+fi
 cargo test
 
 """.format(pr=self.pr),
@@ -167,31 +94,36 @@ cargo test
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        dockerfile_content = """
+FROM rust:1.56.0
 
-        return f"""FROM {name}:{tag}
+## Set noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 
-{self.global_env}
+# Install system dependencies for starship
+RUN apt-get update && apt-get install -y git cmake pkg-config libssl-dev
 
-{copy_commands}
+WORKDIR /home/
+COPY fix.patch /home/
+COPY test.patch /home/
+RUN git clone https://github.com/starship/starship.git /home/starship
 
-{prepare_commands}
-
-{self.clear_env}
-
+WORKDIR /home/starship
+RUN git reset --hard
+RUN git checkout {pr.base.sha}
 """
+        dockerfile_content += f"""
+{copy_commands}
+"""
+        return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("starship", "starship")
-class Starship(Instance):
+@Instance.register("starship", "starship_mid_0x")
+class STARSHIP_MID_0X(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -202,7 +134,7 @@ class Starship(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return StarshipImageDefault(self.pr, self._config)
+        return StarshipMid0xImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

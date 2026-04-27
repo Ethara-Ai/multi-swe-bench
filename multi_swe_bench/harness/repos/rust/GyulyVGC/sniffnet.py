@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 from typing import Optional, Union
 
@@ -8,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class StarshipImageBase(Image):
+class SniffnetImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -45,9 +43,14 @@ class StarshipImageBase(Image):
 
         return f"""FROM {image_name}
 
-RUN apt update && apt install -y cmake pkg-config libssl-dev
-
 {self.global_env}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libasound2-dev \
+    libpcap-dev \
+    libfontconfig1-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/
 
@@ -58,7 +61,7 @@ WORKDIR /home/
 """
 
 
-class StarshipImageDefault(Image):
+class SniffnetImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -72,7 +75,7 @@ class StarshipImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return StarshipImageBase(self.pr, self.config)
+        return SniffnetImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -190,8 +193,8 @@ cargo test
 """
 
 
-@Instance.register("starship", "starship")
-class Starship(Instance):
+@Instance.register("GyulyVGC", "sniffnet")
+class Sniffnet(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -202,34 +205,56 @@ class Starship(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return StarshipImageDefault(self.pr, self._config)
+        return SniffnetImageDefault(self.pr, self._config)
+
+    _APPLY_OPTS = "--whitespace=nowarn"
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
-        return "bash /home/run.sh"
+        return (
+            "bash -c '"
+            "cd /home/{repo} ; "
+            "cargo test 2>&1 || true"
+            "'".format(repo=self.pr.repo)
+        )
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
-        return "bash /home/test-run.sh"
+        return (
+            "bash -c '"
+            "cd /home/{repo} ; "
+            "git checkout -- . ; "
+            "git apply {opts} /home/test.patch || "
+            "git apply {opts} --3way /home/test.patch || true ; "
+            "cargo test 2>&1 || true"
+            "'".format(repo=self.pr.repo, opts=self._APPLY_OPTS)
+        )
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
-        return "bash /home/fix-run.sh"
+        return (
+            "bash -c '"
+            "cd /home/{repo} ; "
+            "git checkout -- . ; "
+            "git apply {opts} /home/test.patch || "
+            "git apply {opts} --3way /home/test.patch || true ; "
+            "git apply {opts} /home/fix.patch || "
+            "git apply {opts} --3way /home/fix.patch || true ; "
+            "cargo test 2>&1 || true"
+            "'".format(repo=self.pr.repo, opts=self._APPLY_OPTS)
+        )
 
     def parse_log(self, test_log: str) -> TestResult:
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [re.compile(r"test (\S+) ... ok")]
-        re_fail_tests = [re.compile(r"test (\S+) ... FAILED")]
-        re_skip_tests = [re.compile(r"test (\S+) ... ignored")]
+        re_pass_tests = [re.compile(r"test (\S+) \.\.\. ok")]
+        re_fail_tests = [re.compile(r"test (\S+) \.\.\. FAILED")]
+        re_skip_tests = [re.compile(r"test (\S+) \.\.\. ignored")]
 
         for line in test_log.splitlines():
             line = line.strip()

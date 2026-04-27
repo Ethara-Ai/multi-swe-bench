@@ -173,17 +173,21 @@ class Pandas(Instance):
     def dependency(self) -> Optional[Image]:
         return PandasImageDefault(self.pr, self._config)
 
-    _PIP_FIX = "pip install meson-python meson ninja cython numpy pytz python-dateutil pytest-asyncio 2>/dev/null || true ; "
+    _PIP_FIX = (
+        'CYTHON_REQ=$(grep -o "Cython[^\\"]*" pyproject.toml 2>/dev/null | head -1) ; '
+        'pip install "${CYTHON_REQ:-cython}" numpy==1.26.4 pytz python-dateutil pytest-asyncio 2>/dev/null || true ; '
+    )
 
     _BUILD_CMD = (
         'python -c "import pandas" 2>/dev/null || '
-        "pip install -e . --no-build-isolation 2>/dev/null || "
+        "( pip install -e . --no-build-isolation 2>/dev/null || "
         "pip install -e . 2>/dev/null || "
-        "python setup.py develop 2>/dev/null || true"
+        "python setup.py develop 2>/dev/null || true )"
     )
 
     _PYTEST_CMD = (
-        "pytest --no-header -rA --tb=short -p no:cacheprovider -v pandas/tests/"
+        'TEST_FILES=$(sed -n "s/^diff --git a\\/\\([^ ]*\\).*/\\1/p" /home/test.patch | grep "^pandas/tests/.*\\.py$" | sort -u | tr "\\n" " ") ; '
+        "pytest --no-header -rA --tb=short -p no:cacheprovider -v $TEST_FILES"
     )
 
     _APPLY_OPTS = "--whitespace=nowarn"
@@ -205,7 +209,7 @@ class Pandas(Instance):
             "bash -c '"
             "cd /home/{repo} ; "
             "{pip}"
-            "git apply {opts} /home/test.patch || "
+            "git apply {opts} --reject /home/test.patch || "
             "git apply {opts} --3way /home/test.patch || true ; "
             "{build} ; "
             "{pytest}"
@@ -225,9 +229,9 @@ class Pandas(Instance):
             "bash -c '"
             "cd /home/{repo} ; "
             "{pip}"
-            "git apply {opts} /home/test.patch || "
+            "git apply {opts} --reject /home/test.patch || "
             "git apply {opts} --3way /home/test.patch || true ; "
-            "git apply {opts} /home/fix.patch || "
+            "git apply {opts} --reject /home/fix.patch || "
             "git apply {opts} --3way /home/fix.patch || true ; "
             "{build} ; "
             "{pytest}"

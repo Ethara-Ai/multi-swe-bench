@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 from typing import Optional, Union
 
@@ -8,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class StarshipImageBase(Image):
+class OPENWRT_18428_TO_17613_ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -22,13 +20,13 @@ class StarshipImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "rust:latest"
+        return "debian:latest"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-18428-to-17613"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-18428-to-17613"
 
     def files(self) -> list[File]:
         return []
@@ -39,17 +37,40 @@ class StarshipImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/openwrt"
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY openwrt /home/openwrt"
 
         return f"""FROM {image_name}
-
-RUN apt update && apt install -y cmake pkg-config libssl-dev
 
 {self.global_env}
 
 WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+RUN apt-get update && apt-get install -y \\
+    build-essential \\
+    git \\
+    python3 \\
+    python3-setuptools \\
+    perl \\
+    libncurses-dev \\
+    gawk \\
+    flex \\
+    bison \\
+    unzip \\
+    wget \\
+    curl \\
+    rsync \\
+    subversion \\
+    file \\
+    swig \\
+    libssl-dev \\
+    xsltproc \\
+    zlib1g-dev \\
+    gettext \\
+    && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -58,7 +79,7 @@ WORKDIR /home/
 """
 
 
-class StarshipImageDefault(Image):
+class OPENWRT_18428_TO_17613_ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -72,7 +93,7 @@ class StarshipImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return StarshipImageBase(self.pr, self.config)
+        return OPENWRT_18428_TO_17613_ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -119,13 +140,17 @@ exit 0
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+cd /home/openwrt
+export FORCE_UNSAFE_CONFIGURE=1
 git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-cargo test || true
+./scripts/feeds update -a
+./scripts/feeds install -a
+make defconfig || true
+make -j$(nproc) || true
 
 """.format(pr=self.pr),
             ),
@@ -133,10 +158,13 @@ cargo test || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
-cd /home/{pr.repo}
-cargo test
+cd /home/openwrt
+export FORCE_UNSAFE_CONFIGURE=1
+make clean
+make defconfig
+make -j$(nproc) V=s 2>&1
 
 """.format(pr=self.pr),
             ),
@@ -144,11 +172,14 @@ cargo test
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
-cd /home/{pr.repo}
-git apply /home/test.patch
-cargo test
+cd /home/openwrt
+export FORCE_UNSAFE_CONFIGURE=1
+git apply --whitespace=nowarn /home/test.patch
+make clean
+make defconfig
+make -j$(nproc) V=s 2>&1
 
 """.format(pr=self.pr),
             ),
@@ -156,11 +187,14 @@ cargo test
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
-cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
-cargo test
+cd /home/openwrt
+export FORCE_UNSAFE_CONFIGURE=1
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+make clean
+make defconfig
+make -j$(nproc) V=s 2>&1
 
 """.format(pr=self.pr),
             ),
@@ -190,8 +224,8 @@ cargo test
 """
 
 
-@Instance.register("starship", "starship")
-class Starship(Instance):
+@Instance.register("openwrt", "openwrt_18428_to_17613")
+class OPENWRT_18428_TO_17613(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -202,7 +236,7 @@ class Starship(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return StarshipImageDefault(self.pr, self._config)
+        return OPENWRT_18428_TO_17613_ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -223,31 +257,28 @@ class Starship(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        # Strip ANSI escape codes
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+        test_log = ansi_escape.sub("", test_log)
+
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [re.compile(r"test (\S+) ... ok")]
-        re_fail_tests = [re.compile(r"test (\S+) ... FAILED")]
-        re_skip_tests = [re.compile(r"test (\S+) ... ignored")]
+        # OpenWrt is a build system - success means the build completed
+        # Detect GNU make errors: recipe failures, signal kills, and fatal stops
+        re_error = re.compile(
+            r"^make\[?\d*\]?: \*\*\*"  # All fatal make errors start with ***
+            r"|^make\[?\d*\]?:.*Stop\.",  # Fatal stops (missing targets, syntax)
+            re.MULTILINE,
+        )
 
-        for line in test_log.splitlines():
-            line = line.strip()
+        has_error = bool(re_error.search(test_log))
 
-            for re_pass in re_pass_tests:
-                match = re_pass.match(line)
-                if match:
-                    passed_tests.add(match.group(1))
-
-            for re_fail in re_fail_tests:
-                match = re_fail.match(line)
-                if match:
-                    failed_tests.add(match.group(1))
-
-            for re_skip in re_skip_tests:
-                match = re_skip.match(line)
-                if match:
-                    skipped_tests.add(match.group(1))
+        if has_error:
+            failed_tests.add("build")
+        else:
+            passed_tests.add("build")
 
         return TestResult(
             passed_count=len(passed_tests),

@@ -42,3 +42,5 @@ from multi_swe_bench.harness.repos.rust.typst import *
 from multi_swe_bench.harness.repos.rust.unicode_org import *
 from multi_swe_bench.harness.repos.rust.uutils import *
 from multi_swe_bench.harness.repos.rust.yewstack import *
+from multi_swe_bench.harness.repos.rust.PyO3 import *
+from multi_swe_bench.harness.repos.rust.GyulyVGC import *
