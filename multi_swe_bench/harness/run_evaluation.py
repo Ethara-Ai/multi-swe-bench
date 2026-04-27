@@ -266,7 +266,6 @@ class CliArgs:
     def __post_init__(self):
         self._check_mode()
         self._check_workdir()
-        self._check_patch_files()
         self._check_dataset_files()
         self._check_log_dir()
         self._check_log_level()
@@ -274,6 +273,7 @@ class CliArgs:
         self._check_max_workers()
 
         if self.mode == "evaluation":
+            self._check_patch_files()
             self._check_repo_dir()
             self._check_output_dir()
         elif self.mode == "instance":

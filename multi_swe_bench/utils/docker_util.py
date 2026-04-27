@@ -127,6 +127,30 @@ def _detect_native_platform() -> str:
     return "linux/amd64"
 
 
+def _get_container_builder() -> str | None:
+    """Find a buildx builder that uses the docker-container driver.
+
+    The default ``docker`` driver does not support OCI export or
+    multi-platform builds.  If the user has created a ``docker-container``
+    builder we should use it explicitly so that the ``--output type=oci``
+    flag works correctly.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "buildx", "ls"],
+            capture_output=True,
+            text=True,
+        )
+        for line in result.stdout.splitlines():
+            if "docker-container" in line:
+                name = line.split()[0].rstrip("*").strip()
+                if name:
+                    return name
+    except Exception:
+        pass
+    return None
+
+
 def _run_buildx(
     cmd: list[str],
     workdir: str,
@@ -175,19 +199,23 @@ def _build_with_buildx(
 ):
     """Multi-arch build using docker buildx subprocess.
 
-    When output_tar is provided, the image is exported as an OCI archive AND
-    also loaded into the local Docker daemon:
-      - Single platform: both --output and --load in one buildx invocation.
-      - Multi platform: first invocation exports the OCI tar, second invocation
-        loads just the native platform from the buildx cache into the daemon.
+    When output_tar is provided, the image is exported as an OCI archive.
+    A second pass then loads the native platform into the local daemon from
+    the buildx cache (--load is incompatible with OCI output in a single pass).
     """
     platforms = [p.strip() for p in platform.split(",")]
     is_multi_platform = len(platforms) > 1
+
+    builder = _get_container_builder()
 
     cmd = [
         "docker",
         "buildx",
         "build",
+    ]
+    if builder:
+        cmd.extend(["--builder", builder])
+    cmd.extend([
         "--platform",
         platform,
         "-f",
@@ -196,7 +224,7 @@ def _build_with_buildx(
         image_full_name,
         "--provenance=false",
         "--sbom=false",
-    ]
+    ])
 
     # Add build arguments
     for key, value in (buildargs or {}).items():
@@ -206,14 +234,8 @@ def _build_with_buildx(
     if base_image_context:
         cmd.extend(["--build-context", base_image_context])
 
-    # Output strategy:
-    #   - output_tar + single platform: OCI tar AND --load in one command
-    #   - output_tar + multi platform:  OCI tar only (--load in second pass below)
-    #   - no output_tar:                --load only
     if output_tar:
         cmd.extend(["--output", f"type=oci,dest={output_tar}"])
-        if not is_multi_platform:
-            cmd.append("--load")
     else:
         cmd.append("--load")
 
@@ -233,12 +255,12 @@ def _build_with_buildx(
         )
         logger.info(f"Extracted OCI tar to {oci_dir}")
 
-    # --- Second pass for multi-platform + output_tar ---
-    # The first build exported a multi-arch OCI tar but could NOT use --load
-    # (incompatible with multi-platform).  Re-run buildx targeting only the
+    # --- Second pass: load native image into daemon ---
+    # The first build exported an OCI tar but could NOT use --load
+    # (incompatible with OCI output).  Re-run buildx targeting only the
     # native platform with --load.  All layers are already in the buildx
     # cache from the first build, so this completes near-instantly.
-    if output_tar and is_multi_platform:
+    if output_tar:
         native = _detect_native_platform()
         logger.info(
             f"Loading native platform ({native}) into daemon from buildx cache..."
@@ -248,6 +270,10 @@ def _build_with_buildx(
             "docker",
             "buildx",
             "build",
+        ]
+        if builder:
+            load_cmd.extend(["--builder", builder])
+        load_cmd.extend([
             "--platform",
             native,
             "-f",
@@ -256,7 +282,7 @@ def _build_with_buildx(
             image_full_name,
             "--provenance=false",
             "--sbom=false",
-        ]
+        ])
         for key, value in (buildargs or {}).items():
             load_cmd.extend(["--build-arg", f"{key}={value}"])
         if base_image_context:
