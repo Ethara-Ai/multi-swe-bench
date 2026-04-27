@@ -2,6 +2,7 @@ from multi_swe_bench.harness.repos.rust.actix import *
 from multi_swe_bench.harness.repos.rust.alacritty import *
 from multi_swe_bench.harness.repos.rust.astral_sh import *
 from multi_swe_bench.harness.repos.rust.async_graphql import *
+from multi_swe_bench.harness.repos.rust.atuinsh import *
 from multi_swe_bench.harness.repos.rust.bee_san import *
 from multi_swe_bench.harness.repos.rust.bitcoindevkit import *
 from multi_swe_bench.harness.repos.rust.boa_dev import *
