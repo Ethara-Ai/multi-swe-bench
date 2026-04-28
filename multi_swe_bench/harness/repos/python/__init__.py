@@ -102,6 +102,7 @@ from multi_swe_bench.harness.repos.python.haddocking import *
 from multi_swe_bench.harness.repos.python.hdmf_dev import *
 from multi_swe_bench.harness.repos.python.hgrecco import *
 from multi_swe_bench.harness.repos.python.hhursev import *
+from multi_swe_bench.harness.repos.python.hiyouga import *
 from multi_swe_bench.harness.repos.python.huggingface import *
 from multi_swe_bench.harness.repos.python.hylang import *
 from multi_swe_bench.harness.repos.python.hyperspy import *
@@ -125,6 +126,7 @@ from multi_swe_bench.harness.repos.python.kids_first import *
 from multi_swe_bench.harness.repos.python.kornia import *
 from multi_swe_bench.harness.repos.python.kserve import *
 from multi_swe_bench.harness.repos.python.kubeflow import *
+from multi_swe_bench.harness.repos.python.langflow_ai import *
 from multi_swe_bench.harness.repos.python.learningequality import *
 from multi_swe_bench.harness.repos.python.LiberTEM import *
 from multi_swe_bench.harness.repos.python.Lightning_AI import *
