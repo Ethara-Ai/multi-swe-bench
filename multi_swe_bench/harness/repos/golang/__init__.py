@@ -73,3 +73,4 @@ from multi_swe_bench.harness.repos.golang.go_playground import *
 from multi_swe_bench.harness.repos.golang.traefik import *
 from multi_swe_bench.harness.repos.golang.binwiederhier import *
 from multi_swe_bench.harness.repos.golang.derailed import *
+from multi_swe_bench.harness.repos.golang.cloudevents import *
