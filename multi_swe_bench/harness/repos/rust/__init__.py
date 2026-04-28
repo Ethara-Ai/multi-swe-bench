@@ -10,14 +10,18 @@ from multi_swe_bench.harness.repos.rust.BurntSushi import *
 from multi_swe_bench.harness.repos.rust.bytecodealliance import *
 from multi_swe_bench.harness.repos.rust.casey import *
 from multi_swe_bench.harness.repos.rust.clap_rs import *
+from multi_swe_bench.harness.repos.rust.dandavison import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
 from multi_swe_bench.harness.repos.rust.fedimint import *
 from multi_swe_bench.harness.repos.rust.fish_shell import *
 from multi_swe_bench.harness.repos.rust.FuelLabs import *
 from multi_swe_bench.harness.repos.rust.GitoxideLabs import *
 from multi_swe_bench.harness.repos.rust.golemcloud import *
+from multi_swe_bench.harness.repos.rust.GyulyVGC import *
 from multi_swe_bench.harness.repos.rust.helix_editor import *
 from multi_swe_bench.harness.repos.rust.hyperium import *
+from multi_swe_bench.harness.repos.rust.iced_rs import *
+from multi_swe_bench.harness.repos.rust.napi_rs import *
 from multi_swe_bench.harness.repos.rust.nushell import *
 from multi_swe_bench.harness.repos.rust.ogham import *
 from multi_swe_bench.harness.repos.rust.PyO3 import *
@@ -27,7 +31,10 @@ from multi_swe_bench.harness.repos.rust.rayon_rs import *
 from multi_swe_bench.harness.repos.rust.rusqlite import *
 from multi_swe_bench.harness.repos.rust.rust_lang import *
 from multi_swe_bench.harness.repos.rust.rust_ndarray import *
+from multi_swe_bench.harness.repos.rust.rustdesk import *
 from multi_swe_bench.harness.repos.rust.rustls import *
+from multi_swe_bench.harness.repos.rust.rustwasm import *
+from multi_swe_bench.harness.repos.rust.Schniz import *
 from multi_swe_bench.harness.repos.rust.seanmonstar import *
 from multi_swe_bench.harness.repos.rust.SeaQL import *
 from multi_swe_bench.harness.repos.rust.serde_rs import *
@@ -42,22 +49,3 @@ from multi_swe_bench.harness.repos.rust.typst import *
 from multi_swe_bench.harness.repos.rust.unicode_org import *
 from multi_swe_bench.harness.repos.rust.uutils import *
 from multi_swe_bench.harness.repos.rust.yewstack import *
-from multi_swe_bench.harness.repos.rust.PyO3 import *
-from multi_swe_bench.harness.repos.rust.GyulyVGC import *
-from multi_swe_bench.harness.repos.rust.actix import *
-from multi_swe_bench.harness.repos.rust.hyperium import *
-from multi_swe_bench.harness.repos.rust.seanmonstar import *
-from multi_swe_bench.harness.repos.rust.astral_sh import *
-from multi_swe_bench.harness.repos.rust.ratatui import *
-from multi_swe_bench.harness.repos.rust.rustls import *
-from multi_swe_bench.harness.repos.rust.async_graphql import *
-<<<<<<< HEAD
-from multi_swe_bench.harness.repos.rust.dtolnay import *
-from multi_swe_bench.harness.repos.rust.tower_rs import *
-from multi_swe_bench.harness.repos.rust.iced_rs import *
-from multi_swe_bench.harness.repos.rust.rustdesk import *
-from multi_swe_bench.harness.repos.rust.napi_rs import *
-from multi_swe_bench.harness.repos.rust.dandavison import *
-=======
-from multi_swe_bench.harness.repos.rust.Schniz import *
->>>>>>> 7d5bf501 (Added Global init file of Rust)

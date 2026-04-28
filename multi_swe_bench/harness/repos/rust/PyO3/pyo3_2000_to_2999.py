@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class Pyo3ImageBase(Image):
+class Pyo3Mid2ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +20,13 @@ class Pyo3ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "rust:latest"
+        return "rust:1.85-bookworm"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-2000-2999"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-2000-2999"
 
     def files(self) -> list[File]:
         return []
@@ -56,7 +56,7 @@ WORKDIR /home/
 """
 
 
-class Pyo3ImageDefault(Image):
+class Pyo3Mid2ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -70,7 +70,7 @@ class Pyo3ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return Pyo3ImageBase(self.pr, self.config)
+        return Pyo3Mid2ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -188,8 +188,8 @@ cargo test
 """
 
 
-@Instance.register("PyO3", "pyo3")
-class Pyo3(Instance):
+@Instance.register("PyO3", "pyo3_2000_to_2999")
+class Pyo3_2000_to_2999(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -200,7 +200,7 @@ class Pyo3(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return Pyo3ImageDefault(self.pr, self._config)
+        return Pyo3Mid2ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
