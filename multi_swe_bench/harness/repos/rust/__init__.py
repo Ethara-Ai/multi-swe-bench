@@ -51,9 +51,13 @@ from multi_swe_bench.harness.repos.rust.astral_sh import *
 from multi_swe_bench.harness.repos.rust.ratatui import *
 from multi_swe_bench.harness.repos.rust.rustls import *
 from multi_swe_bench.harness.repos.rust.async_graphql import *
+<<<<<<< HEAD
 from multi_swe_bench.harness.repos.rust.dtolnay import *
 from multi_swe_bench.harness.repos.rust.tower_rs import *
 from multi_swe_bench.harness.repos.rust.iced_rs import *
 from multi_swe_bench.harness.repos.rust.rustdesk import *
 from multi_swe_bench.harness.repos.rust.napi_rs import *
 from multi_swe_bench.harness.repos.rust.dandavison import *
+=======
+from multi_swe_bench.harness.repos.rust.Schniz import *
+>>>>>>> 7d5bf501 (Added Global init file of Rust)
