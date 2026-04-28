@@ -45,6 +45,10 @@ class Traefik8624To1331ImageBase(Image):
 
 {self.global_env}
 
+RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \
+    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
+    sed -i '/buster-updates/d' /etc/apt/sources.list
+
 ENV GO111MODULE=off
 ENV GOPATH=/go
 
