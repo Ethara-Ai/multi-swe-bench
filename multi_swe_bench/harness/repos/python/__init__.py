@@ -231,6 +231,7 @@ from multi_swe_bench.harness.repos.python.pywbem import *
 from multi_swe_bench.harness.repos.python.qiboteam import *
 from multi_swe_bench.harness.repos.python.qiskit import *
 from multi_swe_bench.harness.repos.python.ranaroussi import *
+from multi_swe_bench.harness.repos.python.radical_cybertools import *
 from multi_swe_bench.harness.repos.python.randovania import *
 from multi_swe_bench.harness.repos.python.RasaHQ import *
 from multi_swe_bench.harness.repos.python.RDFLib import *
@@ -299,3 +300,16 @@ from multi_swe_bench.harness.repos.python.zulip import *
 from multi_swe_bench.harness.repos.python.ros2 import *
 from multi_swe_bench.harness.repos.python.StackStorm.st2_4976_to_5037 import *
 from multi_swe_bench.harness.repos.python.StackStorm.st2_5038_to_5605 import *
+from multi_swe_bench.harness.repos.python.miurahr import *
+from multi_swe_bench.harness.repos.python.opsdroid import *
+from multi_swe_bench.harness.repos.python.xarray_contrib import *
+
+from multi_swe_bench.harness.repos.python.nvbn import *
+from multi_swe_bench.harness.repos.python.michaelhly import *
+from multi_swe_bench.harness.repos.python.rytilahti import *
+from multi_swe_bench.harness.repos.python.asottile.pyupgrade import *
+from multi_swe_bench.harness.repos.python.doorstop_dev.doorstop import *
+from multi_swe_bench.harness.repos.python.dry_python.returns import *
+from multi_swe_bench.harness.repos.python.quantumlib import *
+from multi_swe_bench.harness.repos.python.radical_cybertools import *
+
