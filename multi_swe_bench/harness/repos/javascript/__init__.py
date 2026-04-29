@@ -128,3 +128,5 @@ from multi_swe_bench.harness.repos.javascript.neomjs import *
 from multi_swe_bench.harness.repos.javascript.webtorrent import *
 from multi_swe_bench.harness.repos.javascript.DDDEastMidlandsLimited import *
 from multi_swe_bench.harness.repos.javascript.mozilla import *
+from multi_swe_bench.harness.repos.javascript.AnomalyInnovations import *
+from multi_swe_bench.harness.repos.javascript.s import *

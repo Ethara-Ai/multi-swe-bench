@@ -75,3 +75,7 @@ from multi_swe_bench.harness.repos.golang.binwiederhier import *
 from multi_swe_bench.harness.repos.golang.derailed import *
 from multi_swe_bench.harness.repos.golang.cloudevents import *
 from multi_swe_bench.harness.repos.golang.Khan import *
+from multi_swe_bench.harness.repos.golang.roc_streaming import *
+from multi_swe_bench.harness.repos.golang.nspcc_dev import *
+from multi_swe_bench.harness.repos.golang.cli import *
+from multi_swe_bench.harness.repos.golang.umputun import *
