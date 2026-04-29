@@ -137,3 +137,4 @@ from multi_swe_bench.harness.repos.typescript.wei import *
 from multi_swe_bench.harness.repos.typescript.withastro import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
 from multi_swe_bench.harness.repos.typescript.recharts import *
+from multi_swe_bench.harness.repos.typescript.italia import *
