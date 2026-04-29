@@ -30,3 +30,4 @@ from multi_swe_bench.harness.repos.java.openequella import *
 from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe import *
 from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe_5927_to_5927 import *
 from multi_swe_bench.harness.repos.java.termux import *
+from multi_swe_bench.harness.repos.java.agentscope_ai import *
