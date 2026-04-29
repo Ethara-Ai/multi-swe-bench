@@ -36,6 +36,7 @@ from multi_swe_bench.harness.repos.typescript.capricorn86 import *
 from multi_swe_bench.harness.repos.typescript.CatchTheTornado import *
 from multi_swe_bench.harness.repos.typescript.ChainSafe import *
 from multi_swe_bench.harness.repos.typescript.chakra_ui import *
+from multi_swe_bench.harness.repos.typescript.coder import *
 from multi_swe_bench.harness.repos.typescript.colinhacks import *
 from multi_swe_bench.harness.repos.typescript.comixed import *
 from multi_swe_bench.harness.repos.typescript.CommunitySolidServer import *
