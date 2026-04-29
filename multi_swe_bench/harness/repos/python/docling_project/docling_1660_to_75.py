@@ -23,7 +23,7 @@ class ImageDefault(Image):
         return "python:3.10-slim-bookworm"
 
     def image_prefix(self) -> str:
-        return "envagent"
+        return "mswebench"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -206,7 +206,7 @@ poetry run pytest --no-header -rA --tb=no -p no:cacheprovider -v tests
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        merge_sha = self.pr.merge_commit_sha or ""
+        merge_sha = getattr(self.pr, 'merge_commit_sha', '') or ""
 
         dockerfile_content = """
 # Docling Poetry-era build (PRs 75-1660)

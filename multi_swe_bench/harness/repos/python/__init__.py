@@ -63,6 +63,7 @@ from multi_swe_bench.harness.repos.python.django_cms import *
 from multi_swe_bench.harness.repos.python.dlt_hub import *
 from multi_swe_bench.harness.repos.python.dmwm import *
 from multi_swe_bench.harness.repos.python.docker import *
+from multi_swe_bench.harness.repos.python.docling_project import *
 from multi_swe_bench.harness.repos.python.dssg import *
 from multi_swe_bench.harness.repos.python.dstackai import *
 from multi_swe_bench.harness.repos.python.e_valuation import *
