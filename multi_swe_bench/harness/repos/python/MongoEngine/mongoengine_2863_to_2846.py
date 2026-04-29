@@ -77,6 +77,8 @@ cat test_commands.sh""",
                 ".",
                 "run.sh",
                 """#!/bin/bash
+mkdir -p /data/db
+mongod --fork --logpath /var/log/mongodb.log
 cd /home/{pr.repo}
 pytest -v tests/
 
@@ -86,6 +88,8 @@ pytest -v tests/
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
+mkdir -p /data/db
+mongod --fork --logpath /var/log/mongodb.log
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
@@ -99,6 +103,8 @@ pytest -v tests/
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
+mkdir -p /data/db
+mongod --fork --logpath /var/log/mongodb.log
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
@@ -116,24 +122,22 @@ pytest -v tests/
             copy_commands += f"COPY {file.name} /home/\n"
 
         dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
-
-# Choose an appropriate base image based on the project's requirements - replace python:3.9-slim with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
 FROM python:3.9-slim
 
-## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
+# Install basic requirements and MongoDB dependencies
+RUN apt-get update && apt-get install -y git wget gnupg curl
 
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+# Install MongoDB 7.0 from Ubuntu jammy repo (arm64/amd64 compatible)
+RUN curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | \
+    gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg trusted=yes] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | \
+    tee /etc/apt/sources.list.d/mongodb-org-7.0.list && \
+    apt-get update && \
+    apt-get install -y --allow-unauthenticated mongodb-org && \
+    mkdir -p /data/db && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -143,6 +147,9 @@ RUN git clone https://github.com/MongoEngine/mongoengine.git /home/mongoengine
 WORKDIR /home/mongoengine
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements-dev.txt blinker Pillow
 """
         dockerfile_content += f"""
 {copy_commands}
