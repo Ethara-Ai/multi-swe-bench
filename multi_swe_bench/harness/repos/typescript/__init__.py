@@ -29,6 +29,7 @@ from multi_swe_bench.harness.repos.typescript.BetterThanTomorrow import *
 from multi_swe_bench.harness.repos.typescript.blitz_js import *
 from multi_swe_bench.harness.repos.typescript.blockscout import *
 from multi_swe_bench.harness.repos.typescript.boardgameio import *
+from multi_swe_bench.harness.repos.typescript.bolivian_peru import *
 from multi_swe_bench.harness.repos.typescript.calcom import *
 from multi_swe_bench.harness.repos.typescript.canonical import *
 from multi_swe_bench.harness.repos.typescript.capricorn86 import *
