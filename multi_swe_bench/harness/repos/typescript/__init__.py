@@ -133,5 +133,6 @@ from multi_swe_bench.harness.repos.typescript.vuejs import *
 from multi_swe_bench.harness.repos.typescript.vuetifyjs import *
 from multi_swe_bench.harness.repos.typescript.webdriverio import *
 from multi_swe_bench.harness.repos.typescript.website import *
+from multi_swe_bench.harness.repos.typescript.wei import *
 from multi_swe_bench.harness.repos.typescript.withastro import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
