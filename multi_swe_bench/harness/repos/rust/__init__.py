@@ -1,5 +1,6 @@
 from multi_swe_bench.harness.repos.rust.actix import *
 from multi_swe_bench.harness.repos.rust.alacritty import *
+from multi_swe_bench.harness.repos.rust.bevyengine import *
 from multi_swe_bench.harness.repos.rust.astral_sh import *
 from multi_swe_bench.harness.repos.rust.async_graphql import *
 from multi_swe_bench.harness.repos.rust.atuinsh import *
