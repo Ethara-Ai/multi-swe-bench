@@ -51,7 +51,7 @@ class ImageDefault(Image):
 ###ACTION_DELIMITER###
 pip install -r development.txt
 ###ACTION_DELIMITER###
-apt-get update && apt-get install -y python3-pip
+apt-get update && apt-get install -y python3-pip libffi-dev gcc golang-go
 ###ACTION_DELIMITER###
 pip3 install -r development.txt
 ###ACTION_DELIMITER###
@@ -88,7 +88,7 @@ bash test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-#!/bin/bash
+source /home/{pr.repo}/venv/bin/activate 2>/dev/null || true
 pytest -v -rf --cov=CTFd --cov-context=test --cov-report=xml \
     --ignore-glob="**/node_modules/" \
     --ignore=node_modules/ \
@@ -105,11 +105,9 @@ pipdeptree
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-#!/bin/bash
+source /home/{pr.repo}/venv/bin/activate 2>/dev/null || true
+git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch || git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/test.patch 2>&1 || true
+find . -name '*.rej' -delete 2>/dev/null || true
 pytest -v -rf --cov=CTFd --cov-context=test --cov-report=xml \
     --ignore-glob="**/node_modules/" \
     --ignore=node_modules/ \
@@ -126,11 +124,9 @@ pipdeptree
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-#!/bin/bash
+source /home/{pr.repo}/venv/bin/activate 2>/dev/null || true
+git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch || {{ git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/test.patch 2>&1 || true; git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/fix.patch 2>&1 || true; }}
+find . -name '*.rej' -delete 2>/dev/null || true
 pytest -v -rf --cov=CTFd --cov-context=test --cov-report=xml \
     --ignore-glob="**/node_modules/" \
     --ignore=node_modules/ \
@@ -178,8 +174,12 @@ WORKDIR /home/CTFd
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
 """
+        prepare_commands = "RUN bash /home/prepare.sh"
+
         dockerfile_content += f"""
 {copy_commands}
+
+{prepare_commands}
 """
         return dockerfile_content.format(pr=self.pr)
 

@@ -4,6 +4,7 @@ from multi_swe_bench.harness.repos.javascript._4ian import *
 from multi_swe_bench.harness.repos.javascript.Accenture import *
 from multi_swe_bench.harness.repos.javascript.accordproject import *
 from multi_swe_bench.harness.repos.javascript.acornjs import *
+from multi_swe_bench.harness.repos.javascript.adam_p import *
 from multi_swe_bench.harness.repos.javascript.adobe import *
 from multi_swe_bench.harness.repos.javascript.aframevr import *
 from multi_swe_bench.harness.repos.javascript.Agoric import *
