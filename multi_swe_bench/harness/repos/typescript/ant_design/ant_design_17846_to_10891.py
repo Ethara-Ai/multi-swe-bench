@@ -1,111 +1,12 @@
-"""ant-design/ant-design base config — fallback for PRs without number_interval."""
-
-import re
-from typing import Optional, Union
+from typing import Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design import parse_jest_log
 
 
-def parse_jest_log(test_log: str) -> TestResult:
-    """Shared Jest parse_log for all ant-design era configs.
-
-    Handles both file-level (PASS/FAIL <path>) and test-level (✓/✕ <name>)
-    output from Jest verbose mode. Pattern derived from jestjs/jest.py
-    (authoritative Jest config) with ANSI stripping and set-based dedup
-    from remotion (gold standard infrastructure).
-    """
-    passed_tests: set[str] = set()
-    failed_tests: set[str] = set()
-    skipped_tests: set[str] = set()
-
-    # Strip ANSI escape codes
-    clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-
-    # File-level patterns (PASS/FAIL <filepath>)
-    # Use \S+ because file paths never contain spaces, avoiding lazy/optional timing ambiguity
-    re_pass_file = re.compile(r"^PASS:?\s+(\S+)")
-    re_fail_file = re.compile(r"^FAIL:?\s+(\S+)")
-
-    # Test-level patterns (✓/✕ <test name>)
-    re_pass_check = re.compile(r"^\s*[✓✔]\s+(.+)$")
-    re_pass_timing = re.compile(r"[✓✔]\s+(.+?)\s+\(\d+\s*ms\)")
-    re_fail_cross = re.compile(r"^\s*[×✗✕]\s+(.+)$")
-    re_fail_timing = re.compile(r"[×✗✕]\s+(.+?)\s+\(\d+\s*ms\)")
-
-    # Skip patterns
-    re_skip_circle = re.compile(r"^\s*[○◌]\s+(.+)$")
-    re_skip_keyword = re.compile(r"SKIP:?\s+(.+?)\s")
-
-    for line in clean_log.splitlines():
-        # Pass — file-level
-        m = re_pass_file.match(line)
-        if m and m.group(1) not in failed_tests:
-            passed_tests.add(m.group(1))
-            continue
-
-        # Pass — test-level (timing first — strips timing suffix)
-        m = re_pass_timing.search(line)
-        if m and m.group(1) not in failed_tests:
-            passed_tests.add(m.group(1))
-            continue
-
-        # Pass — test-level (checkmark fallback — no timing)
-        m = re_pass_check.match(line)
-        if m and m.group(1) not in failed_tests:
-            passed_tests.add(m.group(1))
-            continue
-
-        # Fail — file-level
-        m = re_fail_file.match(line)
-        if m:
-            failed_tests.add(m.group(1))
-            passed_tests.discard(m.group(1))
-            continue
-
-        # Fail — test-level (timing first — strips timing suffix)
-        m = re_fail_timing.search(line)
-        if m:
-            failed_tests.add(m.group(1))
-            passed_tests.discard(m.group(1))
-            continue
-
-        # Fail — test-level (cross fallback — no timing)
-        m = re_fail_cross.match(line)
-        if m:
-            failed_tests.add(m.group(1))
-            passed_tests.discard(m.group(1))
-            continue
-
-        # Skip — circle symbol
-        m = re_skip_circle.match(line)
-        if m:
-            skipped_tests.add(m.group(1))
-            continue
-
-        # Skip — keyword
-        m = re_skip_keyword.match(line)
-        if m:
-            skipped_tests.add(m.group(1))
-            continue
-
-    # Final dedup: worst wins — sets must be mutually exclusive
-    passed_tests -= failed_tests
-    passed_tests -= skipped_tests
-    skipped_tests -= failed_tests
-
-    return TestResult(
-        passed_count=len(passed_tests),
-        failed_count=len(failed_tests),
-        skipped_count=len(skipped_tests),
-        passed_tests=passed_tests,
-        failed_tests=failed_tests,
-        skipped_tests=skipped_tests,
-    )
-
-
-class AntDesignImageBase(Image):
+class AntDesignImageBase_ANT_DESIGN_17846_TO_10891(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -119,13 +20,13 @@ class AntDesignImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:18"
+        return "node:11"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-17846_to_10891"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-17846_to_10891"
 
     def files(self) -> list[File]:
         return []
@@ -157,7 +58,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 """
 
 
-class AntDesignImageDefault(Image):
+class AntDesignImageDefault_ANT_DESIGN_17846_TO_10891(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -171,7 +72,7 @@ class AntDesignImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return AntDesignImageBase(self.pr, self.config)
+        return AntDesignImageBase_ANT_DESIGN_17846_TO_10891(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -217,28 +118,39 @@ bash /home/check_git_changes.sh
 git checkout {base_sha}
 bash /home/check_git_changes.sh
 
-npm install || true
+npm install --legacy-peer-deps || true
 
 # Pin transitive deps to prevent version drift (no lockfile in repo)
-npm install --no-save cheerio@1.0.0-rc.10 2>/dev/null || true
+npm install --no-save --legacy-peer-deps jsdom@11.12.0 jest-environment-jsdom@24.9.0 nwsapi@2.2.2 2>/dev/null || true
+
+# Force cheerio@0.22.0 LAST — enzyme depends on cheerio@^1.0.0-rc.2 which npm resolves to 1.x
+# cheerio@1.x uses catch{{}}/node:stream (needs Node 10+/16+), must nuke AFTER all npm installs
+find node_modules -path "*/node_modules/cheerio" -type d -exec rm -rf {{}} + 2>/dev/null
+rm -rf node_modules/cheerio node_modules/.package-lock.json 2>/dev/null
+npm install --no-save --legacy-peer-deps cheerio@0.22.0 2>/dev/null || true
+for nested in $(find node_modules -path "*/node_modules/cheerio/dist" -type d 2>/dev/null); do
+  nested_dir=$(dirname "$nested")
+  rm -rf "$nested_dir"
+  cp -r node_modules/cheerio "$nested_dir"
+done
+find node_modules -name "parse5-parser-stream" -type d -exec rm -rf {{}} + 2>/dev/null
 npm run version || true
 
-# Patch .jest.js to add missing ESM module transforms
-node -e "
+node << 'PATCHEOF' || true
 const fs = require('fs');
 try {{
   let c = fs.readFileSync('.jest.js', 'utf8');
   const needed = ['@exodus', 'jsdom', '@csstools', '@asamuzakjp/dom-selector'];
   let changed = false;
   for (const m of needed) {{
-    if (!c.includes(\"'\" + m + \"'\")) {{
-      c = c.replace('const compileModules = [', \"const compileModules = [\\n  '\" + m + \"',\");
+    if (!c.includes("'" + m + "'")) {{
+      c = c.replace('const compileModules = [', "const compileModules = [\\n  '" + m + "',");
       changed = true;
     }}
   }}
   if (changed) {{ fs.writeFileSync('.jest.js', c); console.log('Patched .jest.js ESM modules'); }}
 }} catch(e) {{ console.log('No .jest.js to patch'); }}
-" || true
+PATCHEOF
 """.format(repo=self.pr.repo, base_sha=self.pr.base.sha),
             ),
             File(
@@ -281,7 +193,7 @@ npx jest --config .jest.js --no-cache --verbose || true
     def dockerfile(self) -> str:
         image = self.dependency()
         if isinstance(image, str):
-            raise ValueError("AntDesignImageDefault dependency must be an Image")
+            raise ValueError("AntDesignImageDefault_ANT_DESIGN_17846_TO_10891 dependency must be an Image")
         name = image.image_name()
         tag = image.image_tag()
 
@@ -302,8 +214,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("ant-design", "ant-design")
-class AntDesign(Instance):
+@Instance.register("ant-design", "ant_design_17846_to_10891")
+class ANT_DESIGN_17846_TO_10891(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -313,8 +225,8 @@ class AntDesign(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
-        return AntDesignImageDefault(self.pr, self._config)
+    def dependency(self) -> Image | None:
+        return AntDesignImageDefault_ANT_DESIGN_17846_TO_10891(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
