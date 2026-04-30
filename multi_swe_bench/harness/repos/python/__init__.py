@@ -94,6 +94,7 @@ from multi_swe_bench.harness.repos.python.geopandas import *
 from multi_swe_bench.harness.repos.python.getmoto import *
 from multi_swe_bench.harness.repos.python.getsentry import *
 from multi_swe_bench.harness.repos.python.giampaolo import *
+from multi_swe_bench.harness.repos.python.github import *
 from multi_swe_bench.harness.repos.python.google import *
 from multi_swe_bench.harness.repos.python.googleapis import *
 from multi_swe_bench.harness.repos.python.great_expectations import *
