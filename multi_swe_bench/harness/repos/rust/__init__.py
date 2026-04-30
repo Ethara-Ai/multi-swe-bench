@@ -29,6 +29,7 @@ from multi_swe_bench.harness.repos.rust.PyO3 import *
 from multi_swe_bench.harness.repos.rust.qdrant import *
 from multi_swe_bench.harness.repos.rust.ratatui import *
 from multi_swe_bench.harness.repos.rust.rayon_rs import *
+from multi_swe_bench.harness.repos.rust.rtk_ai import *
 from multi_swe_bench.harness.repos.rust.rusqlite import *
 from multi_swe_bench.harness.repos.rust.rust_lang import *
 from multi_swe_bench.harness.repos.rust.rust_ndarray import *
