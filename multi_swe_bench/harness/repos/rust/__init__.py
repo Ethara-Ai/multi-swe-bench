@@ -25,6 +25,7 @@ from multi_swe_bench.harness.repos.rust.iced_rs import *
 from multi_swe_bench.harness.repos.rust.napi_rs import *
 from multi_swe_bench.harness.repos.rust.nushell import *
 from multi_swe_bench.harness.repos.rust.ogham import *
+from multi_swe_bench.harness.repos.rust.pola_rs import *
 from multi_swe_bench.harness.repos.rust.PyO3 import *
 from multi_swe_bench.harness.repos.rust.qdrant import *
 from multi_swe_bench.harness.repos.rust.ratatui import *
