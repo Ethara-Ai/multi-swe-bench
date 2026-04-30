@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "eclipse-temurin:8-jdk"
+        return "openjdk:11-jdk-slim"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -76,9 +76,9 @@ mvn clean test -Dstyle.color=never -e -Dsurefire.printSummary=always -Dsurefire.
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
+#!/bin/bash
 mvn clean test -Dstyle.color=never -e -Dsurefire.printSummary=always -Dsurefire.useFile=false
-echo "=== JASMINE TESTS ==="
-mvn jasmine:test -Dstyle.color=never
+
 """.replace("[[REPO_NAME]]", repo_name),
             ),
             File(
@@ -90,9 +90,9 @@ if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
+#!/bin/bash
 mvn clean test -Dstyle.color=never -e -Dsurefire.printSummary=always -Dsurefire.useFile=false
-echo "=== JASMINE TESTS ==="
-mvn jasmine:test -Dstyle.color=never
+
 """.replace("[[REPO_NAME]]", repo_name),
             ),
             File(
@@ -104,9 +104,9 @@ if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /hom
     echo "Error: git apply failed" >&2
     exit 1  
 fi
+#!/bin/bash
 mvn clean test -Dstyle.color=never -e -Dsurefire.printSummary=always -Dsurefire.useFile=false
-echo "=== JASMINE TESTS ==="
-mvn jasmine:test -Dstyle.color=never
+
 """.replace("[[REPO_NAME]]", repo_name),
             ),
         ]
@@ -122,7 +122,7 @@ mvn jasmine:test -Dstyle.color=never
 
 # Choose an appropriate base image based on the project's requirements - replace openjdk:11-jdk-slim with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM eclipse-temurin:8-jdk
+FROM openjdk:11-jdk-slim
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -131,7 +131,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # For example: RUN apt-get update && apt-get install -y git
 # For example: RUN yum install -y git
 # For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git maven
+RUN apt-get update && apt-get install -y git
 
 # Ensure bash is available
 RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
@@ -184,16 +184,19 @@ class AODN_PORTAL_2406_TO_2042(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+        # Parse the log content and extract test execution results.
+        passed_tests = set()  # Tests that passed successfully
+        failed_tests = set()  # Tests that failed
+        skipped_tests = set()  # Tests that were skipped
         import re
 
-        # Groovy / Surefire: testMethod(Class) or Class.testMethod
+        # Implement the log parsing logic here
+        # Extract all test names using regex patterns
         test_patterns = [
-            re.compile(r"(test[A-Za-z0-9_]+)\(([A-Za-z0-9.]+)\)"),
-            re.compile(r"([A-Za-z0-9.]+)\.(test[A-Za-z0-9_]+)"),
+            re.compile(r"(test[A-Za-z0-9_]+)\(([A-Za-z0-9.]+)\)"),  # testMethod(Class)
+            re.compile(r"([A-Za-z0-9.]+)\.(test[A-Za-z0-9_]+)"),  # Class.testMethod
         ]
+        # Collect all unique test names (normalized to Class.testMethod)
         test_names = set()
         for line in log.split("\n"):
             line = line.strip()
@@ -207,50 +210,31 @@ class AODN_PORTAL_2406_TO_2042(Instance):
                         class_name, method = match.groups()
                         test_name = f"{class_name}.{method}"
                     test_names.add(test_name)
-        groovy_failed = set()
-        if test_names:
-            stack_trace_re = re.compile(
-                r"at .*?(" + "|".join(re.escape(test) for test in test_names) + ")"
-            )
-            in_error = False
-            for line in log.split("\n"):
-                line = line.strip()
-                if "java.lang." in line or "NullPointerException" in line:
-                    in_error = True
-                if in_error and "at " in line:
-                    match = stack_trace_re.search(line)
-                    if match:
-                        groovy_failed.add(match.group(1))
-                        in_error = False
-        groovy_passed = test_names - groovy_failed
-
-        # Jasmine (JavaScript): parse section after "=== JASMINE TESTS ==="
-        jasmine_failed = set()
-        jasmine_section = log.split("=== JASMINE TESTS ===")[-1] if "=== JASMINE TESTS ===" in log else ""
-        jasmine_passed_count = 0
-        if jasmine_section:
-            # "N.) Full.Spec.Path <<< FAILURE!" format
-            failure_re = re.compile(r"^\d+\.\)\s+(.+?)\s+<<<\s+FAILURE!", re.MULTILINE)
-            for m in failure_re.finditer(jasmine_section):
-                jasmine_failed.add(m.group(1).strip())
-
-            # Inline "spec description <<< FAILURE!" (without numbered prefix)
-            inline_re = re.compile(r"^(.+?)\s+<<<\s+FAILURE!", re.MULTILINE)
-            for m in inline_re.finditer(jasmine_section):
-                raw = m.group(1).strip()
-                if not re.match(r"^\d+\.\)", raw):
-                    jasmine_failed.add(raw)
-
-            # "Results: NNN specs, N failures" — derive passed count
-            total_match = re.search(r"Results:\s+(\d+)\s+specs?,\s+(\d+)\s+failures?", jasmine_section)
-            if total_match:
-                jasmine_passed_count = int(total_match.group(1)) - int(total_match.group(2))
-
-        passed_tests = groovy_passed
-        failed_tests = groovy_failed | jasmine_failed
-
-        for i in range(jasmine_passed_count):
-            passed_tests.add(f"jasmine_spec_{i}")
+        # Identify failed tests by checking if their name appears in stack traces
+        failed_tests = set()
+        stack_trace_re = re.compile(
+            r"at .*?(" + "|".join(re.escape(test) for test in test_names) + ")"
+        )  # Match test names in stack traces (escaped for special chars)
+        in_error = False
+        for line in log.split("\n"):
+            line = line.strip()
+            # Detect error start (e.g., exception messages)
+            if "java.lang." in line or "NullPointerException" in line:
+                in_error = True
+            # Check stack trace lines following an error
+            if in_error and "at " in line:
+                match = stack_trace_re.search(line)
+                if match:
+                    failed_test = match.group(1)
+                    failed_tests.add(failed_test)
+                    in_error = False  # Reset after finding the test
+        # Passed tests are those not in failed_tests
+        passed_tests = test_names - failed_tests
+        parsed_results = {
+            "passed_tests": passed_tests,
+            "failed_tests": failed_tests,
+            "skipped_tests": skipped_tests,
+        }
 
         return TestResult(
             passed_count=len(passed_tests),
