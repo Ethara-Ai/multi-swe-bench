@@ -51,6 +51,7 @@ from multi_swe_bench.harness.repos.typescript.drizzle_team import *
 from multi_swe_bench.harness.repos.typescript.Effect_TS import *
 from multi_swe_bench.harness.repos.typescript.electron import *
 from multi_swe_bench.harness.repos.typescript.equinor import *
+from multi_swe_bench.harness.repos.typescript.excalidraw import *
 from multi_swe_bench.harness.repos.typescript.Expensify import *
 from multi_swe_bench.harness.repos.typescript.facebook import *
 from multi_swe_bench.harness.repos.typescript.firecrawl import *

@@ -97,3 +97,4 @@ from multi_swe_bench.harness.repos.typescript.NomicFoundation import *
 from multi_swe_bench.harness.repos.typescript.Effect_TS import *
 from multi_swe_bench.harness.repos.typescript.stakwork import *
 from multi_swe_bench.harness.repos.typescript.refinedev import *
+from multi_swe_bench.harness.repos.typescript.excalidraw import *
