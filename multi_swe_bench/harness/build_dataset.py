@@ -541,7 +541,9 @@ class CliArgs:
             is_clean, error_msg = git_util.is_clean(repo_dir)
             if not is_clean:
                 self.logger.error(error_msg)
-                self.skips.add(repo_commits.skip_id)
+                if self.skips is None:
+                    self.skips = set()
+                self.skips.update(repo_commits.skip_id)
                 error_happened = True
                 continue
 
@@ -549,7 +551,9 @@ class CliArgs:
             if len(commit_hashes) == 0:
                 self.logger.error(f"No commit hashes found in {repo.repo_full_name}")
                 error_happened = True
-                self.skips.add(repo_commits.skip_id)
+                if self.skips is None:
+                    self.skips = set()
+                self.skips.update(repo_commits.skip_id)
                 continue
 
             for commit_hash, pr_number in tqdm(
@@ -561,7 +565,9 @@ class CliArgs:
                         f"Commit hash not found in {repo.repo_full_name}:pr-{pr_number}: {commit_hash}"
                     )
                     error_happened = True
-                    self.skips.add(repo_commits.skip_id)
+                    if self.skips is None:
+                        self.skips = set()
+                    self.skips.add(f"{repo.org}/{repo.repo}:pr-{pr_number}")
 
         # if error_happened:
         #     raise ValueError("Check commit hashes failed, please check the logs.")
