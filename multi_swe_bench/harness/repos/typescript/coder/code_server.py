@@ -49,7 +49,7 @@ fi
 # ---------- end smart install ----------
 """
 
-_TEST_CMD = "./ci/dev/test-unit.sh --forceExit --detectOpenHandles 2>&1 || true"
+_TEST_CMD = "./ci/dev/test-unit.sh --forceExit --detectOpenHandles --verbose 2>&1 || true"
 
 
 class CodeServerImageBase(Image):
@@ -336,11 +336,10 @@ class CodeServer(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        # Jest verbose: ✓ name (Xms), ✕ name (Xms), ○ skipped name
-        # Jest summary: Tests: N failed, N passed, N total
-        pass_re = re.compile(r"^\s*[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$")
-        fail_re = re.compile(r"^\s*[✕✗×]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$")
-        skip_re = re.compile(r"^\s*[○]\s+(?:skipped\s+)?(.+)$")
+        pass_re = re.compile(r"^(\s*)[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$")
+        fail_re = re.compile(r"^(\s*)[✕✗×]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$")
+        skip_re = re.compile(r"^(\s*)[○]\s+(?:skipped\s+)?(.+)$")
+        describe_re = re.compile(r"^(\s{2,})(\S.*)$")
 
         summary_re = re.compile(
             r"^Tests:\s+"
@@ -355,6 +354,29 @@ class CodeServer(Instance):
         summary_skipped = 0
         found_summary = False
 
+        describe_stack: list[tuple[int, str]] = []
+
+        def _get_context(indent_len: int) -> str:
+            parts = []
+            for lvl, name in describe_stack:
+                if lvl < indent_len:
+                    parts.append(name)
+                else:
+                    break
+            return " › ".join(parts)
+
+        def _update_stack(indent_len: int, name: str) -> None:
+            while describe_stack and describe_stack[-1][0] >= indent_len:
+                describe_stack.pop()
+            describe_stack.append((indent_len, name))
+
+        def _full_name(indent_str: str, test_name: str) -> str:
+            indent_len = len(indent_str)
+            ctx = _get_context(indent_len)
+            if ctx:
+                return f"{ctx} › {test_name}"
+            return test_name
+
         for line in test_log.splitlines():
             stripped = line.strip()
 
@@ -368,14 +390,14 @@ class CodeServer(Instance):
 
             m_pass = pass_re.match(line)
             if m_pass:
-                test_name = m_pass.group(1).strip()
+                test_name = _full_name(m_pass.group(1), m_pass.group(2).strip())
                 if test_name:
                     passed_tests.add(test_name)
                 continue
 
             m_fail = fail_re.match(line)
             if m_fail:
-                test_name = m_fail.group(1).strip()
+                test_name = _full_name(m_fail.group(1), m_fail.group(2).strip())
                 if test_name:
                     failed_tests.add(test_name)
                     passed_tests.discard(test_name)
@@ -383,12 +405,18 @@ class CodeServer(Instance):
 
             m_skip = skip_re.match(line)
             if m_skip:
-                test_name = m_skip.group(1).strip()
+                test_name = _full_name(m_skip.group(1), m_skip.group(2).strip())
                 if test_name:
                     skipped_tests.add(test_name)
                 continue
 
-        # Fallback: use summary counts if no individual lines found
+            m_desc = describe_re.match(line)
+            if m_desc:
+                indent_str = m_desc.group(1)
+                desc_text = m_desc.group(2).strip()
+                if not any(c in desc_text for c in "✓✔✕✗×○●"):
+                    _update_stack(len(indent_str), desc_text)
+
         if not passed_tests and not failed_tests and found_summary:
             for i in range(summary_passed):
                 passed_tests.add(f"test_{i + 1}")
