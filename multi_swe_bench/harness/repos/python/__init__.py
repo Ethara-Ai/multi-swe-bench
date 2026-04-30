@@ -288,6 +288,7 @@ from multi_swe_bench.harness.repos.python.Unidata import *
 from multi_swe_bench.harness.repos.python.unionai_oss import *
 from multi_swe_bench.harness.repos.python.urllib3 import *
 from multi_swe_bench.harness.repos.python.UXARRAY import *
+from multi_swe_bench.harness.repos.python.vacanza import *
 from multi_swe_bench.harness.repos.python.vega import *
 from multi_swe_bench.harness.repos.python.vprusso import *
 from multi_swe_bench.harness.repos.python.vyperlang import *

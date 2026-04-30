@@ -47,3 +47,4 @@ from multi_swe_bench.harness.repos.cpp.roc_streaming import *
 from multi_swe_bench.harness.repos.cpp.zigrazor import *
 from multi_swe_bench.harness.repos.cpp.aristocratos import *
 from multi_swe_bench.harness.repos.cpp.telegramdesktop import *
+from multi_swe_bench.harness.repos.cpp.ccache import *

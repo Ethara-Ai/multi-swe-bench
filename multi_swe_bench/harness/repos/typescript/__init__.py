@@ -11,6 +11,7 @@ from multi_swe_bench.harness.repos.typescript.antvis import *
 from multi_swe_bench.harness.repos.typescript.apache import *
 from multi_swe_bench.harness.repos.typescript.apify import *
 from multi_swe_bench.harness.repos.typescript.apollographql import *
+from multi_swe_bench.harness.repos.typescript.amantus_ai import *
 from multi_swe_bench.harness.repos.typescript.archestra_ai import *
 from multi_swe_bench.harness.repos.typescript.arco_design import *
 from multi_swe_bench.harness.repos.typescript.ariakit import *
@@ -70,6 +71,7 @@ from multi_swe_bench.harness.repos.typescript.jestjs import *
 from multi_swe_bench.harness.repos.typescript.JoshuaKGoldberg import *
 from multi_swe_bench.harness.repos.typescript.Joystream import *
 from multi_swe_bench.harness.repos.typescript.latticexyz import *
+from multi_swe_bench.harness.repos.typescript.livestorejs import *
 from multi_swe_bench.harness.repos.typescript.League_of_Foundry_Developers import *
 from multi_swe_bench.harness.repos.typescript.markedjs import *
 from multi_swe_bench.harness.repos.typescript.mermaid_js import *
