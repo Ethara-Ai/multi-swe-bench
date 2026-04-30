@@ -71,6 +71,7 @@ from multi_swe_bench.harness.repos.typescript.Joystream import *
 from multi_swe_bench.harness.repos.typescript.latticexyz import *
 from multi_swe_bench.harness.repos.typescript.League_of_Foundry_Developers import *
 from multi_swe_bench.harness.repos.typescript.markedjs import *
+from multi_swe_bench.harness.repos.typescript.mermaid_js import *
 from multi_swe_bench.harness.repos.typescript.MetaMask import *
 from multi_swe_bench.harness.repos.typescript.microsoft import *
 from multi_swe_bench.harness.repos.typescript.MTES_MCT import *
