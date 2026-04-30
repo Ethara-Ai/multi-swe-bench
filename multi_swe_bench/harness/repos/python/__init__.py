@@ -300,8 +300,7 @@ from multi_swe_bench.harness.repos.python.yt_dlp import *
 from multi_swe_bench.harness.repos.python.zarr_developers import *
 from multi_swe_bench.harness.repos.python.zulip import *
 from multi_swe_bench.harness.repos.python.ros2 import *
-from multi_swe_bench.harness.repos.python.StackStorm.st2_4976_to_5037 import *
-from multi_swe_bench.harness.repos.python.StackStorm.st2_5038_to_5605 import *
+from multi_swe_bench.harness.repos.python.StackStorm import *
 from multi_swe_bench.harness.repos.python.asottile import *
 from multi_swe_bench.harness.repos.python.koxudaxi import *
 from multi_swe_bench.harness.repos.python.miurahr import *
