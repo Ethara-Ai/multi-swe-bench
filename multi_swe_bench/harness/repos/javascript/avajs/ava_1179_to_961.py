@@ -89,8 +89,7 @@ bash test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-#!/bin/bash
-npx xo --quiet && npx nyc tap --no-cov --timeout=150 test/*.js test/reporters/*.js
+npx nyc tap --no-cov --timeout=150 test/*.js test/reporters/*.js
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -101,10 +100,9 @@ npx xo --quiet && npx nyc tap --no-cov --timeout=150 test/*.js test/reporters/*.
 cd /home/[[REPO_NAME]]
 if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-#!/bin/bash
-npx xo --quiet && npx nyc tap --no-cov --timeout=150 test/*.js test/reporters/*.js
+npx nyc tap --no-cov --timeout=150 test/*.js test/reporters/*.js
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -113,12 +111,11 @@ npx xo --quiet && npx nyc tap --no-cov --timeout=150 test/*.js test/reporters/*.
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-#!/bin/bash
-npx xo --quiet && npx nyc tap --no-cov --timeout=150 test/*.js test/reporters/*.js
+npx nyc tap --no-cov --timeout=150 test/*.js test/reporters/*.js
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
