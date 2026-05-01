@@ -6,6 +6,10 @@ from multi_swe_bench.harness.repos.java.apache.rocketmq import *
 from multi_swe_bench.harness.repos.java.apache.shenyu import *
 from multi_swe_bench.harness.repos.java.apache.logging_log4j2_0_to_2329 import *
 from multi_swe_bench.harness.repos.java.apache.logging_log4j2_2330_to_99999 import *
+<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.java.apache.druid_0_to_16976 import *
 from multi_swe_bench.harness.repos.java.apache.druid_16977_to_18789 import *
 from multi_swe_bench.harness.repos.java.apache.druid_18790_to_99999 import *
+=======
+from multi_swe_bench.harness.repos.java.apache.skywalking import *
+>>>>>>> Stashed changes
