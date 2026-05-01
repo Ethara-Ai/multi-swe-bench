@@ -18,6 +18,7 @@ from multi_swe_bench.harness.repos.rust.fish_shell import *
 from multi_swe_bench.harness.repos.rust.FuelLabs import *
 from multi_swe_bench.harness.repos.rust.GitoxideLabs import *
 from multi_swe_bench.harness.repos.rust.golemcloud import *
+from multi_swe_bench.harness.repos.rust.graphite_editor import *
 from multi_swe_bench.harness.repos.rust.GyulyVGC import *
 from multi_swe_bench.harness.repos.rust.helix_editor import *
 from multi_swe_bench.harness.repos.rust.hyperium import *
