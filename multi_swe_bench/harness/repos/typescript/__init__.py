@@ -174,3 +174,4 @@ from multi_swe_bench.harness.repos.typescript.textlint import *
 from multi_swe_bench.harness.repos.typescript.web3ui import *
 from multi_swe_bench.harness.repos.typescript.wulkano import *
 from multi_swe_bench.harness.repos.typescript.yarnpkg import *
+from multi_swe_bench.harness.repos.typescript.Yeachan_Heo import *
