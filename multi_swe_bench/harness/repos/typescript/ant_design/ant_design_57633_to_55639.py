@@ -118,12 +118,12 @@ bash /home/check_git_changes.sh
 git checkout {base_sha}
 bash /home/check_git_changes.sh
 
-npm install --legacy-peer-deps || true
+npm install --legacy-peer-deps --ignore-scripts || true
 
 # Pin transitive deps to prevent version drift (no lockfile in repo)
 find node_modules -path "*/node_modules/cheerio" -type d -exec rm -rf {{}} + 2>/dev/null
 rm -rf node_modules/cheerio node_modules/.package-lock.json 2>/dev/null
-npm install --no-save --legacy-peer-deps cheerio@1.0.0-rc.10 2>/dev/null || true
+npm install --no-save --legacy-peer-deps --ignore-scripts cheerio@1.0.0-rc.10 2>/dev/null || true
 for nested in $(find node_modules -path "*/node_modules/cheerio/dist" -type d 2>/dev/null); do
   nested_dir=$(dirname "$nested")
   rm -rf "$nested_dir"
