@@ -6,7 +6,18 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class BabelImageBase(Image):
+# Era 3: yarn classic + jest, node:14-slim (Debian Buster)
+# yarn.lock v1 format, jest in devDeps, lerna for bootstrapping
+# PRs #7358-#11973 (master, main, feature branches)
+# WORKAROUND: deleted git dep @lerna/collect-updates must be removed from resolutions
+# Test output (jest --verbose --ci):
+#   PASS packages/.../test/index.js
+#   ✓ test name (Xms)     — pass
+#   ✕ test name (Xms)     — fail
+#   ○ skipped test name    — skip
+
+
+class BabelClassicJestImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +31,13 @@ class BabelImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:22-bookworm"
+        return "node:14-slim"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-classic-jest"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-classic-jest"
 
     def files(self) -> list[File]:
         return []
@@ -41,23 +52,22 @@ class BabelImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        apt_cmd = ("RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
+                   "    sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \\\n"
+                   "    sed -i '/buster-updates/d' /etc/apt/sources.list && \\\n"
+                   "    apt-get update && apt-get install -y --no-install-recommends git make python3 && rm -rf /var/lib/apt/lists/*")
+        parts = [f"FROM {image_name}"]
+        if self.global_env:
+            parts.append(self.global_env)
+        parts.append("WORKDIR /home/")
+        parts.append(apt_cmd)
+        parts.append(code)
+        if self.clear_env:
+            parts.append(self.clear_env)
+        return "\n".join(parts) + "\n"
 
-{self.global_env}
 
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y git make python3
-RUN corepack enable
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class BabelImageDefault(Image):
+class BabelClassicJestImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -71,7 +81,7 @@ class BabelImageDefault(Image):
         return self._config
 
     def dependency(self) -> Optional[Image]:
-        return BabelImageBase(self.pr, self._config)
+        return BabelClassicJestImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -123,8 +133,14 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+# Remove deleted git fork dependency if present in resolutions
+sed -i '/@lerna.*collect-updates/d' package.json || true
+sed -i '/nicolo-ribaudo\\/lerna/d' package.json || true
+
+yarn install --ignore-engines || true
+if [ -f node_modules/.bin/lerna ]; then
+    ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
+fi
 
 """.format(pr=self.pr),
             ),
@@ -134,10 +150,14 @@ YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
                 """#!/bin/bash
 set -e
 cd /home/{pr.repo}
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+sed -i '/@lerna.*collect-updates/d' package.json || true
+sed -i '/nicolo-ribaudo\\/lerna/d' package.json || true
+yarn install --ignore-engines || true
+if [ -f node_modules/.bin/lerna ]; then
+    ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
+fi
 make build || true
-BABEL_ENV=test yarn jest --verbose --ci || true
+BABEL_ENV=test node node_modules/jest/bin/jest.js --verbose --ci || true
 """.format(pr=self.pr),
             ),
             File(
@@ -147,10 +167,14 @@ BABEL_ENV=test yarn jest --verbose --ci || true
 set -e
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+sed -i '/@lerna.*collect-updates/d' package.json || true
+sed -i '/nicolo-ribaudo\\/lerna/d' package.json || true
+yarn install --ignore-engines || true
+if [ -f node_modules/.bin/lerna ]; then
+    ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
+fi
 make build || true
-BABEL_ENV=test yarn jest --verbose --ci || true
+BABEL_ENV=test node node_modules/jest/bin/jest.js --verbose --ci || true
 
 """.format(pr=self.pr),
             ),
@@ -161,10 +185,14 @@ BABEL_ENV=test yarn jest --verbose --ci || true
 set -e
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+sed -i '/@lerna.*collect-updates/d' package.json || true
+sed -i '/nicolo-ribaudo\\/lerna/d' package.json || true
+yarn install --ignore-engines || true
+if [ -f node_modules/.bin/lerna ]; then
+    ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
+fi
 make build || true
-BABEL_ENV=test yarn jest --verbose --ci || true
+BABEL_ENV=test node node_modules/jest/bin/jest.js --verbose --ci || true
 
 """.format(pr=self.pr),
             ),
@@ -212,25 +240,22 @@ BABEL_ENV=test yarn jest --verbose --ci || true
                     RUN rm -f $HOME/.npmrc
                 """
                 )
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{proxy_setup}
-
-{copy_commands}
-
-{prepare_commands}
-
-{proxy_cleanup}
-
-{self.clear_env}
-
-"""
+        parts = [f"FROM {name}:{tag}"]
+        if self.global_env:
+            parts.append(self.global_env)
+        if proxy_setup:
+            parts.append(proxy_setup)
+        parts.append(copy_commands)
+        parts.append(prepare_commands)
+        if proxy_cleanup:
+            parts.append(proxy_cleanup)
+        if self.clear_env:
+            parts.append(self.clear_env)
+        return "\n".join(parts) + "\n"
 
 
-@Instance.register("babel", "babel")
-class Babel(Instance):
+@Instance.register("babel", "babel_classic_jest")
+class babel_classic_jest(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -241,7 +266,7 @@ class Babel(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return BabelImageDefault(self.pr, self._config)
+        return BabelClassicJestImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

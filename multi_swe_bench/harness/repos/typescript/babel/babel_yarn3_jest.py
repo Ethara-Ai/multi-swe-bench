@@ -6,7 +6,18 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class BabelImageBase(Image):
+# Era 5: yarn@3.x + corepack + jest, node:18-bookworm-slim
+# packageManager: yarn@3.x.x in package.json
+# PRs #11554-#16101 (main branch)
+# Test output (jest --verbose --ci):
+#   PASS packages/.../test/index.js
+#   FAIL packages/.../test/index.js
+#   ✓ test name (X ms)    — pass
+#   ✕ test name (X ms)    — fail
+#   ○ skipped test name    — skip
+
+
+class BabelYarn3ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +31,13 @@ class BabelImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:22-bookworm"
+        return "node:18-bookworm-slim"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-yarn3-jest"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-yarn3-jest"
 
     def files(self) -> list[File]:
         return []
@@ -41,23 +52,19 @@ class BabelImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y git make python3
-RUN corepack enable
-{code}
-
-{self.clear_env}
-
-"""
+        parts = [f"FROM {image_name}"]
+        if self.global_env:
+            parts.append(self.global_env)
+        parts.append("WORKDIR /home/")
+        parts.append("RUN apt-get update && apt-get install -y --no-install-recommends git make python3 && rm -rf /var/lib/apt/lists/*")
+        parts.append("RUN corepack enable")
+        parts.append(code)
+        if self.clear_env:
+            parts.append(self.clear_env)
+        return "\n".join(parts) + "\n"
 
 
-class BabelImageDefault(Image):
+class BabelYarn3ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -71,7 +78,7 @@ class BabelImageDefault(Image):
         return self._config
 
     def dependency(self) -> Optional[Image]:
-        return BabelImageBase(self.pr, self._config)
+        return BabelYarn3ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -212,25 +219,22 @@ BABEL_ENV=test yarn jest --verbose --ci || true
                     RUN rm -f $HOME/.npmrc
                 """
                 )
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{proxy_setup}
-
-{copy_commands}
-
-{prepare_commands}
-
-{proxy_cleanup}
-
-{self.clear_env}
-
-"""
+        parts = [f"FROM {name}:{tag}"]
+        if self.global_env:
+            parts.append(self.global_env)
+        if proxy_setup:
+            parts.append(proxy_setup)
+        parts.append(copy_commands)
+        parts.append(prepare_commands)
+        if proxy_cleanup:
+            parts.append(proxy_cleanup)
+        if self.clear_env:
+            parts.append(self.clear_env)
+        return "\n".join(parts) + "\n"
 
 
-@Instance.register("babel", "babel")
-class Babel(Instance):
+@Instance.register("babel", "babel_yarn3_jest")
+class babel_yarn3_jest(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -241,7 +245,7 @@ class Babel(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return BabelImageDefault(self.pr, self._config)
+        return BabelYarn3ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

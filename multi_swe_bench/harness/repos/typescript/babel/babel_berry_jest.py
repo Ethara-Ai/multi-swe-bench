@@ -6,7 +6,18 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class BabelImageBase(Image):
+# Era 4: yarn berry (bundled yarnPath) + jest, node:16-slim
+# .yarnrc.yml with yarnPath: .yarn/releases/yarn-2.4.x.cjs, no packageManager field
+# PRs #10853-#13727 (main, next-8-dev, feature branches)
+# Install via: node .yarn/releases/yarn-*.cjs install (no corepack)
+# Test output (jest --verbose --ci):
+#   PASS packages/.../test/index.js
+#   ✓ test name (X ms)    — pass
+#   ✕ test name (X ms)    — fail
+#   ○ skipped test name    — skip
+
+
+class BabelBerryImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +31,13 @@ class BabelImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:22-bookworm"
+        return "node:16-slim"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-berry-jest"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-berry-jest"
 
     def files(self) -> list[File]:
         return []
@@ -41,23 +52,22 @@ class BabelImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        apt_cmd = ("RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
+                   "    sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \\\n"
+                   "    sed -i '/bullseye-updates/d' /etc/apt/sources.list && \\\n"
+                   "    apt-get update && apt-get install -y --no-install-recommends git make python3 && rm -rf /var/lib/apt/lists/*")
+        parts = [f"FROM {image_name}"]
+        if self.global_env:
+            parts.append(self.global_env)
+        parts.append("WORKDIR /home/")
+        parts.append(apt_cmd)
+        parts.append(code)
+        if self.clear_env:
+            parts.append(self.clear_env)
+        return "\n".join(parts) + "\n"
 
-{self.global_env}
 
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y git make python3
-RUN corepack enable
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class BabelImageDefault(Image):
+class BabelBerryImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -71,7 +81,7 @@ class BabelImageDefault(Image):
         return self._config
 
     def dependency(self) -> Optional[Image]:
-        return BabelImageBase(self.pr, self._config)
+        return BabelBerryImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -123,8 +133,8 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+YARN_BIN=$(find .yarn/releases -name 'yarn-*.cjs' | head -1)
+node $YARN_BIN install || true
 
 """.format(pr=self.pr),
             ),
@@ -134,10 +144,10 @@ YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
                 """#!/bin/bash
 set -e
 cd /home/{pr.repo}
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+YARN_BIN=$(find .yarn/releases -name 'yarn-*.cjs' | head -1)
+node $YARN_BIN install || true
 make build || true
-BABEL_ENV=test yarn jest --verbose --ci || true
+BABEL_ENV=test node $YARN_BIN node $(node $YARN_BIN bin jest) --verbose --ci || true
 """.format(pr=self.pr),
             ),
             File(
@@ -147,10 +157,10 @@ BABEL_ENV=test yarn jest --verbose --ci || true
 set -e
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+YARN_BIN=$(find .yarn/releases -name 'yarn-*.cjs' | head -1)
+node $YARN_BIN install || true
 make build || true
-BABEL_ENV=test yarn jest --verbose --ci || true
+BABEL_ENV=test node $YARN_BIN node $(node $YARN_BIN bin jest) --verbose --ci || true
 
 """.format(pr=self.pr),
             ),
@@ -161,10 +171,10 @@ BABEL_ENV=test yarn jest --verbose --ci || true
 set -e
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+YARN_BIN=$(find .yarn/releases -name 'yarn-*.cjs' | head -1)
+node $YARN_BIN install || true
 make build || true
-BABEL_ENV=test yarn jest --verbose --ci || true
+BABEL_ENV=test node $YARN_BIN node $(node $YARN_BIN bin jest) --verbose --ci || true
 
 """.format(pr=self.pr),
             ),
@@ -212,25 +222,22 @@ BABEL_ENV=test yarn jest --verbose --ci || true
                     RUN rm -f $HOME/.npmrc
                 """
                 )
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{proxy_setup}
-
-{copy_commands}
-
-{prepare_commands}
-
-{proxy_cleanup}
-
-{self.clear_env}
-
-"""
+        parts = [f"FROM {name}:{tag}"]
+        if self.global_env:
+            parts.append(self.global_env)
+        if proxy_setup:
+            parts.append(proxy_setup)
+        parts.append(copy_commands)
+        parts.append(prepare_commands)
+        if proxy_cleanup:
+            parts.append(proxy_cleanup)
+        if self.clear_env:
+            parts.append(self.clear_env)
+        return "\n".join(parts) + "\n"
 
 
-@Instance.register("babel", "babel")
-class Babel(Instance):
+@Instance.register("babel", "babel_berry_jest")
+class babel_berry_jest(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -241,7 +248,7 @@ class Babel(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return BabelImageDefault(self.pr, self._config)
+        return BabelBerryImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

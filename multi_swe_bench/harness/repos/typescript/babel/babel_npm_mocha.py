@@ -6,7 +6,19 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class BabelImageBase(Image):
+# Era 1: npm + mocha, node:6-slim (Debian Stretch)
+# No yarn.lock, no lerna, mocha in devDeps
+# PRs #319-#5427 (master, 7.0 branch)
+# Test output (mocha --reporter dot):
+#   ․․․․  (dots for individual passes)
+#   N passing (Xs)
+#   N pending
+#   N failing
+#   1) suite name test name:
+#      Error: message
+
+
+class BabelNpmMochaImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +32,13 @@ class BabelImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:22-bookworm"
+        return "node:6-slim"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-npm-mocha"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-npm-mocha"
 
     def files(self) -> list[File]:
         return []
@@ -41,23 +53,22 @@ class BabelImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        apt_cmd = ("RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
+                   "    sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \\\n"
+                   "    sed -i '/stretch-updates/d' /etc/apt/sources.list && \\\n"
+                   "    apt-get update && apt-get install -y --no-install-recommends --allow-unauthenticated git make python && rm -rf /var/lib/apt/lists/*")
+        parts = [f"FROM {image_name}"]
+        if self.global_env:
+            parts.append(self.global_env)
+        parts.append("WORKDIR /home/")
+        parts.append(apt_cmd)
+        parts.append(code)
+        if self.clear_env:
+            parts.append(self.clear_env)
+        return "\n".join(parts) + "\n"
 
-{self.global_env}
 
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y git make python3
-RUN corepack enable
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class BabelImageDefault(Image):
+class BabelNpmMochaImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -71,7 +82,7 @@ class BabelImageDefault(Image):
         return self._config
 
     def dependency(self) -> Optional[Image]:
-        return BabelImageBase(self.pr, self._config)
+        return BabelNpmMochaImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -123,8 +134,8 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+npm install || true
+node scripts/bootstrap.js 2>/dev/null || true
 
 """.format(pr=self.pr),
             ),
@@ -134,10 +145,10 @@ YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
                 """#!/bin/bash
 set -e
 cd /home/{pr.repo}
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+npm install || true
+node scripts/bootstrap.js 2>/dev/null || true
 make build || true
-BABEL_ENV=test yarn jest --verbose --ci || true
+./scripts/test.sh 2>&1 || true
 """.format(pr=self.pr),
             ),
             File(
@@ -147,10 +158,10 @@ BABEL_ENV=test yarn jest --verbose --ci || true
 set -e
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+npm install || true
+node scripts/bootstrap.js 2>/dev/null || true
 make build || true
-BABEL_ENV=test yarn jest --verbose --ci || true
+./scripts/test.sh 2>&1 || true
 
 """.format(pr=self.pr),
             ),
@@ -161,10 +172,10 @@ BABEL_ENV=test yarn jest --verbose --ci || true
 set -e
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-corepack enable || true
-YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
+npm install || true
+node scripts/bootstrap.js 2>/dev/null || true
 make build || true
-BABEL_ENV=test yarn jest --verbose --ci || true
+./scripts/test.sh 2>&1 || true
 
 """.format(pr=self.pr),
             ),
@@ -212,25 +223,22 @@ BABEL_ENV=test yarn jest --verbose --ci || true
                     RUN rm -f $HOME/.npmrc
                 """
                 )
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{proxy_setup}
-
-{copy_commands}
-
-{prepare_commands}
-
-{proxy_cleanup}
-
-{self.clear_env}
-
-"""
+        parts = [f"FROM {name}:{tag}"]
+        if self.global_env:
+            parts.append(self.global_env)
+        if proxy_setup:
+            parts.append(proxy_setup)
+        parts.append(copy_commands)
+        parts.append(prepare_commands)
+        if proxy_cleanup:
+            parts.append(proxy_cleanup)
+        if self.clear_env:
+            parts.append(self.clear_env)
+        return "\n".join(parts) + "\n"
 
 
-@Instance.register("babel", "babel")
-class Babel(Instance):
+@Instance.register("babel", "babel_npm_mocha")
+class babel_npm_mocha(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -241,7 +249,7 @@ class Babel(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return BabelImageDefault(self.pr, self._config)
+        return BabelNpmMochaImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -266,40 +274,33 @@ class Babel(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        passed_res = [
-            re.compile(r"^PASS:?\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*s\))?$"),
-            re.compile(r"^\s*[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$"),
-        ]
+        # Mocha dot reporter: failures listed as "N) suite/test name:"
+        # Passes are only dots — generate synthetic names from summary count
+        fail_re = re.compile(r"^\s+(\d+)\)\s+(.+?)\s*:?\s*$")
+        passing_re = re.compile(r"^\s+(\d+)\s+passing")
+        pending_re = re.compile(r"^\s+(\d+)\s+pending")
 
-        failed_res = [
-            re.compile(r"^FAIL:?\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*s\))?$"),
-            re.compile(r"^\s*[✕×✗]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$"),
-        ]
-
-        skipped_res = [
-            re.compile(r"^\s*○\s+skipped\s+(.+)$"),
-        ]
+        pass_count = 0
+        skip_count = 0
 
         for line in test_log.splitlines():
-            for passed_re in passed_res:
-                m = passed_re.match(line)
-                if m and m.group(1) not in failed_tests:
-                    passed_tests.add(m.group(1))
+            m = fail_re.match(line)
+            if m:
+                failed_tests.add(m.group(2).strip())
 
-            for failed_re in failed_res:
-                m = failed_re.match(line)
-                if m:
-                    failed_tests.add(m.group(1))
-                    if m.group(1) in passed_tests:
-                        passed_tests.remove(m.group(1))
+            m = passing_re.match(line)
+            if m:
+                pass_count = int(m.group(1))
 
-            for skipped_re in skipped_res:
-                m = skipped_re.match(line)
-                if m and m.group(1) not in passed_tests and m.group(1) not in failed_tests:
-                    skipped_tests.add(m.group(1))
+            m = pending_re.match(line)
+            if m:
+                skip_count = int(m.group(1))
 
-        skipped_tests -= passed_tests
-        skipped_tests -= failed_tests
+        for i in range(pass_count):
+            passed_tests.add(f"test_pass_{i+1}")
+
+        for i in range(skip_count):
+            skipped_tests.add(f"test_pending_{i+1}")
 
         return TestResult(
             passed_count=len(passed_tests),
