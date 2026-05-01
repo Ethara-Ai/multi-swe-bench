@@ -338,3 +338,6 @@ from multi_swe_bench.harness.repos.python.marshmallow_code import *
 from multi_swe_bench.harness.repos.python.mkdocs import *
 from multi_swe_bench.harness.repos.python.pretalx import *
 from multi_swe_bench.harness.repos.python.python_attrs import *
+from multi_swe_bench.harness.repos.python.mitmproxy import *
+
+
