@@ -83,3 +83,4 @@ from multi_swe_bench.harness.repos.golang.schollz import *
 from multi_swe_bench.harness.repos.golang.ethereum import *
 from multi_swe_bench.harness.repos.golang.wailsapp import *
 from multi_swe_bench.harness.repos.golang.seaweedfs import *
+from multi_swe_bench.harness.repos.golang.juanfont import *
