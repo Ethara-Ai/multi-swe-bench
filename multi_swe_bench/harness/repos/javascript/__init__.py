@@ -1,5 +1,4 @@
 from multi_swe_bench.harness.repos.golang.cilium import *
-from multi_swe_bench.harness.repos.javascript.vavr_io import *
 from multi_swe_bench.harness.repos.javascript._4ian import *
 from multi_swe_bench.harness.repos.javascript.Accenture import *
 from multi_swe_bench.harness.repos.javascript.accordproject import *
