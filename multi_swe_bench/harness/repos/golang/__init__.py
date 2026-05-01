@@ -79,6 +79,10 @@ from multi_swe_bench.harness.repos.golang.roc_streaming import *
 from multi_swe_bench.harness.repos.golang.nspcc_dev import *
 from multi_swe_bench.harness.repos.golang.cli import *
 from multi_swe_bench.harness.repos.golang.umputun import *
+<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.golang.schollz import *
 from multi_swe_bench.harness.repos.golang.ethereum import *
 from multi_swe_bench.harness.repos.golang.wailsapp import *
+=======
+from multi_swe_bench.harness.repos.golang.seaweedfs import *
+>>>>>>> Stashed changes
