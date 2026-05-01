@@ -130,3 +130,5 @@ from multi_swe_bench.harness.repos.javascript.DDDEastMidlandsLimited import *
 from multi_swe_bench.harness.repos.javascript.mozilla import *
 from multi_swe_bench.harness.repos.javascript.AnomalyInnovations import *
 from multi_swe_bench.harness.repos.javascript.s import *
+from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
+from multi_swe_bench.harness.repos.javascript.style_dictionary import *
