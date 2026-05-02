@@ -45,6 +45,8 @@ class ImageBase(Image):
 
 {self.global_env}
 
+RUN apt-get update && apt-get install -y --no-install-recommends netcat-openbsd less && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /home/
 
 {code}
@@ -54,6 +56,39 @@ WORKDIR /home/
 """
 
 
+class ImageBaseOld(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+    @property
+    def config(self) -> Config:
+        return self._config
+    def dependency(self) -> Union[str, "Image"]:
+        return "node:18"
+    def image_tag(self) -> str:
+        return "base-old"
+    def workdir(self) -> str:
+        return "base-old"
+    def files(self) -> list[File]:
+        return []
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        return f"""FROM {image_name}
+{self.global_env}
+RUN apt-get update && apt-get install -y --no-install-recommends netcat-openbsd less && rm -rf /var/lib/apt/lists/*
+WORKDIR /home/
+{code}
+{self.clear_env}
+"""
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -121,7 +156,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-npm ci || true
+npm ci || npm install
 """.format(pr=self.pr),
             ),
             File(
@@ -143,6 +178,10 @@ set -e
 
 cd /home/{pr.repo}
 git apply  --exclude package-lock.json --whitespace=nowarn /home/test.patch
+npm install
+if [ -f tsconfig.json ]; then
+  node -e "let f=require('fs'),j=JSON.parse(f.readFileSync('tsconfig.json','utf8'));j.compilerOptions=j.compilerOptions||{{}};j.compilerOptions.skipLibCheck=true;f.writeFileSync('tsconfig.json',JSON.stringify(j,null,2))"
+fi
 npm run build
 npm run test:coverage -- --reporter=verbose
 
@@ -156,6 +195,10 @@ set -e
 
 cd /home/{pr.repo}
 git apply  --exclude package-lock.json --whitespace=nowarn /home/test.patch /home/fix.patch
+npm install
+if [ -f tsconfig.json ]; then
+  node -e "let f=require('fs'),j=JSON.parse(f.readFileSync('tsconfig.json','utf8'));j.compilerOptions=j.compilerOptions||{{}};j.compilerOptions.skipLibCheck=true;f.writeFileSync('tsconfig.json',JSON.stringify(j,null,2))"
+fi
 npm run build
 npm run test:coverage -- --reporter=verbose
 
@@ -254,7 +297,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-npm ci || true
+npm ci || npm install
 """.format(pr=self.pr),
             ),
             File(
@@ -264,7 +307,10 @@ npm ci || true
 set -e
 
 cd /home/{pr.repo}
-npm test -- --reporter=verbose
+if [ -f tsconfig.json ]; then
+  node -e "let f=require('fs'),j=JSON.parse(f.readFileSync('tsconfig.json','utf8'));j.compilerOptions=j.compilerOptions||{{}};j.compilerOptions.skipLibCheck=true;f.writeFileSync('tsconfig.json',JSON.stringify(j,null,2))"
+fi
+timeout 300 npm test -- --reporter=verbose || true
 """.format(pr=self.pr),
             ),
             File(
@@ -275,7 +321,11 @@ set -e
 
 cd /home/{pr.repo}
 git apply  --exclude package-lock.json --whitespace=nowarn /home/test.patch
-npm test -- --reporter=verbose
+npm install
+if [ -f tsconfig.json ]; then
+  node -e "let f=require('fs'),j=JSON.parse(f.readFileSync('tsconfig.json','utf8'));j.compilerOptions=j.compilerOptions||{{}};j.compilerOptions.skipLibCheck=true;f.writeFileSync('tsconfig.json',JSON.stringify(j,null,2))"
+fi
+timeout 300 npm test -- --reporter=verbose || true
 
 """.format(pr=self.pr),
             ),
@@ -287,7 +337,11 @@ set -e
 
 cd /home/{pr.repo}
 git apply  --exclude package-lock.json --whitespace=nowarn /home/test.patch /home/fix.patch
-npm test -- --reporter=verbose
+npm install
+if [ -f tsconfig.json ]; then
+  node -e "let f=require('fs'),j=JSON.parse(f.readFileSync('tsconfig.json','utf8'));j.compilerOptions=j.compilerOptions||{{}};j.compilerOptions.skipLibCheck=true;f.writeFileSync('tsconfig.json',JSON.stringify(j,null,2))"
+fi
+timeout 300 npm test -- --reporter=verbose || true
 
 """.format(pr=self.pr),
             ),
@@ -384,6 +438,36 @@ class Zx(Instance):
                 else:
                     failed_tests.add(full_test_name)
                 continue
+
+        # Fallback: parse uvu test runner output
+        if not passed_tests and not failed_tests:
+            current_suite = ""
+            for line in test_log.splitlines():
+                stripped = line.strip()
+                clean = re.sub(r'\x1b\[[0-9;]*m', '', stripped)
+                if not clean.strip():
+                    continue
+
+                suite_match = re.match(
+                    r'^([\w][\w.-]+\.(?:test|spec)\.\w+)$', clean.strip()
+                )
+                if suite_match:
+                    current_suite = suite_match.group(1)
+                    continue
+
+                summary_match = re.search(
+                    r'\(\s*(\d+)\s*/\s*(\d+)\s*\)', clean
+                )
+                if summary_match and current_suite:
+                    passed = int(summary_match.group(1))
+                    total = int(summary_match.group(2))
+                    failed = total - passed
+                    if passed > 0:
+                        passed_tests.add(f"{current_suite}:passed({passed})")
+                    if failed > 0:
+                        failed_tests.add(f"{current_suite}:failed({failed})")
+                    current_suite = ""
+                    continue
 
         return TestResult(
             passed_count=len(passed_tests),

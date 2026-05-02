@@ -74,11 +74,9 @@ yarn test -- --verbose' > test_commands.sh && chmod +x test_commands.sh""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-#!/bin/bash
-set -e
 yarn clean
 yarn build
-yarn test -- --verbose
+yarn test -- --verbose || true
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -89,13 +87,11 @@ yarn test -- --verbose
 cd /home/[[REPO_NAME]]
 if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-#!/bin/bash
-set -e
 yarn clean
 yarn build
-yarn test -- --verbose
+yarn test -- --verbose || true
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -104,15 +100,13 @@ yarn test -- --verbose
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-#!/bin/bash
-set -e
 yarn clean
 yarn build
-yarn test -- --verbose
+yarn test -- --verbose || true
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -151,6 +145,15 @@ RUN git clone https://github.com/allure-framework/allure-js.git /home/allure-js
 WORKDIR /home/allure-js
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
+
+RUN apt-get update && apt-get install -y \\
+    libgtk2.0-0 libgtk-3-0 libnotify-dev libgconf-2-4 libnss3 libxss1 libasound2 xvfb \\
+    libatk-bridge2.0-0 libatk1.0-0 libgdk-pixbuf-2.0-0 libpango-1.0-0 libpangocairo-1.0-0 \\
+    libcairo-gobject2 libgbm1 libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 libatspi2.0-0 \\
+    libcups2 libdrm2 libxfixes3 \\
+    && rm -rf /var/lib/apt/lists/*
+RUN yarn install || true
+RUN yarn build || true
 """
         dockerfile_content += f"""
 {copy_commands}
@@ -192,28 +195,30 @@ class ALLURE_JS_973_TO_928(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.
+        # Test lines are prefixed with package name: [allure-packagename]:  ✓ test/path (N tests) Nms
+        # We must include the package prefix to disambiguate identical test paths across packages.
         import re
 
-        # Define regex patterns for test statuses
-        # Refined patterns to capture test names accurately
         passed_pattern = re.compile(
-            r"✓\s+([^\(]+?)\s+\(\d+ tests\)"
-        )  # Matches passed tests
+            r"\[([^\]]+)\]:\s+✓\s+([^\(]+?)\s+\(\d+ tests?\)"
+        )
         failed_pattern = re.compile(
-            r"\s+❯\s+([^\(]+?)\s+\(\d+ tests \| \d+ failed\)"
-        )  # Matches failed tests
+            r"\[([^\]]+)\]:\s+❯\s+([^\(]+?)\s+\(\d+ tests? \| \d+ failed\)"
+        )
         skipped_pattern = re.compile(
-            r"\s+❯\s+([^\(]+?)\s+\(0 test\)"
-        )  # Matches skipped tests
-        # Extract test names using the patterns
-        passed_tests = set(match.strip() for match in passed_pattern.findall(log))
-        failed_tests = set(match.strip() for match in failed_pattern.findall(log))
-        skipped_tests = set(match.strip() for match in skipped_pattern.findall(log))
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+            r"\[([^\]]+)\]:\s+❯\s+([^\(]+?)\s+\(0 test\)"
+        )
+
+        # "allure-cypress/test/spec/base.test.ts" — disambiguates identical paths across packages
+        passed_tests = set(
+            f"{m.group(1)}/{m.group(2).strip()}" for m in passed_pattern.finditer(log)
+        )
+        failed_tests = set(
+            f"{m.group(1)}/{m.group(2).strip()}" for m in failed_pattern.finditer(log)
+        )
+        skipped_tests = set(
+            f"{m.group(1)}/{m.group(2).strip()}" for m in skipped_pattern.finditer(log)
+        )
 
         return TestResult(
             passed_count=len(passed_tests),

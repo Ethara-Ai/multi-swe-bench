@@ -27,3 +27,6 @@ from multi_swe_bench.harness.repos.python.pypa.cibuildwheel_342_to_315 import *
 from multi_swe_bench.harness.repos.python.pypa.cibuildwheel_1588_to_1091 import *
 from multi_swe_bench.harness.repos.python.pypa.pipx_541_to_340 import *
 from multi_swe_bench.harness.repos.python.pypa.pipx_1721_to_804 import *
+from multi_swe_bench.harness.repos.python.pypa.bandersnatch_928_to_469 import *
+from multi_swe_bench.harness.repos.python.pypa.bandersnatch_1594_to_1309 import *
+from multi_swe_bench.harness.repos.python.pypa.bandersnatch_2151_to_1861 import *

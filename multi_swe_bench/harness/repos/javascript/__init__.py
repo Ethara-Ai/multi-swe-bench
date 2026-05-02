@@ -1,9 +1,9 @@
 from multi_swe_bench.harness.repos.golang.cilium import *
-from multi_swe_bench.harness.repos.javascript.vavr_io import *
 from multi_swe_bench.harness.repos.javascript._4ian import *
 from multi_swe_bench.harness.repos.javascript.Accenture import *
 from multi_swe_bench.harness.repos.javascript.accordproject import *
 from multi_swe_bench.harness.repos.javascript.acornjs import *
+from multi_swe_bench.harness.repos.javascript.adam_p import *
 from multi_swe_bench.harness.repos.javascript.adobe import *
 from multi_swe_bench.harness.repos.javascript.aframevr import *
 from multi_swe_bench.harness.repos.javascript.Agoric import *
@@ -28,6 +28,7 @@ from multi_swe_bench.harness.repos.javascript.carbondesignsystem import *
 from multi_swe_bench.harness.repos.javascript.cfpb import *
 from multi_swe_bench.harness.repos.javascript.chaijs import *
 from multi_swe_bench.harness.repos.javascript.char0n import *
+from multi_swe_bench.harness.repos.javascript.chalk import *
 from multi_swe_bench.harness.repos.javascript.chartjs import *
 from multi_swe_bench.harness.repos.javascript.City_of_Helsinki import *
 from multi_swe_bench.harness.repos.javascript.codeceptjs import *
@@ -77,7 +78,7 @@ from multi_swe_bench.harness.repos.javascript.nasa import *
 from multi_swe_bench.harness.repos.javascript.nock import *
 from multi_swe_bench.harness.repos.javascript.openlayers import *
 from multi_swe_bench.harness.repos.javascript.postcss import *
-from multi_swe_bench.harness.repos.javascript.preactjs import *
+# from multi_swe_bench.harness.repos.javascript.preactjs import *  # missing module
 from multi_swe_bench.harness.repos.javascript.prettier import *
 from multi_swe_bench.harness.repos.javascript.PrismJS import *
 from multi_swe_bench.harness.repos.javascript.ProcessMaker import *
@@ -125,3 +126,9 @@ from multi_swe_bench.harness.repos.javascript.webpack.webpack_cli import *
 from multi_swe_bench.harness.repos.javascript.neomjs import *
 from multi_swe_bench.harness.repos.javascript.webtorrent import *
 from multi_swe_bench.harness.repos.javascript.DDDEastMidlandsLimited import *
+from multi_swe_bench.harness.repos.javascript.mozilla import *
+from multi_swe_bench.harness.repos.javascript.AnomalyInnovations import *
+from multi_swe_bench.harness.repos.javascript.s import *
+from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
+from multi_swe_bench.harness.repos.javascript.style_dictionary import *
+from multi_swe_bench.harness.repos.javascript.bigskysoftware import *

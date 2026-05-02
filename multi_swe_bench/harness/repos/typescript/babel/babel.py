@@ -70,7 +70,7 @@ class BabelImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Optional[Image]:
         return BabelImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:

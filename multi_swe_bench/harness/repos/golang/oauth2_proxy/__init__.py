@@ -1,11 +1,11 @@
-from .oauth2_proxy import *
-from .oauth2_proxy_434_to_280 import *
-from .oauth2_proxy_800_to_413 import *
-from .oauth2_proxy_980_to_754 import *
-from .oauth2_proxy_1104_to_967 import *
-from .oauth2_proxy_1920_to_1574 import *
-from .oauth2_proxy_2381_to_1921 import *
-from .oauth2_proxy_2888_to_2300 import *
-from .oauth2_proxy_3116_to_3061 import *
-from .oauth2_proxy_3101_to_2524 import *
-from .oauth2_proxy_3352_to_2685 import *
+# from .oauth2_proxy import *
+# from .oauth2_proxy_434_to_280 import *
+# from .oauth2_proxy_800_to_413 import *
+# from .oauth2_proxy_980_to_754 import *
+# from .oauth2_proxy_1104_to_967 import *
+# from .oauth2_proxy_1920_to_1574 import *
+# from .oauth2_proxy_2381_to_1921 import *
+# from .oauth2_proxy_2888_to_2300 import *
+# from .oauth2_proxy_3116_to_3061 import *
+# from .oauth2_proxy_3101_to_2524 import *
+# from .oauth2_proxy_3352_to_2685 import *

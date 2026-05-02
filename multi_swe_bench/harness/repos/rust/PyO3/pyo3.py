@@ -1,12 +1,12 @@
 import re
-from typing import Optional
+from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageDefault(Image):
+class Pyo3ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -19,11 +19,58 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
+    def dependency(self) -> Union[str, "Image"]:
         return "rust:latest"
 
-    def image_prefix(self) -> str:
-        return "envagent"
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        return f"""FROM {image_name}
+
+RUN apt-get update && apt-get install -y python3-dev && ln -sf /usr/bin/python3 /usr/local/bin/python
+
+{self.global_env}
+
+WORKDIR /home/
+
+{code}
+
+{self.clear_env}
+
+"""
+
+
+class Pyo3ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image | None:
+        return Pyo3ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -45,12 +92,39 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""".format(),
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
+
 cd /home/{pr.repo}
-apt-get update && apt-get install -y python3-dev
+git reset --hard
+bash /home/check_git_changes.sh
+git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
+
 cargo test || true
+
 """.format(pr=self.pr),
             ),
             File(
@@ -58,8 +132,10 @@ cargo test || true
                 "run.sh",
                 """#!/bin/bash
 set -e
+
 cd /home/{pr.repo}
 cargo test
+
 """.format(pr=self.pr),
             ),
             File(
@@ -67,12 +143,11 @@ cargo test
                 "test-run.sh",
                 """#!/bin/bash
 set -e
+
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
+git apply /home/test.patch
 cargo test
+
 """.format(pr=self.pr),
             ),
             File(
@@ -80,44 +155,41 @@ cargo test
                 "fix-run.sh",
                 """#!/bin/bash
 set -e
+
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
+git apply /home/test.patch /home/fix.patch
 cargo test
+
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """FROM rust:latest
+        prepare_commands = "RUN bash /home/prepare.sh"
 
-ENV DEBIAN_FRONTEND=noninteractive
+        return f"""FROM {name}:{tag}
 
-RUN apt-get update && apt-get install -y git python3-dev
+{self.global_env}
 
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/PyO3/pyo3.git /home/pyo3
-
-WORKDIR /home/pyo3
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+
+{prepare_commands}
+
+{self.clear_env}
+
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("PyO3", "pyo3")
-class PYO3(Instance):
+class Pyo3(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -128,7 +200,7 @@ class PYO3(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+        return Pyo3ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -153,18 +225,27 @@ class PYO3(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        passed_pattern = re.compile(r"test (\S+) ... ok")
-        failed_pattern = re.compile(r"test (\S+) ... FAILED")
-        ignored_pattern = re.compile(r"test (\S+) ... ignored")
+        re_pass_tests = [re.compile(r"test (\S+) ... ok")]
+        re_fail_tests = [re.compile(r"test (\S+) ... FAILED")]
+        re_skip_tests = [re.compile(r"test (\S+) ... ignored")]
 
         for line in test_log.splitlines():
             line = line.strip()
-            if passed_match := passed_pattern.match(line):
-                passed_tests.add(passed_match.group(1))
-            elif failed_match := failed_pattern.match(line):
-                failed_tests.add(failed_match.group(1))
-            elif ignored_match := ignored_pattern.match(line):
-                skipped_tests.add(ignored_match.group(1))
+
+            for re_pass in re_pass_tests:
+                match = re_pass.match(line)
+                if match:
+                    passed_tests.add(match.group(1))
+
+            for re_fail in re_fail_tests:
+                match = re_fail.match(line)
+                if match:
+                    failed_tests.add(match.group(1))
+
+            for re_skip in re_skip_tests:
+                match = re_skip.match(line)
+                if match:
+                    skipped_tests.add(match.group(1))
 
         return TestResult(
             passed_count=len(passed_tests),

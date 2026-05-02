@@ -148,6 +148,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch
+pnpm install || true
 pnpm dev:prepare 
 pnpm test:unit -- --verbose
 pnpm test:runtime  --no-watch
@@ -162,6 +163,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
+pnpm install || true
 pnpm dev:prepare
 pnpm test:unit -- --verbose
 pnpm test:runtime  --no-watch
@@ -261,6 +263,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 pnpm install || true
+pnpm add -w unbuild || true
 
 """.format(pr=self.pr),
             ),
@@ -285,6 +288,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch
+pnpm install || true
 pnpm build:stub
 pnpm test:unit -- --verbose
 pnpm test:runtime  --no-watch
@@ -299,6 +303,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
+pnpm install || true
 pnpm build:stub
 pnpm test:unit -- --verbose
 pnpm test:runtime  --no-watch
@@ -373,9 +378,9 @@ class Nuxt(Instance):
 
         current_suite = None
 
-        re_pass_suite = re.compile(r"^✓\s+(.+?)\s")
+        re_pass_suite = re.compile(r"^✓\s+(.+?)\s+\(\d+")
 
-        re_fail_suite = re.compile(r"^❯\s+(.+?)\s")
+        re_fail_suite = re.compile(r"^❯\s+(.+?)\s+\(\d+")
 
         for line in test_log.splitlines():
             line = line.strip()

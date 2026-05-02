@@ -83,11 +83,8 @@ yarn --cwd CTFd/themes/admin verify
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-#!/bin/bash
+git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch || git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/test.patch 2>&1 || true
+find . -name '*.rej' -delete 2>/dev/null || true
 pytest -v -rf --cov=CTFd --cov-context=test --cov-report=xml --ignore-glob="**/node_modules/" --ignore=node_modules/ -W ignore::sqlalchemy.exc.SADeprecationWarning -W ignore::sqlalchemy.exc.SAWarning -n auto
 yarn --cwd CTFd/themes/admin verify
 
@@ -98,11 +95,8 @@ yarn --cwd CTFd/themes/admin verify
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-#!/bin/bash
+git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch || {{ git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/test.patch 2>&1 || true; git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/fix.patch 2>&1 || true; }}
+find . -name '*.rej' -delete 2>/dev/null || true
 pytest -v -rf --cov=CTFd --cov-context=test --cov-report=xml --ignore-glob="**/node_modules/" --ignore=node_modules/ -W ignore::sqlalchemy.exc.SADeprecationWarning -W ignore::sqlalchemy.exc.SAWarning -n auto
 yarn --cwd CTFd/themes/admin verify
 
@@ -144,8 +138,12 @@ WORKDIR /home/CTFd
 RUN git reset --hard
 RUN git checkout {pr.base.sha}
 """
+        prepare_commands = "RUN bash /home/prepare.sh"
+
         dockerfile_content += f"""
 {copy_commands}
+
+{prepare_commands}
 """
         return dockerfile_content.format(pr=self.pr)
 

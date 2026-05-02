@@ -22,3 +22,8 @@ from multi_swe_bench.harness.repos.c.nanopb import *
 from multi_swe_bench.harness.repos.c.microsoft import *
 from multi_swe_bench.harness.repos.c.jarun import *
 from multi_swe_bench.harness.repos.c.openwrt import *
+from multi_swe_bench.harness.repos.c.FluidSynth import *
+from multi_swe_bench.harness.repos.c.htop_dev import *
+from multi_swe_bench.harness.repos.c.fastfetch_cli import *
+from multi_swe_bench.harness.repos.c.timescale.timescaledb import *
+from multi_swe_bench.harness.repos.c.arendst import *

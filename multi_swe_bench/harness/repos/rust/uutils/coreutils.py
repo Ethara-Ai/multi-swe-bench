@@ -5,73 +5,11 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-NO_FEATURES_UNIX_PRS = {558, 644, 718, 832, 960, 965, 977, 1015, 1022, 1143, 1169, 1306, 1530}
-
-INTERVALS = [
-    {
-        "prs": {
-            85, 238, 366, 368, 372, 421,
-            558, 644, 718, 832, 960, 965, 977, 1015, 1022,
-            1143, 1169, 1306, 1530,
-            1583, 1745, 1788, 1811, 1827, 1988, 2056, 2075, 2103, 2109,
-            2210, 2275, 2302, 2361, 2455, 2471, 2544, 2574, 2599, 2610,
-            2709, 3319, 3455, 3845, 3874, 4231, 4356, 4382, 4710, 4740, 4860,
-        },
-        "rust_image": "rust:1.64.0",
-        "tag": "base-rust164",
-        "apt_fix": (
-            "RUN echo 'deb http://archive.debian.org/debian buster main'"
-            " > /etc/apt/sources.list && \\\n"
-            "    apt-get -o Acquire::Check-Valid-Until=false update && \\\n"
-            "    apt-get install -y --allow-unauthenticated gcc make libonig-dev pkg-config"
-        ),
-    },
-    {
-        "prs": {5331, 5355, 5357, 5749, 5994, 6007},
-        "rust_image": "rust:1.79.0",
-        "tag": "base-rust179",
-        "apt_fix": "RUN apt-get update && apt-get install -y gcc make",
-    },
-]
-
-DEFAULT_RUST_IMAGE = "rust:1.88.0"
-DEFAULT_TAG = "base"
-DEFAULT_APT_FIX = ""
-
-
-def _get_interval(pr_number: int) -> dict:
-    for interval in INTERVALS:
-        if pr_number in interval["prs"]:
-            return interval
-    return {
-        "rust_image": DEFAULT_RUST_IMAGE,
-        "tag": DEFAULT_TAG,
-        "apt_fix": DEFAULT_APT_FIX,
-    }
-
-
-def _extract_test_filters(test_patch: str, fix_patch: str) -> str:
-    filters = set()
-    for patch in [test_patch, fix_patch]:
-        if not patch:
-            continue
-        for line in patch.split("\n"):
-            if line.startswith("diff --git"):
-                path = line.split(" b/")[-1] if " b/" in line else ""
-                m = re.search(r"tests/by-util/(test_\w+)", path)
-                if m:
-                    filters.add(m.group(1))
-                m = re.search(r"src/uu/(\w+)/", path)
-                if m:
-                    filters.add(f"test_{m.group(1)}")
-    return " ".join(sorted(filters))
-
 
 class CoreutilsImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
-        self._interval = _get_interval(pr.number)
 
     @property
     def pr(self) -> PullRequest:
@@ -82,13 +20,13 @@ class CoreutilsImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return self._interval["rust_image"]
+        return "rust:1.88.0"
 
     def image_tag(self) -> str:
-        return self._interval["tag"]
+        return "base"
 
     def workdir(self) -> str:
-        return self._interval["tag"]
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -103,16 +41,12 @@ class CoreutilsImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        apt_fix = self._interval["apt_fix"]
-        if apt_fix:
-            apt_fix = f"\n{apt_fix}\n"
-
         return f"""FROM {image_name}
 
 {self.global_env}
 
 WORKDIR /home/
-{apt_fix}
+
 {code}
 
 {self.clear_env}
@@ -142,16 +76,28 @@ class CoreutilsImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    def _cargo_test_base(self) -> str:
-        if self.pr.number in NO_FEATURES_UNIX_PRS:
-            return "cargo test"
-        return "cargo test --features unix"
+    @staticmethod
+    def _extract_test_filters(test_patch: str, fix_patch: str) -> str:
+        filters = set()
+        for patch in [test_patch, fix_patch]:
+            if not patch:
+                continue
+            for line in patch.split("\n"):
+                if line.startswith("diff --git"):
+                    path = line.split(" b/")[-1] if " b/" in line else ""
+                    m = re.search(r"tests/by-util/(test_\w+)", path)
+                    if m:
+                        filters.add(m.group(1))
+                    m = re.search(r"src/uu/(\w+)/", path)
+                    if m:
+                        filters.add(f"test_{m.group(1)}")
+        return " ".join(sorted(filters))
 
     def files(self) -> list[File]:
-        test_filters = _extract_test_filters(
+        test_filters = self._extract_test_filters(
             self.pr.test_patch, self.pr.fix_patch
         )
-        cargo_base = self._cargo_test_base()
+        cargo_base = "cargo test --features unix"
         if test_filters:
             cargo_test_cmd = " && ".join(
                 f'{cargo_base} "{f}" -- --test-threads=1'

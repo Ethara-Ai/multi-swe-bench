@@ -1,0 +1,3 @@
+from multi_swe_bench.harness.repos.golang.editorconfig_checker.editorconfig_checker import *
+from multi_swe_bench.harness.repos.golang.editorconfig_checker.editorconfig_checker_319_to_319 import *
+from multi_swe_bench.harness.repos.golang.editorconfig_checker.editorconfig_checker_184_to_126 import *
