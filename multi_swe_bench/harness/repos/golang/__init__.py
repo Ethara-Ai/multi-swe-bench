@@ -71,7 +71,6 @@ from multi_swe_bench.harness.repos.golang.adguardteam import *
 from multi_swe_bench.harness.repos.golang.go_playground import *
 from multi_swe_bench.harness.repos.golang.traefik import *
 from multi_swe_bench.harness.repos.golang.binwiederhier import *
-from multi_swe_bench.harness.repos.golang.usememos import *
 from multi_swe_bench.harness.repos.golang.derailed import *
 from multi_swe_bench.harness.repos.golang.cloudevents import *
 from multi_swe_bench.harness.repos.golang.Khan import *
@@ -87,3 +86,4 @@ from multi_swe_bench.harness.repos.golang.metrico import *
 from multi_swe_bench.harness.repos.golang.editorconfig_checker import *
 from multi_swe_bench.harness.repos.golang.milvus_io import *
 from multi_swe_bench.harness.repos.golang.restic import *
+from multi_swe_bench.harness.repos.golang.usememos import *
