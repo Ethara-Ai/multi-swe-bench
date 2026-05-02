@@ -78,11 +78,7 @@ from multi_swe_bench.harness.repos.javascript.nasa import *
 from multi_swe_bench.harness.repos.javascript.nock import *
 from multi_swe_bench.harness.repos.javascript.openlayers import *
 from multi_swe_bench.harness.repos.javascript.postcss import *
-<<<<<<< HEAD
 # from multi_swe_bench.harness.repos.javascript.preactjs import *  # missing module
-=======
-# from multi_swe_bench.harness.repos.javascript.preactjs import *  # module does not exist
->>>>>>> 9564a04b (updated javascript global init file)
 from multi_swe_bench.harness.repos.javascript.prettier import *
 from multi_swe_bench.harness.repos.javascript.PrismJS import *
 from multi_swe_bench.harness.repos.javascript.ProcessMaker import *
