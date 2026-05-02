@@ -1,10 +1,7 @@
-<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.java.apache.druid_0_to_16976 import *
 from multi_swe_bench.harness.repos.java.apache.druid_16977_to_18789 import *
 from multi_swe_bench.harness.repos.java.apache.druid_18790_to_99999 import *
-=======
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler import *
->>>>>>> Stashed changes
 from multi_swe_bench.harness.repos.java.apache.dubbo import *
 from multi_swe_bench.harness.repos.java.apache.dubbo_0_to_6278 import *
 from multi_swe_bench.harness.repos.java.apache.dubbo_6279_to_99999 import *
