@@ -53,19 +53,8 @@ from multi_swe_bench.harness.repos.rust.tokio_rs import *
 from multi_swe_bench.harness.repos.rust.tower_rs import *
 from multi_swe_bench.harness.repos.rust.typst import *
 from multi_swe_bench.harness.repos.rust.unicode_org import *
-<<<<<<< HEAD
 from multi_swe_bench.harness.repos.rust.uutils import *
 from multi_swe_bench.harness.repos.rust.yewstack import *
 from multi_swe_bench.harness.repos.rust.zellij_org import *
 from multi_swe_bench.harness.repos.rust.jdx import *
-=======
-from multi_swe_bench.harness.repos.rust.actix import *
-from multi_swe_bench.harness.repos.rust.hyperium import *
-from multi_swe_bench.harness.repos.rust.seanmonstar import *
-from multi_swe_bench.harness.repos.rust.astral_sh import *
-from multi_swe_bench.harness.repos.rust.ratatui import *
-from multi_swe_bench.harness.repos.rust.rustls import *
-from multi_swe_bench.harness.repos.rust.async_graphql import *
-from multi_swe_bench.harness.repos.rust.dtolnay import *
 from multi_swe_bench.harness.repos.rust.wasm_bindgen import *
->>>>>>> 844df9ab (Added registry for wasm_bindgen)
