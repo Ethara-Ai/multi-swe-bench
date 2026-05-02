@@ -79,6 +79,7 @@ from multi_swe_bench.harness.repos.golang.roc_streaming import *
 from multi_swe_bench.harness.repos.golang.nspcc_dev import *
 from multi_swe_bench.harness.repos.golang.cli import *
 from multi_swe_bench.harness.repos.golang.umputun import *
+<<<<<<< HEAD
 from multi_swe_bench.harness.repos.golang.schollz import *
 from multi_swe_bench.harness.repos.golang.ethereum import *
 from multi_swe_bench.harness.repos.golang.wailsapp import *
@@ -86,3 +87,6 @@ from multi_swe_bench.harness.repos.golang.seaweedfs import *
 from multi_swe_bench.harness.repos.golang.juanfont import *
 from multi_swe_bench.harness.repos.golang.metrico import *
 from multi_swe_bench.harness.repos.golang.editorconfig_checker import *
+=======
+from multi_swe_bench.harness.repos.golang.milvus_io import *
+>>>>>>> d4dd32fa (Added registry and global init file for milvus dataset.)
