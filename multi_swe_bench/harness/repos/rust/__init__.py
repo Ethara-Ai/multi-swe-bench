@@ -56,3 +56,4 @@ from multi_swe_bench.harness.repos.rust.unicode_org import *
 from multi_swe_bench.harness.repos.rust.uutils import *
 from multi_swe_bench.harness.repos.rust.yewstack import *
 from multi_swe_bench.harness.repos.rust.zellij_org import *
+from multi_swe_bench.harness.repos.rust.jdx import *
