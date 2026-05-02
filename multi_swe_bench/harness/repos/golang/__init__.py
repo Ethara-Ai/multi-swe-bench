@@ -85,3 +85,5 @@ from multi_swe_bench.harness.repos.golang.juanfont import *
 from multi_swe_bench.harness.repos.golang.metrico import *
 from multi_swe_bench.harness.repos.golang.editorconfig_checker import *
 from multi_swe_bench.harness.repos.golang.milvus_io import *
+from multi_swe_bench.harness.repos.golang.restic import *
+
