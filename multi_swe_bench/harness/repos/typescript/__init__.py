@@ -179,3 +179,4 @@ from multi_swe_bench.harness.repos.typescript.wulkano import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
 from multi_swe_bench.harness.repos.typescript.yarnpkg import *
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo import *
+from multi_swe_bench.harness.repos.typescript.pixijs import *
