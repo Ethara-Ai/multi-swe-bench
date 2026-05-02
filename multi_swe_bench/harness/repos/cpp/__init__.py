@@ -30,7 +30,6 @@ from multi_swe_bench.harness.repos.cpp.polybar import *
 from multi_swe_bench.harness.repos.cpp.lballabio import *
 from multi_swe_bench.harness.repos.cpp.Z3Prover import *
 from multi_swe_bench.harness.repos.cpp.NVIDIA import *
-# from multi_swe_bench.harness.repos.cpp.aristocratos import *
 from multi_swe_bench.harness.repos.cpp.facebookresearch import *
 from multi_swe_bench.harness.repos.cpp.ClusterDuck_Protocol import *
 from multi_swe_bench.harness.repos.cpp.TartanLlama import *
@@ -45,6 +44,6 @@ from multi_swe_bench.harness.repos.cpp.luanti_org import *
 from multi_swe_bench.harness.repos.cpp.omnigres import *
 from multi_swe_bench.harness.repos.cpp.roc_streaming import *
 from multi_swe_bench.harness.repos.cpp.zigrazor import *
-from multi_swe_bench.harness.repos.cpp.aristocratos import *
 from multi_swe_bench.harness.repos.cpp.telegramdesktop import *
 from multi_swe_bench.harness.repos.cpp.ccache import *
+from multi_swe_bench.harness.repos.cpp.aristocratos import *
