@@ -97,6 +97,7 @@ from multi_swe_bench.harness.repos.typescript.mui import *
 from multi_swe_bench.harness.repos.typescript.NervJS import *
 from multi_swe_bench.harness.repos.typescript.nestjs import *
 from multi_swe_bench.harness.repos.typescript.nocodb import *
+from multi_swe_bench.harness.repos.typescript.n8n_io import *
 from multi_swe_bench.harness.repos.typescript.NomicFoundation import *
 from multi_swe_bench.harness.repos.typescript.Northeastern_Electric_Racing import *
 from multi_swe_bench.harness.repos.typescript.nuxt import *
