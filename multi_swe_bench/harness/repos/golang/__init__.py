@@ -87,3 +87,5 @@ from multi_swe_bench.harness.repos.golang.editorconfig_checker import *
 from multi_swe_bench.harness.repos.golang.milvus_io import *
 from multi_swe_bench.harness.repos.golang.restic import *
 from multi_swe_bench.harness.repos.golang.usememos import *
+from multi_swe_bench.harness.repos.golang.rclone import *
+from multi_swe_bench.harness.repos.golang.docker import *
