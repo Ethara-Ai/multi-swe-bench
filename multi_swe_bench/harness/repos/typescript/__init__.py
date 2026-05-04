@@ -172,18 +172,12 @@ from multi_swe_bench.harness.repos.typescript.vuetifyjs import *
 from multi_swe_bench.harness.repos.typescript.web3ui import *
 from multi_swe_bench.harness.repos.typescript.webdriverio import *
 from multi_swe_bench.harness.repos.typescript.website import *
-<<<<<<< Updated upstream
 
 # from multi_swe_bench.harness.repos.typescript.wei import *
-=======
->>>>>>> Stashed changes
 from multi_swe_bench.harness.repos.typescript.withastro import *
 from multi_swe_bench.harness.repos.typescript.wulkano import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
 from multi_swe_bench.harness.repos.typescript.yarnpkg import *
-<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo import *
 from multi_swe_bench.harness.repos.typescript.pixijs import *
-=======
 from multi_swe_bench.harness.repos.typescript.lobehub import *
->>>>>>> Stashed changes
