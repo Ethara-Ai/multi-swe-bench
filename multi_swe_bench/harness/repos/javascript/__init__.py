@@ -132,3 +132,4 @@ from multi_swe_bench.harness.repos.javascript.s import *
 from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
 from multi_swe_bench.harness.repos.javascript.style_dictionary import *
 from multi_swe_bench.harness.repos.javascript.bigskysoftware import *
+from multi_swe_bench.harness.repos.javascript.emotion_js import *
