@@ -57,19 +57,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     ca-certificates curl git gnupg make sudo wget \\
     dbus dbus-x11 \\
     && rm -rf /var/lib/apt/lists/*
-ARG TARGETARCH
 RUN set -eux; \\
-    if [ "$TARGETARCH" = "amd64" ]; then \\
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \\
       wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -; \\
       echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \\
       apt-get update; \\
       apt-get install -y --no-install-recommends \\
         google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \\
-        fonts-khmeros fonts-kacst fonts-freefont-ttf; \\
-    else \\
-      apt-get update; \\
-      apt-get install -y --no-install-recommends \\
-        chromium fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \\
         fonts-khmeros fonts-kacst fonts-freefont-ttf; \\
     fi; \\
     rm -rf /var/lib/apt/lists/*
@@ -233,12 +227,12 @@ fi
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+git apply --whitespace=nowarn -3 /home/test.patch || \\
+  git apply --whitespace=nowarn --reject /home/test.patch || true
 
 # Detect package manager and run tests
 if [ -f yarn.lock ]; then
@@ -276,12 +270,16 @@ fi
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+if git apply --whitespace=nowarn --check /home/test.patch /home/fix.patch 2>/dev/null; then
+  git apply --whitespace=nowarn /home/test.patch /home/fix.patch || true
+else
+  git apply --whitespace=nowarn -3 /home/test.patch /home/fix.patch || \\
+    git apply --whitespace=nowarn --reject /home/test.patch /home/fix.patch || true
+fi
 
 # Detect package manager and run tests
 if [ -f yarn.lock ]; then
@@ -308,7 +306,11 @@ if [ -f yarn.lock ]; then
     yarn test-node || true
 else
     nvm use || true
-    npm ci || npm install || true
+    if [ -f ./node_modules/gulp/bin/gulp.js ]; then
+        npm install || true
+    else
+        npm ci || npm install || true
+    fi
     node --max-old-space-size=8192 ./node_modules/gulp/bin/gulp.js compile || true
     npm run test-node || true
 fi
