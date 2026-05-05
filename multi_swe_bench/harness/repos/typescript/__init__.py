@@ -172,12 +172,19 @@ from multi_swe_bench.harness.repos.typescript.vuetifyjs import *
 from multi_swe_bench.harness.repos.typescript.web3ui import *
 from multi_swe_bench.harness.repos.typescript.webdriverio import *
 from multi_swe_bench.harness.repos.typescript.website import *
+<<<<<<< HEAD
 
 # from multi_swe_bench.harness.repos.typescript.wei import *
+=======
+# from multi_swe_bench.harness.repos.typescript.wei import *  # COMMENTED: missing module
+>>>>>>> 1a77a5eb (Added: New Registry typescript/Yeachan-Heo)
 from multi_swe_bench.harness.repos.typescript.withastro import *
 from multi_swe_bench.harness.repos.typescript.wulkano import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
 from multi_swe_bench.harness.repos.typescript.yarnpkg import *
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo import *
+<<<<<<< HEAD
 from multi_swe_bench.harness.repos.typescript.pixijs import *
 from multi_swe_bench.harness.repos.typescript.lobehub import *
+=======
+>>>>>>> 1a77a5eb (Added: New Registry typescript/Yeachan-Heo)
