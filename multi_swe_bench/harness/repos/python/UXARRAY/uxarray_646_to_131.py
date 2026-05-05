@@ -21,7 +21,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "ubuntu:latest"
+        return "ubuntu:22.04"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -56,6 +56,8 @@ apt-get update && apt-get install -y python3 python3-pip python3-venv
 python3 -m venv venv
 ###ACTION_DELIMITER###
 venv/bin/pip install -e .
+###ACTION_DELIMITER###
+venv/bin/pip install 'xarray<2024.1.0' 'numpy<2.0' gmpy2
 ###ACTION_DELIMITER###
 venv/bin/pip install pytest
 ###ACTION_DELIMITER###
@@ -173,7 +175,7 @@ venv/bin/pytest -vv --no-header -rA -p no:cacheprovider test/
 
 # Choose an appropriate base image based on the project's requirements - replace ubuntu:latest with actual base image
 # For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM ubuntu:latest
+FROM ubuntu:22.04
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
