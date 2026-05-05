@@ -59,3 +59,4 @@ from multi_swe_bench.harness.repos.rust.zellij_org import *
 from multi_swe_bench.harness.repos.rust.jdx import *
 from multi_swe_bench.harness.repos.rust.wasm_bindgen import *
 from multi_swe_bench.harness.repos.rust.TabbyML import *
+from multi_swe_bench.harness.repos.rust.emilk import *
