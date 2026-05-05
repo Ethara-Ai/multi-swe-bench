@@ -172,8 +172,6 @@ from multi_swe_bench.harness.repos.typescript.vuetifyjs import *
 from multi_swe_bench.harness.repos.typescript.web3ui import *
 from multi_swe_bench.harness.repos.typescript.webdriverio import *
 from multi_swe_bench.harness.repos.typescript.website import *
-
-# from multi_swe_bench.harness.repos.typescript.wei import *
 # from multi_swe_bench.harness.repos.typescript.wei import *  # COMMENTED: missing module
 from multi_swe_bench.harness.repos.typescript.withastro import *
 from multi_swe_bench.harness.repos.typescript.wulkano import *

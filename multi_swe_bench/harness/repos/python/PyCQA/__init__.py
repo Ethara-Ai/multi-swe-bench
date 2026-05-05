@@ -3,5 +3,3 @@ from multi_swe_bench.harness.repos.python.PyCQA.isort_1775_to_1749 import *
 from multi_swe_bench.harness.repos.python.PyCQA.isort_1692_to_1622 import *
 from multi_swe_bench.harness.repos.python.PyCQA.isort_1424_to_1031 import *
 from multi_swe_bench.harness.repos.python.PyCQA.isort_1031_to_209 import *
-from multi_swe_bench.harness.repos.python.PyCQA.flake8_bugbear_503_to_129 import *
-from multi_swe_bench.harness.repos.python.PyCQA.flake8_bugbear_547_to_512 import *
