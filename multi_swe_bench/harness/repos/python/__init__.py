@@ -19,6 +19,7 @@ from multi_swe_bench.harness.repos.python.beetbox import *
 from multi_swe_bench.harness.repos.python.beeware import *
 from multi_swe_bench.harness.repos.python.bigchaindb import *
 from multi_swe_bench.harness.repos.python.biopython import *
+from multi_swe_bench.harness.repos.python.browser_use import *
 from multi_swe_bench.harness.repos.python.BoboTiG import *
 from multi_swe_bench.harness.repos.python.borgbackup import *
 from multi_swe_bench.harness.repos.python.bridgecrewio import *
