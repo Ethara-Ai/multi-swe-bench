@@ -316,6 +316,7 @@ from multi_swe_bench.harness.repos.python.dry_python.returns import *
 from multi_swe_bench.harness.repos.python.Akuli import *
 from multi_swe_bench.harness.repos.python.EchoCog import *
 from multi_swe_bench.harness.repos.python.NousResearch import *
+
 try:
     from multi_swe_bench.harness.repos.python.Qiskit import *
 except ImportError:
@@ -345,3 +346,4 @@ from multi_swe_bench.harness.repos.python.python_attrs import *
 from multi_swe_bench.harness.repos.python.mitmproxy import *
 from multi_swe_bench.harness.repos.python.python_cachier import *
 from multi_swe_bench.harness.repos.python.ultralytics import *
+from multi_swe_bench.harness.repos.python.taskiq_python import *
