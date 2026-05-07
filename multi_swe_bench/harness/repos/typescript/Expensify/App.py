@@ -50,7 +50,7 @@ class ExpensifyAppImageBase(Image):
 WORKDIR /home/
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends jq patch && rm -rf /var/lib/apt/lists/*
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \\
     export NVM_DIR="$HOME/.nvm" && \\
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -147,27 +147,25 @@ npm ci || npm install || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 cd /home/{pr.repo}
 nvm use 2>/dev/null || true
 
-npx jest --verbose 2>&1 || true
+npx jest --verbose --maxWorkers=8 2>&1 || true
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 cd /home/{pr.repo}
 nvm use 2>/dev/null || true
-git apply --whitespace=nowarn /home/test.patch
+patch --batch --fuzz=5 -p1 -i /home/test.patch || true
 
-npx jest --verbose 2>&1 || true
+npx jest --verbose --maxWorkers=8 2>&1 || true
 
 """.format(pr=self.pr),
             ),
@@ -175,14 +173,13 @@ npx jest --verbose 2>&1 || true
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 cd /home/{pr.repo}
 nvm use 2>/dev/null || true
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
-npx jest --verbose 2>&1 || true
+patch --batch --fuzz=5 -p1 -i /home/test.patch
+patch --batch --fuzz=5 --forward -p1 -i /home/fix.patch || true
+npx jest --verbose --maxWorkers=8 2>&1 || true
 
 """.format(pr=self.pr),
             ),
