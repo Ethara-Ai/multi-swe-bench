@@ -315,7 +315,10 @@ from multi_swe_bench.harness.repos.python.dry_python.returns import *
 from multi_swe_bench.harness.repos.python.Akuli import *
 from multi_swe_bench.harness.repos.python.EchoCog import *
 from multi_swe_bench.harness.repos.python.NousResearch import *
-from multi_swe_bench.harness.repos.python.Qiskit import *
+try:
+    from multi_swe_bench.harness.repos.python.Qiskit import *
+except ImportError:
+    pass
 from multi_swe_bench.harness.repos.python.SAIC_iSmart_API import *
 from multi_swe_bench.harness.repos.python.activeloopai import *
 from multi_swe_bench.harness.repos.python.ansible import *
@@ -340,4 +343,4 @@ from multi_swe_bench.harness.repos.python.pretalx import *
 from multi_swe_bench.harness.repos.python.python_attrs import *
 from multi_swe_bench.harness.repos.python.mitmproxy import *
 from multi_swe_bench.harness.repos.python.python_cachier import *
-
+from multi_swe_bench.harness.repos.python.ultralytics import *
