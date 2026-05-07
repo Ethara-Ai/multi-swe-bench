@@ -60,4 +60,4 @@ from multi_swe_bench.harness.repos.rust.jdx import *
 from multi_swe_bench.harness.repos.rust.wasm_bindgen import *
 from multi_swe_bench.harness.repos.rust.TabbyML import *
 from multi_swe_bench.harness.repos.rust.emilk import *
-from multi_swe_bench.harness.repos.rust.slint_ui import *
+from multi_swe_bench.harness.repos.rust.slint_ui import *from multi_swe_bench.harness.repos.rust.tree_sitter import *
