@@ -77,11 +77,14 @@ from multi_swe_bench.harness.repos.javascript.koajs import *
 from multi_swe_bench.harness.repos.javascript.Kong import *
 from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
 from multi_swe_bench.harness.repos.javascript.LiskHQ import *
+from multi_swe_bench.harness.repos.javascript.lodash import *
 from multi_swe_bench.harness.repos.javascript.ManifoldScholar import *
 from multi_swe_bench.harness.repos.javascript.markedjs import *
+from multi_swe_bench.harness.repos.javascript.mde import *
 from multi_swe_bench.harness.repos.javascript.mattermost import *
 from multi_swe_bench.harness.repos.javascript.motdotla import *
 from multi_swe_bench.harness.repos.javascript.mozilla import *
+from multi_swe_bench.harness.repos.javascript.mochajs import *
 from multi_swe_bench.harness.repos.javascript.nasa import *
 from multi_swe_bench.harness.repos.javascript.neherlab import *
 from multi_swe_bench.harness.repos.javascript.neomjs import *
