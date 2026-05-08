@@ -1,4 +1,3 @@
-from multi_swe_bench.harness.repos.typescript.abaplint import *
 from multi_swe_bench.harness.repos.typescript.actionhero import *
 from multi_swe_bench.harness.repos.typescript.activist_org import *
 from multi_swe_bench.harness.repos.typescript.alibaba import *
@@ -181,3 +180,5 @@ from multi_swe_bench.harness.repos.typescript.Yeachan_Heo import *
 from multi_swe_bench.harness.repos.typescript.pixijs import *
 from multi_swe_bench.harness.repos.typescript.lobehub import *
 from multi_swe_bench.harness.repos.typescript.ReactiveX import *
+from multi_swe_bench.harness.repos.typescript.tldraw import *
+from multi_swe_bench.harness.repos.typescript.tailwindlabs import *
