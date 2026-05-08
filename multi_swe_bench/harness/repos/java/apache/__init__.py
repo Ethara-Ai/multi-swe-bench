@@ -12,3 +12,4 @@ from multi_swe_bench.harness.repos.java.apache.rocketmq import *
 from multi_swe_bench.harness.repos.java.apache.shenyu import *
 from multi_swe_bench.harness.repos.java.apache.skywalking import *
 from multi_swe_bench.harness.repos.java.apache.flink import *
+from multi_swe_bench.harness.repos.java.apache.commons_codec import *
