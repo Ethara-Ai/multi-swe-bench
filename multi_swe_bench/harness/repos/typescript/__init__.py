@@ -180,3 +180,4 @@ from multi_swe_bench.harness.repos.typescript.yarnpkg import *
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo import *
 from multi_swe_bench.harness.repos.typescript.pixijs import *
 from multi_swe_bench.harness.repos.typescript.lobehub import *
+from multi_swe_bench.harness.repos.typescript.ReactiveX import *
