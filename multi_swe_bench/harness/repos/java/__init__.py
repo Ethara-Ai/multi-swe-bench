@@ -36,3 +36,4 @@ from multi_swe_bench.harness.repos.java.javaparser import *
 from multi_swe_bench.harness.repos.java.vavr_io import *
 from multi_swe_bench.harness.repos.java.libgdx import *
 from multi_swe_bench.harness.repos.java.skylot import *
+from multi_swe_bench.harness.repos.java.dbeaver import *
