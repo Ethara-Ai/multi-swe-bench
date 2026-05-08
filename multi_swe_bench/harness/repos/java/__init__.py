@@ -35,3 +35,4 @@ from multi_swe_bench.harness.repos.java.agentscope_ai import *
 from multi_swe_bench.harness.repos.java.javaparser import *
 from multi_swe_bench.harness.repos.java.vavr_io import *
 from multi_swe_bench.harness.repos.java.libgdx import *
+from multi_swe_bench.harness.repos.java.skylot import *
