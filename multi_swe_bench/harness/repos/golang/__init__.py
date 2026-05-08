@@ -89,3 +89,4 @@ from multi_swe_bench.harness.repos.golang.restic import *
 from multi_swe_bench.harness.repos.golang.usememos import *
 from multi_swe_bench.harness.repos.golang.rclone import *
 from multi_swe_bench.harness.repos.golang.docker import *
+from multi_swe_bench.harness.repos.golang.k3s_io import *
