@@ -81,6 +81,7 @@ from multi_swe_bench.harness.repos.typescript.Joystream import *
 from multi_swe_bench.harness.repos.typescript.keyshade_xyz import *
 from multi_swe_bench.harness.repos.typescript.kortina import *
 from multi_swe_bench.harness.repos.typescript.latticexyz import *
+from multi_swe_bench.harness.repos.typescript.laurent22 import *
 from multi_swe_bench.harness.repos.typescript.League_of_Foundry_Developers import *
 from multi_swe_bench.harness.repos.typescript.livestorejs import *
 from multi_swe_bench.harness.repos.typescript.lukasoppermann import *

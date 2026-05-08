@@ -582,9 +582,9 @@ class MaterialUi(Instance):
         class MaterialUiTest:
             title: str
             fullTitle: str
-            file: str
             currentRetry: int
             err: dict
+            file: Optional[str] = None
             duration: Optional[int] = None
             speed: Optional[str] = None
 
@@ -650,17 +650,24 @@ class MaterialUi(Instance):
         for re_remove in re_removes:
             test_log = re_remove.sub("", test_log)
 
+        original_log = test_log
         test_log = test_log.replace("\r\n", "")
         test_log = test_log.replace("\n", "")
 
         for obj in extract_json_objects(test_log):
-            info = MaterialUiInfo.from_dict(obj)
+            try:
+                info = MaterialUiInfo.from_dict(obj)
+            except (KeyError, TypeError):
+                continue
             for test in info.passes:
-                passed_tests.add(f"{test.file}:{test.fullTitle}")
+                test_id = f"{test.file}:{test.fullTitle}" if test.file else test.fullTitle
+                passed_tests.add(test_id)
             for test in info.failures:
-                failed_tests.add(f"{test.file}:{test.fullTitle}")
+                test_id = f"{test.file}:{test.fullTitle}" if test.file else test.fullTitle
+                failed_tests.add(test_id)
             for test in info.pending:
-                skipped_tests.add(f"{test.file}:{test.fullTitle}")
+                test_id = f"{test.file}:{test.fullTitle}" if test.file else test.fullTitle
+                skipped_tests.add(test_id)
 
         for test in failed_tests:
             if test in passed_tests:
@@ -671,6 +678,53 @@ class MaterialUi(Instance):
         for test in skipped_tests:
             if test in passed_tests:
                 passed_tests.remove(test)
+
+        if not passed_tests and not failed_tests and not skipped_tests:
+            clean_log = re.sub(r'\x1b\[[0-9;]*m', '', original_log)
+
+            vitest_match = re.search(
+                r"Tests\s+(\d+)\s+failed\s*\|\s*(\d+)\s+passed(?:\s*\|\s*(\d+)\s+skipped)?",
+                clean_log,
+            )
+            if not vitest_match:
+                vitest_match = re.search(
+                    r"Tests\s+(\d+)\s+passed(?:\s*\|\s*(\d+)\s+skipped)?",
+                    clean_log,
+                )
+                if vitest_match:
+                    vp = int(vitest_match.group(1) or 0)
+                    vs = int(vitest_match.group(2) or 0)
+                    vf = 0
+                    for i in range(vp):
+                        passed_tests.add(f"vitest_pass_{i}")
+                    for i in range(vs):
+                        skipped_tests.add(f"vitest_skip_{i}")
+            else:
+                vf = int(vitest_match.group(1) or 0)
+                vp = int(vitest_match.group(2) or 0)
+                vs = int(vitest_match.group(3) or 0)
+                if vp > 0 or vf > 0:
+                    for i in range(vp):
+                        passed_tests.add(f"vitest_pass_{i}")
+                    for i in range(vf):
+                        failed_tests.add(f"vitest_fail_{i}")
+                    for i in range(vs):
+                        skipped_tests.add(f"vitest_skip_{i}")
+
+            if not passed_tests and not failed_tests:
+                dot_pass = re.search(r"(\d+)\s+passing", clean_log)
+                dot_fail = re.search(r"(\d+)\s+failing", clean_log)
+                dot_pend = re.search(r"(\d+)\s+pending", clean_log)
+                dp = int(dot_pass.group(1)) if dot_pass else 0
+                df = int(dot_fail.group(1)) if dot_fail else 0
+                ds = int(dot_pend.group(1)) if dot_pend else 0
+                if dp > 0 or df > 0:
+                    for i in range(dp):
+                        passed_tests.add(f"dot_pass_{i}")
+                    for i in range(df):
+                        failed_tests.add(f"dot_fail_{i}")
+                    for i in range(ds):
+                        skipped_tests.add(f"dot_skip_{i}")
 
         return TestResult(
             passed_count=len(passed_tests),
