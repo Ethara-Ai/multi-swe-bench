@@ -29,3 +29,4 @@ from multi_swe_bench.harness.repos.c.timescale.timescaledb import *
 from multi_swe_bench.harness.repos.c.arendst import *
 from multi_swe_bench.harness.repos.c.libuv import *
 from multi_swe_bench.harness.repos.c.libexpat import *
+from multi_swe_bench.harness.repos.c.radareorg import *
