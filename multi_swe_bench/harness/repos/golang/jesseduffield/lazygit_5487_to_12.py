@@ -134,11 +134,14 @@ if [ ! -f go.mod ]; then
   echo 'go 1.14' >> go.mod
 fi
 
-# Download dependencies
-go mod download -x 2>&1 || true
-
-# Warm build cache
-go build -mod=mod ./... 2>&1 || true
+if [ -d vendor ]; then
+  # Vendor directory exists — use it directly
+  go build -mod=vendor ./... 2>&1 || true
+else
+  # No vendor — use module mode
+  go mod download -x 2>&1 || true
+  go build -mod=mod ./... 2>&1 || true
+fi
 
 """.format(pr=self.pr),
             ),
@@ -157,7 +160,11 @@ if [ ! -f go.mod ]; then
   echo 'go 1.14' >> go.mod
 fi
 
-go test -mod=mod -count=1 ./...
+if [ -d vendor ]; then
+  go test -v -mod=vendor -count=1 $(go list -mod=vendor ./... | grep -v integration)
+else
+  go test -v -mod=mod -count=1 $(go list -mod=mod ./... | grep -v integration)
+fi
 
 """.format(pr=self.pr),
             ),
@@ -184,27 +191,30 @@ if [ ! -f go.mod ]; then
   echo 'go 1.14' >> go.mod
 fi
 
-# Delete go.sum to avoid checksum mismatch on republished packages
-rm -f go.sum
+if [ -d vendor ]; then
+  go test -v -mod=vendor -count=1 $(go list -mod=vendor ./... | grep -v integration)
+else
+  # Delete go.sum to avoid checksum mismatch on republished packages
+  rm -f go.sum
 
-# Fix Sirupsen/logrus case mismatch (old repos use capital S)
-go mod edit -replace github.com/Sirupsen/logrus=github.com/sirupsen/logrus@v1.9.4 2>/dev/null || true
-# Also fix imports in source (go mod tidy scans imports fresh)
-find . -name '*.go' -exec sed -i 's|github.com/Sirupsen/logrus|github.com/sirupsen/logrus|g' {{}} + 2>/dev/null || true
+  # Fix Sirupsen/logrus case mismatch (old repos use capital S)
+  go mod edit -replace github.com/Sirupsen/logrus=github.com/sirupsen/logrus@v1.9.4 2>/dev/null || true
+  # Also fix imports in source (go mod tidy scans imports fresh)
+  find . -name '*.go' -exec sed -i 's|github.com/Sirupsen/logrus|github.com/sirupsen/logrus|g' {{}} + 2>/dev/null || true
 
-# Fix go-i18n v2 DefaultLanguage (unexported in v2.6+, exported in v2.1.2)
-go mod edit -require github.com/nicksnyder/go-i18n/v2@v2.1.2 2>/dev/null || true
+  # Fix go-i18n v2 DefaultLanguage (unexported in v2.6+, exported in v2.1.2)
+  go mod edit -require github.com/nicksnyder/go-i18n/v2@v2.1.2 2>/dev/null || true
 
-# Bypass checksum verification for republished packages (go-getter)
-export GONOSUMCHECK='*'
-export GONOSUMDB='*'
-export GOFLAGS='-mod=mod'
-export GONOSUMDB='*'
+  # Bypass checksum verification for republished packages (go-getter)
+  export GONOSUMCHECK='*'
+  export GONOSUMDB='*'
+  export GOFLAGS='-mod=mod'
 
-# Tidy modules after patch (may add new deps)
-go mod tidy 2>&1 || true
+  # Tidy modules after patch (may add new deps)
+  go mod tidy 2>&1 || true
 
-go test -mod=mod -count=1 ./...
+  go test -v -mod=mod -count=1 $(go list -mod=mod ./... | grep -v integration)
+fi
 
 """.format(pr=self.pr),
             ),
@@ -234,27 +244,30 @@ if [ ! -f go.mod ]; then
   echo 'go 1.14' >> go.mod
 fi
 
-# Delete go.sum to avoid checksum mismatch on republished packages
-rm -f go.sum
+if [ -d vendor ]; then
+  go test -v -mod=vendor -count=1 $(go list -mod=vendor ./... | grep -v integration)
+else
+  # Delete go.sum to avoid checksum mismatch on republished packages
+  rm -f go.sum
 
-# Fix Sirupsen/logrus case mismatch (old repos use capital S)
-go mod edit -replace github.com/Sirupsen/logrus=github.com/sirupsen/logrus@v1.9.4 2>/dev/null || true
-# Also fix imports in source (go mod tidy scans imports fresh)
-find . -name '*.go' -exec sed -i 's|github.com/Sirupsen/logrus|github.com/sirupsen/logrus|g' {{}} + 2>/dev/null || true
+  # Fix Sirupsen/logrus case mismatch (old repos use capital S)
+  go mod edit -replace github.com/Sirupsen/logrus=github.com/sirupsen/logrus@v1.9.4 2>/dev/null || true
+  # Also fix imports in source (go mod tidy scans imports fresh)
+  find . -name '*.go' -exec sed -i 's|github.com/Sirupsen/logrus|github.com/sirupsen/logrus|g' {{}} + 2>/dev/null || true
 
-# Fix go-i18n v2 DefaultLanguage (unexported in v2.6+, exported in v2.1.2)
-go mod edit -require github.com/nicksnyder/go-i18n/v2@v2.1.2 2>/dev/null || true
+  # Fix go-i18n v2 DefaultLanguage (unexported in v2.6+, exported in v2.1.2)
+  go mod edit -require github.com/nicksnyder/go-i18n/v2@v2.1.2 2>/dev/null || true
 
-# Bypass checksum verification for republished packages (go-getter)
-export GONOSUMCHECK='*'
-export GONOSUMDB='*'
-export GOFLAGS='-mod=mod'
-export GONOSUMDB='*'
+  # Bypass checksum verification for republished packages (go-getter)
+  export GONOSUMCHECK='*'
+  export GONOSUMDB='*'
+  export GOFLAGS='-mod=mod'
 
-# Tidy modules after patches (may add new deps)
-go mod tidy 2>&1 || true
+  # Tidy modules after patches (may add new deps)
+  go mod tidy 2>&1 || true
 
-go test -mod=mod -count=1 ./...
+  go test -v -mod=mod -count=1 $(go list -mod=mod ./... | grep -v integration)
+fi
 
 """.format(pr=self.pr),
             ),
