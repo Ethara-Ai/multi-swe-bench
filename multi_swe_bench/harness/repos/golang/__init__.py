@@ -92,3 +92,4 @@ from multi_swe_bench.harness.repos.golang.docker import *
 from multi_swe_bench.harness.repos.golang.k3s_io import *
 from multi_swe_bench.harness.repos.golang.grafana import *
 from multi_swe_bench.harness.repos.golang.gogs import *
+from multi_swe_bench.harness.repos.golang.dapr import *
