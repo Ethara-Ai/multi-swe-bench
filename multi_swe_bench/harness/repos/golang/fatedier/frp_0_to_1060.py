@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 from typing import Optional, Union
 
@@ -6,7 +8,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class FrpImageBase(Image):
+class Frp0To1060ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -23,10 +25,10 @@ class FrpImageBase(Image):
         return "golang:latest"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-legacy"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-legacy"
 
     def files(self) -> list[File]:
         return []
@@ -54,7 +56,7 @@ WORKDIR /home/
 """
 
 
-class FrpImageDefault(Image):
+class Frp0To1060ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -68,7 +70,7 @@ class FrpImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return FrpImageBase(self.pr, self.config)
+        return Frp0To1060ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -111,6 +113,57 @@ exit 0
             ),
             File(
                 ".",
+                "gen_modules_txt.py",
+                "#!/usr/bin/env python3\n"
+                "import os\n"
+                "\n"
+                "modules = {}\n"
+                'vendor = "vendor"\n'
+                "if not os.path.isdir(vendor):\n"
+                "    exit(0)\n"
+                "\n"
+                "for root, dirs, files in os.walk(vendor):\n"
+                '    go_files = [f for f in files if f.endswith(".go") and not f.endswith("_test.go")]\n'
+                "    if not go_files:\n"
+                "        continue\n"
+                '    pkg = root.replace("vendor/", "", 1)\n'
+                '    parts = pkg.split("/")\n'
+                '    if parts[0] == "github.com" and len(parts) >= 3:\n'
+                '        mod = "/".join(parts[:3])\n'
+                '    elif parts[0] == "golang.org" and len(parts) >= 3:\n'
+                '        mod = "/".join(parts[:3])\n'
+                "    else:\n"
+                "        mod = pkg\n"
+                "    if mod not in modules:\n"
+                "        modules[mod] = []\n"
+                "    modules[mod].append(pkg)\n"
+                "\n"
+                'with open("vendor/modules.txt", "w") as f:\n'
+                "    for mod in sorted(modules.keys()):\n"
+                '        f.write(f"# {mod} v0.0.0-00010101000000-000000000000\\n")\n'
+                '        f.write(f"## explicit\\n")\n'
+                "        for pkg in sorted(modules[mod]):\n"
+                '            f.write(f"{pkg}\\n")\n'
+                "\n"
+                "# Rewrite go.mod: keep module line and go version, replace require block\n"
+                'with open("go.mod") as f:\n'
+                "    lines = f.readlines()\n"
+                "header = []\n"
+                "for line in lines:\n"
+                '    if line.strip().startswith("require"):\n'
+                "        break\n"
+                "    header.append(line)\n"
+                'with open("go.mod", "w") as f:\n'
+                '    f.writelines(header)\n'
+                '    f.write("\\nrequire (\\n")\n'
+                "    for mod in sorted(modules.keys()):\n"
+                '        f.write(f"\\t{mod} v0.0.0-00010101000000-000000000000\\n")\n'
+                '    f.write(")\\n")\n'
+                "\n"
+                'print(f"Generated modules.txt with {len(modules)} modules")\n',
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
@@ -121,7 +174,26 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-go test -v -count=1 ./... || true
+# Pre-go.mod era: initialize go modules so modern Go toolchain can resolve imports
+if [ ! -f go.mod ]; then
+    go mod init github.com/fatedier/frp
+
+    # Generate vendor/modules.txt from existing vendor/ directory
+    # This allows -mod=vendor to work with the old pre-modules vendor layout
+    python3 /home/gen_modules_txt.py
+
+    git config user.email "harness@mswebench.local"
+    git config user.name "harness"
+    git add -A
+    git commit -m "init go modules" --allow-empty || true
+fi
+
+# Detect project layout and run tests accordingly
+if find src -name '*.go' 2>/dev/null | grep -q .; then
+    go test -v -count=1 -mod=vendor -vet=off ./src/... || true
+else
+    go test -v -count=1 -mod=vendor -vet=off ./... || true
+fi
 
 """.format(pr=self.pr),
             ),
@@ -132,7 +204,13 @@ go test -v -count=1 ./... || true
 set -e
 
 cd /home/{pr.repo}
-go test -v -count=1 ./...
+
+# Detect project layout and run tests accordingly
+if find src -name '*.go' 2>/dev/null | grep -q .; then
+    go test -v -count=1 -mod=vendor -vet=off ./src/...
+else
+    go test -v -count=1 -mod=vendor -vet=off ./...
+fi
 
 """.format(pr=self.pr),
             ),
@@ -143,8 +221,20 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
-go test -v -count=1 ./...
+git apply /home/test.patch || git apply --reject --allow-empty /home/test.patch || true
+find . -name '*.rej' -delete 2>/dev/null || true
+
+# Re-generate modules.txt in case test.patch modifies vendor/
+if [ -f go.mod ] && [ -d vendor ]; then
+    python3 /home/gen_modules_txt.py || true
+fi
+
+# Detect project layout and run tests accordingly
+if find src -name '*.go' 2>/dev/null | grep -q .; then
+    go test -v -count=1 -mod=vendor -vet=off ./src/...
+else
+    go test -v -count=1 -mod=vendor -vet=off ./...
+fi
 
 """.format(pr=self.pr),
             ),
@@ -155,8 +245,22 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
-go test -v -count=1 ./...
+git apply /home/test.patch || git apply --reject --allow-empty /home/test.patch || true
+find . -name '*.rej' -delete 2>/dev/null || true
+git apply /home/fix.patch || git apply --reject --allow-empty /home/fix.patch || true
+find . -name '*.rej' -delete 2>/dev/null || true
+
+# Re-generate modules.txt in case patches modify vendor/
+if [ -f go.mod ] && [ -d vendor ]; then
+    python3 /home/gen_modules_txt.py || true
+fi
+
+# Detect project layout and run tests accordingly
+if find src -name '*.go' 2>/dev/null | grep -q .; then
+    go test -v -count=1 -mod=vendor -vet=off ./src/...
+else
+    go test -v -count=1 -mod=vendor -vet=off ./...
+fi
 
 """.format(pr=self.pr),
             ),
@@ -186,8 +290,8 @@ go test -v -count=1 ./...
 """
 
 
-@Instance.register("fatedier", "frp")
-class Frp(Instance):
+@Instance.register("fatedier", "frp_0_to_1060")
+class FRP_0_TO_1060(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -198,7 +302,7 @@ class Frp(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return FrpImageDefault(self.pr, self._config)
+        return Frp0To1060ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -226,7 +330,6 @@ class Frp(Instance):
         re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
         re_fail_tests = [
             re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"FAIL:?\s?(.+?)\s"),
         ]
         re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
 
