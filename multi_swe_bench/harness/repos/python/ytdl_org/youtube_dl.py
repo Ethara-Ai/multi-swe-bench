@@ -103,7 +103,7 @@ class ImageBase(Image):
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install basic requirements
-RUN apt-get update && apt-get install -y git
+RUN apt-get update && apt-get install -y --no-install-recommends git
 
 WORKDIR /home/
 
@@ -158,7 +158,7 @@ class ImageDefault(Image):
         test_files_str = " ".join(test_files)
 
         if test_files_str:
-            pytest_cmd = f"python -m pytest --no-header -rN --tb=short -v {test_files_str}"
+            pytest_cmd = f"python -m pytest --no-header -rN --tb=short -v {test_files_str} || true"
             run_pytest = (
                 "EXISTING_FILES=\"\"\n"
                 f"for f in {test_files_str}; do\n"
@@ -169,13 +169,34 @@ class ImageDefault(Image):
                 "fi"
             )
         else:
-            pytest_cmd = "python -m pytest --no-header -rN --tb=short -v"
-            run_pytest = pytest_cmd
+            # Exclude network-dependent test files to avoid flaky p2f transitions.
+            ignore_flags = " ".join(
+                f"--ignore={f}" for f in _EXCLUDED_TEST_FILES
+            )
+            base_cmd = (
+                f"python -m pytest --no-header -rN --tb=short -v {ignore_flags}"
+            )
+
+            # If the PR title contains an extractor name in brackets
+            # (e.g. "[nhk] Add support for NHK"), run the corresponding
+            # download tests so the fix patch can demonstrate f2p.
+            m = re.match(r"\[([^\]]+)\]", self.pr.title)
+            if m and m.group(1).strip():
+                kw = m.group(1).strip().lower()
+                download_cmd = (
+                    f"python -m pytest --no-header -rN --tb=short -v "
+                    f"test/test_download.py -k \"{kw}\""
+                )
+                pytest_cmd = f"({base_cmd} && {download_cmd}) || true"
+                run_pytest = pytest_cmd
+            else:
+                pytest_cmd = f"{base_cmd} || true"
+                run_pytest = pytest_cmd
 
         fix_patch = _strip_binary_diffs(self.pr.fix_patch)
         test_patch = _strip_binary_diffs(self.pr.test_patch)
 
-        return [
+        files = [
             File(".", "fix.patch", fix_patch),
             File(".", "test.patch", test_patch),
             File(
@@ -249,6 +270,8 @@ class ImageDefault(Image):
                 ),
             ),
         ]
+
+        return files
 
     def dockerfile(self) -> str:
         base = self.dependency()
