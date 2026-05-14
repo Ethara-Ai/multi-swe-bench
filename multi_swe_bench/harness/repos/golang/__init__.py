@@ -30,6 +30,7 @@ from multi_swe_bench.harness.repos.golang.googlecloudplatform import *
 from multi_swe_bench.harness.repos.golang.aws import *
 from multi_swe_bench.harness.repos.golang.alexandrevilain import *
 from multi_swe_bench.harness.repos.golang.omni_network import *
+from multi_swe_bench.harness.repos.golang.danielmiessler import *
 from multi_swe_bench.harness.repos.golang.datazip_inc import *
 from multi_swe_bench.harness.repos.golang.stashapp import *
 from multi_swe_bench.harness.repos.golang.tendermint import *
