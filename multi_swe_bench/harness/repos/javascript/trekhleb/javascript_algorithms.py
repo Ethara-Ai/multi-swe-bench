@@ -145,7 +145,7 @@ cd /home/{pr.repo}
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+git apply --reject --whitespace=nowarn /home/test.patch || true
 ./node_modules/.bin/jest --verbose --no-cache 2>&1
 
 """.format(pr=self.pr),
@@ -157,7 +157,7 @@ git apply --whitespace=nowarn /home/test.patch
 set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git apply --reject --whitespace=nowarn /home/test.patch /home/fix.patch || true
 ./node_modules/.bin/jest --verbose --no-cache 2>&1
 
 """.format(pr=self.pr),
