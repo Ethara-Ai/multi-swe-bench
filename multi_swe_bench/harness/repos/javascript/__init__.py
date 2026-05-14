@@ -128,12 +128,10 @@ from multi_swe_bench.harness.repos.javascript.webpack.webpack import *
 from multi_swe_bench.harness.repos.javascript.webpack.webpack_cli import *
 from multi_swe_bench.harness.repos.javascript.websockets import *
 from multi_swe_bench.harness.repos.javascript.webtorrent import *
-<<<<<<< HEAD
 from multi_swe_bench.harness.repos.javascript.zloirock import *
 from multi_swe_bench.harness.repos.javascript.validatorjs import *
 from multi_swe_bench.harness.repos.javascript.Unitech import *
 from multi_swe_bench.harness.repos.javascript.winstonjs import *
-=======
 from multi_swe_bench.harness.repos.javascript.DDDEastMidlandsLimited import *
 from multi_swe_bench.harness.repos.javascript.mozilla import *
 from multi_swe_bench.harness.repos.javascript.AnomalyInnovations import *
@@ -141,4 +139,3 @@ from multi_swe_bench.harness.repos.javascript.AnomalyInnovations import *
 from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
 from multi_swe_bench.harness.repos.javascript.style_dictionary import *
 from multi_swe_bench.harness.repos.javascript.chinese_poetry import *
->>>>>>> 850fc320 (updated global init file for golang, java, javascript, and typescript)

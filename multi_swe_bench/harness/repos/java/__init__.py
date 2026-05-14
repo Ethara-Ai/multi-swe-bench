@@ -33,15 +33,12 @@ from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe_5927_to_5927 import 
 from multi_swe_bench.harness.repos.java.termux import *
 from multi_swe_bench.harness.repos.java.agentscope_ai import *
 from multi_swe_bench.harness.repos.java.javaparser import *
-<<<<<<< HEAD
 from multi_swe_bench.harness.repos.java.vavr_io import *
 from multi_swe_bench.harness.repos.java.libgdx import *
 from multi_swe_bench.harness.repos.java.skylot import *
 from multi_swe_bench.harness.repos.java.dbeaver import *
 from multi_swe_bench.harness.repos.java.kestra_io import *
-=======
 from multi_swe_bench.harness.repos.java.seleniumhq import *
-from multi_swe_bench.harness.repos.java.vavr_io import *
 from multi_swe_bench.harness.repos.java.bumptech.glide_0_to_4999 import *
 from multi_swe_bench.harness.repos.java.bumptech.glide_5000_to_99999 import *
->>>>>>> 850fc320 (updated global init file for golang, java, javascript, and typescript)
+from multi_swe_bench.harness.repos.java.xuxueli import *
