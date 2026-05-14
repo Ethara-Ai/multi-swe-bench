@@ -94,3 +94,4 @@ from multi_swe_bench.harness.repos.golang.grafana import *
 from multi_swe_bench.harness.repos.golang.gogs import *
 from multi_swe_bench.harness.repos.golang.dapr import *
 from multi_swe_bench.harness.repos.golang.AlistGo import *
+from multi_swe_bench.harness.repos.golang.photoprism import *
