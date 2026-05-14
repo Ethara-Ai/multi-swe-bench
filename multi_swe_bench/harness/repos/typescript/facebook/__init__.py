@@ -6,3 +6,4 @@ from multi_swe_bench.harness.repos.typescript.facebook.lexical_941_to_211 import
 from multi_swe_bench.harness.repos.typescript.facebook.lexical_5618_to_1036 import *
 from multi_swe_bench.harness.repos.typescript.facebook.lexical_7509_to_5743 import *
 from multi_swe_bench.harness.repos.typescript.facebook.lexical_8355_to_7616 import *
+from multi_swe_bench.harness.repos.typescript.facebook.react_native import *
