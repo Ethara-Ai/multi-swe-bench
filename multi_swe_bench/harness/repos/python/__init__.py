@@ -69,6 +69,7 @@ from multi_swe_bench.harness.repos.python.dssg import *
 from multi_swe_bench.harness.repos.python.dstackai import *
 from multi_swe_bench.harness.repos.python.e_valuation import *
 from multi_swe_bench.harness.repos.python.elastic import *
+from multi_swe_bench.harness.repos.python.emscripten_core import *
 from multi_swe_bench.harness.repos.python.enthought import *
 from multi_swe_bench.harness.repos.python.equinor import *
 from multi_swe_bench.harness.repos.python.Ericsson import *
