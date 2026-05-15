@@ -31,4 +31,5 @@ from multi_swe_bench.harness.repos.c.libuv import *
 from multi_swe_bench.harness.repos.c.libexpat import *
 from multi_swe_bench.harness.repos.c.radareorg import *
 from multi_swe_bench.harness.repos.c.qbittorrent import *
+from multi_swe_bench.harness.repos.c.netdata import *
 from multi_swe_bench.harness.repos.c.obsproject import *
