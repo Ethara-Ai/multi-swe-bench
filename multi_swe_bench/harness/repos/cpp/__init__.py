@@ -49,3 +49,4 @@ from multi_swe_bench.harness.repos.cpp.ccache import *
 from multi_swe_bench.harness.repos.cpp.aristocratos import *
 from multi_swe_bench.harness.repos.cpp.oatpp import *
 from multi_swe_bench.harness.repos.cpp.ArduPilot import *
+from multi_swe_bench.harness.repos.cpp.grpc import *
