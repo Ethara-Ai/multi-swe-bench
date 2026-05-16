@@ -1,4 +1,4 @@
-"""TheAlgorithms/Java config for PRs 3464-4953 (Maven era, JDK 17)."""
+"""TheAlgorithms/Java config for PRs 5142-9999 (JDK 21, Maven era)."""
 
 import re
 import textwrap
@@ -9,7 +9,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TheAlgorithmsJava3464ImageBase(Image):
+class TheAlgorithmsJava5142ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -26,10 +26,10 @@ class TheAlgorithmsJava3464ImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return "base-jdk17"
+        return "base-jdk21"
 
     def workdir(self) -> str:
-        return "base-jdk17"
+        return "base-jdk21"
 
     def files(self) -> list[File]:
         return []
@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 """
 
 
-class TheAlgorithmsJava3464ImageDefault(Image):
+class TheAlgorithmsJava5142ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -70,7 +70,7 @@ class TheAlgorithmsJava3464ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return TheAlgorithmsJava3464ImageBase(self.pr, self._config)
+        return TheAlgorithmsJava5142ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -151,7 +151,6 @@ else
       </mirror> \\
   </mirrors>' ~/.m2/settings.xml
 fi
-mvn clean test -Dstyle.color=never || true
 """.format(pr=self.pr),
             ),
             File(
@@ -252,7 +251,7 @@ mvn clean test -Dstyle.color=never
 
 {self.global_env}
 
-RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk maven && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-21-jdk maven && rm -rf /var/lib/apt/lists/*
 
 {proxy_setup}
 
@@ -267,8 +266,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk 
 """
 
 
-@Instance.register("TheAlgorithms", "TheAlgorithms_Java_3464_to_4953")
-class TheAlgorithmsJava3464To4953(Instance):
+@Instance.register("TheAlgorithms", "TheAlgorithms_Java_5142_to_9999")
+class TheAlgorithmsJava5142To9999(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -279,7 +278,7 @@ class TheAlgorithmsJava3464To4953(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return TheAlgorithmsJava3464ImageDefault(self.pr, self._config)
+        return TheAlgorithmsJava5142ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

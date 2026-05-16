@@ -1,4 +1,4 @@
-"""TheAlgorithms/Java config for PRs 645-2823 (early era, JDK 11, Maven with legacy files)."""
+"""TheAlgorithms/Java config for PRs 2823-5142 (JDK 17, Maven era)."""
 
 import re
 import textwrap
@@ -9,7 +9,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TheAlgorithmsJava645ImageBase(Image):
+class TheAlgorithmsJava2823ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -26,10 +26,10 @@ class TheAlgorithmsJava645ImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-jdk17"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-jdk17"
 
     def files(self) -> list[File]:
         return []
@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 """
 
 
-class TheAlgorithmsJava645ImageDefault(Image):
+class TheAlgorithmsJava2823ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -70,7 +70,7 @@ class TheAlgorithmsJava645ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return TheAlgorithmsJava645ImageBase(self.pr, self._config)
+        return TheAlgorithmsJava2823ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -123,9 +123,8 @@ bash /home/check_git_changes.sh
 git fetch origin {pr.base.sha} || true
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
-if [ -f pom.xml ]; then
-    if [ ! -f ~/.m2/settings.xml ]; then
-        mkdir -p ~/.m2 && cat <<EOF > ~/.m2/settings.xml
+if [ ! -f ~/.m2/settings.xml ]; then
+    mkdir -p ~/.m2 && cat <<EOF > ~/.m2/settings.xml
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
@@ -141,35 +140,16 @@ if [ -f pom.xml ]; then
 
 </settings>
 EOF
-    else
-      grep -q "<mirror>" ~/.m2/settings.xml || sed -i '/<\\/settings>/i \\
-      <mirrors> \\
-          <mirror> \\
-              <id>aliyunmaven</id> \\
-              <mirrorOf>central</mirrorOf> \\
-              <name>Aliyun Maven Mirror</name> \\
-              <url>https://maven.aliyun.com/repository/public</url> \\
-          </mirror> \\
-      </mirrors>' ~/.m2/settings.xml
-    fi
-    if grep -q "junit-jupiter" pom.xml && ! grep -q "maven-surefire-plugin" pom.xml; then
-        sed -i '/<\\/plugins>/i \\
-            <plugin>\\
-                <groupId>org.apache.maven.plugins</groupId>\\
-                <artifactId>maven-surefire-plugin</artifactId>\\
-                <version>2.22.2</version>\\
-            </plugin>' pom.xml
-    fi
-    if grep -q "junit-jupiter-api" pom.xml && ! grep -q "junit-jupiter-engine" pom.xml; then
-        sed -i '/<\\/dependencies>/i \\
-        <dependency>\\
-            <groupId>org.junit.jupiter</groupId>\\
-            <artifactId>junit-jupiter-engine</artifactId>\\
-            <version>5.5.0</version>\\
-            <scope>test</scope>\\
-        </dependency>' pom.xml
-    fi
-    mvn clean test -Dstyle.color=never || true
+else
+  grep -q "<mirror>" ~/.m2/settings.xml || sed -i '/<\\/settings>/i \\
+  <mirrors> \\
+      <mirror> \\
+          <id>aliyunmaven</id> \\
+          <mirrorOf>central</mirrorOf> \\
+          <name>Aliyun Maven Mirror</name> \\
+          <url>https://maven.aliyun.com/repository/public</url> \\
+      </mirror> \\
+  </mirrors>' ~/.m2/settings.xml
 fi
 """.format(pr=self.pr),
             ),
@@ -180,12 +160,7 @@ fi
 set -e
 
 cd /home/{pr.repo}
-if [ -f pom.xml ]; then
-    mvn clean test -Dstyle.color=never
-else
-    echo "No pom.xml found, skipping Maven test"
-    exit 1
-fi
+mvn clean test -Dstyle.color=never
 """.format(pr=self.pr),
             ),
             File(
@@ -196,12 +171,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-if [ -f pom.xml ]; then
-    mvn clean test -Dstyle.color=never
-else
-    echo "No pom.xml found, skipping Maven test"
-    exit 1
-fi
+mvn clean test -Dstyle.color=never
 
 """.format(pr=self.pr),
             ),
@@ -213,12 +183,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-if [ -f pom.xml ]; then
-    mvn clean test -Dstyle.color=never
-else
-    echo "No pom.xml found, skipping Maven test"
-    exit 1
-fi
+mvn clean test -Dstyle.color=never
 
 """.format(pr=self.pr),
             ),
@@ -286,7 +251,7 @@ fi
 
 {self.global_env}
 
-RUN apt-get update && apt-get install -y --no-install-recommends openjdk-11-jdk maven && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk maven && rm -rf /var/lib/apt/lists/*
 
 {proxy_setup}
 
@@ -301,8 +266,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends openjdk-11-jdk 
 """
 
 
-@Instance.register("TheAlgorithms", "TheAlgorithms_Java_645_to_2823")
-class TheAlgorithmsJava645To2823(Instance):
+@Instance.register("TheAlgorithms", "TheAlgorithms_Java_2823_to_5142")
+class TheAlgorithmsJava2823To5142(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -313,7 +278,7 @@ class TheAlgorithmsJava645To2823(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return TheAlgorithmsJava645ImageDefault(self.pr, self._config)
+        return TheAlgorithmsJava2823ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
