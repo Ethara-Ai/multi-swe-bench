@@ -97,3 +97,4 @@ from multi_swe_bench.harness.repos.golang.dapr import *
 from multi_swe_bench.harness.repos.golang.AlistGo import *
 from multi_swe_bench.harness.repos.golang.photoprism import *
 from multi_swe_bench.harness.repos.golang.v2ray import *
+from multi_swe_bench.harness.repos.golang.XTLS import *

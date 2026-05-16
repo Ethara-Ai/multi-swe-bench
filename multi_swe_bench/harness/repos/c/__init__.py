@@ -33,3 +33,4 @@ from multi_swe_bench.harness.repos.c.radareorg import *
 from multi_swe_bench.harness.repos.c.qbittorrent import *
 from multi_swe_bench.harness.repos.c.netdata import *
 from multi_swe_bench.harness.repos.c.obsproject import *
+from multi_swe_bench.harness.repos.c.TheAlgorithms import *
