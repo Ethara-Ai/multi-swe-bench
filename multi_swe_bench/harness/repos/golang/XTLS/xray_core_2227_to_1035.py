@@ -23,10 +23,10 @@ class XrayCoreGo120ImageBase(Image):
         return "golang:1.20"
 
     def image_tag(self) -> str:
-        return "base-xray_core_go120"
+        return "base-xray_core_2227_to_1035"
 
     def workdir(self) -> str:
-        return "base-xray_core_go120"
+        return "base-xray_core_2227_to_1035"
 
     def files(self) -> list[File]:
         return []
@@ -200,7 +200,7 @@ go test -timeout 30m -count=1 -v ./...
 """
 
 
-@Instance.register("XTLS", "xray_core_go120")
+@Instance.register("XTLS", "xray_core_2227_to_1035")
 class XRAY_CORE_GO120(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

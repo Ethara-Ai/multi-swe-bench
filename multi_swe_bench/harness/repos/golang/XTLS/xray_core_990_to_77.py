@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class XrayCoreGo124ImageBase(Image):
+class XrayCoreGo117ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +20,13 @@ class XrayCoreGo124ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:1.24"
+        return "golang:1.17"
 
     def image_tag(self) -> str:
-        return "base-xray_core_go124"
+        return "base-xray_core_990_to_77"
 
     def workdir(self) -> str:
-        return "base-xray_core_go124"
+        return "base-xray_core_990_to_77"
 
     def files(self) -> list[File]:
         return []
@@ -46,7 +46,10 @@ class XrayCoreGo124ImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-ENV GOFLAGS=-buildvcs=false
+# NOTE: no GOFLAGS=-buildvcs here — the `-buildvcs` flag was added in Go 1.18,
+# and this era runs golang:1.17, where it errors "unknown flag -buildvcs" and
+# breaks every `go` command. Go <=1.17 has no VCS stamping, so the flag is
+# unneeded anyway. (go120/go124/go126 keep it — they're on Go 1.18+.)
 ENV GOTOOLCHAIN=local
 
 {code}
@@ -56,7 +59,7 @@ ENV GOTOOLCHAIN=local
 """
 
 
-class XrayCoreGo124ImageDefault(Image):
+class XrayCoreGo117ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -70,7 +73,7 @@ class XrayCoreGo124ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return XrayCoreGo124ImageBase(self.pr, self._config)
+        return XrayCoreGo117ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -200,8 +203,8 @@ go test -timeout 30m -count=1 -v ./...
 """
 
 
-@Instance.register("XTLS", "xray_core_go124")
-class XRAY_CORE_GO124(Instance):
+@Instance.register("XTLS", "xray_core_990_to_77")
+class XRAY_CORE_GO117(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -212,7 +215,7 @@ class XRAY_CORE_GO124(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return XrayCoreGo124ImageDefault(self.pr, self._config)
+        return XrayCoreGo117ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
