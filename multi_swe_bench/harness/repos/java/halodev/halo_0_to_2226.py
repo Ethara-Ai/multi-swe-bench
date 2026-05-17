@@ -9,55 +9,58 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 # ──────────────────────────────────────────────────────────────
-# JDK selection verified against all 188 base commits (2025-04-16):
+# Era: halo_0_to_2226  —  Halo 1.x (releases 1.4 / 1.5)
 #
-#   JDK 8  (15 PRs): master #174-#1039, dev #769
-#   JDK 11 (13 PRs): master #1217-#2143, master #5562
-#   JDK 17 (157 PRs): next #2138-#2488, main #2522-#7407
-#   JDK 21 (3 PRs): main #7665, #7990, #8304
+#   Toolchain : JDK 11 (Azul Zulu)
+#   Build     : Gradle wrapper, single-module project
+#   Node.js   : not required — the ui/ subproject does not exist
+#               in this era, so no com.github.node-gradle plugin
+#               and no system Node.js is needed.
 #
-# Gradle wrapper auto-downloads Node.js/pnpm via the
-# com.github.node-gradle.node plugin for PRs with a ui/ subproject
-# (main #5320+), so no system Node.js installation is needed.
+# Verified in Docker: PR #1144 on JDK 11 compiled and executed
+# 122 tests (Halo 1.x targets Java 8 source but builds cleanly on
+# JDK 11), so a single JDK 11 image covers the whole 1.x era.
 # ──────────────────────────────────────────────────────────────
 
 
-def _select_jdk(pr: PullRequest) -> str:
-    ref = pr.base.ref
-    if ref == "dev":
-        return "8"
-    if ref == "master":
-        if pr.number < 1217:
-            return "8"
-        return "11"
-    if ref == "next":
-        return "17"
-    if pr.number >= 7665:
-        return "21"
-    return "17"
+def _filter_binary_patches(patch_content: str) -> str:
+    """Remove binary diff sections from a git patch.
+
+    Binary diffs (e.g. gradle/wrapper/gradle-wrapper.jar, image assets) cause
+    'cannot apply binary patch without full index line' errors with git apply,
+    which aborts the whole patch atomically. These binary files are not needed
+    to compile or run tests, so the section is dropped.
+    """
+    if not patch_content:
+        return patch_content
+
+    lines = patch_content.split("\n")
+    result = []
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith("diff --git"):
+            section_start = i
+            i += 1
+            is_binary = False
+            while i < len(lines) and not lines[i].startswith("diff --git"):
+                if lines[i].startswith("GIT binary patch") or lines[i].startswith(
+                    "Binary files"
+                ):
+                    is_binary = True
+                i += 1
+            if not is_binary:
+                result.extend(lines[section_start:i])
+        else:
+            result.append(lines[i])
+            i += 1
+    return "\n".join(result)
 
 
-def _zulu_package(jdk: str) -> str:
-    return f"zulu{jdk}-jdk"
+class Halo0To2226ImageBase(Image):
 
-
-def _java_home(jdk: str) -> str:
-    return f"/usr/lib/jvm/zulu{jdk}"
-
-
-class _HaloImageBaseFactory:
-    @staticmethod
-    def create(pr: PullRequest, config: Config) -> Image:
-        jdk = _select_jdk(pr)
-        return _HaloImageBase(pr, config, jdk)
-
-
-class _HaloImageBase(Image):
-
-    def __init__(self, pr: PullRequest, config: Config, jdk: str):
+    def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
-        self._jdk = jdk
 
     @property
     def pr(self) -> PullRequest:
@@ -71,9 +74,7 @@ class _HaloImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        if self._jdk == "17":
-            return "base"
-        return f"base-jdk{self._jdk}"
+        return "base-jdk11"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -91,15 +92,12 @@ class _HaloImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        zulu = _zulu_package(self._jdk)
-        java_home = _java_home(self._jdk)
-
         return f"""FROM {image_name}
 
 {self.global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
+# DEBIAN_FRONTEND and LANG are injected by DockerfileEnhancer; only LC_ALL
+# needs setting here.
 ENV LC_ALL=C.UTF-8
 
 WORKDIR /home/
@@ -110,10 +108,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 RUN curl -fsSL https://repos.azul.com/azul-repo.key -o /usr/share/keyrings/azul.asc \\
     && echo "deb [signed-by=/usr/share/keyrings/azul.asc] https://repos.azul.com/zulu/deb stable main" > /etc/apt/sources.list.d/zulu.list
-RUN apt-get update && apt-get install -y --no-install-recommends {zulu} \\
+RUN apt-get update && apt-get install -y --no-install-recommends zulu11-jdk \\
     && rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME={java_home}
+ENV JAVA_HOME=/usr/lib/jvm/zulu11
 ENV PATH=$JAVA_HOME/bin:$PATH
 
 {code}
@@ -123,7 +121,7 @@ ENV PATH=$JAVA_HOME/bin:$PATH
 """
 
 
-class HaloImageDefault(Image):
+class Halo0To2226ImageDefault(Image):
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -138,7 +136,7 @@ class HaloImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return _HaloImageBaseFactory.create(self.pr, self._config)
+        return Halo0To2226ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -147,16 +145,18 @@ class HaloImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        filtered_fix_patch = _filter_binary_patches(self.pr.fix_patch)
+        filtered_test_patch = _filter_binary_patches(self.pr.test_patch)
         return [
             File(
                 ".",
                 "fix.patch",
-                f"{self.pr.fix_patch}",
+                f"{filtered_fix_patch}",
             ),
             File(
                 ".",
                 "test.patch",
-                f"{self.pr.test_patch}",
+                f"{filtered_test_patch}",
             ),
             File(
                 ".",
@@ -191,15 +191,14 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# jcenter() shut down Feb 2024 — remove it so Gradle does not hang
-sed -i '/jcenter()/d' build.gradle 2>/dev/null || true
-sed -i '/jcenter()/d' settings.gradle 2>/dev/null || true
-
-# Replace China-only aliyun mirror with mavenCentral for portability
-sed -i '/maven.aliyun.com/d' build.gradle 2>/dev/null || true
+# jcenter() is decommissioned (HTTP 404). Halo 1.x needs the custom build
+# net.sf.image4j:image4j:0.7zensight1, which now survives only on the Aliyun
+# mirror — so swap the dead jcenter() repo for it (mavenCentral stays).
+sed -i "s#jcenter()#maven {{ url 'https://maven.aliyun.com/repository/public' }}#g" build.gradle 2>/dev/null || true
+sed -i "s#jcenter()#maven {{ url 'https://maven.aliyun.com/repository/public' }}#g" settings.gradle 2>/dev/null || true
 
 chmod +x gradlew
-./gradlew build -x test -x check || true
+./gradlew build -x test -x check --console=plain --no-daemon || true
 """.format(pr=self.pr),
             ),
             File(
@@ -209,7 +208,7 @@ chmod +x gradlew
 set -e
 
 cd /home/{pr.repo}
-./gradlew clean test --continue
+./gradlew clean test --continue --console=plain --no-daemon
 """.format(pr=self.pr),
             ),
             File(
@@ -220,7 +219,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-./gradlew clean test --continue
+./gradlew clean test --continue --console=plain --no-daemon
 
 """.format(pr=self.pr),
             ),
@@ -232,7 +231,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-./gradlew clean test --continue
+./gradlew clean test --continue --console=plain --no-daemon
 
 """.format(pr=self.pr),
             ),
@@ -303,8 +302,8 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 """
 
 
-@Instance.register("halo-dev", "halo")
-class Halo(Instance):
+@Instance.register("halo-dev", "halo_0_to_2226")
+class Halo0To2226(Instance):
 
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -316,7 +315,7 @@ class Halo(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return HaloImageDefault(self.pr, self._config)
+        return Halo0To2226ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
