@@ -168,6 +168,7 @@ from multi_swe_bench.harness.repos.python.numba import *
 from multi_swe_bench.harness.repos.python.obspy import *
 from multi_swe_bench.harness.repos.python.oceanprotocol import *
 from multi_swe_bench.harness.repos.python.OCR_D import *
+from multi_swe_bench.harness.repos.python.openai import *
 from multi_swe_bench.harness.repos.python.omry import *
 from multi_swe_bench.harness.repos.python.onicagroup import *
 from multi_swe_bench.harness.repos.python.open_formulieren import *
@@ -317,11 +318,7 @@ from multi_swe_bench.harness.repos.python.dry_python.returns import *
 from multi_swe_bench.harness.repos.python.Akuli import *
 from multi_swe_bench.harness.repos.python.EchoCog import *
 from multi_swe_bench.harness.repos.python.NousResearch import *
-
-try:
-    from multi_swe_bench.harness.repos.python.Qiskit import *
-except ImportError:
-    pass
+from multi_swe_bench.harness.repos.python.Qiskit import *
 from multi_swe_bench.harness.repos.python.SAIC_iSmart_API import *
 from multi_swe_bench.harness.repos.python.activeloopai import *
 from multi_swe_bench.harness.repos.python.ansible import *
