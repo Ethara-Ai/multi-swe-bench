@@ -139,3 +139,4 @@ from multi_swe_bench.harness.repos.javascript.AnomalyInnovations import *
 from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
 from multi_swe_bench.harness.repos.javascript.style_dictionary import *
 from multi_swe_bench.harness.repos.javascript.chinese_poetry import *
+from multi_swe_bench.harness.repos.javascript.gatsbyjs import *
