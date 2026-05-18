@@ -49,6 +49,10 @@ from multi_swe_bench.harness.repos.cpp.ccache import *
 from multi_swe_bench.harness.repos.cpp.aristocratos import *
 from multi_swe_bench.harness.repos.cpp.oatpp import *
 from multi_swe_bench.harness.repos.cpp.ArduPilot import *
+<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.cpp.grpc import *
 from multi_swe_bench.harness.repos.cpp.WerWolv import *
 from multi_swe_bench.harness.repos.cpp.TheAlgorithms import *
+=======
+from multi_swe_bench.harness.repos.cpp.carbon_language import *
+>>>>>>> Stashed changes
