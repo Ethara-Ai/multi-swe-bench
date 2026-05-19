@@ -1,5 +1,6 @@
 from multi_swe_bench.harness.repos.python.aeon_toolkit import *
 from multi_swe_bench.harness.repos.python.aesara_devs import *
+from multi_swe_bench.harness.repos.python.agno_agi import *
 from multi_swe_bench.harness.repos.python.AgnostiqHQ import *
 from multi_swe_bench.harness.repos.python.agronholm import *
 from multi_swe_bench.harness.repos.python.aiidateam import *
