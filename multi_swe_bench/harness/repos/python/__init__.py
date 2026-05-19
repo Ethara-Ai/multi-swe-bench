@@ -348,3 +348,4 @@ from multi_swe_bench.harness.repos.python.taskiq_python import *
 from multi_swe_bench.harness.repos.python.tox_dev import *
 from multi_swe_bench.harness.repos.python.TauricResearch import *
 from multi_swe_bench.harness.repos.python.sissbruecker import *
+from multi_swe_bench.harness.repos.python.dgtlmoon import *
