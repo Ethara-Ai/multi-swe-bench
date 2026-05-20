@@ -7,7 +7,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class PipenvBase_1767_to_1621(Image):
+class PipenvBase_1620_to_1427(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -27,10 +27,10 @@ class PipenvBase_1767_to_1621(Image):
         return "envagent"
 
     def image_tag(self) -> str:
-        return "base_1767_to_1621"
+        return "base_1620_to_1427"
 
     def workdir(self) -> str:
-        return "base_1767_to_1621"
+        return "base_1620_to_1427"
 
     def files(self) -> list[File]:
         return []
@@ -106,7 +106,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return PipenvBase_1767_to_1621(self.pr, self._config)
+        return PipenvBase_1620_to_1427(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -133,87 +133,26 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -la
+                """apt-get update && apt-get install -y --no-install-recommends build-essential
 ###ACTION_DELIMITER###
-pip install -e . --upgrade
+pip install --upgrade pip setuptools wheel
 ###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
+pip install -e .
 ###ACTION_DELIMITER###
-pip install 'setuptools<60'
+pipenv install --dev --skip-lock || true
 ###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
+pip install pytest pytest-xdist mock 'click<8'
 ###ACTION_DELIMITER###
-pip install 'markupsafe<2'
-###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
-###ACTION_DELIMITER###
-pipenv lock
-###ACTION_DELIMITER###
-sed -i 's/sphinx = "<=1.5.5"/sphinx = ">=4.0"/' Pipfile
-###ACTION_DELIMITER###
-pipenv lock
-###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
-###ACTION_DELIMITER###
-sed -i '/\[dev-packages\]/a alabaster = "<1.0.0"' Pipfile
-###ACTION_DELIMITER###
-pipenv lock
-###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
-###ACTION_DELIMITER###
-sed -i '/click =/c\click = "<=8.1.7"' Pipfile
-###ACTION_DELIMITER###
-pipenv lock
-###ACTION_DELIMITER###
-grep -n 'alabaster\|click' Pipfile
-###ACTION_DELIMITER###
-sed -i '12d' Pipfile
-###ACTION_DELIMITER###
-pipenv lock
-###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
-###ACTION_DELIMITER###
-sed -i '/markdown-it-py =/c\markdown-it-py = "<=3.0.0"' Pipfile
-###ACTION_DELIMITER###
-pipenv lock
-###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
-###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-grep 'markdown-it-py' Pipfile
-###ACTION_DELIMITER###
-pipenv graph
-###ACTION_DELIMITER###
-echo 'markdown-it-py = "<=3.0.0"' >> Pipfile
-###ACTION_DELIMITER###
-pipenv lock
-###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
-###ACTION_DELIMITER###
-sed -i '/\[dev-packages\]/a markdown-it-py = "<=3.0.0"' Pipfile
-###ACTION_DELIMITER###
-pipenv lock
-###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
-###ACTION_DELIMITER###
-sed -i '/\[dev-packages\]/a secretstorage = "<=3.3.3"' Pipfile
-###ACTION_DELIMITER###
-pipenv lock
-###ACTION_DELIMITER###
-pipenv install --deploy --system --dev
-###ACTION_DELIMITER###
-sed -i '/\[dev-packages\]/a sphinx = "<=7.4.7"' Pipfile
-###ACTION_DELIMITER###
-echo 'pytest -v -n auto tests' > test_commands.sh""",
+echo 'pipenv run pytest -v tests' > test_commands.sh""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-pip install -e tests/pytest-pypi 2>/dev/null || true
-pytest -v -n auto tests
+pipenv install pytest --dev --skip-lock || true
+pipenv run pip install 'setuptools<81' 'werkzeug<2.3'
+pipenv run pytest -v tests
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -222,9 +161,10 @@ pytest -v -n auto tests
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-pip install -e tests/pytest-pypi 2>/dev/null || true
-git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch 2>/dev/null || git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='*.zip' --exclude='*.exe' --exclude='*.png' --exclude='*.tar.gz' --exclude='*.whl' --exclude='*.egg' --exclude='*.bin' --exclude='*.so' --exclude='*.jpg' --exclude='*.gif' --exclude='*.ico' --exclude='*importlib_resources/tests*' /home/test.patch 2>/dev/null || echo "WARN: test.patch could not be applied" >&2
-pytest -v -n auto tests
+git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch 2>/dev/null || git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='*.tar.gz' --exclude='*.whl' --exclude='*.egg' /home/test.patch 2>/dev/null || echo "WARN: test.patch could not be applied" >&2
+pipenv install pytest --dev --skip-lock || true
+pipenv run pip install 'setuptools<81' 'werkzeug<2.3'
+pipenv run pytest -v tests
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -233,9 +173,10 @@ pytest -v -n auto tests
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/[[REPO_NAME]]
-pip install -e tests/pytest-pypi 2>/dev/null || true
-git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch /home/fix.patch 2>/dev/null || git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='*.zip' --exclude='*.exe' --exclude='*.png' --exclude='*.tar.gz' --exclude='*.whl' --exclude='*.egg' --exclude='*.bin' --exclude='*.so' --exclude='*.jpg' --exclude='*.gif' --exclude='*.ico' --exclude='*importlib_resources/tests*' /home/test.patch /home/fix.patch 2>/dev/null || echo "WARN: patches could not be applied" >&2
-pytest -v -n auto tests
+git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch /home/fix.patch 2>/dev/null || git -C /home/[[REPO_NAME]] apply --whitespace=nowarn --exclude='*.tar.gz' --exclude='*.whl' --exclude='*.egg' /home/test.patch /home/fix.patch 2>/dev/null || echo "WARN: patches could not be applied" >&2
+pipenv install pytest --dev --skip-lock || true
+pipenv run pip install 'setuptools<81' 'werkzeug<2.3'
+pipenv run pytest -v tests
 
 """.replace("[[REPO_NAME]]", repo_name),
             ),
@@ -262,8 +203,8 @@ pytest -v -n auto tests
         return dockerfile_content
 
 
-@Instance.register("pypa", "pipenv_1767_to_1621")
-class PIPENV_1767_TO_1621(Instance):
+@Instance.register("pypa", "pipenv_1620_to_1427")
+class PIPENV_1620_TO_1427(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
