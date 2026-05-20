@@ -351,3 +351,4 @@ from multi_swe_bench.harness.repos.python.TauricResearch import *
 from multi_swe_bench.harness.repos.python.sissbruecker import *
 from multi_swe_bench.harness.repos.python.dgtlmoon import *
 from multi_swe_bench.harness.repos.python.reflex_dev import *
+from multi_swe_bench.harness.repos.python.Significant_Gravitas import *

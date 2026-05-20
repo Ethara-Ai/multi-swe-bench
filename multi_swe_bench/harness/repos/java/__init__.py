@@ -44,3 +44,4 @@ from multi_swe_bench.harness.repos.java.bumptech.glide_5000_to_99999 import *
 from multi_swe_bench.harness.repos.java.xuxueli import *
 from multi_swe_bench.harness.repos.java.Blankj import *
 from multi_swe_bench.harness.repos.java.jeecgboot import *
+from multi_swe_bench.harness.repos.java.Snailclimb import *

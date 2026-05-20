@@ -100,3 +100,5 @@ from multi_swe_bench.harness.repos.golang.v2ray import *
 from multi_swe_bench.harness.repos.golang.XTLS import *
 from multi_swe_bench.harness.repos.golang.mudler import *
 from multi_swe_bench.harness.repos.golang.twpayne import *
+from multi_swe_bench.harness.repos.golang.netbirdio import *
+from multi_swe_bench.harness.repos.golang.go_delve import *
