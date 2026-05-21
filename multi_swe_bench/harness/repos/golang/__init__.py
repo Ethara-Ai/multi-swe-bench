@@ -103,3 +103,7 @@ from multi_swe_bench.harness.repos.golang.twpayne import *
 from multi_swe_bench.harness.repos.golang.netbirdio import *
 from multi_swe_bench.harness.repos.golang.go_delve import *
 from multi_swe_bench.harness.repos.golang.trufflesecurity import *
+from multi_swe_bench.harness.repos.golang.go_co_op import *
+from multi_swe_bench.harness.repos.golang.pulumi import *
+from multi_swe_bench.harness.repos.golang.goadesign import *
+from multi_swe_bench.harness.repos.golang.MHSanaei import *
