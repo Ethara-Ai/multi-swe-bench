@@ -102,3 +102,4 @@ from multi_swe_bench.harness.repos.golang.mudler import *
 from multi_swe_bench.harness.repos.golang.twpayne import *
 from multi_swe_bench.harness.repos.golang.netbirdio import *
 from multi_swe_bench.harness.repos.golang.go_delve import *
+from multi_swe_bench.harness.repos.golang.trufflesecurity import *
