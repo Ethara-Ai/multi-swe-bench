@@ -108,3 +108,5 @@ from multi_swe_bench.harness.repos.golang.pulumi import *
 from multi_swe_bench.harness.repos.golang.goadesign import *
 from multi_swe_bench.harness.repos.golang.MHSanaei import *
 from multi_swe_bench.harness.repos.golang.dolthub import *
+from multi_swe_bench.harness.repos.golang.dagger import *
+from multi_swe_bench.harness.repos.golang.rook import *
