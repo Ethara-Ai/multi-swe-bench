@@ -112,3 +112,4 @@ from multi_swe_bench.harness.repos.golang.dagger import *
 from multi_swe_bench.harness.repos.golang.rook import *
 from multi_swe_bench.harness.repos.golang.maximhq import *
 from multi_swe_bench.harness.repos.golang.goreleaser import *
+from multi_swe_bench.harness.repos.golang.elastic import *
