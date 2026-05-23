@@ -341,7 +341,7 @@ class OpenTelemetryGo(Instance):
                     test_name = skip_match.group(1)
                     if test_name in passed_tests:
                         continue
-                    if test_name not in failed_tests:
+                    if test_name in failed_tests:
                         continue
                     skipped_tests.add(get_base_name(test_name))
 

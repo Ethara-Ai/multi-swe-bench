@@ -6,16 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-_GO_BASE_IMAGE = "golang:1.25"
-
-
 class OtelCollectorImageBase(Image):
-    """Base image: FROM golang:1.25 + clone repo.
-
-    Shared across ALL opentelemetry-collector PRs.
-    image_tag = "base", workdir = "base".
-    """
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -29,7 +20,7 @@ class OtelCollectorImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return _GO_BASE_IMAGE
+        return "golang:latest"
 
     def image_tag(self) -> str:
         return "base"
@@ -46,26 +37,21 @@ class OtelCollectorImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {_GO_BASE_IMAGE}
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y git
-
-{self.global_env}
-
-WORKDIR /home/
-
-{code}
-
-{self.clear_env}
-
-"""
+        # Single-newline join (not blank-line separated). DockerfileEnhancer
+        # prepends its own blank line before re-emitting the post-FROM content;
+        # using "\n\n" here would compound into consecutive blank lines. We
+        # also omit items the enhancer already injects (ENV DEBIAN_FRONTEND,
+        # ENV LANG, ENV TZ, proxy ARGs, cert symlinks) to avoid duplication.
+        sections = [f"FROM {self.dependency()}"]
+        if self.global_env:
+            sections.append(self.global_env)
+        sections.append(code)
+        if self.clear_env:
+            sections.append(self.clear_env)
+        return "\n".join(sections) + "\n"
 
 
 class ImageDefault(Image):
-    """Per-PR image: FROM base → checkout + patches + prepare."""
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -92,21 +78,13 @@ class ImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "check_git_changes.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
   echo "check_git_changes: Not inside a git repository"
@@ -120,13 +98,13 @@ fi
 
 echo "check_git_changes: No uncommitted changes"
 exit 0
-
 """.format(),
             ),
             File(
                 ".",
                 "find_modules.sh",
                 '#!/bin/bash\n'
+                'set -eo pipefail\n'
                 'REPO_DIR="$1"\n'
                 'shift\n'
                 'PATCHES="$@"\n'
@@ -180,6 +158,7 @@ exit 0
                 ".",
                 "run_tests_per_module.sh",
                 '#!/bin/bash\n'
+                'set -eo pipefail\n'
                 'REPO_DIR="$1"\n'
                 'MODULE_LINES="$2"\n'
                 'EXIT_CODE=0\n'
@@ -220,45 +199,15 @@ exit 0
             ),
             File(
                 ".",
-                "detect_go_version.sh",
-                '#!/bin/bash\n'
-                'REPO_DIR="${1:-.}"\n'
-                'MAX_MAJOR=0\n'
-                'MAX_MINOR=0\n'
-                '\n'
-                'while IFS= read -r -d "" GOMOD; do\n'
-                '  VER=$(grep -m1 "^go " "$GOMOD" | awk \'{print $2}\')\n'
-                '  [ -z "$VER" ] && continue\n'
-                '  MAJOR=$(echo "$VER" | cut -d. -f1)\n'
-                '  MINOR=$(echo "$VER" | cut -d. -f2)\n'
-                '  if [ "$MAJOR" -gt "$MAX_MAJOR" ] 2>/dev/null || \\\n'
-                '     { [ "$MAJOR" -eq "$MAX_MAJOR" ] && [ "$MINOR" -gt "$MAX_MINOR" ]; } 2>/dev/null; then\n'
-                '    MAX_MAJOR=$MAJOR\n'
-                '    MAX_MINOR=$MINOR\n'
-                '  fi\n'
-                'done < <(find "$REPO_DIR" -name go.mod -not -path "*/vendor/*" -print0)\n'
-                '\n'
-                'if [ "$MAX_MAJOR" -gt 0 ]; then\n'
-                '  echo "${MAX_MAJOR}.${MAX_MINOR}"\n'
-                'else\n'
-                '  echo "unknown"\n'
-                'fi\n',
-            ),
-            File(
-                ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
-
-REQUIRED_GO=$(bash /home/detect_go_version.sh /home/{pr.repo})
-CURRENT_GO=$(go version | grep -oP '\\d+\\.\\d+' | head -1)
-echo "detect_go_version: required=$REQUIRED_GO current=$CURRENT_GO"
 
 find /home/{pr.repo} -name go.mod -not -path "*/vendor/*" -print0 | while IFS= read -r -d "" GOMOD; do
   MOD_DIR=$(dirname "$GOMOD")
@@ -268,71 +217,72 @@ done
 
 MODULE_LINES=$(bash /home/find_modules.sh /home/{pr.repo} /home/test.patch /home/fix.patch)
 bash /home/run_tests_per_module.sh /home/{pr.repo} "$MODULE_LINES" || true
-
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
 MODULE_LINES=$(bash /home/find_modules.sh /home/{pr.repo} /home/test.patch /home/fix.patch)
 bash /home/run_tests_per_module.sh /home/{pr.repo} "$MODULE_LINES"
-
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
 git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+
+# Patch may have modified go.mod/go.sum — run `go mod tidy` so cross-module
+# transitive deps (multi-module monorepo) get their go.sum entries populated.
+find /home/{pr.repo} -name go.mod -not -path "*/vendor/*" -print0 | while IFS= read -r -d "" GOMOD; do
+  (cd "$(dirname "$GOMOD")" && go mod tidy 2>&1) || echo "go mod tidy failed in $(dirname "$GOMOD") (non-fatal)"
+done
+
 MODULE_LINES=$(bash /home/find_modules.sh /home/{pr.repo} /home/test.patch /home/fix.patch)
 bash /home/run_tests_per_module.sh /home/{pr.repo} "$MODULE_LINES"
-
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+
+# Patches may have modified go.mod/go.sum — run `go mod tidy` so cross-module
+# transitive deps (multi-module monorepo) get their go.sum entries populated.
+find /home/{pr.repo} -name go.mod -not -path "*/vendor/*" -print0 | while IFS= read -r -d "" GOMOD; do
+  (cd "$(dirname "$GOMOD")" && go mod tidy 2>&1) || echo "go mod tidy failed in $(dirname "$GOMOD") (non-fatal)"
+done
+
 MODULE_LINES=$(bash /home/find_modules.sh /home/{pr.repo} /home/test.patch /home/fix.patch)
 bash /home/run_tests_per_module.sh /home/{pr.repo} "$MODULE_LINES"
-
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-WORKDIR /home/{self.pr.repo}
-
-{copy_commands}
-
-RUN bash /home/prepare.sh
-
-{self.clear_env}
-
-"""
+        sections = [f"FROM {image.image_name()}:{image.image_tag()}"]
+        if self.global_env:
+            sections.append(self.global_env)
+        sections.append(f"WORKDIR /home/{self.pr.repo}")
+        copy_section = "\n".join(f"COPY {f.name} /home/" for f in self.files())
+        if copy_section:
+            sections.append(copy_section)
+        sections.append("RUN bash /home/prepare.sh")
+        if self.clear_env:
+            sections.append(self.clear_env)
+        return "\n\n".join(sections) + "\n"
 
 
 @Instance.register("open-telemetry", "opentelemetry-collector")
@@ -352,19 +302,16 @@ class OpenTelemetryCollector(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
@@ -374,49 +321,43 @@ class OpenTelemetryCollector(Instance):
 
         re_pass_tests = [
             re.compile(r"--- PASS: (\S+)"),
-            re.compile(r"ok\s+(\S+)"),  # package-level pass (e.g. "ok  \tgo.opentelemetry.io/...")
+            re.compile(r"^ok\s+(\S+)"),
         ]
         re_fail_tests = [
             re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"FAIL:?\s?(.+?)\s"),
+            re.compile(r"^FAIL\s+(\S+)\s+\[(?:build|setup) failed\]"),
         ]
         re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
-
-        def get_base_name(test_name: str) -> str:
-            return test_name
 
         for line in test_log.splitlines():
             line = line.strip()
 
-            for re_pass_test in re_pass_tests:
-                pass_match = re_pass_test.match(line)
-                if pass_match:
-                    test_name = pass_match.group(1)
-                    if test_name in failed_tests:
+            for r in re_pass_tests:
+                m = r.match(line)
+                if m:
+                    name = m.group(1)
+                    if name in failed_tests:
                         continue
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    passed_tests.add(get_base_name(test_name))
+                    skipped_tests.discard(name)
+                    passed_tests.add(name)
 
-            for re_fail_test in re_fail_tests:
-                fail_match = re_fail_test.match(line)
-                if fail_match:
-                    test_name = fail_match.group(1)
-                    if test_name in passed_tests:
-                        passed_tests.remove(test_name)
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    failed_tests.add(get_base_name(test_name))
+            for r in re_fail_tests:
+                m = r.match(line)
+                if m:
+                    name = m.group(1)
+                    passed_tests.discard(name)
+                    skipped_tests.discard(name)
+                    failed_tests.add(name)
 
-            for re_skip_test in re_skip_tests:
-                skip_match = re_skip_test.match(line)
-                if skip_match:
-                    test_name = skip_match.group(1)
-                    if test_name in passed_tests:
+            for r in re_skip_tests:
+                m = r.match(line)
+                if m:
+                    name = m.group(1)
+                    if name in failed_tests:
                         continue
-                    if test_name not in failed_tests:
+                    if name in passed_tests:
                         continue
-                    skipped_tests.add(get_base_name(test_name))
+                    skipped_tests.add(name)
 
         return TestResult(
             passed_count=len(passed_tests),
