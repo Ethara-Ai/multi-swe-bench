@@ -114,3 +114,11 @@ from multi_swe_bench.harness.repos.golang.maximhq import *
 from multi_swe_bench.harness.repos.golang.goreleaser import *
 from multi_swe_bench.harness.repos.golang.elastic import *
 from multi_swe_bench.harness.repos.golang.anchore import *
+from multi_swe_bench.harness.repos.golang.ariga import *
+from multi_swe_bench.harness.repos.golang.bluenviron import *
+from multi_swe_bench.harness.repos.golang.cert_manager import *
+from multi_swe_bench.harness.repos.golang.golangci import *
+from multi_swe_bench.harness.repos.golang.miniflux import *
+from multi_swe_bench.harness.repos.golang.pion import *
+from multi_swe_bench.harness.repos.golang.treeverse import *
+
