@@ -45,3 +45,4 @@ from multi_swe_bench.harness.repos.java.xuxueli import *
 from multi_swe_bench.harness.repos.java.Blankj import *
 from multi_swe_bench.harness.repos.java.jeecgboot import *
 from multi_swe_bench.harness.repos.java.Snailclimb import *
+from multi_swe_bench.harness.repos.java.apolloconfig import *
