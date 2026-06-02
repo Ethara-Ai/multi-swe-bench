@@ -131,6 +131,7 @@ from multi_swe_bench.harness.repos.python.kids_first import *
 from multi_swe_bench.harness.repos.python.kornia import *
 from multi_swe_bench.harness.repos.python.kserve import *
 from multi_swe_bench.harness.repos.python.kubeflow import *
+from multi_swe_bench.harness.repos.python.langchain_ai import *
 from multi_swe_bench.harness.repos.python.langflow_ai import *
 from multi_swe_bench.harness.repos.python.learningequality import *
 from multi_swe_bench.harness.repos.python.LiberTEM import *
