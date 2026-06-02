@@ -188,3 +188,4 @@ from multi_swe_bench.harness.repos.typescript.tldraw import *
 from multi_swe_bench.harness.repos.typescript.tailwindlabs import *
 from multi_swe_bench.harness.repos.typescript.vueuse import *
 from multi_swe_bench.harness.repos.typescript.toeverything import *
+from multi_swe_bench.harness.repos.typescript.Eugeny import *

@@ -53,3 +53,4 @@ from multi_swe_bench.harness.repos.cpp.grpc import *
 from multi_swe_bench.harness.repos.cpp.WerWolv import *
 from multi_swe_bench.harness.repos.cpp.TheAlgorithms import *
 from multi_swe_bench.harness.repos.cpp.carbon_language import *
+from multi_swe_bench.harness.repos.cpp.ggml_org import *
