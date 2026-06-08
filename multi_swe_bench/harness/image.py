@@ -1,16 +1,3 @@
-# Copyright (c) 2024 Bytedance Ltd. and/or its affiliates
-
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-
-#      http://www.apache.org/licenses/LICENSE-2.0
-
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
 
 from __future__ import annotations
 import re
@@ -47,6 +34,38 @@ class Image:
         "debian:stretch",
         "debian:jessie",
     ]
+    _HARDENING_BLOCK = """\
+RUN set -eux; \\
+    git checkout --detach "${BASE_COMMIT}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${BASE_COMMIT}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+"""
 
     def __lt__(self, other: "Image") -> bool:
         return self.image_full_name() < other.image_full_name()
@@ -208,6 +227,8 @@ class Image:
         if extra_setup:
             sections.append(extra_setup)
 
+        sections.append(self._HARDENING_BLOCK)
+
         if self.clear_env:
             sections.append(self.clear_env)
 
@@ -295,6 +316,7 @@ class DockerfileEnhancer:
 
         final = "\n".join(result)
         final = cls._standardize_repo_fetch(final, image.pr.repo)
+        final = cls._inject_final_sanitize(final, image.pr.repo)
         return final
 
     @classmethod
@@ -322,6 +344,8 @@ class DockerfileEnhancer:
             f"RUN git reset --hard\n"
             f"RUN git checkout ${{BASE_COMMIT}}\n"
             f"\n"
+            f"{Image._HARDENING_BLOCK}\n"
+            f"\n"
             f'CMD ["/bin/bash"]'
         )
 
@@ -341,6 +365,29 @@ class DockerfileEnhancer:
         content = clone_pat.sub(replacement, content)
 
         return content
+
+    @classmethod
+    def _inject_final_sanitize(cls, content: str, repo: str) -> str:
+        marker = 'test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
+
+        lines = content.split("\n")
+        last_cmd_idx = None
+        for i, line in enumerate(lines):
+            if line.strip().startswith("CMD "):
+                last_cmd_idx = i
+
+        if last_cmd_idx is None:
+            return content.rstrip("\n") + "\n\n" + Image._HARDENING_BLOCK
+
+        preceding = "\n".join(lines[:last_cmd_idx])
+        if marker in preceding:
+            intervening = preceding[preceding.rfind(marker):]
+            if not any(tok in intervening for tok in ("git fetch", "git clone", "git remote add")):
+                return content
+
+        hardening_lines = Image._HARDENING_BLOCK.rstrip("\n").split("\n")
+        new_lines = lines[:last_cmd_idx] + [""] + hardening_lines + [""] + lines[last_cmd_idx:]
+        return "\n".join(new_lines)
 
     @classmethod
     def _infrastructure_block(
@@ -366,8 +413,8 @@ class DockerfileEnhancer:
 
         sections = [build_args, cls._ENV_BLOCK, label_block]
 
-        if Image._is_deprecated_debian(base_img):
-            sections.append(cls._DEPRECATED_DEBIAN_FIX)
+        # Deprecated-debian apt-sources rewrite is handled at apt-install time
+        # by Image._get_apt_update_command (line 168). No duplicate fix needed here.
 
         sections.extend([cls._CERT_SYMLINKS])
         return "\n\n".join(sections) + "\n"
