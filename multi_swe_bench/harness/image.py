@@ -357,7 +357,6 @@ class DockerfileEnhancer:
         content = copy_pat.sub(replacement, content)
 
         # Pattern 2: RUN git clone <hardcoded-url> /home/{repo}
-        # (skip lines that already use ${REPO_URL})
         clone_pat = re.compile(
             rf'^RUN\s+git\s+clone\s+(?!"\$\{{REPO_URL\}}")(\S+)\s+/home/{re.escape(repo)}\s*$',
             re.MULTILINE,
@@ -369,6 +368,9 @@ class DockerfileEnhancer:
     @classmethod
     def _inject_final_sanitize(cls, content: str, repo: str) -> str:
         marker = 'test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
+        expected_workdir = f"/home/{repo}"
+        if not any(tok in content for tok in ("git clone", "git fetch", "git remote add")):
+            return content
 
         lines = content.split("\n")
         last_cmd_idx = None
@@ -376,8 +378,21 @@ class DockerfileEnhancer:
             if line.strip().startswith("CMD "):
                 last_cmd_idx = i
 
+        def _last_workdir_before(idx: int) -> str | None:
+            for j in range(idx - 1, -1, -1):
+                stripped = lines[j].strip()
+                if stripped.upper().startswith("WORKDIR "):
+                    return stripped.split(None, 1)[1].strip()
+            return None
+
         if last_cmd_idx is None:
-            return content.rstrip("\n") + "\n\n" + Image._HARDENING_BLOCK
+            tail_workdir = _last_workdir_before(len(lines))
+            prefix = (
+                f"\nWORKDIR {expected_workdir}\n\n"
+                if tail_workdir != expected_workdir
+                else "\n\n"
+            )
+            return content.rstrip("\n") + prefix + Image._HARDENING_BLOCK
 
         preceding = "\n".join(lines[:last_cmd_idx])
         if marker in preceding:
@@ -386,7 +401,12 @@ class DockerfileEnhancer:
                 return content
 
         hardening_lines = Image._HARDENING_BLOCK.rstrip("\n").split("\n")
-        new_lines = lines[:last_cmd_idx] + [""] + hardening_lines + [""] + lines[last_cmd_idx:]
+        injected: list[str] = [""]
+        if _last_workdir_before(last_cmd_idx) != expected_workdir:
+            injected.extend([f"WORKDIR {expected_workdir}", ""])
+        injected.extend(hardening_lines)
+        injected.append("")
+        new_lines = lines[:last_cmd_idx] + injected + lines[last_cmd_idx:]
         return "\n".join(new_lines)
 
     @classmethod
@@ -394,7 +414,8 @@ class DockerfileEnhancer:
         cls, image: "Image", base_img: str, dataset_generation: bool = False
     ) -> str:
         org, repo = image.pr.org, image.pr.repo
-        repo_url = f"https://github.com/{org}/{repo}.git"
+        github_repo = repo[: -len("_root")] if repo.endswith("_root") else repo
+        repo_url = f"https://github.com/{org}/{github_repo}.git"
 
         # Build ARGs: TARGETARCH, then REPO_URL and BASE_COMMIT, then proxy args
         build_args = (
