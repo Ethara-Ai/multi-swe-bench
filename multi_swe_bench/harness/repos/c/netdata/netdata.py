@@ -48,7 +48,12 @@ class ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            # Use ${REPO_URL} (provided by DockerfileEnhancer as ARG) so the
+            # Path B regex in _standardize_repo_fetch SKIPS this line — base
+            # image has no BASE_COMMIT and must not be rewritten to a template
+            # containing `RUN git checkout ${BASE_COMMIT}`. Per-PR hardening
+            # happens in ImageDefault. See ANTI_CHEAT_HARDENING.md.
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
@@ -106,8 +111,14 @@ RUN printf '#!/bin/sh\\nexec /usr/bin/gcc "$@" -Wno-error=deprecated-declaration
 
 {code}
 
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -273,16 +284,30 @@ git apply --whitespace=nowarn /tmp/test.filtered.patch /tmp/fix.filtered.patch
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # BASE_COMMIT as ENV so Image._HARDENING_BLOCK (which references
+        # ${BASE_COMMIT}) resolves to this PR's base SHA. Hardening RUN runs
+        # AFTER prepare.sh so the repo is already detached on BASE_COMMIT,
+        # then we delete every ref, GC unreachable objects, and self-audit.
         return f"""FROM {name}:{tag}
+
+ENV BASE_COMMIT={self.pr.base.sha}
 
 {self.global_env}
 
 {copy_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
 {prepare_commands}
+
+{Image._HARDENING_BLOCK}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -319,58 +344,64 @@ class Netdata(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        # `netdata -W unittest` output is heterogeneous and not designed for
-        # machine parsing. State-machine logic, derived from inspecting
-        # src/daemon/unit_test.c:
-        #
-        # - `run_all_mockup_tests()` calls subtests in sequence, bailing on
-        #   first failure. Each subtest emits "Running test 'NAME':" at start.
-        #   It does NOT emit a bare OK/FAILED at the end — instead it prints
-        #   inline "test1/dim1: ..., OK" or "..., ### E R R O R ###" for
-        #   each assertion. A test passed iff the next `Running test '...':`
-        #   line or the final `ALL TESTS PASSED` sentinel appears.
-        # - `check_*()` helpers print inline "...: OK" or "...: FAILED" and
-        #   bail on first error, so "any '### E R R O R ###' inside the
-        #   subtest's lines" is the failure signal.
-        # - `test_sqlite()` prints "Testing SQLIte" then "SQLite is OK" or
-        #   "Failed to test SQLite: ...".
-        # - `unit_test(delay, shift)` prints "UNIT TEST(N, M) FAILED" on fail.
-        # - "ALL TESTS PASSED" is the bulk sentinel.
+        re_running_test = re.compile(r"^Running test '([^']+)'")
+        re_unit_test_fail = re.compile(r"^UNIT TEST\((\d+),\s*(\d+)\)\s*FAILED")
+        re_make_check = re.compile(r"^(PASS|FAIL|SKIP|XFAIL|XPASS):\s+(\S+)")
+        re_cmocka_ok = re.compile(r"^\[\s*OK\s*\]\s+(\S+)")
+        re_cmocka_fail = re.compile(r"^\[\s*FAILED\s*\]\s+(\S+)")
+        re_unittest_fn = re.compile(r"^(\w+(?:_unittest|_test|_tests))\(\)(?::|\s)\s*(.*)")
+        re_slug_chars = re.compile(r"\W+")
+        pass_verbs = ("passed", "ok", "done", "completed", "success")
+        fail_verbs = ("failed", "fail", "error")
+
+        def slug(text, maxlen=80):
+            return re_slug_chars.sub("_", text.lower()).strip("_")[:maxlen]
+
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
 
-        current_test = None
-        current_failed = False  # whether the active subtest hit any error
-        suite_started = False
+        current_name = None
+        current_tag = None
+        current_failed = False
+        awaiting_description = False
         suite_completed = False
 
         def close_current(failed_override=None):
-            nonlocal current_test, current_failed
-            if not current_test:
+            nonlocal current_name, current_tag, current_failed, awaiting_description
+            if not current_tag:
                 return
             failed = current_failed if failed_override is None else failed_override
-            tag = f"run_test_{current_test}"
-            (failed_tests if failed else passed_tests).add(tag)
-            current_test = None
+            (failed_tests if failed else passed_tests).add(current_tag)
+            current_name = None
+            current_tag = None
             current_failed = False
+            awaiting_description = False
 
         for line in test_log.splitlines():
             stripped = line.strip()
+
+            # FIX 1: consume description line BEFORE empty-line skip so an
+            # empty description (rare) still clears the flag.
+            if awaiting_description:
+                awaiting_description = False
+                if stripped:
+                    current_tag = f"{current_name}_{slug(stripped)}"
+                continue
+
             if not stripped:
                 continue
 
-            # New subtest starts → close previous (it passed since we reached here).
-            m = re.match(r"^Running test '([^']+)'", stripped)
+            m = re_running_test.match(stripped)
             if m:
                 close_current()
-                current_test = re.sub(r"\W+", "_", m.group(1)).strip("_")
+                current_name = slug(m.group(1))
+                current_tag = current_name
                 current_failed = False
-                suite_started = True
+                awaiting_description = True
                 continue
 
-            # Inline assertion failures inside a run_test() subtest
-            if current_test and "### E R R O R ###" in stripped:
+            if current_tag and "### E R R O R ###" in stripped:
                 current_failed = True
                 continue
 
@@ -381,16 +412,15 @@ class Netdata(Instance):
                 failed_tests.add("test_sqlite")
                 continue
 
-            m = re.match(r"^UNIT TEST\((\d+),\s*(\d+)\)\s*FAILED", stripped)
+            m = re_unit_test_fail.match(stripped)
             if m:
                 failed_tests.add(f"unit_test_{m.group(1)}_{m.group(2)}")
                 continue
 
-            # `make check` (autotools) emits PASS:/FAIL:/SKIP: lines per test
-            m = re.match(r"^(PASS|FAIL|SKIP|XFAIL|XPASS):\s+(\S+)", stripped)
+            m = re_make_check.match(stripped)
             if m:
                 verdict, name = m.group(1), m.group(2)
-                tag = f"check_{re.sub(r'[^A-Za-z0-9_]+', '_', name)}"
+                tag = f"check_{slug(name)}"
                 if verdict in ("PASS", "XFAIL"):
                     passed_tests.add(tag)
                 elif verdict in ("FAIL", "XPASS"):
@@ -399,25 +429,26 @@ class Netdata(Instance):
                     skipped_tests.add(tag)
                 continue
 
-            # CMocka inline reports
-            m = re.match(r"^\[\s*OK\s*\]\s+(\S+)", stripped)
+            m = re_cmocka_ok.match(stripped)
             if m:
                 passed_tests.add(f"cmocka_{m.group(1)}")
                 continue
-            m = re.match(r"^\[\s*FAILED\s*\]\s+(\S+)", stripped)
+            m = re_cmocka_fail.match(stripped)
             if m:
                 failed_tests.add(f"cmocka_{m.group(1)}")
                 continue
 
-            # Modern *_unittest() helpers — self-announce on a single line
-            m = re.match(r"^(\w+)\(\)(?::|\s)\s*(.*)", stripped)
+            # FIX 2: tightened to require _unittest|_test|_tests suffix AND
+            # verdict prefix (not substring) — guards against false positives
+            # from arbitrary `func(): error` lines in C traces.
+            m = re_unittest_fn.match(stripped)
             if m:
                 name = m.group(1)
-                rest = (m.group(2) or "").lower()
-                if any(w in rest for w in ["passed", "completed", " ok", "done"]):
+                rest = (m.group(2) or "").lstrip().lower()
+                if rest.startswith(pass_verbs):
                     passed_tests.add(name)
                     continue
-                if any(w in rest for w in ["fail", "error"]):
+                if rest.startswith(fail_verbs):
                     failed_tests.add(name)
                     continue
 
@@ -427,20 +458,18 @@ class Netdata(Instance):
                 suite_completed = True
                 continue
 
-        # End of log: if a subtest was still active (timed out / killed before
-        # completing), mark it failed.
-        if current_test:
-            close_current(failed_override=True)
+        # FIX 3: only override-to-failed when suite did NOT complete; if
+        # ALL TESTS PASSED already fired, the open subtest is part of a
+        # passing suite (log truncated after suite completion).
+        if current_tag:
+            close_current(failed_override=False if suite_completed else True)
 
-        # If the suite started but never reached "ALL TESTS PASSED" and we
-        # didn't otherwise mark anything failed, the suite was interrupted —
-        # leave the per-subtest failed state as-is; the missing bulk sentinel
-        # is implicit signal.
-        _ = (suite_started, suite_completed)
-
-        common = passed_tests & failed_tests
-        passed_tests -= common
-        failed_tests -= common
+        # FIX 4: failure dominates over passed; passed dominates over skipped.
+        # Previous `passed -= common; failed -= common` silently dropped
+        # tests that appeared in both sets.
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

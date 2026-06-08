@@ -181,7 +181,7 @@ git apply --whitespace=nowarn /tmp/test.filtered.patch /tmp/fix.filtered.patch
 
     def dockerfile(self) -> str:
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
@@ -192,6 +192,8 @@ git apply --whitespace=nowarn /tmp/test.filtered.patch /tmp/fix.filtered.patch
         prepare_commands = "RUN bash /home/prepare.sh"
 
         return f"""FROM ubuntu:20.04
+
+ENV BASE_COMMIT={self.pr.base.sha}
 
 {self.global_env}
 
@@ -238,12 +240,20 @@ RUN printf '#!/bin/sh\\nexec /usr/bin/gcc "$@" -Wno-error=deprecated-declaration
 
 {code}
 
-{self.clear_env}
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
 
 {copy_commands}
 
 {prepare_commands}
 
+{Image._HARDENING_BLOCK}
+
+{self.clear_env}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -280,37 +290,64 @@ class Netdata_7436_to_1986(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        # Same parser as modern netdata.py — see comments there.
+        re_running_test = re.compile(r"^Running test '([^']+)'")
+        re_unit_test_fail = re.compile(r"^UNIT TEST\((\d+),\s*(\d+)\)\s*FAILED")
+        re_make_check = re.compile(r"^(PASS|FAIL|SKIP|XFAIL|XPASS):\s+(\S+)")
+        re_cmocka_ok = re.compile(r"^\[\s*OK\s*\]\s+(\S+)")
+        re_cmocka_fail = re.compile(r"^\[\s*FAILED\s*\]\s+(\S+)")
+        re_unittest_fn = re.compile(r"^(\w+(?:_unittest|_test|_tests))\(\)(?::|\s)\s*(.*)")
+        re_slug_chars = re.compile(r"\W+")
+        pass_verbs = ("passed", "ok", "done", "completed", "success")
+        fail_verbs = ("failed", "fail", "error")
+
+        def slug(text, maxlen=80):
+            return re_slug_chars.sub("_", text.lower()).strip("_")[:maxlen]
+
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
 
-        current_test = None
+        current_name = None
+        current_tag = None
         current_failed = False
+        awaiting_description = False
+        suite_completed = False
 
         def close_current(failed_override=None):
-            nonlocal current_test, current_failed
-            if not current_test:
+            nonlocal current_name, current_tag, current_failed, awaiting_description
+            if not current_tag:
                 return
             failed = current_failed if failed_override is None else failed_override
-            tag = f"run_test_{current_test}"
-            (failed_tests if failed else passed_tests).add(tag)
-            current_test = None
+            (failed_tests if failed else passed_tests).add(current_tag)
+            current_name = None
+            current_tag = None
             current_failed = False
+            awaiting_description = False
 
         for line in test_log.splitlines():
             stripped = line.strip()
+
+            # FIX 1: consume description line BEFORE empty-line skip so an
+            # empty description (rare) still clears the flag.
+            if awaiting_description:
+                awaiting_description = False
+                if stripped:
+                    current_tag = f"{current_name}_{slug(stripped)}"
+                continue
+
             if not stripped:
                 continue
 
-            m = re.match(r"^Running test '([^']+)'", stripped)
+            m = re_running_test.match(stripped)
             if m:
                 close_current()
-                current_test = re.sub(r"\W+", "_", m.group(1)).strip("_")
+                current_name = slug(m.group(1))
+                current_tag = current_name
                 current_failed = False
+                awaiting_description = True
                 continue
 
-            if current_test and "### E R R O R ###" in stripped:
+            if current_tag and "### E R R O R ###" in stripped:
                 current_failed = True
                 continue
 
@@ -321,15 +358,15 @@ class Netdata_7436_to_1986(Instance):
                 failed_tests.add("test_sqlite")
                 continue
 
-            m = re.match(r"^UNIT TEST\((\d+),\s*(\d+)\)\s*FAILED", stripped)
+            m = re_unit_test_fail.match(stripped)
             if m:
                 failed_tests.add(f"unit_test_{m.group(1)}_{m.group(2)}")
                 continue
 
-            m = re.match(r"^(PASS|FAIL|SKIP|XFAIL|XPASS):\s+(\S+)", stripped)
+            m = re_make_check.match(stripped)
             if m:
                 verdict, name = m.group(1), m.group(2)
-                tag = f"check_{re.sub(r'[^A-Za-z0-9_]+', '_', name)}"
+                tag = f"check_{slug(name)}"
                 if verdict in ("PASS", "XFAIL"):
                     passed_tests.add(tag)
                 elif verdict in ("FAIL", "XPASS"):
@@ -338,37 +375,47 @@ class Netdata_7436_to_1986(Instance):
                     skipped_tests.add(tag)
                 continue
 
-            m = re.match(r"^\[\s*OK\s*\]\s+(\S+)", stripped)
+            m = re_cmocka_ok.match(stripped)
             if m:
                 passed_tests.add(f"cmocka_{m.group(1)}")
                 continue
-            m = re.match(r"^\[\s*FAILED\s*\]\s+(\S+)", stripped)
+            m = re_cmocka_fail.match(stripped)
             if m:
                 failed_tests.add(f"cmocka_{m.group(1)}")
                 continue
 
-            m = re.match(r"^(\w+)\(\)(?::|\s)\s*(.*)", stripped)
+            # FIX 2: tightened to require _unittest|_test|_tests suffix AND
+            # verdict prefix (not substring) — guards against false positives
+            # from arbitrary `func(): error` lines in C traces.
+            m = re_unittest_fn.match(stripped)
             if m:
                 name = m.group(1)
-                rest = (m.group(2) or "").lower()
-                if any(w in rest for w in ["passed", "completed", " ok", "done"]):
+                rest = (m.group(2) or "").lstrip().lower()
+                if rest.startswith(pass_verbs):
                     passed_tests.add(name)
                     continue
-                if any(w in rest for w in ["fail", "error"]):
+                if rest.startswith(fail_verbs):
                     failed_tests.add(name)
                     continue
 
             if "all tests passed" in stripped.lower():
                 close_current()
                 passed_tests.add("netdata_unittest_suite")
+                suite_completed = True
                 continue
 
-        if current_test:
-            close_current(failed_override=True)
+        # FIX 3: only override-to-failed when suite did NOT complete; if
+        # ALL TESTS PASSED already fired, the open subtest is part of a
+        # passing suite (log truncated after suite completion).
+        if current_tag:
+            close_current(failed_override=False if suite_completed else True)
 
-        common = passed_tests & failed_tests
-        passed_tests -= common
-        failed_tests -= common
+        # FIX 4: failure dominates over passed; passed dominates over skipped.
+        # Previous `passed -= common; failed -= common` silently dropped
+        # tests that appeared in both sets.
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
