@@ -69,7 +69,7 @@ def get_top_repositories(g: Github, language=None, limit=10):
 def main(tokens, out_dir: Path, filtered_prs_file: Path):
     print("starting get all related issues")
     print(f"Output directory: {out_dir}")
-    print(f"Tokens: {tokens}")
+    print(f"Tokens: {len(tokens)} loaded")
     print(f"Pull file: {filtered_prs_file}")
 
     org_repo_re = re.compile(r"(.+)__(.+?)_(?:lht_)?filtered_prs.jsonl")
@@ -128,6 +128,7 @@ def main(tokens, out_dir: Path, filtered_prs_file: Path):
                 )
             except Exception as e:
                 print(f"  Warning: could not fetch issue #{issue_num}: {e}")
+
 
 if __name__ == "__main__":
     parser = get_parser()

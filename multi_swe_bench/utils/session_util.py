@@ -24,6 +24,14 @@ class BuildDockerfileError(Exception):
     """Raised when the Dockerfile build failed"""
 
 
+def _docker_commit_argv(container_name: str, image_name: str) -> list[str]:
+    return ["docker", "commit", container_name, image_name]
+
+
+def _docker_push_argv(image_name: str) -> list[str]:
+    return ["docker", "push", image_name]
+
+
 logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
 
 
@@ -344,10 +352,14 @@ async def run_and_save_logs_and_generate_dockerfile(
 
         # Save commit image
         post_image_name = image_name.replace("_v1", "_v2")
-        save_image_cmd = f"docker commit {deployment._container_name} {post_image_name}"
+        # List-form argv (no shell=True) prevents shell injection (CWE-78) via
+        # container/image names that may carry dataset-derived metadata.
+        save_image_cmd = _docker_commit_argv(
+            deployment._container_name, post_image_name
+        )
         try:
             result = subprocess.run(
-                save_image_cmd, shell=True, capture_output=True, text=True, timeout=600
+                save_image_cmd, capture_output=True, text=True, timeout=600
             )
             if result.returncode != 0:
                 raise BuildDockerfileError(
@@ -401,12 +413,14 @@ async def run_and_save_logs_and_generate_dockerfile(
 
 async def push_icm_image(envagent_image_name: str, name: str, logger: logging.Logger):
     """Push image to ICM with retry mechanism"""
-    push_image_cmd = f"docker push {envagent_image_name}"
+    # List-form argv (no shell=True) prevents shell injection (CWE-78) via
+    # image names that may carry dataset-derived metadata.
+    push_image_cmd = _docker_push_argv(envagent_image_name)
     max_retries = 3
     for attempt in range(max_retries):
         try:
             result = subprocess.run(
-                push_image_cmd, shell=True, capture_output=True, text=True, timeout=600
+                push_image_cmd, capture_output=True, text=True, timeout=600
             )
             if result.returncode == 0:
                 logger.info(f"✅ {envagent_image_name}/{name}: image push success")

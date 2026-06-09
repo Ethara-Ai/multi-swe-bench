@@ -152,7 +152,7 @@ def main(
     retry_attempts: int,
 ):
     print("starting build complete dataset")
-    print(f"Tokens: {tokens}")
+    print(f"Tokens: {len(tokens)} loaded")
     print(f"Output directory: {out_dir}")
     print(f"Dataset file: {filtered_prs_with_issues_file}")
     print(f"Delay on error: {delay_on_error}")

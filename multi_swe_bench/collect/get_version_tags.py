@@ -41,7 +41,6 @@ import json
 import random
 import re
 from pathlib import Path
-from typing import Optional
 
 from github import Auth, Github, GithubException
 from packaging.version import Version as PkgVersion, InvalidVersion

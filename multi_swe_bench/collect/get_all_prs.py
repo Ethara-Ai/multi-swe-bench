@@ -52,7 +52,7 @@ def get_github(token) -> Github:
 def main(tokens: list[str], out_dir: Path, org: str, repo: str):
     print("starting get all pull requests")
     print(f"Output directory: {out_dir}")
-    print(f"Tokens: {tokens}")
+    print(f"Tokens: {len(tokens)} loaded")
     print(f"Org: {org}")
     print(f"Repo: {repo}")
 
