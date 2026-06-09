@@ -235,7 +235,7 @@ from multi_swe_bench.harness.repos.python.pytroll import *
 from multi_swe_bench.harness.repos.python.pyvista import *
 from multi_swe_bench.harness.repos.python.pywbem import *
 from multi_swe_bench.harness.repos.python.qiboteam import *
-from multi_swe_bench.harness.repos.python.qiskit import *
+from multi_swe_bench.harness.repos.python.Qiskit import *
 from multi_swe_bench.harness.repos.python.ranaroussi import *
 from multi_swe_bench.harness.repos.python.radical_cybertools import *
 from multi_swe_bench.harness.repos.python.randovania import *
