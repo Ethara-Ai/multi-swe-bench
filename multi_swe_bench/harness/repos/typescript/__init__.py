@@ -190,3 +190,4 @@ from multi_swe_bench.harness.repos.typescript.vueuse import *
 from multi_swe_bench.harness.repos.typescript.toeverything import *
 from multi_swe_bench.harness.repos.typescript.Eugeny import *
 from multi_swe_bench.harness.repos.typescript.pubkey import *
+from multi_swe_bench.harness.repos.typescript.abi import *
