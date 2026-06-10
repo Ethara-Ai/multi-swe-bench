@@ -132,3 +132,4 @@ from multi_swe_bench.harness.repos.javascript.winstonjs import *
 from multi_swe_bench.harness.repos.javascript.chinese_poetry import *
 from multi_swe_bench.harness.repos.javascript.gatsbyjs import *
 from multi_swe_bench.harness.repos.javascript.Mintplex_Labs import *
+from multi_swe_bench.harness.repos.javascript.yarnpkg import *
