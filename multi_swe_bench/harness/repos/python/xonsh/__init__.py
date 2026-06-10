@@ -4,3 +4,6 @@ from multi_swe_bench.harness.repos.python.xonsh.xonsh_4241_to_3906 import *
 from multi_swe_bench.harness.repos.python.xonsh.xonsh_4241_to_3906 import *
 from multi_swe_bench.harness.repos.python.xonsh.xonsh_3156_to_3126 import *
 from multi_swe_bench.harness.repos.python.xonsh.xonsh_3126_to_3068 import *
+from multi_swe_bench.harness.repos.python.xonsh.xonsh_0_5_to_0_9 import *
+from multi_swe_bench.harness.repos.python.xonsh.xonsh_0_10_to_0_19 import *
+from multi_swe_bench.harness.repos.python.xonsh.xonsh_0_20_to_0_23 import *
