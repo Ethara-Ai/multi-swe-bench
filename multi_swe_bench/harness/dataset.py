@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import uuid as _uuid_module
 from dataclasses import dataclass, field
 
 from dataclasses_json import dataclass_json
@@ -61,6 +62,7 @@ class Dataset(PullRequest):
             number=pr.number,
             tag=pr.tag,
             lang=pr.lang,
+            uuid=pr.uuid or str(_uuid_module.uuid4()),
             state=pr.state,
             title=pr.title,
             body=pr.body,

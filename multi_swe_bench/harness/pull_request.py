@@ -181,6 +181,7 @@ class PullRequest(PullRequestBase):
     tag: str = ""
     number_interval: str = ""
     lang: str = ""
+    uuid: str = ""
 
     def __post_init__(self):
         if not isinstance(self.state, str):
