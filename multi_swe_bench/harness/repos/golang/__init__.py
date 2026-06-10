@@ -139,3 +139,4 @@ from multi_swe_bench.harness.repos.golang.gitleaks import *
 from multi_swe_bench.harness.repos.golang.google import *
 from multi_swe_bench.harness.repos.golang.riverqueue import *
 from multi_swe_bench.harness.repos.golang.valyala import *
+from multi_swe_bench.harness.repos.golang.harness import *
