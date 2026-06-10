@@ -125,3 +125,17 @@ from multi_swe_bench.harness.repos.golang.wagoodman import *
 from multi_swe_bench.harness.repos.golang.open_policy_agent import *
 from multi_swe_bench.harness.repos.golang.future_architect import *
 from multi_swe_bench.harness.repos.golang.99designs import *
+from multi_swe_bench.harness.repos.golang.amir20 import *
+from multi_swe_bench.harness.repos.golang.avelino import *
+from multi_swe_bench.harness.repos.golang.cloudwego import *
+from multi_swe_bench.harness.repos.golang.coder import *
+from multi_swe_bench.harness.repos.golang.dunglas import *
+from multi_swe_bench.harness.repos.golang.earthly import *
+from multi_swe_bench.harness.repos.golang.eksctl_io import *
+from multi_swe_bench.harness.repos.golang.encoredev import *
+from multi_swe_bench.harness.repos.golang.evilmartians import *
+from multi_swe_bench.harness.repos.golang.flipt_io import *
+from multi_swe_bench.harness.repos.golang.gitleaks import *
+from multi_swe_bench.harness.repos.golang.google import *
+from multi_swe_bench.harness.repos.golang.riverqueue import *
+from multi_swe_bench.harness.repos.golang.valyala import *
