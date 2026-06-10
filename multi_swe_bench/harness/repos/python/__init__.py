@@ -354,3 +354,4 @@ from multi_swe_bench.harness.repos.python.reflex_dev import *
 from multi_swe_bench.harness.repos.python.Significant_Gravitas import *
 from multi_swe_bench.harness.repos.python.mealie_recipes import *
 from multi_swe_bench.harness.repos.python.TheAlgorithms import *
+from multi_swe_bench.harness.repos.python.khoj_ai import *
