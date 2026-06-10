@@ -121,4 +121,6 @@ from multi_swe_bench.harness.repos.golang.golangci import *
 from multi_swe_bench.harness.repos.golang.miniflux import *
 from multi_swe_bench.harness.repos.golang.pion import *
 from multi_swe_bench.harness.repos.golang.treeverse import *
-
+from multi_swe_bench.harness.repos.golang.wagoodman import *
+from multi_swe_bench.harness.repos.golang.open_policy_agent import *
+from multi_swe_bench.harness.repos.golang.future_architect import *

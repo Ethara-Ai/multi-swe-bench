@@ -38,7 +38,6 @@ from multi_swe_bench.harness.repos.java.libgdx import *
 from multi_swe_bench.harness.repos.java.skylot import *
 from multi_swe_bench.harness.repos.java.dbeaver import *
 from multi_swe_bench.harness.repos.java.kestra_io import *
-from multi_swe_bench.harness.repos.java.seleniumhq import *
 from multi_swe_bench.harness.repos.java.bumptech.glide_0_to_4999 import *
 from multi_swe_bench.harness.repos.java.bumptech.glide_5000_to_99999 import *
 from multi_swe_bench.harness.repos.java.xuxueli import *
@@ -46,3 +45,8 @@ from multi_swe_bench.harness.repos.java.Blankj import *
 from multi_swe_bench.harness.repos.java.jeecgboot import *
 from multi_swe_bench.harness.repos.java.Snailclimb import *
 from multi_swe_bench.harness.repos.java.apolloconfig import *
+from multi_swe_bench.harness.repos.java.zxing import *
+from multi_swe_bench.harness.repos.java.xiaojieonly.ehviewer_cn_sxj_0_to_399 import *
+from multi_swe_bench.harness.repos.java.xiaojieonly.ehviewer_cn_sxj_400_to_2199 import *
+from multi_swe_bench.harness.repos.java.xiaojieonly.ehviewer_cn_sxj_2200_to_99999 import *
+from multi_swe_bench.harness.repos.java.xkcoding import *
