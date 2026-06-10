@@ -11,3 +11,7 @@ from multi_swe_bench.harness.repos.python.microsoft.autogen_3557_to_3481 import 
 from multi_swe_bench.harness.repos.python.microsoft.autogen_1963_to_1569 import *
 from multi_swe_bench.harness.repos.python.microsoft.torchgeo_1985_to_1441 import *
 from multi_swe_bench.harness.repos.python.microsoft.torchgeo_2840_to_2432 import *
+from multi_swe_bench.harness.repos.python.microsoft.autogen_283_to_0 import *
+from multi_swe_bench.harness.repos.python.microsoft.autogen_4600_to_284 import *
+from multi_swe_bench.harness.repos.python.microsoft.autogen_5800_to_4601 import *
+from multi_swe_bench.harness.repos.python.microsoft.autogen_99999_to_5801 import *
