@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageBase(Image):
+class CarbonLangImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -21,94 +22,80 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
+        # Returning a string (rather than a chained Image) lets the shared
+        # Image.dockerfile() in image.py own the build: it installs the default
+        # + extra_packages, clones "${REPO_URL}", checks out "${BASE_COMMIT}",
+        # runs extra_setup(), and appends the _HARDENING_BLOCK that strips every
+        # other ref/commit so the fix can't be read out of git history.
+        # DockerfileEnhancer then injects the proxy/cert infra and the final
+        # sanitize pass. None of that fires when dockerfile() is overridden,
+        # which is why the previous two-stage build bypassed it.
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-ENV LC_ALL=C.UTF-8
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    ca-certificates curl wget git gnupg lsb-release software-properties-common \\
-    build-essential make pkg-config zip unzip sudo \\
-    python3 python3-pip python-is-python3 \\
-    openjdk-21-jdk-headless \\
-    libtinfo5 libxml2 m4 \\
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh && \\
-    bash /tmp/llvm.sh 19 all && \\
-    apt-get install -y --no-install-recommends libc++-19-dev libc++abi-19-dev lld-19 lldb-19 && \\
-    ln -sf /usr/bin/clang-19 /usr/bin/clang && \\
-    ln -sf /usr/bin/clang++-19 /usr/bin/clang++ && \\
-    ln -sf /usr/bin/lld-19 /usr/bin/lld && \\
-    ln -sf /usr/bin/ld.lld-19 /usr/bin/ld.lld && \\
-    ln -sf /usr/bin/llvm-ar-19 /usr/bin/llvm-ar && \\
-    ln -sf /usr/bin/llvm-nm-19 /usr/bin/llvm-nm && \\
-    ln -sf /usr/bin/llvm-strip-19 /usr/bin/llvm-strip && \\
-    ln -sf /usr/bin/lldb-19 /usr/bin/lldb && \\
-    rm /tmp/llvm.sh && rm -rf /var/lib/apt/lists/*
-
-RUN ARCH=$(dpkg --print-architecture) && \\
-    curl -fSL "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${{ARCH}}" \\
-      -o /tmp/bazel && \\
-    install -m 755 /tmp/bazel /usr/local/bin/bazel && \\
-    rm /tmp/bazel
-
-RUN useradd -m -d /home/builder -s /bin/bash builder && \\
-    chown -R builder:builder /home/
-
-USER builder
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class ImageDefault(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image:
-        return ImageBase(self.pr, self._config)
-
-    def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    def extra_packages(self) -> list[str]:
+        # Appended to image.py's default_packages (ca-certificates, curl,
+        # build-essential, git, gnupg, make, python3, sudo, wget). These are the
+        # carbon-lang specific build deps + what apt.llvm.org's llvm.sh needs
+        # (lsb-release, software-properties-common, gnupg).
+        return [
+            "lsb-release",
+            "software-properties-common",
+            "pkg-config",
+            "zip",
+            "unzip",
+            "python3-pip",
+            "python-is-python3",
+            "openjdk-21-jdk-headless",
+            "libtinfo5",
+            "libxml2",
+            "m4",
+        ]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. Installs the LLVM 19 toolchain + Bazelisk (as bazel), then
+        # stages the runtime helper scripts + patches into /home/. The copied
+        # files live outside /home/{repo}, so the hardening pass (which only
+        # operates inside the git tree) leaves them untouched. Everything runs
+        # as root; Bazel builds fine as root in this harness (see cpp/grpc).
+        return (
+            "# Install the LLVM 19 toolchain and symlink the unversioned names.\n"
+            "RUN curl -fSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh && \\\n"
+            "    bash /tmp/llvm.sh 19 all && \\\n"
+            "    apt-get install -y --no-install-recommends "
+            "libc++-19-dev libc++abi-19-dev lld-19 lldb-19 && \\\n"
+            "    ln -sf /usr/bin/clang-19 /usr/bin/clang && \\\n"
+            "    ln -sf /usr/bin/clang++-19 /usr/bin/clang++ && \\\n"
+            "    ln -sf /usr/bin/lld-19 /usr/bin/lld && \\\n"
+            "    ln -sf /usr/bin/ld.lld-19 /usr/bin/ld.lld && \\\n"
+            "    ln -sf /usr/bin/llvm-ar-19 /usr/bin/llvm-ar && \\\n"
+            "    ln -sf /usr/bin/llvm-nm-19 /usr/bin/llvm-nm && \\\n"
+            "    ln -sf /usr/bin/llvm-strip-19 /usr/bin/llvm-strip && \\\n"
+            "    ln -sf /usr/bin/lldb-19 /usr/bin/lldb && \\\n"
+            "    rm /tmp/llvm.sh && rm -rf /var/lib/apt/lists/*\n"
+            "\n"
+            "# Install Bazelisk as bazel (auto-selects the version from\n"
+            "# .bazelversion / tools/bazel wrapper per checkout).\n"
+            "RUN ARCH=$(dpkg --print-architecture) && \\\n"
+            '    curl -fSL "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${ARCH}" \\\n'
+            "      -o /tmp/bazel && \\\n"
+            "    install -m 755 /tmp/bazel /usr/local/bin/bazel && \\\n"
+            "    rm /tmp/bazel\n"
+            "\n"
+            "# Stage runtime helper scripts + patches.\n"
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY bazel_utils.sh /home/bazel_utils.sh\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh"
+        )
 
     def files(self) -> list[File]:
         return [
@@ -121,41 +108,6 @@ class ImageDefault(Image):
                 ".",
                 "test.patch",
                 f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -369,33 +321,6 @@ run_carbon_tests /home/{pr.repo} || true
             ),
         ]
 
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY --chown=builder:builder {file.name} /home/\n"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-WORKDIR /home/
-ENV LC_ALL=C.UTF-8
-
-USER builder
-
-{copy_commands}
-
-RUN bash /home/prepare.sh
-
-{self.clear_env}
-
-CMD ["/bin/bash"]
-"""
-
 
 @Instance.register("carbon-language", "carbon-lang")
 class CarbonLang(Instance):
@@ -408,8 +333,8 @@ class CarbonLang(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Image:
-        return ImageDefault(self.pr, self._config)
+    def dependency(self) -> Optional[Image]:
+        return CarbonLangImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

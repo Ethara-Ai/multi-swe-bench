@@ -1,5 +1,5 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -30,61 +30,6 @@ from multi_swe_bench.harness.pull_request import PullRequest
 # ---------------------------------------------------------------------------
 
 
-class ImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "rust:1-bookworm"
-
-    def image_tag(self) -> str:
-        return "base-rust-564"
-
-    def workdir(self) -> str:
-        return "base-rust-564"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
-ENV CI=true
-
-WORKDIR /home/
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates pkg-config chromium ffmpeg \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -98,14 +43,44 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return ImageBase(self.pr, self.config)
+    def dependency(self) -> str:
+        # Returning a string (rather than a chained Image) lets the shared
+        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
+        # checks out "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that
+        # strips every other ref/commit so the fix can't be read out of git
+        # history. DockerfileEnhancer then injects the proxy/cert infra and the
+        # final sanitize pass. None of that fires when dockerfile() is
+        # overridden, which is why the previous two-stage build bypassed it.
+        return "rust:1-bookworm"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    def extra_packages(self) -> list[str]:
+        # git + ca-certificates are already in the default package set baked by
+        # Image.dockerfile(); add the headless-Chrome stack the e2e tests need.
+        return ["pkg-config", "chromium", "ffmpeg"]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. We set the browser env, stage the runtime helper scripts +
+        # patches into /home/, and warm the cargo build cache. The copied files
+        # live outside /home/{repo}, so the hardening pass (which only operates
+        # inside the git tree) leaves them untouched.
+        return (
+            "ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium\n"
+            "ENV CI=true\n"
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "COPY prepare.sh /home/prepare.sh\n"
+            "RUN bash /home/prepare.sh"
+        )
 
     def files(self) -> list[File]:
         return [
@@ -121,36 +96,18 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
                 "prepare.sh",
                 """#!/bin/bash
+# Warm the cargo build cache at image-build time so the eval runs don't need
+# network. The repo is already checked out at ${{BASE_COMMIT}} and hardened by
+# Image.dockerfile(), so this script no longer performs any git checkout
+# itself. The cargo build is allowed to fail (|| true) because its only
+# purpose here is to populate the target/ cache; the real pass/fail signal
+# comes from the run/test-run/fix-run scripts.
 set -e
 
 cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
+git reset --hard || true
 # [profile.ci] was introduced mid-era (absent at PR 594 / v0.15.3); fall back
 # to the default profile when it is missing.  Binary crate: no --lib.
 PROFILE=""
@@ -204,29 +161,6 @@ cargo test $PROFILE --manifest-path cli/Cargo.toml -- --include-ignored --test-t
 """.format(pr=self.pr),
             ),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("vercel-labs", "agent_browser_564_to_99999")

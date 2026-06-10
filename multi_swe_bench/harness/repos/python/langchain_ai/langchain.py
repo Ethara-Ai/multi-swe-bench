@@ -1,75 +1,10 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-class ImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "python:3.11-slim"
-
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PIP_NO_INPUT=1
-ENV POETRY_VIRTUALENVS_IN_PROJECT=true
-ENV POETRY_NO_INTERACTION=1
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git \\
-    build-essential \\
-    curl \\
-    ca-certificates \\
-    pkg-config \\
-    libffi-dev \\
-    libssl-dev \\
- && apt-get clean \\
- && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir "poetry<1.5"
-
-WORKDIR /home/
-
-{code}
-
-{self.clear_env}
-
-"""
 
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -84,14 +19,51 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Optional[Image]:
-        return ImageBase(self.pr, self._config)
+    def dependency(self) -> str:
+        # Returning a string (rather than a chained Image) lets the shared
+        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
+        # checks out "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that
+        # strips every other ref/commit so the fix can't be read out of git
+        # history. DockerfileEnhancer then injects the proxy/cert infra and the
+        # final sanitize pass. None of that fires when dockerfile() is
+        # overridden, which is why the previous two-stage build bypassed it.
+        return "python:3.11-slim"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    def extra_packages(self) -> list[str]:
+        # git, build-essential, curl, ca-certificates are already in the
+        # default package set baked by Image.dockerfile(); add only the C
+        # build deps poetry needs to compile langchain's native extras.
+        return ["pkg-config", "libffi-dev", "libssl-dev"]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. We install poetry, stage the runtime helper scripts + patches
+        # into /home/, and pre-install every libs/* package so the eval scripts
+        # find warm venvs. The copied files live outside /home/{repo}, so the
+        # hardening pass (which only operates inside the git tree) leaves them
+        # untouched.
+        return (
+            "ENV PIP_DISABLE_PIP_VERSION_CHECK=1\n"
+            "ENV PIP_NO_INPUT=1\n"
+            "ENV POETRY_VIRTUALENVS_IN_PROJECT=true\n"
+            "ENV POETRY_NO_INTERACTION=1\n"
+            'RUN pip install --no-cache-dir "poetry<1.5"\n'
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY strip_binaries.sh /home/strip_binaries.sh\n"
+            "COPY run_tests.sh /home/run_tests.sh\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "COPY prepare.sh /home/prepare.sh\n"
+            "RUN bash /home/prepare.sh"
+        )
 
     def files(self) -> list[File]:
         return [
@@ -104,27 +76,6 @@ class ImageDefault(Image):
                 ".",
                 "test.patch",
                 f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""",
             ),
             File(
                 ".",
@@ -186,19 +137,20 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
+# Pre-install langchain + every libs/* subpackage so the run scripts find
+# cached venvs. The repo is already checked out at ${{BASE_COMMIT}} and
+# hardened by Image.dockerfile(), so this script no longer performs any
+# git checkout itself. `git reset --hard` only discards tracked-file churn
+# from a previous install pass (e.g. poetry.lock); untracked .venv dirs are
+# left in place. Failures are tolerated because optional extras frequently
+# fail on stripped images. Pip-based fallbacks ensure the project + its core
+# test plugins are still installed when a single optional sub-dep build
+# fails midway.
 set -e
 
 cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
+git reset --hard || true
 
-# Pre-install langchain + every libs/* subpackage that exists so the run
-# scripts find cached venvs. Failures are tolerated because optional
-# extras frequently fail on stripped images. Pip-based fallbacks ensure
-# the project + its core test plugins are still installed when a single
-# optional sub-dep build fails midway.
 for pkg in libs/langchain libs/core libs/community libs/experimental libs/text-splitters libs/partners/*; do
     [ -f "$pkg/pyproject.toml" ] || continue
     [ -d "$pkg/tests/unit_tests" ] || continue
@@ -268,27 +220,6 @@ bash /home/run_tests.sh
             ),
         ]
 
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 @Instance.register("langchain-ai", "langchain")
 class Langchain(Instance):
