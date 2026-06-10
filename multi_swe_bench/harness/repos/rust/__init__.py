@@ -64,3 +64,4 @@ from multi_swe_bench.harness.repos.rust.slint_ui import *
 from multi_swe_bench.harness.repos.rust.tree_sitter import *
 from multi_swe_bench.harness.repos.rust.wezterm import *
 from multi_swe_bench.harness.repos.rust.vercel_labs import *
+from multi_swe_bench.harness.repos.rust.google import *
