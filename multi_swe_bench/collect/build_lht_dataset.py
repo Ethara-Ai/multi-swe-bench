@@ -38,6 +38,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -561,6 +562,7 @@ def main(
 
             record = {
                 "instance_id": instance_id,
+                "uuid": str(uuid.uuid4()),
                 "org": org,
                 "repo": repo,
                 "number": pr_numbers_str,

@@ -1,4 +1,3 @@
-from multi_swe_bench.harness.repos.golang.cilium import *
 from multi_swe_bench.harness.repos.javascript._4ian import *
 from multi_swe_bench.harness.repos.javascript.Accenture import *
 from multi_swe_bench.harness.repos.javascript.accordproject import *
@@ -93,7 +92,6 @@ from multi_swe_bench.harness.repos.javascript.nock import *
 from multi_swe_bench.harness.repos.javascript.openlayers import *
 from multi_swe_bench.harness.repos.javascript.postcss import *
 
-# from multi_swe_bench.harness.repos.javascript.preactjs import *  # missing module
 from multi_swe_bench.harness.repos.javascript.prettier import *
 from multi_swe_bench.harness.repos.javascript.PrismJS import *
 from multi_swe_bench.harness.repos.javascript.ProcessMaker import *
@@ -102,7 +100,6 @@ from multi_swe_bench.harness.repos.javascript.quartodev import *
 from multi_swe_bench.harness.repos.javascript.RaspberryPiFoundation import *
 from multi_swe_bench.harness.repos.javascript.Real_Dev_Squad import *
 from multi_swe_bench.harness.repos.javascript.rollup import *
-# from multi_swe_bench.harness.repos.javascript.s import *  # missing module
 from multi_swe_bench.harness.repos.javascript.SchemaStore import *
 from multi_swe_bench.harness.repos.javascript.scratchfoundation import *
 from multi_swe_bench.harness.repos.javascript.Semantic_Org import *
@@ -132,12 +129,6 @@ from multi_swe_bench.harness.repos.javascript.zloirock import *
 from multi_swe_bench.harness.repos.javascript.validatorjs import *
 from multi_swe_bench.harness.repos.javascript.Unitech import *
 from multi_swe_bench.harness.repos.javascript.winstonjs import *
-from multi_swe_bench.harness.repos.javascript.DDDEastMidlandsLimited import *
-from multi_swe_bench.harness.repos.javascript.mozilla import *
-from multi_swe_bench.harness.repos.javascript.AnomalyInnovations import *
-#from multi_swe_bench.harness.repos.javascript.s import *
-from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
-from multi_swe_bench.harness.repos.javascript.style_dictionary import *
 from multi_swe_bench.harness.repos.javascript.chinese_poetry import *
 from multi_swe_bench.harness.repos.javascript.gatsbyjs import *
 from multi_swe_bench.harness.repos.javascript.Mintplex_Labs import *
