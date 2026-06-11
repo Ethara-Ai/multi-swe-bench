@@ -103,43 +103,101 @@ def _extract_end_tag(base_label: str) -> str:
     return base_label.split('..', 1)[1]
 
 
-def _binary_restore_shell(fix_patch: str, test_patch: str, end_tag: str) -> str:
-    """Generate shell commands to restore binary files from end_tag.
+def _binary_extract_shell(fix_patch: str, test_patch: str, end_tag: str) -> str:
+    """Build-time snippet: copy every binary blob referenced by either patch from
+    end_tag into /home/.bin_fixtures, BEFORE the hardening pass runs.
 
-    Combines both patches. Returns a bash snippet with no leading shebang.
-    Uses `git show` to extract blobs and `git rm` for deletes.
+    The shared Image.dockerfile() hardening block deletes all tags, removes the
+    origin remote and prunes unreachable objects, so the end-of-range tag (and
+    its blobs) are gone by eval time. This snippet runs inside prepare.sh (part
+    of extra_setup(), which executes before hardening) while the tag still
+    exists, stashing the blobs outside the git tree so they survive. Runs from
+    the repo root; emits a bash snippet with no leading shebang.
+    """
+    if not end_tag:
+        return '# no end_tag; skipping binary pre-extract\n'
+    merged = {}
+    for action, path in _extract_binary_ops(test_patch) + _extract_binary_ops(fix_patch):
+        merged[path] = action
+    # Only adds/modifies need a blob; deletes are handled at restore time.
+    adds = [p for p, a in merged.items() if a != 'delete']
+    if not adds:
+        return '# no binary blobs to pre-extract\n'
+
+    lines = [
+        '# --- Pre-extract binary fixtures from end-of-range tag (pre-hardening) ---',
+        f'_END_REF="{end_tag}"',
+        'if git rev-parse --verify -q "$_END_REF" >/dev/null 2>&1; then',
+        '    _HAVE_END=1',
+        'else',
+        '    git fetch --tags --quiet origin >/dev/null 2>&1 || true',
+        '    if git rev-parse --verify -q "$_END_REF" >/dev/null 2>&1; then _HAVE_END=1; else _HAVE_END=0; fi',
+        'fi',
+        'if [ "$_HAVE_END" = "1" ]; then',
+    ]
+    for path in adds:
+        q = path.replace("'", "'\\''")
+        lines.append(f"    mkdir -p \"/home/.bin_fixtures/$(dirname '{q}')\" 2>/dev/null || true")
+        lines.append(f"    git show \"$_END_REF:{q}\" > '/home/.bin_fixtures/{q}' 2>/dev/null || true")
+    lines.append('fi')
+    lines.append('# --- end pre-extract ---')
+    return '\n'.join(lines) + '\n'
+
+
+def _binary_restore_shell(fix_patch: str, test_patch: str, end_tag: str) -> str:
+    """Eval-time snippet: restore binary files from the fixtures pre-extracted to
+    /home/.bin_fixtures by _binary_extract_shell.
+
+    The fixtures were stashed at build time (before the hardening pass removed
+    git history), so this no longer touches git at all: adds/modifies are copied
+    in from /home/.bin_fixtures, deletes are `rm`-ed. Combines both patches
+    (pass fix_patch='' for the test-only variant). Returns a bash snippet with
+    no leading shebang; runs from the repo root.
     """
     if not end_tag:
         return '# no end_tag; skipping binary restore\n'
-    ops_fix = _extract_binary_ops(fix_patch)
-    ops_test = _extract_binary_ops(test_patch)
-    # Dedup by path, prefer most-recent fix (overrides test-patch)
     merged = {}
-    for action, path in ops_test + ops_fix:
+    for action, path in _extract_binary_ops(test_patch) + _extract_binary_ops(fix_patch):
         merged[path] = action
     if not merged:
         return '# no binary ops\n'
 
-    lines = [
-        '# --- Restore binary files from end-of-range tag ---',
-        f'_END_REF="{end_tag}"',
-        'if git rev-parse --verify -q "$_END_REF" >/dev/null; then',
-        '    _HAVE_END=1',
-        'else',
-        '    git fetch --tags --quiet origin || true',
-        '    if git rev-parse --verify -q "$_END_REF" >/dev/null; then _HAVE_END=1; else _HAVE_END=0; fi',
-        'fi',
-        'if [ "$_HAVE_END" = "1" ]; then',
-    ]
+    lines = ['# --- Restore binary files from pre-extracted fixtures ---']
     for path, action in merged.items():
         # Escape for shell single-quoting
         q = path.replace("'", "'\\''")
         if action == 'delete':
-            lines.append(f"    rm -f '{q}' || true")
+            lines.append(f"rm -f '{q}' || true")
         else:
-            # add or modify: extract blob into working tree
-            lines.append(f"    mkdir -p \"$(dirname '{q}')\" 2>/dev/null || true")
-            lines.append(f"    git show \"$_END_REF:{q}\" > '{q}' 2>/dev/null || true")
-    lines.append('fi')
+            lines.append(
+                f"if [ -f '/home/.bin_fixtures/{q}' ]; then "
+                f"mkdir -p \"$(dirname '{q}')\" 2>/dev/null || true; "
+                f"cp '/home/.bin_fixtures/{q}' '{q}'; fi"
+            )
     lines.append('# --- end binary restore ---')
     return '\n'.join(lines) + '\n'
+
+
+# Gradle reads proxy settings from gradle.properties, not from the http_proxy
+# environment variable. jadx's prepare.sh runs `./gradlew assemble`, which hits
+# the network, so when the build is behind a proxy this translates it. No-op
+# when no proxy is set (the common case). Raw string: the `\n` are for printf and
+# the ${...} are shell, so this must NOT be passed through str.format().
+_GRADLE_PROXY_SETUP = r'''# Translate an http(s) proxy into Gradle's gradle.properties (no-op if unset).
+PROXY_URL="${http_proxy:-${HTTP_PROXY:-}}"
+if [ -n "$PROXY_URL" ]; then
+    PROXY_HP="${PROXY_URL#*://}"; PROXY_HP="${PROXY_HP%%/*}"
+    PROXY_HOST="${PROXY_HP%%:*}"
+    PROXY_PORT="${PROXY_HP##*:}"
+    case "$PROXY_PORT" in ''|*[!0-9]*) PROXY_PORT="" ;; esac
+    if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
+        mkdir -p ~/.gradle
+        grep -q systemProp.http.proxyHost ~/.gradle/gradle.properties 2>/dev/null || {
+            printf 'systemProp.http.proxyHost=%s\n' "$PROXY_HOST"  >> ~/.gradle/gradle.properties
+            printf 'systemProp.http.proxyPort=%s\n' "$PROXY_PORT"  >> ~/.gradle/gradle.properties
+            printf 'systemProp.https.proxyHost=%s\n' "$PROXY_HOST" >> ~/.gradle/gradle.properties
+            printf 'systemProp.https.proxyPort=%s\n' "$PROXY_PORT" >> ~/.gradle/gradle.properties
+        }
+    fi
+fi
+'''

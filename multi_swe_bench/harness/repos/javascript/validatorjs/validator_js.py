@@ -1,3 +1,11 @@
+"""Generic validatorjs/validator.js config (node 20, npm + mocha era).
+
+Used for jsonl records that carry no number_interval, so Instance.create
+resolves them to the plain "validatorjs/validator.js" key (the bundle-specific
+configs register under validator_js_<range> keys instead). Modeled on
+validator_js_931_to_99999 (node:20-bookworm + npm + mocha).
+"""
+
 import re
 from typing import Optional
 
@@ -6,7 +14,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class Traefik12645To8393ImageDefault(Image):
+class ValidatorJsImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -27,7 +35,7 @@ class Traefik12645To8393ImageDefault(Image):
         # read out of git history. DockerfileEnhancer then injects the proxy/cert
         # infra and the final sanitize pass. None of that fires when dockerfile()
         # is overridden, which is why the previous two-stage build bypassed it.
-        return "golang:1.25"
+        return "node:20-bookworm"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -37,10 +45,10 @@ class Traefik12645To8393ImageDefault(Image):
 
     def extra_setup(self) -> str:
         # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. Stages the runtime helper scripts + patches into /home/ and
-        # warms the Go module cache so the eval scripts run offline. The copied
-        # files live outside /home/{repo}, so the hardening pass (which only
-        # operates inside the git tree) leaves them untouched.
+        # block. Stages the helper scripts + patches into /home/ and runs
+        # prepare.sh, which installs node_modules + builds so the eval scripts
+        # run offline. node_modules lives inside the repo but is untracked, so
+        # the hardening pass (which only rewrites git history) leaves it intact.
         return (
             "COPY fix.patch /home/fix.patch\n"
             "COPY test.patch /home/test.patch\n"
@@ -69,28 +77,26 @@ class Traefik12645To8393ImageDefault(Image):
                 """#!/bin/bash
 # Repo is already cloned + checked out at ${{BASE_COMMIT}} and hardened by
 # Image.dockerfile(), so this script no longer performs any git checkout. It
-# only warms the Go module/build caches so the eval runs don't need network.
+# installs dependencies and builds so the eval runs don't need network.
 set -e
 
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 git reset --hard || true
 
-go mod download -x 2>&1 || true
-go generate ./... 2>&1 || true
-go build ./... 2>&1 || true
-
+npm install --legacy-peer-deps >/dev/null 2>&1 || true
+npm run build > /home/build.log 2>&1 || {{ cat /home/build.log; exit 1; }}
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -eo pipefail
+set -e
 
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
-go test -v -count=1 ./...
+./node_modules/.bin/mocha --require @babel/register --reporter spec --recursive
 
 """.format(pr=self.pr),
             ),
@@ -98,12 +104,14 @@ go test -v -count=1 ./...
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -eo pipefail
+set -e
 
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-go test -v -count=1 ./...
+npm install --legacy-peer-deps >/dev/null 2>&1 || true
+npm run build > /home/build.log 2>&1 || {{ cat /home/build.log; exit 1; }}
+./node_modules/.bin/mocha --require @babel/register --reporter spec --recursive
 
 """.format(pr=self.pr),
             ),
@@ -111,20 +119,22 @@ go test -v -count=1 ./...
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -eo pipefail
+set -e
 
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-go test -v -count=1 ./...
+npm install --legacy-peer-deps >/dev/null 2>&1 || true
+npm run build > /home/build.log 2>&1 || {{ cat /home/build.log; exit 1; }}
+./node_modules/.bin/mocha --require @babel/register --reporter spec --recursive
 
 """.format(pr=self.pr),
             ),
         ]
 
 
-@Instance.register("traefik", "traefik_12645_to_8393")
-class Traefik12645To8393(Instance):
+@Instance.register("validatorjs", "validator.js")
+class ValidatorJs(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -135,7 +145,7 @@ class Traefik12645To8393(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return Traefik12645To8393ImageDefault(self.pr, self._config)
+        return ValidatorJsImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -160,51 +170,53 @@ class Traefik12645To8393(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
-        re_fail_tests = [
-            re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"FAIL:?\s?(.+?)\s"),
-        ]
-        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
 
-        def get_base_name(test_name: str) -> str:
-            index = test_name.rfind("/")
-            if index == -1:
-                return test_name
-            return test_name[:index]
+        lines = test_log.splitlines()
+        current_path = []
+        indentation_to_level = {}
 
-        for line in test_log.splitlines():
-            line = line.strip()
+        for line in lines:
+            line = ansi_escape.sub("", line)
 
-            for re_pass_test in re_pass_tests:
-                pass_match = re_pass_test.match(line)
-                if pass_match:
-                    test_name = pass_match.group(1)
-                    if test_name in failed_tests:
-                        continue
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    passed_tests.add(get_base_name(test_name))
+            match = re.match(
+                r"^(\s*)(?:([✓✔]|[0-9]+\))\s+)?(.*?)(?:\s+\([0-9]+ms\))?$", line
+            )
 
-            for re_fail_test in re_fail_tests:
-                fail_match = re_fail_test.match(line)
-                if fail_match:
-                    test_name = fail_match.group(1)
-                    if test_name in passed_tests:
-                        passed_tests.remove(test_name)
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    failed_tests.add(get_base_name(test_name))
+            if not match or not match.group(3).strip():
+                continue
 
-            for re_skip_test in re_skip_tests:
-                skip_match = re_skip_test.match(line)
-                if skip_match:
-                    test_name = skip_match.group(1)
-                    if test_name in passed_tests:
-                        continue
-                    if test_name not in failed_tests:
-                        continue
-                    skipped_tests.add(get_base_name(test_name))
+            spaces, status, name = match.groups()
+            name = name.strip()
+            indent = len(spaces)
+
+            if indent not in indentation_to_level:
+                if not indentation_to_level:
+                    indentation_to_level[indent] = 0
+                else:
+                    prev_indents = sorted(
+                        [i for i in indentation_to_level.keys() if i < indent]
+                    )
+                    if prev_indents:
+                        closest_indent = prev_indents[-1]
+                        indentation_to_level[indent] = (
+                            indentation_to_level[closest_indent] + 1
+                        )
+                    else:
+                        indentation_to_level[indent] = 0
+
+            level = indentation_to_level[indent]
+            current_path = current_path[:level]
+            current_path.append(name)
+
+            if status:
+                full_path = ":".join(current_path)
+                if status in ("✓", "✔"):
+                    passed_tests.add(full_path)
+                elif status.endswith(")"):
+                    failed_tests.add(full_path)
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

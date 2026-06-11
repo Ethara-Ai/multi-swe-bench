@@ -1,4 +1,11 @@
-"""TheAlgorithms/Java config for PRs 0-2823 (JDK 11, Gradle→Maven era)."""
+"""Generic TheAlgorithms/Java config (JDK 17, Maven era).
+
+Used for jsonl records that carry no number_interval, so Instance.create
+resolves them to the plain "TheAlgorithms/Java" key (the bundle-specific
+configs register under TheAlgorithms_Java_<range> keys instead). Modeled on
+TheAlgorithms_Java_2823_to_5142 (ubuntu:22.04 + openjdk-17 + maven), which
+matches the mid-2022 JDK 17 / Maven era these PRs sit in.
+"""
 
 import re
 from typing import Optional
@@ -8,7 +15,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TheAlgorithmsJava0ImageDefault(Image):
+class TheAlgorithmsJavaImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -38,9 +45,9 @@ class TheAlgorithmsJava0ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def extra_packages(self) -> list[str]:
-        # JDK 11 + Maven on top of the default toolchain (git + ca-certificates
+        # JDK 17 + Maven on top of the default toolchain (git + ca-certificates
         # are already in the base package set in Image.dockerfile()).
-        return ["openjdk-11-jdk", "maven"]
+        return ["openjdk-17-jdk", "maven"]
 
     def extra_setup(self) -> str:
         # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
@@ -48,15 +55,10 @@ class TheAlgorithmsJava0ImageDefault(Image):
         # patches into /home/, and runs prepare.sh (which writes the Maven mirror
         # config under ~/.m2, outside the git tree, so the hardening pass leaves
         # it untouched).
-        #
-        # NOTE: the pom.xml fixups live in fixup_pom.sh and run at *eval* time,
-        # not here. They edit a tracked file, and the hardening pass re-checks-out
-        # ${BASE_COMMIT} after extra_setup(), which would revert any such edit.
         return (
             "ENV LC_ALL=C.UTF-8\n"
             "COPY fix.patch /home/fix.patch\n"
             "COPY test.patch /home/test.patch\n"
-            "COPY fixup_pom.sh /home/fixup_pom.sh\n"
             "COPY run.sh /home/run.sh\n"
             "COPY test-run.sh /home/test-run.sh\n"
             "COPY fix-run.sh /home/fix-run.sh\n"
@@ -90,9 +92,8 @@ mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 git reset --hard || true
 
-if [ -f pom.xml ]; then
-    if [ ! -f ~/.m2/settings.xml ]; then
-        mkdir -p ~/.m2 && cat <<EOF > ~/.m2/settings.xml
+if [ ! -f ~/.m2/settings.xml ]; then
+    mkdir -p ~/.m2 && cat <<EOF > ~/.m2/settings.xml
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
@@ -108,50 +109,18 @@ if [ -f pom.xml ]; then
 
 </settings>
 EOF
-    else
-      grep -q "<mirror>" ~/.m2/settings.xml || sed -i '/<\\/settings>/i \\
-      <mirrors> \\
-          <mirror> \\
-              <id>aliyunmaven</id> \\
-              <mirrorOf>central</mirrorOf> \\
-              <name>Aliyun Maven Mirror</name> \\
-              <url>https://maven.aliyun.com/repository/public</url> \\
-          </mirror> \\
-      </mirrors>' ~/.m2/settings.xml
-    fi
+else
+  grep -q "<mirror>" ~/.m2/settings.xml || sed -i '/<\\/settings>/i \\
+  <mirrors> \\
+      <mirror> \\
+          <id>aliyunmaven</id> \\
+          <mirrorOf>central</mirrorOf> \\
+          <name>Aliyun Maven Mirror</name> \\
+          <url>https://maven.aliyun.com/repository/public</url> \\
+      </mirror> \\
+  </mirrors>' ~/.m2/settings.xml
 fi
 """.format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fixup_pom.sh",
-                """#!/bin/bash
-# Re-apply the JUnit/Surefire pom.xml fixups at eval time. These can't live in
-# prepare.sh: the hardening pass re-checks-out ${{BASE_COMMIT}} after
-# extra_setup(), which would revert any edit to this tracked file. Run from the
-# repo root (the run scripts cd there first).
-set -e
-
-[ -f pom.xml ] || exit 0
-
-if grep -q "junit-jupiter" pom.xml && ! grep -q "maven-surefire-plugin" pom.xml; then
-    sed -i '/<\\/plugins>/i \\
-        <plugin>\\
-            <groupId>org.apache.maven.plugins</groupId>\\
-            <artifactId>maven-surefire-plugin</artifactId>\\
-            <version>2.22.2</version>\\
-        </plugin>' pom.xml
-fi
-if grep -q "junit-jupiter-api" pom.xml && ! grep -q "junit-jupiter-engine" pom.xml; then
-    sed -i '/<\\/dependencies>/i \\
-    <dependency>\\
-        <groupId>org.junit.jupiter</groupId>\\
-        <artifactId>junit-jupiter-engine</artifactId>\\
-        <version>5.5.0</version>\\
-        <scope>test</scope>\\
-    </dependency>' pom.xml
-fi
-""".format(),
             ),
             File(
                 ".",
@@ -161,13 +130,7 @@ set -e
 
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
-bash /home/fixup_pom.sh
-if [ -f pom.xml ]; then
-    mvn clean test -Dstyle.color=never
-else
-    echo "No pom.xml found, skipping Maven test"
-    exit 1
-fi
+mvn clean test -Dstyle.color=never
 """.format(pr=self.pr),
             ),
             File(
@@ -179,13 +142,7 @@ set -e
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-bash /home/fixup_pom.sh
-if [ -f pom.xml ]; then
-    mvn clean test -Dstyle.color=never
-else
-    echo "No pom.xml found, skipping Maven test"
-    exit 1
-fi
+mvn clean test -Dstyle.color=never
 
 """.format(pr=self.pr),
             ),
@@ -198,21 +155,15 @@ set -e
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-bash /home/fixup_pom.sh
-if [ -f pom.xml ]; then
-    mvn clean test -Dstyle.color=never
-else
-    echo "No pom.xml found, skipping Maven test"
-    exit 1
-fi
+mvn clean test -Dstyle.color=never
 
 """.format(pr=self.pr),
             ),
         ]
 
 
-@Instance.register("TheAlgorithms", "TheAlgorithms_Java_0_to_2823")
-class TheAlgorithmsJava0To2823(Instance):
+@Instance.register("TheAlgorithms", "Java")
+class TheAlgorithmsJava(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -223,7 +174,7 @@ class TheAlgorithmsJava0To2823(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return TheAlgorithmsJava0ImageDefault(self.pr, self._config)
+        return TheAlgorithmsJavaImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

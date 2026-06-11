@@ -1,68 +1,9 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-
-
-class Traefik8624To1331ImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "golang:1.13"
-
-    def image_tag(self) -> str:
-        return "base-v1"
-
-    def workdir(self) -> str:
-        return "base-v1"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
-    sed -i '/buster-updates/d' /etc/apt/sources.list
-
-ENV GO111MODULE=off
-ENV GOPATH=/go
-
-WORKDIR /home/
-
-{code}
-
-RUN mkdir -p /go/src/github.com/containous && ln -s /home/{self.pr.repo} /go/src/github.com/containous/{self.pr.repo}
-
-RUN go get -u github.com/jteeuwen/go-bindata/...
-
-{self.clear_env}
-
-"""
 
 
 class Traefik8624To1331ImageDefault(Image):
@@ -78,14 +19,53 @@ class Traefik8624To1331ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return Traefik8624To1331ImageBase(self.pr, self.config)
+    def dependency(self) -> str:
+        # Returning a string (rather than a chained Image) lets the shared
+        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
+        # checks out "${BASE_COMMIT}", runs extra_setup(), and appends the
+        # _HARDENING_BLOCK that strips every other ref/commit so the fix can't be
+        # read out of git history. DockerfileEnhancer then injects the proxy/cert
+        # infra and the final sanitize pass. None of that fires when dockerfile()
+        # is overridden, which is why the previous two-stage build bypassed it.
+        return "golang:1.13"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    def _get_apt_update_command(self, packages_str: str, base_img: str) -> str:
+        # golang:1.13 is built on Debian buster, whose apt repos have moved to
+        # archive.debian.org. The base image name ("golang:1.13") doesn't match
+        # DEPRECATED_DEBIAN_IMAGES, so apt-get update would 404 against the live
+        # mirrors. Force the archive-rewrite branch by handing the parent a
+        # buster tag, which triggers the sources.list fixup before installing.
+        return super()._get_apt_update_command(packages_str, "debian:buster")
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. This PR predates Go modules, so it builds under GOPATH: the repo
+        # (cloned to /home/{repo}) is symlinked into the legacy import path and
+        # go-bindata is installed for `go generate`. GO111MODULE=off / GOPATH are
+        # set here so they persist into the eval container. The staged helper
+        # scripts + patches live outside /home/{repo}, so the hardening pass
+        # (which only touches the git tree) leaves them untouched.
+        repo = self.pr.repo
+        return (
+            "ENV GO111MODULE=off\n"
+            "ENV GOPATH=/go\n"
+            f"RUN mkdir -p /go/src/github.com/containous && \\\n"
+            f"    ln -sf /home/{repo} /go/src/github.com/containous/{repo}\n"
+            "RUN go get -u github.com/jteeuwen/go-bindata/... || true\n"
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "COPY prepare.sh /home/prepare.sh\n"
+            "RUN bash /home/prepare.sh"
+        )
 
     def files(self) -> list[File]:
         return [
@@ -101,38 +81,20 @@ class Traefik8624To1331ImageDefault(Image):
             ),
             File(
                 ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
                 "prepare.sh",
                 """#!/bin/bash
+# Repo is already cloned + checked out at ${{BASE_COMMIT}} and hardened by
+# Image.dockerfile(); the GOPATH symlink is created in extra_setup(). This
+# script only regenerates bindata and warms caches so the eval runs offline.
 set -e
 
+mkdir -p /go/src/github.com/containous
+[ -e /go/src/github.com/containous/{pr.repo} ] || ln -sf /home/{pr.repo} /go/src/github.com/containous/{pr.repo}
 cd /go/src/github.com/containous/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
+git reset --hard || true
 
-go generate || true
+go generate ./... 2>&1 || true
+go build ./... 2>&1 || true
 
 """.format(pr=self.pr),
             ),
@@ -140,8 +102,10 @@ go generate || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+mkdir -p /go/src/github.com/containous
+[ -e /go/src/github.com/containous/{pr.repo} ] || ln -sf /home/{pr.repo} /go/src/github.com/containous/{pr.repo}
 cd /go/src/github.com/containous/{pr.repo}
 go test -v -count=1 ./...
 
@@ -151,10 +115,12 @@ go test -v -count=1 ./...
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+mkdir -p /go/src/github.com/containous
+[ -e /go/src/github.com/containous/{pr.repo} ] || ln -sf /home/{pr.repo} /go/src/github.com/containous/{pr.repo}
 cd /go/src/github.com/containous/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn /home/test.patch
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -163,38 +129,17 @@ go test -v -count=1 ./...
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+mkdir -p /go/src/github.com/containous
+[ -e /go/src/github.com/containous/{pr.repo} ] || ln -sf /home/{pr.repo} /go/src/github.com/containous/{pr.repo}
 cd /go/src/github.com/containous/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("traefik", "traefik_8624_to_1331")

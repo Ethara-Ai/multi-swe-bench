@@ -1,192 +1,40 @@
 import re
-import textwrap
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 from multi_swe_bench.harness.repos.java.skylot._common import (
+    _GRADLE_PROXY_SETUP,
+    _binary_extract_shell,
     _binary_restore_shell,
     _extract_end_tag,
     _filter_binary_patches,
 )
 
-
-class JadxJdk11ImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "eclipse-temurin:11"
-
-    def image_tag(self) -> str:
-        return "base-jdk11"
-
-    def workdir(self) -> str:
-        return "base-jdk11"
-
-    def files(self) -> list[File]:
-        filtered_fix_patch = _filter_binary_patches(self.pr.fix_patch)
-        filtered_test_patch = _filter_binary_patches(self.pr.test_patch)
-        end_tag = _extract_end_tag(getattr(self.pr.base, 'label', '') or '')
-        bin_restore_fix = _binary_restore_shell(
-            self.pr.fix_patch, self.pr.test_patch, end_tag
-        )
-        bin_restore_test = _binary_restore_shell(
-            '', self.pr.test_patch, end_tag
-        )
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{filtered_fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{filtered_test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-./gradlew --no-daemon assemble || true
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -eo pipefail
-
-cd /home/{pr.repo}
-./gradlew --no-daemon test --continue
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-{bin_restore}
-./gradlew --no-daemon test --continue
-
-""".format(pr=self.pr, bin_restore=bin_restore_test),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-{bin_restore}
-./gradlew --no-daemon test --continue
-
-""".format(pr=self.pr, bin_restore=bin_restore_fix),
-            ),
-        ]
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-ENV JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8"
-ENV GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx2g"
-
-WORKDIR /home/
-
-RUN apt-get update && apt-get install -y \\
-    git \\
-    ca-certificates \\
-    curl \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-# Ensure mavenCentral() is available, substitute jcommander:1.80 with 1.78
-# (1.80 was never published to Maven Central, only jcenter which is dead),
-# and emit per-test PASSED/FAILED events.
-RUN mkdir -p /root/.gradle && \\
-    printf '%s\\n' \\
-      'allprojects {{' \\
-      '    repositories {{' \\
-      '        mavenCentral()' \\
-      '        maven {{ url "https://plugins.gradle.org/m2/" }}' \\
-      '    }}' \\
-      '    configurations.all {{' \\
-      '        resolutionStrategy.dependencySubstitution {{' \\
-      '            substitute module("com.beust:jcommander:1.80") with module("com.beust:jcommander:1.78")' \\
-      '        }}' \\
-      '    }}' \\
-      '    tasks.withType(Test).configureEach {{ test ->' \\
-      '        test.testLogging {{' \\
-      '            events "passed", "failed", "skipped"' \\
-      '            exceptionFormat "short"' \\
-      '            showStandardStreams = false' \\
-      '        }}' \\
-      '    }}' \\
-      '}}' > /root/.gradle/init.gradle
-
-{self.clear_env}
-
+# init.gradle: ensure mavenCentral() is available, substitute jcommander:1.80
+# with 1.78 (1.80 was never published to Maven Central, only jcenter which is
+# dead), and emit per-test PASSED/FAILED events. Lives at /root/.gradle (outside
+# the git tree), so the hardening pass leaves it untouched.
+_INIT_GRADLE = """\
+allprojects {
+    repositories {
+        mavenCentral()
+        maven { url "https://plugins.gradle.org/m2/" }
+    }
+    configurations.all {
+        resolutionStrategy.dependencySubstitution {
+            substitute module("com.beust:jcommander:1.80") with module("com.beust:jcommander:1.78")
+        }
+    }
+    tasks.withType(Test).configureEach { test ->
+        test.testLogging {
+            events "passed", "failed", "skipped"
+            exceptionFormat "short"
+            showStandardStreams = false
+        }
+    }
+}
 """
 
 
@@ -203,8 +51,15 @@ class JadxJdk11ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return JadxJdk11ImageBase(self.pr, self._config)
+    def dependency(self) -> str:
+        # Returning a string (rather than a chained Image) lets the shared
+        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
+        # checks out "${BASE_COMMIT}", runs extra_setup(), and appends the
+        # _HARDENING_BLOCK that strips every other ref/commit so the fix can't be
+        # read out of git history. DockerfileEnhancer then injects the proxy/cert
+        # infra and the final sanitize pass. None of that fires when dockerfile()
+        # is overridden, which is why the previous two-stage build bypassed it.
+        return "eclipse-temurin:11"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -212,164 +67,95 @@ class JadxJdk11ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. Sets the JVM/Gradle env, installs the init.gradle to /root, and
+        # stages the helper scripts + patches into /home/. prepare.sh then warms
+        # the Gradle build and pre-extracts binary fixtures while git history
+        # still exists (the hardening pass removes it afterward). git/curl/
+        # ca-certificates are already in the default package set.
+        return (
+            "ENV LC_ALL=C.UTF-8\n"
+            'ENV JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8"\n'
+            'ENV GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx2g"\n'
+            "COPY init.gradle /root/.gradle/init.gradle\n"
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "COPY prepare.sh /home/prepare.sh\n"
+            "RUN bash /home/prepare.sh"
+        )
+
     def files(self) -> list[File]:
         filtered_fix_patch = _filter_binary_patches(self.pr.fix_patch)
         filtered_test_patch = _filter_binary_patches(self.pr.test_patch)
-        end_tag = _extract_end_tag(getattr(self.pr.base, 'label', '') or '')
+        end_tag = _extract_end_tag(getattr(self.pr.base, "label", "") or "")
+        bin_extract = _binary_extract_shell(
+            self.pr.fix_patch, self.pr.test_patch, end_tag
+        )
         bin_restore_fix = _binary_restore_shell(
             self.pr.fix_patch, self.pr.test_patch, end_tag
         )
-        bin_restore_test = _binary_restore_shell(
-            '', self.pr.test_patch, end_tag
+        bin_restore_test = _binary_restore_shell("", self.pr.test_patch, end_tag)
+        repo = self.pr.repo
+
+        prepare_sh = (
+            "#!/bin/bash\n"
+            "# Repo already cloned + checked out at ${BASE_COMMIT} and hardened by\n"
+            "# Image.dockerfile(); this warms the Gradle build and pre-extracts binary\n"
+            "# fixtures before the hardening pass removes git history.\n"
+            "set -e\n"
+            "\n"
+            f"mkdir -p /home/{repo}\n"
+            f"cd /home/{repo}\n"
+            "git reset --hard || true\n"
+            "\n"
+            + _GRADLE_PROXY_SETUP
+            + "\n"
+            + bin_extract
+            + "\n"
+            "./gradlew --no-daemon assemble || true\n"
         )
+        run_sh = (
+            "#!/bin/bash\n"
+            "set -eo pipefail\n"
+            "\n"
+            f"mkdir -p /home/{repo}\n"
+            f"cd /home/{repo}\n"
+            "./gradlew --no-daemon test --continue\n"
+        )
+        test_run_sh = (
+            "#!/bin/bash\n"
+            "set -eo pipefail\n"
+            "\n"
+            f"mkdir -p /home/{repo}\n"
+            f"cd /home/{repo}\n"
+            "git apply --whitespace=nowarn /home/test.patch\n"
+            + bin_restore_test
+            + "./gradlew --no-daemon test --continue\n"
+        )
+        fix_run_sh = (
+            "#!/bin/bash\n"
+            "set -eo pipefail\n"
+            "\n"
+            f"mkdir -p /home/{repo}\n"
+            f"cd /home/{repo}\n"
+            "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
+            + bin_restore_fix
+            + "./gradlew --no-daemon test --continue\n"
+        )
+
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{filtered_fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{filtered_test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-./gradlew --no-daemon assemble || true
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -eo pipefail
-
-cd /home/{pr.repo}
-./gradlew --no-daemon test --continue
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-{bin_restore}
-./gradlew --no-daemon test --continue
-
-""".format(pr=self.pr, bin_restore=bin_restore_test),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-{bin_restore}
-./gradlew --no-daemon test --continue
-
-""".format(pr=self.pr, bin_restore=bin_restore_fix),
-            ),
+            File(".", "init.gradle", _INIT_GRADLE),
+            File(".", "fix.patch", f"{filtered_fix_patch}"),
+            File(".", "test.patch", f"{filtered_test_patch}"),
+            File(".", "prepare.sh", prepare_sh),
+            File(".", "run.sh", run_sh),
+            File(".", "test-run.sh", test_run_sh),
+            File(".", "fix-run.sh", fix_run_sh),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        proxy_setup = ""
-        proxy_cleanup = ""
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p ~/.gradle && \\
-                        if [ ! -f "$HOME/.gradle/gradle.properties" ]; then \\
-                            touch "$HOME/.gradle/gradle.properties"; \\
-                        fi && \\
-                        if ! grep -q "systemProp.http.proxyHost" "$HOME/.gradle/gradle.properties"; then \\
-                            echo 'systemProp.http.proxyHost={proxy_host}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.http.proxyPort={proxy_port}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.https.proxyHost={proxy_host}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.https.proxyPort={proxy_port}' >> "$HOME/.gradle/gradle.properties"; \\
-                        fi
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f ~/.gradle/gradle.properties
-                """
-                )
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{proxy_setup}
-
-{copy_commands}
-
-{prepare_commands}
-
-{proxy_cleanup}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("skylot", "jadx_793_to_1831")

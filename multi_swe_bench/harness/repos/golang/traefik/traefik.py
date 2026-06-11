@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class Traefik12645To8393ImageDefault(Image):
+class TraefikImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,14 +20,20 @@ class Traefik12645To8393ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        # Returning a string (rather than a chained Image) lets the shared
-        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
-        # checks out "${BASE_COMMIT}", runs extra_setup(), and appends the
-        # _HARDENING_BLOCK that strips every other ref/commit so the fix can't be
-        # read out of git history. DockerfileEnhancer then injects the proxy/cert
-        # infra and the final sanitize pass. None of that fires when dockerfile()
-        # is overridden, which is why the previous two-stage build bypassed it.
-        return "golang:1.25"
+        # Generic traefik config for jsonl records that carry no number_interval
+        # (so Instance.create resolves them to the plain "traefik/traefik" key).
+        # The targeted PRs sit on the v1.x release lines (e.g. base ref "v1.6"),
+        # which predate Go modules: github.com/containous import path, glide/dep
+        # + vendor/, go-bindata for static assets. golang:1.13 builds these in
+        # GOPATH mode.
+        #
+        # Returning a string lets the shared Image.dockerfile() own the build:
+        # it clones "${REPO_URL}", checks out "${BASE_COMMIT}", runs
+        # extra_setup(), and appends the _HARDENING_BLOCK that strips every other
+        # ref/commit so the fix can't be read out of git history.
+        # DockerfileEnhancer then injects the proxy/cert infra and the final
+        # sanitize pass.
+        return "golang:1.13"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -35,13 +41,29 @@ class Traefik12645To8393ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def _get_apt_update_command(self, packages_str: str, base_img: str) -> str:
+        # golang:1.13 is built on Debian buster, whose apt repos have moved to
+        # archive.debian.org. The base image name ("golang:1.13") doesn't match
+        # DEPRECATED_DEBIAN_IMAGES, so apt-get update would 404 against the live
+        # mirrors. Force the archive-rewrite branch by handing the parent a
+        # buster tag, which triggers the sources.list fixup before installing.
+        return super()._get_apt_update_command(packages_str, "debian:buster")
+
     def extra_setup(self) -> str:
         # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. Stages the runtime helper scripts + patches into /home/ and
-        # warms the Go module cache so the eval scripts run offline. The copied
-        # files live outside /home/{repo}, so the hardening pass (which only
-        # operates inside the git tree) leaves them untouched.
+        # block. These v1.x PRs predate Go modules, so they build under GOPATH:
+        # the repo (cloned to /home/{repo}) is symlinked into the legacy import
+        # path and go-bindata is installed for `go generate`. GO111MODULE=off /
+        # GOPATH are set here so they persist into the eval container. The staged
+        # helper scripts + patches live outside /home/{repo}, so the hardening
+        # pass (which only touches the git tree) leaves them untouched.
+        repo = self.pr.repo
         return (
+            "ENV GO111MODULE=off\n"
+            "ENV GOPATH=/go\n"
+            f"RUN mkdir -p /go/src/github.com/containous && \\\n"
+            f"    ln -sf /home/{repo} /go/src/github.com/containous/{repo}\n"
+            "RUN go get -u github.com/jteeuwen/go-bindata/... || true\n"
             "COPY fix.patch /home/fix.patch\n"
             "COPY test.patch /home/test.patch\n"
             "COPY run.sh /home/run.sh\n"
@@ -68,15 +90,15 @@ class Traefik12645To8393ImageDefault(Image):
                 "prepare.sh",
                 """#!/bin/bash
 # Repo is already cloned + checked out at ${{BASE_COMMIT}} and hardened by
-# Image.dockerfile(), so this script no longer performs any git checkout. It
-# only warms the Go module/build caches so the eval runs don't need network.
+# Image.dockerfile(); the GOPATH symlink is created in extra_setup(). This
+# script only regenerates bindata and warms caches so the eval runs offline.
 set -e
 
-mkdir -p /home/{pr.repo}
-cd /home/{pr.repo}
+mkdir -p /go/src/github.com/containous
+[ -e /go/src/github.com/containous/{pr.repo} ] || ln -sf /home/{pr.repo} /go/src/github.com/containous/{pr.repo}
+cd /go/src/github.com/containous/{pr.repo}
 git reset --hard || true
 
-go mod download -x 2>&1 || true
 go generate ./... 2>&1 || true
 go build ./... 2>&1 || true
 
@@ -88,8 +110,9 @@ go build ./... 2>&1 || true
                 """#!/bin/bash
 set -eo pipefail
 
-mkdir -p /home/{pr.repo}
-cd /home/{pr.repo}
+mkdir -p /go/src/github.com/containous
+[ -e /go/src/github.com/containous/{pr.repo} ] || ln -sf /home/{pr.repo} /go/src/github.com/containous/{pr.repo}
+cd /go/src/github.com/containous/{pr.repo}
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -100,8 +123,9 @@ go test -v -count=1 ./...
                 """#!/bin/bash
 set -eo pipefail
 
-mkdir -p /home/{pr.repo}
-cd /home/{pr.repo}
+mkdir -p /go/src/github.com/containous
+[ -e /go/src/github.com/containous/{pr.repo} ] || ln -sf /home/{pr.repo} /go/src/github.com/containous/{pr.repo}
+cd /go/src/github.com/containous/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
 go test -v -count=1 ./...
 
@@ -113,8 +137,9 @@ go test -v -count=1 ./...
                 """#!/bin/bash
 set -eo pipefail
 
-mkdir -p /home/{pr.repo}
-cd /home/{pr.repo}
+mkdir -p /go/src/github.com/containous
+[ -e /go/src/github.com/containous/{pr.repo} ] || ln -sf /home/{pr.repo} /go/src/github.com/containous/{pr.repo}
+cd /go/src/github.com/containous/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 go test -v -count=1 ./...
 
@@ -123,8 +148,8 @@ go test -v -count=1 ./...
         ]
 
 
-@Instance.register("traefik", "traefik_12645_to_8393")
-class Traefik12645To8393(Instance):
+@Instance.register("traefik", "traefik")
+class Traefik(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -135,7 +160,7 @@ class Traefik12645To8393(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return Traefik12645To8393ImageDefault(self.pr, self._config)
+        return TraefikImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
