@@ -118,6 +118,7 @@ from multi_swe_bench.harness.repos.typescript.PrismJS import *
 from multi_swe_bench.harness.repos.typescript.puppeteer import *
 from multi_swe_bench.harness.repos.typescript.reacthookform import *
 from multi_swe_bench.harness.repos.typescript.realm import *
+from multi_swe_bench.harness.repos.typescript.realworld_apps import *
 from multi_swe_bench.harness.repos.typescript.recharts import *
 from multi_swe_bench.harness.repos.typescript.reduxjs import *
 from multi_swe_bench.harness.repos.typescript.redwoodjs import *
