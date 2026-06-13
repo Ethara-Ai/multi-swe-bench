@@ -1,4 +1,5 @@
 from multi_swe_bench.harness.repos.javascript._4ian import *
+from multi_swe_bench.harness.repos.javascript.affaan_m import *
 from multi_swe_bench.harness.repos.javascript.Accenture import *
 from multi_swe_bench.harness.repos.javascript.accordproject import *
 from multi_swe_bench.harness.repos.javascript.acornjs import *
@@ -6,6 +7,7 @@ from multi_swe_bench.harness.repos.javascript.adam_p import *
 from multi_swe_bench.harness.repos.javascript.adobe import *
 from multi_swe_bench.harness.repos.javascript.aframevr import *
 from multi_swe_bench.harness.repos.javascript.Agoric import *
+from multi_swe_bench.harness.repos.javascript.airbnb import *
 from multi_swe_bench.harness.repos.javascript.alam00000 import *
 from multi_swe_bench.harness.repos.javascript.alibabafusion import *
 from multi_swe_bench.harness.repos.javascript.alphagov import *
@@ -92,6 +94,7 @@ from multi_swe_bench.harness.repos.javascript.nock import *
 from multi_swe_bench.harness.repos.javascript.openlayers import *
 from multi_swe_bench.harness.repos.javascript.postcss import *
 
+# from multi_swe_bench.harness.repos.javascript.preactjs import *  # missing module
 from multi_swe_bench.harness.repos.javascript.prettier import *
 from multi_swe_bench.harness.repos.javascript.PrismJS import *
 from multi_swe_bench.harness.repos.javascript.ProcessMaker import *
