@@ -56,3 +56,6 @@ from multi_swe_bench.harness.repos.cpp.carbon_language import *
 from multi_swe_bench.harness.repos.cpp.ggml_org import *
 from multi_swe_bench.harness.repos.cpp.ossrs import *
 from multi_swe_bench.harness.repos.cpp.aseprite import *
+from multi_swe_bench.harness.repos.cpp.LadybirdBrowser import *
+from multi_swe_bench.harness.repos.cpp.shadps4_emu import *  # noqa: F401,F403
+from multi_swe_bench.harness.repos.cpp.LizardByte import *  # noqa: F401,F403
