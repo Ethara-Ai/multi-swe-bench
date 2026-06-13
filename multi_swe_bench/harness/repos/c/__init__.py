@@ -6,6 +6,7 @@ from multi_swe_bench.harness.repos.c.libarchive import *
 from multi_swe_bench.harness.repos.c.libgit2 import *
 from multi_swe_bench.harness.repos.c.libsdlorg import *
 from multi_swe_bench.harness.repos.c.mruby import *
+from multi_swe_bench.harness.repos.c.raysan5 import *
 from multi_swe_bench.harness.repos.c.OpenMathLib import *
 from multi_swe_bench.harness.repos.c.php import *
 from multi_swe_bench.harness.repos.c.ponylang import *
