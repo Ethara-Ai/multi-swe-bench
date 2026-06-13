@@ -132,6 +132,7 @@ from multi_swe_bench.harness.repos.python.kornia import *
 from multi_swe_bench.harness.repos.python.kserve import *
 from multi_swe_bench.harness.repos.python.kubeflow import *
 from multi_swe_bench.harness.repos.python.langchain_ai import *
+from multi_swe_bench.harness.repos.python.langchain_ai_langgraph import *
 from multi_swe_bench.harness.repos.python.langflow_ai import *
 from multi_swe_bench.harness.repos.python.learningequality import *
 from multi_swe_bench.harness.repos.python.LiberTEM import *
@@ -194,6 +195,7 @@ from multi_swe_bench.harness.repos.python.PennLINC import *
 from multi_swe_bench.harness.repos.python.PennyLaneAI import *
 from multi_swe_bench.harness.repos.python.pgmpy import *
 from multi_swe_bench.harness.repos.python.pints_team import *
+from multi_swe_bench.harness.repos.python.pipecat_ai import *
 from multi_swe_bench.harness.repos.python.planetlabs import *
 from multi_swe_bench.harness.repos.python.PlasmaControl import *
 from multi_swe_bench.harness.repos.python.PlasmaPy import *
@@ -271,6 +273,7 @@ from multi_swe_bench.harness.repos.python.sql_machine_learning import *
 from multi_swe_bench.harness.repos.python.sqlalchemy import *
 from multi_swe_bench.harness.repos.python.sqlfluff import *
 from multi_swe_bench.harness.repos.python.stac_utils import *
+from multi_swe_bench.harness.repos.python.stanfordnlp import *
 from multi_swe_bench.harness.repos.python.statsmodels import *
 from multi_swe_bench.harness.repos.python.stfc import *
 from multi_swe_bench.harness.repos.python.streamlit import *
@@ -281,6 +284,7 @@ from multi_swe_bench.harness.repos.python.sympy import *
 from multi_swe_bench.harness.repos.python.teemtee import *
 from multi_swe_bench.harness.repos.python.tefra import *
 from multi_swe_bench.harness.repos.python.Textualize import *
+from multi_swe_bench.harness.repos.python.Textual_rich import *
 from multi_swe_bench.harness.repos.python.Theano import *
 from multi_swe_bench.harness.repos.python.thenewboston_blockchain import *
 from multi_swe_bench.harness.repos.python.theupdateframework import *
