@@ -65,6 +65,12 @@ from multi_swe_bench.harness.repos.golang.argoproj import *
 from multi_swe_bench.harness.repos.golang.cockroachdb import *
 from multi_swe_bench.harness.repos.golang.jaegertracing import *
 from multi_swe_bench.harness.repos.golang.hashicorp import *
+from multi_swe_bench.harness.repos.golang.bufbuild import *
+from multi_swe_bench.harness.repos.golang.rqlite import *
+from multi_swe_bench.harness.repos.golang.inngest import *
+from multi_swe_bench.harness.repos.golang.grafana import *
+from multi_swe_bench.harness.repos.golang.openfga import *
+from multi_swe_bench.harness.repos.golang.hashicorp_terraform import *
 from multi_swe_bench.harness.repos.golang.envoyproxy import *
 from multi_swe_bench.harness.repos.golang.ory import *
 from multi_swe_bench.harness.repos.golang.go_task import *
@@ -85,6 +91,7 @@ from multi_swe_bench.harness.repos.golang.seaweedfs import *
 from multi_swe_bench.harness.repos.golang.juanfont import *
 from multi_swe_bench.harness.repos.golang.metrico import *
 from multi_swe_bench.harness.repos.golang.editorconfig_checker import *
+from multi_swe_bench.harness.repos.golang.goharbor import *
 from multi_swe_bench.harness.repos.golang.milvus_io import *
 from multi_swe_bench.harness.repos.golang.restic import *
 from multi_swe_bench.harness.repos.golang.usememos import *
@@ -144,3 +151,11 @@ from multi_swe_bench.harness.repos.golang.harness import *
 from multi_swe_bench.harness.repos.golang.Wei_Shaw import *
 from multi_swe_bench.harness.repos.golang.siderolabs import *
 from multi_swe_bench.harness.repos.golang.aquasecurity import *
+from multi_swe_bench.harness.repos.golang.kubevela import *
+from multi_swe_bench.harness.repos.golang.grafana_pyroscope import *
+from multi_swe_bench.harness.repos.golang.linkerd import *
+from multi_swe_bench.harness.repos.golang.telepresenceio import *
+from multi_swe_bench.harness.repos.golang.charmbracelet import *
+from multi_swe_bench.harness.repos.golang.canonical import *
+from multi_swe_bench.harness.repos.golang.external_dns import *
+from multi_swe_bench.harness.repos.golang.skaffold import *
