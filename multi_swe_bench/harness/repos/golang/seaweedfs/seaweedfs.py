@@ -54,6 +54,38 @@ WORKDIR /home/
 """
 
 
+_HARDENING_BLOCK = r"""RUN set -eux; \
+    git checkout --detach "${BASE_COMMIT}"; \
+    git remote remove origin 2>/dev/null || true; \
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \
+        | xargs -r -n1 git update-ref -d; \
+    git reflog expire --expire=now --all; \
+    git reflog expire --expire-unreachable=now --all; \
+    git gc --prune=now --aggressive; \
+    git repack -a -d -l --quiet; \
+    rm -f .git/objects/info/alternates; \
+    git config --local gc.auto 0; \
+    git config --local fetch.recurseSubmodules false; \
+    git config --local remote.pushDefault ""; \
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${BASE_COMMIT}")"; \
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \
+    test -z "$(git remote)"; \
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \
+        git submodule foreach --recursive ' \
+            git checkout --detach HEAD; \
+            git remote remove origin 2>/dev/null || true; \
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \
+                | xargs -r -n1 git update-ref -d; \
+            git reflog expire --expire=now --all; \
+            git reflog expire --expire-unreachable=now --all; \
+            git gc --prune=now --aggressive; \
+            rm -f .git/objects/info/alternates; \
+        '; \
+    fi"""
+
+
 class SeaweedfsImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -175,11 +207,17 @@ go test -v -count=1 ./...
 
         return f"""FROM {name}:{tag}
 
+ARG BASE_COMMIT="{self.pr.base.sha}"
+
 {self.global_env}
 
 {copy_commands}
 
 {prepare_commands}
+
+WORKDIR /home/{self.pr.repo}
+
+{_HARDENING_BLOCK}
 
 {self.clear_env}
 
