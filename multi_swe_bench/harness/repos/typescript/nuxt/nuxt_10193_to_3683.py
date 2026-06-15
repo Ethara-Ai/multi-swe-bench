@@ -141,7 +141,16 @@ class ImageDefault(Image):
         for file in self.files():
             copy_commands += "COPY {name} /home/\n".format(name=file.name)
 
+        # Per-PR anti-cheat hardening. dependency() returns an Image, so
+        # DockerfileEnhancer emits this Dockerfile verbatim (it only auto-injects
+        # the hardening into str-dependency/base images), hence we embed
+        # Image._HARDENING_BLOCK ourselves. ENV BASE_COMMIT resolves the block's
+        # ${BASE_COMMIT}; WORKDIR pins the repo dir so the hardening RUN (detach
+        # onto BASE_COMMIT -> drop every ref/remote -> GC unreachable objects ->
+        # self-audit) operates on the checkout prepare.sh produced.
         return """FROM {name}:{tag}
+
+ENV BASE_COMMIT={base_sha}
 
 {global_env}
 
@@ -149,13 +158,21 @@ class ImageDefault(Image):
 
 RUN bash /home/prepare.sh
 
+WORKDIR /home/{repo}
+
+{hardening}
+
 {clear_env}
 
+CMD ["/bin/bash"]
 """.format(
             name=name,
             tag=tag,
+            base_sha=self.pr.base.sha,
             global_env=self.global_env,
             copy_commands=copy_commands,
+            repo=self.pr.repo,
+            hardening=Image._HARDENING_BLOCK,
             clear_env=self.clear_env,
         )
 

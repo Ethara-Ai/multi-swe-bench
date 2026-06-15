@@ -183,7 +183,16 @@ pnpm test:runtime  --no-watch
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Per-PR anti-cheat hardening. dependency() returns an Image, so
+        # DockerfileEnhancer emits this Dockerfile verbatim (it only auto-injects
+        # the hardening into str-dependency/base images), hence we embed
+        # Image._HARDENING_BLOCK ourselves. ENV BASE_COMMIT resolves the block's
+        # ${BASE_COMMIT}; WORKDIR pins the repo dir so the hardening RUN (detach
+        # onto BASE_COMMIT -> drop every ref/remote -> GC unreachable objects ->
+        # self-audit) operates on the checkout prepare.sh produced.
         return f"""FROM {name}:{tag}
+
+ENV BASE_COMMIT={self.pr.base.sha}
 
 {self.global_env}
 
@@ -191,8 +200,13 @@ pnpm test:runtime  --no-watch
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{Image._HARDENING_BLOCK}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -323,7 +337,16 @@ pnpm test:runtime  --no-watch
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Per-PR anti-cheat hardening. dependency() returns an Image, so
+        # DockerfileEnhancer emits this Dockerfile verbatim (it only auto-injects
+        # the hardening into str-dependency/base images), hence we embed
+        # Image._HARDENING_BLOCK ourselves. ENV BASE_COMMIT resolves the block's
+        # ${BASE_COMMIT}; WORKDIR pins the repo dir so the hardening RUN (detach
+        # onto BASE_COMMIT -> drop every ref/remote -> GC unreachable objects ->
+        # self-audit) operates on the checkout prepare.sh produced.
         return f"""FROM {name}:{tag}
+
+ENV BASE_COMMIT={self.pr.base.sha}
 
 {self.global_env}
 
@@ -331,8 +354,13 @@ pnpm test:runtime  --no-watch
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{Image._HARDENING_BLOCK}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
