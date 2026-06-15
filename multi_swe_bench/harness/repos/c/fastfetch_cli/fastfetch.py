@@ -28,7 +28,14 @@ class FastfetchImageDefault(Image):
         # read out of git history. DockerfileEnhancer then injects the proxy/cert
         # infra and the final sanitize pass. None of that fires when dockerfile()
         # is overridden, which is why the previous two-stage build bypassed it.
-        return "debian:latest"
+        #
+        # debian:bookworm (GCC 12), NOT debian:latest (GCC 14): this dataset
+        # spans fastfetch releases 1.5 .. 2.52. Legacy C in the old releases
+        # (e.g. tests/strbuf.c calling exit() without <stdlib.h>) only WARNS on
+        # GCC 12 but is a hard ERROR on GCC 14 (-Werror=implicit-function-
+        # declaration is the default there), so the oldest PRs fail to compile
+        # at baseline on debian:latest. bookworm builds every release in range.
+        return "debian:bookworm"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
