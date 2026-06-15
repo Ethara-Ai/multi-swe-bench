@@ -77,6 +77,17 @@ cd /home/{pr.repo}
 git reset --hard || true
 
 npm install --legacy-peer-deps >/dev/null 2>&1 || true
+
+# devDependencies introduced by the fix patch must be available to the test-only
+# stage too (the test patch may import a devDep whose package.json entry lives in
+# fix.patch). Apply just package.json from the fix, install, then revert the
+# source -- node_modules is untracked so it survives the hardening pass.
+if [ -f /home/fix.patch ]; then
+    git apply --include=package.json --whitespace=nowarn --ignore-whitespace /home/fix.patch 2>/dev/null || true
+    npm install --legacy-peer-deps >/dev/null 2>&1 || true
+    git checkout -- package.json 2>/dev/null || true
+fi
+
 npm run build > /home/build.log 2>&1 || {{ cat /home/build.log; exit 1; }}
 """.format(pr=self.pr),
             ),
@@ -100,7 +111,7 @@ set -e
 
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+git apply --whitespace=nowarn --ignore-whitespace --exclude=package-lock.json --exclude=yarn.lock --exclude=index.js --exclude=validator.js --exclude=validator.min.js --exclude='lib/*' --exclude='es/*' /home/test.patch
 npm install --legacy-peer-deps >/dev/null 2>&1 || true
 npm run build > /home/build.log 2>&1 || {{ cat /home/build.log; exit 1; }}
 ./node_modules/.bin/mocha --reporter spec
@@ -115,7 +126,7 @@ set -e
 
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn --ignore-whitespace --exclude=package-lock.json --exclude=yarn.lock --exclude=index.js --exclude=validator.js --exclude=validator.min.js --exclude='lib/*' --exclude='es/*' /home/test.patch /home/fix.patch
 npm install --legacy-peer-deps >/dev/null 2>&1 || true
 npm run build > /home/build.log 2>&1 || {{ cat /home/build.log; exit 1; }}
 ./node_modules/.bin/mocha --reporter spec

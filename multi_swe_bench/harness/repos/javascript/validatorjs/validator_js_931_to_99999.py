@@ -1,57 +1,21 @@
+"""validatorjs/validator.js config for the modern era: PR number 931..99999
+(node:20-bookworm + npm + mocha with @babel/register).
+
+Conformant with image.py: dependency() returns a base-image *string* so the
+shared Image.dockerfile() owns the build (clone "${REPO_URL}" -> checkout
+"${BASE_COMMIT}" -> extra_setup() -> _HARDENING_BLOCK), and DockerfileEnhancer
+injects the proxy/cert infra + final sanitize pass. The previous version of
+this file overrode dockerfile() and returned a chained Image, which made
+DockerfileEnhancer bail out early (no syntax directive, no hardening, no infra)
+and shared a single base-v2 layer across PRs with different base commits.
+"""
+
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-
-
-class ImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:20-bookworm"
-
-    def image_tag(self) -> str:
-        return "base-v2"
-
-    def workdir(self) -> str:
-        return "base-v2"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-{code}
-
-{self.clear_env}
-
-"""
 
 
 class ImageDefault(Image):
@@ -67,14 +31,37 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return ImageBase(self.pr, self._config)
+    def dependency(self) -> str:
+        # Returning a string (rather than a chained Image) lets the shared
+        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
+        # checks out "${BASE_COMMIT}", runs extra_setup(), and appends the
+        # _HARDENING_BLOCK that strips every other ref/commit so the fix can't be
+        # read out of git history. DockerfileEnhancer then injects the proxy/cert
+        # infra and the final sanitize pass. None of that fires when dockerfile()
+        # is overridden, which is why the previous two-stage build bypassed it.
+        return "node:20-bookworm"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. Stages the helper scripts + patches into /home/ and runs
+        # prepare.sh, which installs node_modules + builds so the eval scripts
+        # run offline. node_modules lives inside the repo but is untracked, so
+        # the hardening pass (which only rewrites git history) leaves it intact.
+        return (
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "COPY prepare.sh /home/prepare.sh\n"
+            "RUN bash /home/prepare.sh"
+        )
 
     def files(self) -> list[File]:
         return [
@@ -90,39 +77,30 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
                 "prepare.sh",
                 """#!/bin/bash
+# Repo is already cloned + checked out at ${{BASE_COMMIT}} and hardened by
+# Image.dockerfile(), so this script no longer performs any git checkout. It
+# installs dependencies and builds so the eval runs don't need network.
 set -e
 
+mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
+git reset --hard || true
 
-npm install --legacy-peer-deps || true
-npm run build
+npm install --legacy-peer-deps >/dev/null 2>&1 || true
+
+# devDependencies introduced by the fix patch must be available to the test-only
+# stage too (the test patch may import a devDep whose package.json entry lives in
+# fix.patch). Apply just package.json from the fix, install, then revert the
+# source -- node_modules is untracked so it survives the hardening pass.
+if [ -f /home/fix.patch ]; then
+    git apply --include=package.json --whitespace=nowarn --ignore-whitespace /home/fix.patch 2>/dev/null || true
+    npm install --legacy-peer-deps >/dev/null 2>&1 || true
+    git checkout -- package.json 2>/dev/null || true
+fi
+
+npm run build > /home/build.log 2>&1 || {{ cat /home/build.log; exit 1; }}
 """.format(pr=self.pr),
             ),
             File(
@@ -131,6 +109,7 @@ npm run build
                 """#!/bin/bash
 set -e
 
+mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 ./node_modules/.bin/mocha --require @babel/register --reporter spec --recursive
 
@@ -142,10 +121,11 @@ cd /home/{pr.repo}
                 """#!/bin/bash
 set -e
 
+mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-npm install --legacy-peer-deps || true
-npm run build
+git apply --whitespace=nowarn --ignore-whitespace --exclude=package-lock.json --exclude=yarn.lock --exclude=index.js --exclude=validator.js --exclude=validator.min.js --exclude='lib/*' --exclude='es/*' /home/test.patch
+npm install --legacy-peer-deps >/dev/null 2>&1 || true
+npm run build > /home/build.log 2>&1 || {{ cat /home/build.log; exit 1; }}
 ./node_modules/.bin/mocha --require @babel/register --reporter spec --recursive
 
 """.format(pr=self.pr),
@@ -156,38 +136,16 @@ npm run build
                 """#!/bin/bash
 set -e
 
+mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-npm install --legacy-peer-deps || true
-npm run build
+git apply --whitespace=nowarn --ignore-whitespace --exclude=package-lock.json --exclude=yarn.lock --exclude=index.js --exclude=validator.js --exclude=validator.min.js --exclude='lib/*' --exclude='es/*' /home/test.patch /home/fix.patch
+npm install --legacy-peer-deps >/dev/null 2>&1 || true
+npm run build > /home/build.log 2>&1 || {{ cat /home/build.log; exit 1; }}
 ./node_modules/.bin/mocha --require @babel/register --reporter spec --recursive
 
 """.format(pr=self.pr),
             ),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("validatorjs", "validator_js_931_to_99999")
