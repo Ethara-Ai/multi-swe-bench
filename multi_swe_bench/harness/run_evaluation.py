@@ -636,13 +636,12 @@ class CliArgs:
                 f.write(file.content)
 
         buildargs = {}
-        if self.dataset_generation:
-            dep = image.dependency()
-            if isinstance(dep, str):
-                buildargs["REPO_URL"] = (
-                    f"https://github.com/{image.pr.org}/{image.pr.repo}.git"
-                )
-                buildargs["BASE_COMMIT"] = image.pr.base.sha
+        dep = image.dependency()
+        if isinstance(dep, str):
+            buildargs["REPO_URL"] = (
+                f"https://github.com/{image.pr.org}/{image.pr.repo}.git"
+            )
+            buildargs["BASE_COMMIT"] = image.pr.base.sha
 
         self.logger.info(f"Building image {image.image_full_name()}...")
         base_image_context = None
