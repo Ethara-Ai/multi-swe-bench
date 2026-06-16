@@ -1,12 +1,26 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_AWK_BINARY_FILTER = (
+    r"awk '/^diff --git /{ block=$0\"\\n\"; next }"
+    r" { if (block!=\"\") { block=block$0\"\\n\";"
+    r" if (/^Binary files .* differ$/) { block=\"\"; next };"
+    r" if (/^--- /||/^\\+\\+\\+ /||/^@@ /) { printf \"%s\",block; block=\"\" } } else print }"
+    r" END { if (block!=\"\") printf \"%s\",block }'"
+)
 
-class DeltaImageBase(Image):
+
+class DeltaImage(Image):
+    """Single per-PR image for dandavison/delta (Rust).
+
+    Uses ${REPO_URL} and ${BASE_COMMIT} ARGs injected by DockerfileEnhancer.
+    Hardening block is explicit to prevent reward hacking via git history.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -19,56 +33,9 @@ class DeltaImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
+    def dependency(self) -> str:
+        # String dependency triggers DockerfileEnhancer (proxy/cert/ARG injection)
         return "rust:latest"
-
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class DeltaImageDefault(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image | None:
-        return DeltaImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -78,63 +45,15 @@ class DeltaImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git fetch origin
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-cargo test || true
-
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 set -eo pipefail
-
 cd /home/{pr.repo}
-cargo test
-
+cargo test 2>&1
 """.format(pr=self.pr),
             ),
             File(
@@ -142,58 +61,56 @@ cargo test
                 "test-run.sh",
                 """#!/bin/bash
 set -eo pipefail
-
 cd /home/{pr.repo}
 for pfile in /home/test.patch; do
     if [ -s "$pfile" ]; then
-        awk '/^diff --git /{{ block=$0"\\n"; next }} {{ if (block!="") {{ block=block$0"\\n"; if (/^Binary files .* differ$/) {{ block=""; next }}; if (/^--- /||/^\\+\\+\\+ /||/^@@ /) {{ printf "%s",block; block="" }} }} else print }} END {{ if (block!="") printf "%s",block }}' "$pfile" > "${{pfile}}.tmp" && cp "${{pfile}}.tmp" "$pfile" && rm "${{pfile}}.tmp"
+        {awk} "$pfile" > "${{pfile}}.tmp" && mv "${{pfile}}.tmp" "$pfile"
     fi
 done
-git apply /home/test.patch
-cargo test
-
-""".format(pr=self.pr),
+git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch
+cargo test 2>&1
+""".format(pr=self.pr, awk=_AWK_BINARY_FILTER),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
 set -eo pipefail
-
 cd /home/{pr.repo}
 for pfile in /home/test.patch /home/fix.patch; do
     if [ -s "$pfile" ]; then
-        awk '/^diff --git /{{ block=$0"\\n"; next }} {{ if (block!="") {{ block=block$0"\\n"; if (/^Binary files .* differ$/) {{ block=""; next }}; if (/^--- /||/^\\+\\+\\+ /||/^@@ /) {{ printf "%s",block; block="" }} }} else print }} END {{ if (block!="") printf "%s",block }}' "$pfile" > "${{pfile}}.tmp" && cp "${{pfile}}.tmp" "$pfile" && rm "${{pfile}}.tmp"
+        {awk} "$pfile" > "${{pfile}}.tmp" && mv "${{pfile}}.tmp" "$pfile"
     fi
 done
-git apply /home/test.patch /home/fix.patch
-cargo test
-
-""".format(pr=self.pr),
+git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch
+cargo test 2>&1
+""".format(pr=self.pr, awk=_AWK_BINARY_FILTER),
             ),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
+        # Use "${REPO_URL}" (not hardcoded URL) so DockerfileEnhancer._standardize_repo_fetch
+        # skips replacement (negative lookahead on that pattern).
+        # Use "${BASE_COMMIT}" — value passed as --build-arg by build_dataset.py.
+        # Explicit _HARDENING_BLOCK prevents _inject_final_sanitize from adding a duplicate.
+        return f"""FROM rust:latest
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+WORKDIR /home/
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-        return f"""FROM {name}:{tag}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
-{self.global_env}
+WORKDIR /home/{self.pr.repo}
+
+RUN git checkout ${{BASE_COMMIT}}
+
+RUN cargo build || true
 
 {copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
+{self._HARDENING_BLOCK}
+CMD ["/bin/bash"]
 """
 
 
@@ -209,56 +126,48 @@ class Delta(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return DeltaImageDefault(self.pr, self._config)
+        return DeltaImage(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        # Strip ANSI escape codes
         ansi_escape = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
         test_log = ansi_escape.sub("", test_log)
 
-        re_pass_tests = [re.compile(r"test (\S+) ... ok")]
-        re_fail_tests = [re.compile(r"test (\S+) ... FAILED")]
-        re_skip_tests = [re.compile(r"test (\S+) ... ignored")]
+        re_pass = re.compile(r"^test (.+) \.\.\. ok$")
+        re_fail = re.compile(r"^test (.+) \.\.\. FAILED$")
+        re_skip = re.compile(r"^test (.+) \.\.\. ignored(?:\s.*)?$")
 
         for line in test_log.splitlines():
             line = line.strip()
-
-            for re_pass in re_pass_tests:
-                match = re_pass.match(line)
-                if match:
-                    passed_tests.add(match.group(1))
-
-            for re_fail in re_fail_tests:
-                match = re_fail.match(line)
-                if match:
-                    failed_tests.add(match.group(1))
-
-            for re_skip in re_skip_tests:
-                match = re_skip.match(line)
-                if match:
-                    skipped_tests.add(match.group(1))
+            m = re_pass.match(line)
+            if m:
+                passed_tests.add(m.group(1))
+                continue
+            m = re_fail.match(line)
+            if m:
+                failed_tests.add(m.group(1))
+                continue
+            m = re_skip.match(line)
+            if m:
+                skipped_tests.add(m.group(1))
 
         passed_tests -= failed_tests
 
