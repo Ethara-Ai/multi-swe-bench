@@ -108,20 +108,69 @@ class GqlgenImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
+        # SHARED base: this single image (tag `base`) is the FROM parent for
+        # every per-PR image, so it MUST keep the full git history + origin so
+        # each PR can `git checkout <its own base commit>`.
+        #
+        # The leading `# syntax=docker/dockerfile:1.6` directive makes
+        # DockerfileEnhancer.enhance() return this Dockerfile verbatim (it
+        # early-returns when SYNTAX_DIRECTIVE is already present -- see
+        # image.py). That is what stops the enhancer from rewriting the clone
+        # into a `git checkout ${BASE_COMMIT}` + history-strip block, which
+        # would pin this shared base to whichever PR built it first and prune
+        # away every other PR's commit ("reference is not a tree").
+        #
+        # Because we opt out of the enhancer we reproduce its proxy/cert infra
+        # here so build-env parity (MITM proxy) is kept and per-PR images
+        # inherit it via FROM. The git-history hardening that the enhancer
+        # would normally add is instead applied per-PR in GqlgenImageDefault,
+        # AFTER prepare.sh checks out the PR's base commit.
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT=""
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
 
 {self.global_env}
 
 ENV GOTOOLCHAIN=auto
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 
 WORKDIR /home/
 
@@ -129,6 +178,7 @@ WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -422,7 +472,13 @@ bash /home/group_pkgs.sh "/home/{repo}" $TEST_FILES | while read mod_root pkg; d
   if [ -n "$pkg_dir" ] && [ "$pkg_dir" != "." ] && [ ! -d "$mod_root/$pkg_dir" ]; then
     continue
   fi
-  (cd "$mod_root" && go test -vet=off -count=1 -v -timeout 30m "$pkg")
+  # Tolerate a single package's failure (e.g. internal/code's ancient
+  # golang.org/x/tools "package ... without types" loader error) so that
+  # `set -e` cannot abort this loop at the first bad package and hide a
+  # genuine fail->pass in a later one (e.g. internal/rewrite's TestRewriter
+  # in PR #1284). Every target package is still executed and its PASS/FAIL
+  # lines captured for parse_log; cross-stage f2p is computed from those.
+  (cd "$mod_root" && go test -vet=off -count=1 -v -timeout 30m "$pkg") || true
 done
 
 """.format(repo=self.pr.repo, test_files=test_files),
@@ -447,7 +503,13 @@ if [ -z "$TEST_FILES" ]; then
 fi
 
 bash /home/group_pkgs.sh "/home/{repo}" $TEST_FILES | while read mod_root pkg; do
-  (cd "$mod_root" && go test -vet=off -count=1 -v -timeout 30m "$pkg")
+  # Tolerate a single package's failure (e.g. internal/code's ancient
+  # golang.org/x/tools "package ... without types" loader error) so that
+  # `set -e` cannot abort this loop at the first bad package and hide a
+  # genuine fail->pass in a later one (e.g. internal/rewrite's TestRewriter
+  # in PR #1284). Every target package is still executed and its PASS/FAIL
+  # lines captured for parse_log; cross-stage f2p is computed from those.
+  (cd "$mod_root" && go test -vet=off -count=1 -v -timeout 30m "$pkg") || true
 done
 
 """.format(repo=self.pr.repo, test_files=test_files),
@@ -472,7 +534,13 @@ if [ -z "$TEST_FILES" ]; then
 fi
 
 bash /home/group_pkgs.sh "/home/{repo}" $TEST_FILES | while read mod_root pkg; do
-  (cd "$mod_root" && go test -vet=off -count=1 -v -timeout 30m "$pkg")
+  # Tolerate a single package's failure (e.g. internal/code's ancient
+  # golang.org/x/tools "package ... without types" loader error) so that
+  # `set -e` cannot abort this loop at the first bad package and hide a
+  # genuine fail->pass in a later one (e.g. internal/rewrite's TestRewriter
+  # in PR #1284). Every target package is still executed and its PASS/FAIL
+  # lines captured for parse_log; cross-stage f2p is computed from those.
+  (cd "$mod_root" && go test -vet=off -count=1 -v -timeout 30m "$pkg") || true
 done
 
 """.format(repo=self.pr.repo, test_files=test_files),
@@ -490,6 +558,48 @@ done
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Git-history hardening for the per-PR (agent) image, applied AFTER
+        # prepare.sh has checked out this PR's base commit -- so the commit to
+        # KEEP is the current HEAD (not a ${BASE_COMMIT} build-arg, which is not
+        # passed to FROM-an-image builds). The shared base deliberately keeps
+        # full history + origin (see GqlgenImageBase); this strips the remote
+        # and every ref/commit not reachable from HEAD, so the evaluated agent
+        # cannot recover the fix from git log/show/history. Mirrors the harness
+        # hardening block, anchored on HEAD. The .gitmodules branch is a no-op
+        # for gqlgen (its _examples is a sibling Go module, not a git submodule)
+        # but is kept for parity.
+        repo = self.pr.repo
+        harden = f"""RUN set -eux; \\
+    cd /home/{repo}; \\
+    git checkout --detach HEAD; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/{repo}/.gitmodules ]; then \\
+        cd /home/{repo} && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi"""
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -497,6 +607,8 @@ done
 {copy_commands}
 
 {prepare_commands}
+
+{harden}
 
 {self.clear_env}
 

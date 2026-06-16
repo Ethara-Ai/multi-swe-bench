@@ -1,64 +1,11 @@
 from __future__ import annotations
 
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-
-
-class MiseImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "rust:1.88"
-
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    libssl-dev \\
-    pkg-config \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-
-"""
 
 
 class MiseImageDefault(Image):
@@ -74,14 +21,45 @@ class MiseImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return MiseImageBase(self.pr, self.config)
+    def dependency(self) -> str:
+        # Returning a string (not a chained Image) lets the shared
+        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
+        # checks out "${BASE_COMMIT}", runs extra_setup(), and then appends the
+        # _HARDENING_BLOCK that detaches HEAD at BASE_COMMIT and strips every
+        # other ref/commit so the fix can't be read out of git history. A single
+        # self-contained per-PR image avoids the old shared-base problem (the
+        # hardening gc-prunes the base to one commit, which a shared "base" tag
+        # cannot satisfy across 274 distinct base shas).
+        return "rust:1.88"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    def extra_packages(self) -> list[str]:
+        # ca-certificates, curl, build-essential, git, make, python3, etc. are
+        # already in the default set baked by Image.dockerfile(); add only the
+        # native build deps cargo needs to compile mise's openssl-backed crates.
+        return ["libssl-dev", "pkg-config"]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. The helper scripts + patches are staged into /home/ (outside
+        # /home/{repo}), so the hardening pass — which only operates inside the
+        # git tree — leaves them untouched. prepare.sh warms the cargo build
+        # cache so the run/test/fix stages don't recompile from scratch.
+        return (
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY check_git_changes.sh /home/check_git_changes.sh\n"
+            "COPY prepare.sh /home/prepare.sh\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "RUN bash /home/prepare.sh"
+        )
 
     def files(self) -> list[File]:
         return [
@@ -125,8 +103,6 @@ set -e
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
 
 cargo test || true
 
@@ -168,29 +144,6 @@ cargo test
 """.format(pr=self.pr),
             ),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("jdx", "mise")

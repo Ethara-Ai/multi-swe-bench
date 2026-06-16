@@ -27,10 +27,12 @@ class ImageBase(Image):
         return "envagent"
 
     def image_tag(self) -> str:
-        return "base"
+        # Per-PR base: hardening pins base to ${BASE_COMMIT} + gc-prunes, so a
+        # shared "base" tag can hold only one commit. Each PR needs its own.
+        return f"pr-{self.pr.number}.base"
 
     def workdir(self) -> str:
-        return "base-era"
+        return f"pr-{self.pr.number}.base-era"
 
     def files(self) -> list[File]:
         return []
