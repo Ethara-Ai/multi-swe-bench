@@ -1,3 +1,26 @@
+"""vueuse/vueuse harness config, conformed to the hardened image.py.
+
+Single per-PR image whose dependency() returns a *string* base image, so the
+shared Image.dockerfile() owns the build: clone "${REPO_URL}", checkout
+"${BASE_COMMIT}", run extra_setup(), then the _HARDENING_BLOCK that strips
+every other ref/commit (the fix can't be read from git history).
+
+DISPATCH IS BY RELEASE VERSION, NOT pr.number. These are release-window
+bundles whose pr.number (first PR in the window) is NOT monotonic with the
+release version (e.g. PR#4158 is v13.5 while PR#4349 is v11.3). The base.sha
+is the window's START tag, so we parse the start version from base.label and
+pick tooling from that. The tooling timeline (verified against the repo):
+
+    v0.0.x  – v6.4    yarn  + jest
+    v6.5    – v7.5.2  pnpm  + jest
+    v7.5.3  – v12.2   pnpm  + vitest run
+    v12.3+           pnpm  + vitest --project unit   (workspace split)
+
+pnpm version drifts none/6/7/8/9/10 across releases, so we let corepack honor
+the repo's own `packageManager` field (falling back to pnpm@7 for early
+commits that predate it) instead of pinning a single version.
+"""
+
 from __future__ import annotations
 
 import re
@@ -7,10 +30,32 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# git-apply excludes shared by every eval script: never let a lockfile or a
+# generated bundle in the patch disturb the working tree.
+_APPLY_EXCLUDES = (
+    "--exclude='*pnpm-lock.yaml' "
+    "--exclude='*yarn.lock' "
+    "--exclude='*package-lock.json'"
+)
 
-class ImageBaseYarn(Image):
-    """Base image for early era (PR <= 734): yarn + jest, node:18."""
+# Tooling-era boundaries, keyed on the base (start) release version.
+_V_PNPM = (6, 5, 0)        # yarn -> pnpm
+_V_VITEST = (7, 5, 3)      # jest -> vitest
+_V_PROJECT = (12, 3, 0)    # vitest run -> vitest --project unit (workspace split)
 
+
+def _start_version(label: str) -> tuple[int, int, int]:
+    """Parse the start version from a base.label like 'v12.8.2..v13.0.0'."""
+    m = re.search(r"v?(\d+)\.(\d+)\.(\d+)", label or "")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+
+
+def _runner(pr: PullRequest) -> str:
+    """'jest' or 'vitest' for the base version — used by parse_log too."""
+    return "jest" if _start_version(pr.base.label) < _V_VITEST else "vitest"
+
+
+class VueuseImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -23,363 +68,109 @@ class ImageBaseYarn(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:18"
-
-    def image_tag(self) -> str:
-        return "base-yarn"
-
-    def workdir(self) -> str:
-        return "base-yarn"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-RUN apt update && apt install -y git
-RUN apt install -y jq
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class ImageBasePnpm(Image):
-    """Base image for pnpm eras (PR 735-4349): pnpm@7, node:18."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:18"
-
-    def image_tag(self) -> str:
-        return "base-pnpm"
-
-    def workdir(self) -> str:
-        return "base-pnpm"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-RUN apt update && apt install -y git
-RUN npm install -g pnpm@7
-RUN apt install -y jq
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class ImageBasePnpm10(Image):
-    """Base image for latest era (PR >= 4350): pnpm@10, node:20."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:20"
-
-    def image_tag(self) -> str:
-        return "base-pnpm10"
-
-    def workdir(self) -> str:
-        return "base-pnpm10"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-RUN apt update && apt install -y git
-RUN npm install -g pnpm@10
-RUN apt install -y jq
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class ImageDefaultYarn(Image):
-    """Default image for era 1 (PR <= 734): yarn + jest."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image | None:
-        return ImageBaseYarn(self.pr, self._config)
-
-    def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-yarn install || true
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -eo pipefail
-export CI=true
-
-cd /home/{pr.repo}
-npx jest --verbose
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-export CI=true
-
-cd /home/{pr.repo}
-git apply --exclude='*pnpm-lock.yaml' --exclude='*yarn.lock' --exclude='*package-lock.json' --whitespace=nowarn /home/test.patch
-npx jest --verbose
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-export CI=true
-
-cd /home/{pr.repo}
-git apply --exclude='*pnpm-lock.yaml' --exclude='*yarn.lock' --exclude='*package-lock.json' --whitespace=nowarn /home/test.patch /home/fix.patch
-npx jest --verbose
-
-""".format(pr=self.pr),
-            ),
-        ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
-
-
-class ImageDefaultPnpm(Image):
-    """Default image for eras 2-3 (PR 735-4349): pnpm + jest/vitest."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image | None:
-        return ImageBasePnpm(self.pr, self._config)
-
-    def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
+    # --- era helpers ---------------------------------------------------
+    def _era(self) -> str:
+        v = _start_version(self.pr.base.label)
+        if v < _V_PNPM:
+            return "yarn"
+        if v < _V_VITEST:
+            return "pnpm_jest"
+        if v < _V_PROJECT:
+            return "pnpm_vitest"
+        return "pnpm_vitest_project"
 
     def _test_cmd(self) -> str:
-        if self.pr.number <= 1092:
+        era = self._era()
+        if era in ("yarn", "pnpm_jest"):
             return "npx jest --verbose"
-        else:
+        if era == "pnpm_vitest":
             return "pnpm exec vitest run --reporter=verbose"
+        return "pnpm exec vitest --project unit --run --reporter=verbose"
+
+    def _pnpm_setup(self) -> str:
+        # Honor the repo's declared packageManager (pnpm 6..10) via corepack so
+        # the lockfileVersion matches; corepack downloads the pinned pnpm at
+        # build time and caches it for the (offline) eval runs. Early commits
+        # have no packageManager field -> pin pnpm@7.
+        return (
+            "if grep -q '\"packageManager\"' package.json 2>/dev/null; then\n"
+            "  corepack enable || true\n"
+            "else\n"
+            "  npm install -g pnpm@7 || true\n"
+            "fi"
+        )
+
+    # --- image plumbing ------------------------------------------------
+    def dependency(self) -> Union[str, "Image"]:
+        # A string base image hands the build to Image.dockerfile(), which
+        # clones ${REPO_URL}, checks out ${BASE_COMMIT}, and hardens history.
+        v = _start_version(self.pr.base.label)
+        return "node:20" if v >= _V_PROJECT else "node:18"
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def extra_packages(self) -> list[str]:
+        return ["jq"]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. Stages the helper scripts + patches into /home/ and runs
+        # prepare.sh (package manager + deps + offline setup). node_modules
+        # lives inside the repo but is untracked, so the hardening pass (which
+        # only rewrites git history) leaves it intact.
+        return (
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY prepare.sh /home/prepare.sh\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "RUN bash /home/prepare.sh"
+        )
+
+    def _prepare_body(self) -> str:
+        era = self._era()
+        if era == "yarn":
+            # yarn ships with the official node image. Very early vueuse (v0.0.x)
+            # generates packages/api.ts via an interactive `node scripts/switch`;
+            # the suites import "../api", so replicate it (Vue 2 = api.2.ts).
+            return (
+                "yarn install || true\n"
+                "if [ -f packages/api.2.ts ] && [ ! -f packages/api.ts ]; then\n"
+                "  cp packages/api.2.ts packages/api.ts\n"
+                "fi"
+            )
+        # pnpm eras
+        lines = [self._pnpm_setup(), "pnpm install --no-frozen-lockfile || true"]
+        if era in ("pnpm_vitest", "pnpm_vitest_project"):
+            # @vueuse/metadata/index.json is git-ignored and generated by the
+            # root `update` script; without it metadata.ts fails to import and
+            # test/exports.test.ts cannot load. Best-effort (no-op if absent).
+            lines.append("pnpm run update >/dev/null 2>&1 || true")
+        return "\n".join(lines)
 
     def files(self) -> list[File]:
         test_cmd = self._test_cmd()
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
+# Repo is already cloned + checked out at ${{BASE_COMMIT}} and hardened by
+# Image.dockerfile(), so this script performs no git checkout. It installs the
+# package manager + dependencies so the eval runs don't need network.
 set -e
 
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-pnpm install --no-frozen-lockfile || true
-
-""".format(pr=self.pr),
+cd /home/{repo}
+git reset --hard || true
+{body}
+""".format(repo=self.pr.repo, body=self._prepare_body()),
             ),
             File(
                 ".",
@@ -390,7 +181,6 @@ export CI=true
 
 cd /home/{repo}
 {test_cmd}
-
 """.format(repo=self.pr.repo, test_cmd=test_cmd),
             ),
             File(
@@ -401,10 +191,10 @@ set -eo pipefail
 export CI=true
 
 cd /home/{repo}
-git apply --exclude='*pnpm-lock.yaml' --exclude='*yarn.lock' --exclude='*package-lock.json' --whitespace=nowarn /home/test.patch
+git reset --hard HEAD || true
+git apply {excludes} --whitespace=nowarn /home/test.patch
 {test_cmd}
-
-""".format(repo=self.pr.repo, test_cmd=test_cmd),
+""".format(repo=self.pr.repo, excludes=_APPLY_EXCLUDES, test_cmd=test_cmd),
             ),
             File(
                 ".",
@@ -414,171 +204,12 @@ set -eo pipefail
 export CI=true
 
 cd /home/{repo}
-git apply --exclude='*pnpm-lock.yaml' --exclude='*yarn.lock' --exclude='*package-lock.json' --whitespace=nowarn /home/test.patch /home/fix.patch
+git reset --hard HEAD || true
+git apply --3way {excludes} --whitespace=nowarn /home/test.patch /home/fix.patch
 {test_cmd}
-
-""".format(repo=self.pr.repo, test_cmd=test_cmd),
+""".format(repo=self.pr.repo, excludes=_APPLY_EXCLUDES, test_cmd=test_cmd),
             ),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
-
-
-class ImageDefaultPnpm10(Image):
-    """Default image for era 4 (PR >= 4350): pnpm@10 + vitest --project unit."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image | None:
-        return ImageBasePnpm10(self.pr, self._config)
-
-    def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-pnpm install --no-frozen-lockfile || true
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -eo pipefail
-export CI=true
-
-cd /home/{pr.repo}
-pnpm vitest --project unit --run --reporter=verbose
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-export CI=true
-
-cd /home/{pr.repo}
-git apply --exclude='*pnpm-lock.yaml' --exclude='*yarn.lock' --exclude='*package-lock.json' --whitespace=nowarn /home/test.patch
-pnpm vitest --project unit --run --reporter=verbose
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-export CI=true
-
-cd /home/{pr.repo}
-git apply --exclude='*pnpm-lock.yaml' --exclude='*yarn.lock' --exclude='*package-lock.json' --whitespace=nowarn /home/test.patch /home/fix.patch
-pnpm vitest --project unit --run --reporter=verbose
-
-""".format(pr=self.pr),
-            ),
-        ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("vueuse", "vueuse")
@@ -593,12 +224,7 @@ class Vueuse(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        if self.pr.number <= 734:
-            return ImageDefaultYarn(self.pr, self._config)
-        elif self.pr.number <= 4349:
-            return ImageDefaultPnpm(self.pr, self._config)
-        else:
-            return ImageDefaultPnpm10(self.pr, self._config)
+        return VueuseImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -623,12 +249,10 @@ class Vueuse(Instance):
         # Strip ANSI escape codes and null bytes for reliable matching
         ansi_re = re.compile(r"\x1b\[[0-9;]*m|\x00")
 
-        if self.pr.number <= 1092:
+        if _runner(self.pr) == "jest":
             # Jest output format:
             #   PASS packages/core/useMemoize/index.test.ts
-            #     ✓ test name (Xms)
             #   FAIL packages/core/useBase64/index.test.ts
-            #     ✗ test name (Xms)
             re_pass_file = re.compile(r"PASS\s+(\S+\.(?:test|spec)\.tsx?)")
             re_fail_file = re.compile(r"FAIL\s+(\S+\.(?:test|spec)\.tsx?)")
 
@@ -636,26 +260,19 @@ class Vueuse(Instance):
                 clean = ansi_re.sub("", line).strip()
                 if not clean:
                     continue
-
-                pass_match = re_pass_file.search(clean)
-                if pass_match:
-                    passed_tests.add(pass_match.group(1))
+                m = re_pass_file.search(clean)
+                if m:
+                    passed_tests.add(m.group(1))
                     continue
-
-                fail_match = re_fail_file.search(clean)
-                if fail_match:
-                    failed_tests.add(fail_match.group(1))
-
-            # A file with any failure is failed (not passed)
-            passed_tests -= failed_tests
+                m = re_fail_file.search(clean)
+                if m:
+                    failed_tests.add(m.group(1))
         else:
             # Vitest verbose output format:
-            # Era 3: ✓ packages/core/useMemoize/index.test.ts > useMemoize > ...
-            # Era 4: ✓ unit packages/core/useMemoize/index.test.ts > useMemoize > ...
-            # Fail:  × packages/core/... or FAIL unit packages/core/...
-            re_pass = re.compile(
-                r"[✓√]\s+(?:unit\s+)?(\S+\.(?:test|spec)\.tsx?)"
-            )
+            #   ✓ packages/core/useMemoize/index.test.ts > ...
+            #   ✓ unit packages/core/useMemoize/index.test.ts > ...   (workspace)
+            #   ×/FAIL packages/core/... or FAIL unit packages/core/...
+            re_pass = re.compile(r"[✓√]\s+(?:unit\s+)?(\S+\.(?:test|spec)\.tsx?)")
             re_fail = re.compile(
                 r"(?:[×✗❯]|FAIL)\s+(?:unit\s+)?(\S+\.(?:test|spec)\.tsx?)"
             )
@@ -664,18 +281,16 @@ class Vueuse(Instance):
                 clean = ansi_re.sub("", line).strip()
                 if not clean:
                     continue
-
-                pass_match = re_pass.search(clean)
-                if pass_match:
-                    passed_tests.add(pass_match.group(1))
+                m = re_pass.search(clean)
+                if m:
+                    passed_tests.add(m.group(1))
                     continue
+                m = re_fail.search(clean)
+                if m:
+                    failed_tests.add(m.group(1))
 
-                fail_match = re_fail.search(clean)
-                if fail_match:
-                    failed_tests.add(fail_match.group(1))
-
-            # A file with any failure is failed (not passed)
-            passed_tests -= failed_tests
+        # A file with any failure is failed (not passed)
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
