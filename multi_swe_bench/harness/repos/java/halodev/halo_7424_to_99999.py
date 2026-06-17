@@ -97,7 +97,15 @@ class Halo7424To99999ImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        # This is a SHARED base (one per era, tag base-jdk21) reused by every PR
+        # in the era. The `# syntax` directive makes DockerfileEnhancer.enhance()
+        # return this Dockerfile unchanged; otherwise it would rewrite the clone
+        # to `git checkout ${BASE_COMMIT}` + hardening + gc-prune, pinning the
+        # shared base to ONE commit and pruning it — breaking every other PR's
+        # `git checkout <base.sha>` in prepare.sh. Per-PR hardening lives in the
+        # Default image instead.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
@@ -197,6 +205,36 @@ exit 0
             ),
             File(
                 ".",
+                "init.gradle",
+                '''// Injected via --init-script so build.gradle/settings.gradle stay PRISTINE —
+// the dataset's test/fix patches must apply with `git apply`, which breaks if a
+// prepare-time `sed` has rewritten those files. Replaces the old sed-based
+// JCenter removal and adds per-test logging.
+allprojects {
+    afterEvaluate { p ->
+        // JCenter/Bintray is decommissioned (HTTP 404). Drop it wherever declared
+        // and guarantee a live mirror set for every project.
+        p.repositories.removeIf { r ->
+            r.hasProperty('url') && r.url != null && r.url.toString().contains('bintray')
+        }
+        p.repositories.mavenCentral()
+        p.repositories.maven { url 'https://maven.aliyun.com/repository/public' }
+    }
+    // Gradle prints nothing per-test by default; parse_log then sees only the
+    // task-level :test and can never derive f2p/n2p. Emit one line per test.
+    tasks.withType(Test).configureEach {
+        testLogging {
+            events 'passed', 'failed', 'skipped'
+            showStandardStreams = false
+            exceptionFormat = 'short'
+        }
+        outputs.upToDateWhen { false }
+    }
+}
+''',
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
@@ -207,15 +245,16 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# jcenter() shut down Feb 2024 — remove it so Gradle does not hang
-sed -i '/jcenter()/d' build.gradle 2>/dev/null || true
-sed -i '/jcenter()/d' settings.gradle 2>/dev/null || true
-
-# Replace China-only aliyun mirror with mavenCentral for portability
-sed -i '/maven.aliyun.com/d' build.gradle 2>/dev/null || true
+# Dead-JCenter fix + per-test logging are injected via --init-script
+# /home/init.gradle, so build.gradle/settings.gradle stay pristine and the
+# test/fix patches apply cleanly. Raise the Gradle JVM heap high — Halo 2.20+
+# reactive integration tests OOM'd at 4g ('Java heap space'). Persists into the
+# PR image layer so run/test/fix all inherit it.
+mkdir -p /root/.gradle
+echo 'org.gradle.jvmargs=-Xmx8g -XX:MaxMetaspaceSize=1g' >> /root/.gradle/gradle.properties
 
 chmod +x gradlew
-./gradlew build -x test -x check --console=plain --no-daemon || true
+./gradlew build -x test -x check --console=plain --no-daemon --init-script /home/init.gradle || true
 """.format(pr=self.pr),
             ),
             File(
@@ -225,7 +264,7 @@ chmod +x gradlew
 set -e
 
 cd /home/{pr.repo}
-./gradlew clean test --continue --console=plain --no-daemon
+./gradlew clean test --continue --console=plain --no-daemon --init-script /home/init.gradle
 """.format(pr=self.pr),
             ),
             File(
@@ -236,7 +275,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-./gradlew clean test --continue --console=plain --no-daemon
+./gradlew clean test --continue --console=plain --no-daemon --init-script /home/init.gradle
 
 """.format(pr=self.pr),
             ),
@@ -248,7 +287,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-./gradlew clean test --continue --console=plain --no-daemon
+./gradlew clean test --continue --console=plain --no-daemon --init-script /home/init.gradle
 
 """.format(pr=self.pr),
             ),
@@ -264,6 +303,34 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
             copy_commands += f"COPY {file.name} /home/\n"
 
         prepare_commands = "RUN bash /home/prepare.sh"
+
+        # The per-PR image's dependency() returns an Image (the shared base), so
+        # DockerfileEnhancer.enhance() returns this Dockerfile unmodified — it only
+        # injects the HEAD-strip hardening for str-dependency images. prepare.sh has
+        # just `git checkout`ed {base.sha}; without this block the working tree still
+        # carries origin + every branch/tag + the full reflog, letting a model read
+        # the fix via `git log` / `git show <future-sha>` / `git fetch`. Detach at
+        # base.sha and strip all other history so only base.sha + ancestors remain.
+        # Literal sha (not ${BASE_COMMIT}) because this image declares no such ARG.
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+        hardening = (
+            "RUN set -eux; \\\n"
+            f"    cd /home/{repo}; \\\n"
+            f"    git checkout --detach {sha}; \\\n"
+            "    git remote remove origin 2>/dev/null || true; \\\n"
+            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d; \\\n"
+            "    git reflog expire --expire=now --all || true; \\\n"
+            "    git reflog expire --expire-unreachable=now --all || true; \\\n"
+            "    git gc --prune=now --aggressive; \\\n"
+            "    git repack -a -d -l --quiet; \\\n"
+            "    rm -f .git/objects/info/alternates; \\\n"
+            "    git config --local gc.auto 0; \\\n"
+            f'    test "$(git rev-parse HEAD)" = "$(git rev-parse {sha})"; \\\n'
+            '    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\\n'
+            '    test -z "$(git remote)"; \\\n'
+            '    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
+        )
 
         proxy_setup = ""
         proxy_cleanup = ""
@@ -311,6 +378,8 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 {copy_commands}
 
 {prepare_commands}
+
+{hardening}
 
 {proxy_cleanup}
 
