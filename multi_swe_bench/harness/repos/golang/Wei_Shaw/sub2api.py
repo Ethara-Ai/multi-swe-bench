@@ -53,17 +53,16 @@ def parse_go_test_log(log: str) -> TestResult:
     )
 
 
-class Sub2apiImageBase(Image):
-    """sub2api single-era base (PRs 7-2247, release_line v0.1.x throughout).
-    Monorepo: Go module lives at `backend/` (NOT repo root); frontend/ is
-    JS/TS and out of scope. go.mod range `go 1.24.0` → `go 1.26.3`; built
-    with golang:1.26 which is backward-compatible across that range.
+class Sub2apiImageDefault(Image):
+    """Per-PR image using the single-image pattern.
 
-    Pure Go (no CGO). modernc.org/sqlite is the only DB driver. Integration
-    tests use testcontainers-go (postgres/redis) but are all `//go:build
-    integration` gated → skipped by default (`go test` without `-tags=integration`).
-    Unit tests use `//go:build unit` (197 files) — we pass `-tags=unit` to
-    include them alongside the 305 untagged tests."""
+    dependency() returns a string => DockerfileEnhancer injects REPO_URL/BASE_COMMIT
+    ARGs, proxy certs, clone, checkout, and _HARDENING_BLOCK automatically.
+    Each PR image clones and hardens to its OWN BASE_COMMIT -- no shared base image.
+
+    Monorepo: Go module lives at backend/ (NOT repo root).
+    Pure Go (no CGO). Integration tests are //go:build integration gated.
+    Unit tests use //go:build unit -- passed -tags=unit in test commands."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -77,75 +76,25 @@ class Sub2apiImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
+    def dependency(self) -> str:
+        # String => DockerfileEnhancer runs => clone + checkout + hardening injected per-PR
         return "golang:1.26"
 
     def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV CGO_ENABLED=0
-ENV GOTOOLCHAIN=local
-ENV GOFLAGS=-buildvcs=false -mod=mod
-
-WORKDIR /home/
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-"""
-
-
-class Sub2apiImageDefault(Image):
-    """Per-PR image: checkout base commit, prefetch modules at backend/, run
-    the targeted Go unit tests under backend/."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image:
-        return Sub2apiImageBase(self.pr, self._config)
-
-    def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    def extra_setup(self) -> str:
+        copy_cmds = "\n".join(f"COPY {f.name} /home/" for f in self.files())
+        return (
+            "ENV CGO_ENABLED=0\n"
+            "ENV GOTOOLCHAIN=local\n"
+            'ENV GOFLAGS="-buildvcs=false -mod=mod"\n'
+            f"{copy_cmds}\n"
+            "RUN bash /home/prepare.sh"
+        )
 
     def files(self) -> list[File]:
         return [
@@ -156,113 +105,87 @@ class Sub2apiImageDefault(Image):
                 "prepare.sh",
                 """#!/bin/bash
 set -e
-cd /home/{pr.repo}
-git reset --hard
-git checkout {pr.base.sha}
-cd backend
+cd /home/{pr.repo}/backend
 timeout 600 go mod download || true
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
-                """#!/bin/bash
+                r"""#!/bin/bash
 set -eo pipefail
-cd /home/{pr.repo}/backend
-# Go package dirs the PR's test patch touches under backend/. Strip the
-# `backend/` prefix so paths are relative to the backend module root.
-# Skip integration/e2e — both are //go:build tagged so harmless if matched,
-# but defensive grep keeps targeted runs lean.
-TEST_DIRS=$({{ grep -E '^diff --git a/backend/\\S+_test\\.go' /home/test.patch \\
-    | sed -E 's#^diff --git a/backend/(.+) b/.*#\\1#' \\
-    | grep -vE '(^|/)(integration|e2e)/' \\
-    | grep -vE '_integration_test\\.go$|_e2e_test\\.go$' \\
-    | sed -E 's#/[^/]+$##' | sort -u; }} || true)
+cd /home/""" + self.pr.repo + r"""/backend
+TEST_DIRS=$({ grep -E '^diff --git a/backend/\S+_test\.go' /home/test.patch \
+    | sed -E 's#^diff --git a/backend/(.+) b/.*#\1#' \
+    | grep -vE '(^|/)(integration|e2e)/' \
+    | grep -vE '_integration_test\.go$|_e2e_test\.go$' \
+    | sed -E 's#/[^/]+$##' | sort -u; } || true)
 RAN=0
 for d in $TEST_DIRS; do
     if [ -d "$d" ]; then ( cd "$d" && go test -tags=unit -json -count=1 . ) 2>&1 || true; RAN=1; fi
 done
 if [ "$RAN" = 0 ]; then echo "NO_BASELINE_TEST_DIRS"; exit 0; fi
-""".format(pr=self.pr),
+""",
             ),
             File(
                 ".",
                 "test-run.sh",
-                """#!/bin/bash
+                r"""#!/bin/bash
 set -eo pipefail
-cd /home/{pr.repo}
-EXCLUDES=(--exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' \\
-    --exclude='*.svg' --exclude='*.ico' --exclude='*.pdf' --exclude='*.tar' \\
-    --exclude='*.gz' --exclude='*.zip' --exclude='*.woff*' --exclude='*.bin' \\
+cd /home/""" + self.pr.repo + r"""
+EXCLUDES=(--exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' \
+    --exclude='*.svg' --exclude='*.ico' --exclude='*.pdf' --exclude='*.tar' \
+    --exclude='*.gz' --exclude='*.zip' --exclude='*.woff*' --exclude='*.bin' \
     --exclude='*.test' --exclude='*.wasm' --exclude='*.exe' --exclude='*.db')
-git apply --whitespace=nowarn "${{EXCLUDES[@]}}" /home/test.patch 2>/dev/null \\
-    || git apply --whitespace=nowarn --reject "${{EXCLUDES[@]}}" /home/test.patch 2>/dev/null || true
+git apply --whitespace=nowarn "${EXCLUDES[@]}" /home/test.patch 2>/dev/null \
+    || git apply --whitespace=nowarn --reject "${EXCLUDES[@]}" /home/test.patch 2>/dev/null || true
 cd backend
-if grep -qE '^diff --git a/backend/go\\.(mod|sum)' /home/test.patch 2>/dev/null; then
+if grep -qE '^diff --git a/backend/go\.(mod|sum)' /home/test.patch 2>/dev/null; then
     timeout 600 go mod download || true
 fi
-TEST_DIRS=$({{ grep -E '^diff --git a/backend/\\S+_test\\.go' /home/test.patch \\
-    | sed -E 's#^diff --git a/backend/(.+) b/.*#\\1#' \\
-    | grep -vE '(^|/)(integration|e2e)/' \\
-    | grep -vE '_integration_test\\.go$|_e2e_test\\.go$' \\
-    | sed -E 's#/[^/]+$##' | sort -u; }} || true)
+TEST_DIRS=$({ grep -E '^diff --git a/backend/\S+_test\.go' /home/test.patch \
+    | sed -E 's#^diff --git a/backend/(.+) b/.*#\1#' \
+    | grep -vE '(^|/)(integration|e2e)/' \
+    | grep -vE '_integration_test\.go$|_e2e_test\.go$' \
+    | sed -E 's#/[^/]+$##' | sort -u; } || true)
 RAN=0
 for d in $TEST_DIRS; do
     if [ -d "$d" ]; then ( cd "$d" && go test -tags=unit -json -count=1 . ) 2>&1 || true; RAN=1; fi
 done
 if [ "$RAN" = 0 ]; then echo "NO_TEST_DIRS"; exit 0; fi
-""".format(pr=self.pr),
+""",
             ),
             File(
                 ".",
                 "fix-run.sh",
-                """#!/bin/bash
+                r"""#!/bin/bash
 set -eo pipefail
-cd /home/{pr.repo}
-EXCLUDES=(--exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' \\
-    --exclude='*.svg' --exclude='*.ico' --exclude='*.pdf' --exclude='*.tar' \\
-    --exclude='*.gz' --exclude='*.zip' --exclude='*.woff*' --exclude='*.bin' \\
+cd /home/""" + self.pr.repo + r"""
+EXCLUDES=(--exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' \
+    --exclude='*.svg' --exclude='*.ico' --exclude='*.pdf' --exclude='*.tar' \
+    --exclude='*.gz' --exclude='*.zip' --exclude='*.woff*' --exclude='*.bin' \
     --exclude='*.test' --exclude='*.wasm' --exclude='*.exe' --exclude='*.db')
-git apply --whitespace=nowarn "${{EXCLUDES[@]}}" /home/test.patch 2>/dev/null \\
-    || git apply --whitespace=nowarn --reject "${{EXCLUDES[@]}}" /home/test.patch 2>/dev/null || true
-git apply --whitespace=nowarn "${{EXCLUDES[@]}}" /home/fix.patch 2>/dev/null \\
-    || git apply --whitespace=nowarn --reject "${{EXCLUDES[@]}}" /home/fix.patch 2>/dev/null || true
+git apply --whitespace=nowarn "${EXCLUDES[@]}" /home/test.patch 2>/dev/null \
+    || git apply --whitespace=nowarn --reject "${EXCLUDES[@]}" /home/test.patch 2>/dev/null || true
+git apply --whitespace=nowarn "${EXCLUDES[@]}" /home/fix.patch 2>/dev/null \
+    || git apply --whitespace=nowarn --reject "${EXCLUDES[@]}" /home/fix.patch 2>/dev/null || true
 cd backend
-if grep -qhE '^diff --git a/backend/go\\.(mod|sum)' /home/test.patch /home/fix.patch 2>/dev/null; then
+if grep -qhE '^diff --git a/backend/go\.(mod|sum)' /home/test.patch /home/fix.patch 2>/dev/null; then
     timeout 600 go mod download || true
 fi
-TEST_DIRS=$({{ grep -E '^diff --git a/backend/\\S+_test\\.go' /home/test.patch \\
-    | sed -E 's#^diff --git a/backend/(.+) b/.*#\\1#' \\
-    | grep -vE '(^|/)(integration|e2e)/' \\
-    | grep -vE '_integration_test\\.go$|_e2e_test\\.go$' \\
-    | sed -E 's#/[^/]+$##' | sort -u; }} || true)
+TEST_DIRS=$({ grep -E '^diff --git a/backend/\S+_test\.go' /home/test.patch \
+    | sed -E 's#^diff --git a/backend/(.+) b/.*#\1#' \
+    | grep -vE '(^|/)(integration|e2e)/' \
+    | grep -vE '_integration_test\.go$|_e2e_test\.go$' \
+    | sed -E 's#/[^/]+$##' | sort -u; } || true)
 RAN=0
 for d in $TEST_DIRS; do
     if [ -d "$d" ]; then ( cd "$d" && go test -tags=unit -json -count=1 . ) 2>&1 || true; RAN=1; fi
 done
 if [ "$RAN" = 0 ]; then echo "NO_TEST_DIRS"; exit 0; fi
-""".format(pr=self.pr),
+""",
             ),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-RUN bash /home/prepare.sh
-
-{self.clear_env}
-"""
 
 
 @Instance.register("Wei-Shaw", "sub2api")
