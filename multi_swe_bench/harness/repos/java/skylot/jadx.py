@@ -1,16 +1,59 @@
-"""Generic skylot/jadx config.
+"""Generic skylot/jadx config (the only key the lht bundle dataset can reach).
 
-Used for jsonl records that carry no number_interval, so Instance.create
-resolves them to the plain "skylot/jadx" key (the bundle-specific configs
-register under jadx_<range> keys instead). These PRs sit on the v1.3.x/v1.4.x
-release lines, which match the jadx_793_to_1831 environment (eclipse-temurin:11
-+ Gradle), so this just re-registers that exact instance under the generic key.
+The skylot__jadx_lht_final.jsonl records carry NO ``number_interval`` and NO
+``tag``, so ``Instance.create`` resolves every one of them to the plain
+``skylot/jadx`` key (see harness/instance.py). The range-keyed era configs
+(``jadx_0_to_169`` / ``jadx_170_to_792`` / ``jadx_793_to_1831`` /
+``jadx_1832_to_99999``) are therefore unreachable by routing on this dataset --
+they would only fire if a record supplied ``number_interval``.
+
+But the dataset spans the whole project history: bundles based on v0.6.x..v1.0.x
+build under JDK 8, the v1.1.x..v1.4.x line under JDK 11, and the v1.5.x line
+under JDK 21. Aliasing the generic key to a single JDK (the previous behaviour,
+JDK 11 only) mis-toolchains the JDK 8 and JDK 21 bundles.
+
+So this generic instance dispatches the build environment by ``pr.number`` --
+the first PR of each bundle, i.e. the PR that defines the window's *start* tag /
+base commit -- using the same boundaries as the era keys:
+
+    number <= 792    -> JDK 8   (JadxJdk8Era2ImageDefault, jcommander 1.74->1.72)
+    793 <= number <= 1831 -> JDK 11 (JadxJdk11ImageDefault, jcommander 1.80->1.78)
+    number >= 1832   -> JDK 21  (JadxJdk21ImageDefault, no jcommander substitution)
+
+Everything else (run/test_patch_run/fix_patch_run/parse_log, the binary-fixture
+pre-extract, the proxy + init.gradle setup) is identical across the eras, so we
+subclass Jadx793To1831 and override only dependency() to pick the right Image.
+The era Image classes each carry their own module-level init.gradle, so swapping
+the class swaps the JDK *and* the matching Gradle tweaks in one step.
 """
 
+from typing import Optional
+
+from multi_swe_bench.harness.image import Image
 from multi_swe_bench.harness.instance import Instance
-from multi_swe_bench.harness.repos.java.skylot.jadx_793_to_1831 import Jadx793To1831
+from multi_swe_bench.harness.repos.java.skylot.jadx_170_to_792 import (
+    JadxJdk8Era2ImageDefault,
+)
+from multi_swe_bench.harness.repos.java.skylot.jadx_793_to_1831 import (
+    Jadx793To1831,
+    JadxJdk11ImageDefault,
+)
+from multi_swe_bench.harness.repos.java.skylot.jadx_1832_to_99999 import (
+    JadxJdk21ImageDefault,
+)
+
+# PR-number boundaries between JDK build environments (inclusive upper bounds).
+_JDK8_MAX = 792    # v0.6.x .. v1.0.x  -> eclipse-temurin:8
+_JDK11_MAX = 1831  # v1.1.x .. v1.4.x  -> eclipse-temurin:11
+# number >= 1832    v1.5.x ..          -> eclipse-temurin:21
 
 
 @Instance.register("skylot", "jadx")
 class Jadx(Jadx793To1831):
-    pass
+    def dependency(self) -> Optional[Image]:
+        number = self.pr.number
+        if number <= _JDK8_MAX:
+            return JadxJdk8Era2ImageDefault(self.pr, self._config)
+        if number <= _JDK11_MAX:
+            return JadxJdk11ImageDefault(self.pr, self._config)
+        return JadxJdk21ImageDefault(self.pr, self._config)
