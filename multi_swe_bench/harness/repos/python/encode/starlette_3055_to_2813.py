@@ -198,10 +198,15 @@ RUN pip install "python-multipart<0.0.7" "anyio<4" "httpx<0.28.0" || true
 RUN pip install -r requirements.txt || pip install -e ".[full]" || pip install -e . || true
 RUN pip install pytest pytest-cov pytest-asyncio pytest-timeout anyio sniffio || true
 
+{hardening_block}
+
 {copy_commands}
 CMD ["/bin/bash"]
 """
-        return dockerfile_content.format(copy_commands=copy_commands)
+        return dockerfile_content.format(
+            copy_commands=copy_commands,
+            hardening_block=Image._HARDENING_BLOCK,
+        )
 
 
 @Instance.register("encode", "starlette_3055_to_2813")
