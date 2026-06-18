@@ -6,55 +6,6 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:20"
-
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-RUN yarn add typescript@latest
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -68,8 +19,11 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return ImageBase(self.pr, self.config)
+    def dependency(self) -> str:
+        return "node:20-bookworm"
+
+    def image_prefix(self) -> str:
+        return "envagent"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -115,12 +69,12 @@ exit 0
                 "prepare.sh",
                 """#!/bin/bash
 set -e
-
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
+
 yarn install || true
 
 """.format(pr=self.pr),
@@ -130,11 +84,10 @@ yarn install || true
                 "run.sh",
                 """#!/bin/bash
 set -e
-
 cd /home/{pr.repo}
-yarn build
-yarn test
-
+yarn install || true
+yarn build || true
+yarn test --verbose --ci || true
 """.format(pr=self.pr),
             ),
             File(
@@ -142,11 +95,11 @@ yarn test
                 "test-run.sh",
                 """#!/bin/bash
 set -e
-
 cd /home/{pr.repo}
-git apply /home/test.patch
-yarn build
-yarn test
+git apply --whitespace=nowarn /home/test.patch
+yarn install || true
+yarn build || true
+yarn test --verbose --ci || true
 
 """.format(pr=self.pr),
             ),
@@ -155,38 +108,55 @@ yarn test
                 "fix-run.sh",
                 """#!/bin/bash
 set -e
-
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
-yarn build
-yarn test
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+yarn install || true
+yarn build || true
+yarn test --verbose --ci || true
 
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        dockerfile_content = """
+# This is a template for creating a Dockerfile to test patches
+# LLM should fill in the appropriate values based on the context
 
-        return f"""FROM {name}:{tag}
+# Choose an appropriate base image based on the project's requirements - replace node:20-bookworm with actual base image
+# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
+FROM node:20-bookworm
 
-{self.global_env}
+## Set noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
 
-{copy_commands}
+# Install basic requirements
+# For example: RUN apt-get update && apt-get install -y git
+# For example: RUN yum install -y git
+# For example: RUN apk add --no-cache git
+RUN apt-get update && apt-get install -y git make python3
 
-{prepare_commands}
+# Ensure bash is available
+RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
 
-{self.clear_env}
+WORKDIR /home/
+COPY fix.patch /home/
+COPY test.patch /home/
+RUN git clone https://github.com/colinhacks/zod.git /home/zod
 
+WORKDIR /home/zod
+RUN git reset --hard
+RUN git checkout {pr.base.sha}
 """
+        dockerfile_content += f"""
+{copy_commands}
+"""
+        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("colinhacks", "zod")
