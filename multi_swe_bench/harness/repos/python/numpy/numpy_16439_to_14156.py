@@ -132,30 +132,37 @@ echo "VERIFICATION_END"
         ]
 
     def dockerfile(self) -> str:
-        global_env_block = f"\n{self.global_env}\n" if self.global_env else ""
-        clear_env_block = f"\n{self.clear_env}" if self.clear_env else ""
-
+        # Single-level template compatible with DockerfileEnhancer: all OS-level
+        # setup happens before the `git clone <hardcoded-url> /home/numpy` line,
+        # which the enhancer rewrites into the standardized clone + checkout +
+        # hardening + CMD block. Only cheap, idempotent steps (reset/checkout and
+        # the script COPYs) follow the clone; the actual numpy compilation is
+        # deferred to the runtime scripts (prepare.sh / run.sh / *-run.sh), which
+        # already perform `pip install -e .`.
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM python:3.5-slim-buster{global_env_block}
+        return f"""FROM python:3.5-slim-buster
+
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \
-    sed -i '/stretch-updates/d' /etc/apt/sources.list && \
-    sed -i '/buster-updates/d' /etc/apt/sources.list && \
-    apt-get update -o Acquire::Check-Valid-Until=false && apt-get install -y \
-    build-essential gfortran libopenblas-dev git pkg-config \
+RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list && \\
+    sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \\
+    sed -i '/stretch-updates/d' /etc/apt/sources.list && \\
+    sed -i '/buster-updates/d' /etc/apt/sources.list && \\
+    apt-get update -o Acquire::Check-Valid-Until=false && apt-get install -y \\
+    build-essential gfortran libopenblas-dev git pkg-config \\
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN if [ ! -f /bin/bash ]; then \
-        if command -v apk >/dev/null 2>&1; then apk add --no-cache bash; \
-        elif command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y bash; \
-        elif command -v yum >/dev/null 2>&1; then yum install -y bash; \
-        else exit 1; fi \
+RUN if [ ! -f /bin/bash ]; then \\
+        if command -v apk >/dev/null 2>&1; then apk add --no-cache bash; \\
+        elif command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y bash; \\
+        elif command -v yum >/dev/null 2>&1; then yum install -y bash; \\
+        else exit 1; fi \\
     fi
+
+RUN pip install --no-cache-dir pytest "hypothesis<6.31" typing_extensions cython==0.29.36 2>/dev/null || true
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -165,12 +172,8 @@ RUN git clone https://github.com/numpy/numpy.git /home/numpy
 WORKDIR /home/numpy
 RUN git reset --hard
 RUN git checkout {self.pr.base.sha}
-RUN git submodule update --init 2>/dev/null || true
-RUN pip install --no-cache-dir pytest "hypothesis<6.31" typing_extensions cython==0.29.36 2>/dev/null || true
-RUN pip install --no-cache-dir -e . 2>/dev/null || python setup.py build_ext --inplace 2>/dev/null || true
 
-{copy_commands}{clear_env_block}
-"""
+{copy_commands}"""
 
 
 @Instance.register("numpy", "numpy_16439_to_14156")
