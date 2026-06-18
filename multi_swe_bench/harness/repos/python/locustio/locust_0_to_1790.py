@@ -21,57 +21,56 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
+        # Returning a string lets the base Image.dockerfile() build the clone,
+        # the ${BASE_COMMIT} checkout and the hardening block, and lets the
+        # DockerfileEnhancer inject proxy/cert/infra (per image.py).
         return "python:3.8-slim"
 
     def image_prefix(self) -> str:
         return "mswebench"
 
     def image_tag(self) -> str:
-        return "base-old"
+        # Include the base commit so each PR's base image is pinned correctly.
+        # The hardening block in image.py detaches to ${BASE_COMMIT} and strips
+        # all refs/remotes; a per-sha tag prevents a shared base image from being
+        # pinned to a single PR's commit and breaking the others.
+        sha = self.pr.base.sha[:8] if getattr(self.pr.base, "sha", None) else "base"
+        return f"base-old-{sha}"
 
     def workdir(self) -> str:
-        return "base-old"
+        # Keep the build context dir per-sha as well so concurrent base builds
+        # for different PRs do not overwrite each other's Dockerfile.
+        sha = self.pr.base.sha[:8] if getattr(self.pr.base, "sha", None) else "base"
+        return f"base-old-{sha}"
 
     def files(self) -> list[File]:
         return []
 
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+    def extra_packages(self) -> list[str]:
+        # build-essential (from the default packages) already provides gcc/g++;
+        # these are the extra headers locust's native deps (pyzmq, gevent, lxml)
+        # need to build.
+        return [
+            "g++",
+            "python3-dev",
+            "libzmq3-dev",
+            "libev-dev",
+            "libxml2-dev",
+            "libxslt-dev",
+        ]
 
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/"
-                f"{self.pr.org}/{self.pr.repo}.git /home/{REPO_DIR}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{REPO_DIR}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    ca-certificates curl git gnupg make sudo wget build-essential \\
-    gcc g++ python3-dev libzmq3-dev libev-dev \\
-    libxml2-dev libxslt-dev \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-WORKDIR /home/{REPO_DIR}
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
-{self.clear_env}
-
-CMD ["/bin/bash"]
-"""
+    def extra_setup(self) -> str:
+        # Runs in WORKDIR /home/locust after the ${BASE_COMMIT} checkout and
+        # before the hardening block, so the editable install is wired to the
+        # pinned source and git history is still present.
+        return (
+            "RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel\n"
+            'RUN python -m pip install --no-cache-dir "gevent<23" "greenlet<3"\n'
+            'RUN python -m pip install --no-cache-dir -e ".[dev]" '
+            "|| python -m pip install --no-cache-dir -e .\n"
+            "RUN python -m pip install --no-cache-dir "
+            "pytest mock pyquery pytest-timeout cryptography"
+        )
 
 
 class ImageDefault(Image):
@@ -103,39 +102,6 @@ class ImageDefault(Image):
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-echo "check_git_changes: No uncommitted changes"
-exit 0
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                f"""#!/bin/bash
-set -e
-cd /home/{REPO_DIR}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {self.pr.base.sha}
-bash /home/check_git_changes.sh
-pip install --upgrade pip setuptools wheel
-pip install "gevent<23" "greenlet<3"
-pip install -e ".[dev]" || pip install -e .
-pip install pytest mock pyquery pytest-timeout cryptography
-""",
-            ),
             File(
                 ".",
                 "run.sh",
@@ -179,10 +145,9 @@ python -m pytest locust/test/ -v --timeout=60
 
 {copy_commands}
 
-RUN bash /home/prepare.sh
-
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 

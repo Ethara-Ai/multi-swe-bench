@@ -21,7 +21,10 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # PRs before ~2500 need Python 3.8 due to pyzmq compatibility issues
+        # Returning a string lets the base Image.dockerfile() build the clone,
+        # the ${BASE_COMMIT} checkout and the hardening block, and lets the
+        # DockerfileEnhancer inject proxy/cert/infra (per image.py).
+        # PRs before ~2500 need Python 3.8 due to pyzmq compatibility issues.
         if self._pr.number < 2500:
             return "python:3.8-slim"
         return "python:3.11-slim"
@@ -30,55 +33,59 @@ class ImageBase(Image):
         return "mswebench"
 
     def image_tag(self) -> str:
+        # Include the base commit so each PR's base image is pinned correctly.
+        # The hardening block in image.py detaches to ${BASE_COMMIT} and strips
+        # all refs/remotes; a per-sha tag prevents a shared base image from being
+        # pinned to a single PR's commit and breaking the others.
+        sha = self.pr.base.sha[:8] if getattr(self.pr.base, "sha", None) else "base"
         if self._pr.number < 2500:
-            return "base-py38"
-        return "base"
+            return f"base-py38-{sha}"
+        return f"base-{sha}"
 
     def workdir(self) -> str:
+        # Keep the build context dir per-sha as well so concurrent base builds
+        # for different PRs do not overwrite each other's Dockerfile.
+        sha = self.pr.base.sha[:8] if getattr(self.pr.base, "sha", None) else "base"
         if self._pr.number < 2500:
-            return "base-py38"
-        return "base"
+            return f"base-py38-{sha}"
+        return f"base-{sha}"
 
     def files(self) -> list[File]:
         return []
 
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+    def extra_packages(self) -> list[str]:
+        # build-essential (from the default packages) already provides gcc/g++;
+        # these are the extra headers locust's native deps (pyzmq, gevent, lxml)
+        # need to build.
+        return [
+            "g++",
+            "python3-dev",
+            "libzmq3-dev",
+            "libev-dev",
+            "libxml2-dev",
+            "libxslt-dev",
+        ]
 
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/"
-                f"{self.pr.org}/{self.pr.repo}.git /home/{REPO_DIR}"
+    def extra_setup(self) -> str:
+        # Runs in WORKDIR /home/locust after the ${BASE_COMMIT} checkout and
+        # before the hardening block, so the editable install is wired to the
+        # pinned source and git history is still present.
+        lines = [
+            "RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel",
+        ]
+        if self._pr.number < 2500:
+            lines.append(
+                'RUN python -m pip install --no-cache-dir "gevent<23" "greenlet<3"'
             )
-        else:
-            code = f"COPY {self.pr.repo} /home/{REPO_DIR}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    ca-certificates curl git gnupg make sudo wget build-essential \\
-    gcc g++ python3-dev libzmq3-dev libev-dev \\
-    libxml2-dev libxslt-dev \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-WORKDIR /home/{REPO_DIR}
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
-{self.clear_env}
-
-CMD ["/bin/bash"]
-"""
+        lines.append(
+            'RUN python -m pip install --no-cache-dir -e ".[dev]" '
+            "|| python -m pip install --no-cache-dir -e ."
+        )
+        lines.append(
+            "RUN python -m pip install --no-cache-dir "
+            "pytest pytest-timeout mock pyquery cryptography retry"
+        )
+        return "\n".join(lines)
 
 
 class ImageDefault(Image):
@@ -106,59 +113,16 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    def _prepare_script(self) -> str:
-        base = f"""#!/bin/bash
-set -e
-cd /home/{REPO_DIR}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {self.pr.base.sha}
-bash /home/check_git_changes.sh
-pip install --upgrade pip setuptools wheel
-"""
-        if self.pr.number < 2500:
-            base += """pip install "gevent<23" "greenlet<3"
-pip install -e ".[dev]" || pip install -e .
-"""
-        else:
-            base += """pip install -e ".[dev]" || pip install -e .
-"""
-        base += """pip install pytest mock pyquery cryptography retry
-"""
-        return base
-
     def files(self) -> list[File]:
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-echo "check_git_changes: No uncommitted changes"
-exit 0
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                self._prepare_script(),
-            ),
-            File(
-                ".",
                 "run.sh",
                 f"""#!/bin/bash
 cd /home/{REPO_DIR}
-python -m pytest locust/test/ -v
+python -m pytest locust/test/ -v --timeout=120 --timeout-method=thread
 """,
             ),
             File(
@@ -167,7 +131,7 @@ python -m pytest locust/test/ -v
                 f"""#!/bin/bash
 cd /home/{REPO_DIR}
 git apply --whitespace=nowarn /home/test.patch
-python -m pytest locust/test/ -v
+python -m pytest locust/test/ -v --timeout=120 --timeout-method=thread
 """,
             ),
             File(
@@ -176,7 +140,7 @@ python -m pytest locust/test/ -v
                 f"""#!/bin/bash
 cd /home/{REPO_DIR}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-python -m pytest locust/test/ -v
+python -m pytest locust/test/ -v --timeout=120 --timeout-method=thread
 """,
             ),
         ]
@@ -196,10 +160,9 @@ python -m pytest locust/test/ -v
 
 {copy_commands}
 
-RUN bash /home/prepare.sh
-
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
