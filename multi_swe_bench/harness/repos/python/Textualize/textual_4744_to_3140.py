@@ -103,39 +103,26 @@ poetry run pytest tests -v --cov=./src/textual --cov-report=xml:./coverage.xml -
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        dockerfile_content = f"""FROM python:3.11-slim
 
-# Choose an appropriate base image based on the project's requirements - replace python:3.11-slim with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.11-slim
-
-## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
 RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
 
 WORKDIR /home/
 COPY fix.patch /home/
 COPY test.patch /home/
-RUN git clone https://github.com/Textualize/textual.git /home/textual
+RUN git clone "${{REPO_URL}}" /home/textual
 
 WORKDIR /home/textual
 RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
+RUN git checkout ${{BASE_COMMIT}}
+
+{Image._HARDENING_BLOCK}
 {copy_commands}
+CMD ["/bin/bash"]
 """
-        return dockerfile_content.format(pr=self.pr)
+        return dockerfile_content
 
 
 @Instance.register("Textualize", "textual_4744_to_3140")
