@@ -8,83 +8,10 @@ appropriate base image.  Tests run via Mocha through Lerna
 """
 
 import re
-from typing import Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-
-
-class TheiaNode8ImageBase(Image):
-    """Base Docker image: node:8-buster with the repo cloned.
-
-    Theia requires native compilation deps (libx11-dev, libxkbfile-dev,
-    libsecret-1-dev) for electron/browser backend packages, plus make
-    and g++ for node-gyp.  Node 8 ships with npm that uses Python 2
-    for node-gyp (available by default on buster).
-    """
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:8-buster"
-
-    def image_tag(self) -> str:
-        return "base-node8"
-
-    def workdir(self) -> str:
-        return "base-node8"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/"
-                f"{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list && \\
-    sed -i 's|http://security.debian.org|http://archive.debian.org|g' /etc/apt/sources.list && \\
-    sed -i '/buster-updates/d' /etc/apt/sources.list && \\
-    apt-get update && apt-get install -y \\
-    git \\
-    libx11-dev \\
-    libxkbfile-dev \\
-    libsecret-1-dev \\
-    make \\
-    g++ \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-
-"""
 
 
 class TheiaNode8ImageDefault(Image):
@@ -109,8 +36,40 @@ class TheiaNode8ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image:
-        return TheiaNode8ImageBase(self.pr, self.config)
+    def dependency(self) -> str:
+        return "node:8-buster"
+
+    @staticmethod
+    def _is_deprecated_debian(base_img: str) -> bool:
+        # node:*-buster (and older) images sit on EOL Debian whose apt repos
+        # have moved to archive.debian.org. The base class only recognises
+        # bare "debian:buster"-style tags, so flag the node images here too;
+        # this makes Image._get_apt_update_command() rewrite sources.list to
+        # archive.debian.org before "apt-get update" (otherwise install 404s).
+        if any(s in base_img for s in ("buster", "stretch", "jessie")):
+            return True
+        return Image._is_deprecated_debian(base_img)
+
+    def extra_packages(self) -> list[str]:
+        # build-essential (g++/make), git, and python3 are already in the
+        # default package set baked into Image.dockerfile(); only Theia's
+        # native-module headers (electron/keytar/node-pty backends) are extra.
+        return ["libx11-dev", "libxkbfile-dev", "libsecret-1-dev"]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. Stages the eval scripts + patches into /home/ (outside the git
+        # tree, so hardening leaves them untouched) and bakes the heavy
+        # yarn/npm install + compile into the image via prepare.sh.
+        return (
+            "COPY prepare.sh /home/prepare.sh\n"
+            "RUN bash /home/prepare.sh\n"
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh"
+        )
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -139,15 +98,14 @@ set -e
 
 cd /home/{repo}
 git reset --hard
-git checkout {base_sha}
 
 export PUPPETEER_SKIP_DOWNLOAD=true
+export TS_NODE_TRANSPILE_ONLY=true
 export ELECTRON_SKIP_BINARY_DOWNLOAD=true
 yarn install --ignore-engines || true
 yarn compile || yarn build || true
 """.format(
                     repo=self.pr.repo,
-                    base_sha=self.pr.base.sha,
                 ),
             ),
             File(
@@ -160,7 +118,8 @@ set -eo pipefail
 cd /home/{repo}
 
 export PUPPETEER_SKIP_DOWNLOAD=true
-./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 2>&1
+export TS_NODE_TRANSPILE_ONLY=true
+./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 --no-bail 2>&1
 """.format(repo=self.pr.repo),
             ),
             File(
@@ -171,12 +130,14 @@ export PUPPETEER_SKIP_DOWNLOAD=true
 set -eo pipefail
 
 cd /home/{repo}
-git apply --whitespace=nowarn /home/test.patch
+git reset --hard
+git apply --whitespace=nowarn --3way /home/test.patch
 
 export PUPPETEER_SKIP_DOWNLOAD=true
+export TS_NODE_TRANSPILE_ONLY=true
 export ELECTRON_SKIP_BINARY_DOWNLOAD=true
 yarn compile || yarn build || true
-./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 2>&1
+./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 --no-bail 2>&1
 """.format(repo=self.pr.repo),
             ),
             File(
@@ -187,39 +148,18 @@ yarn compile || yarn build || true
 set -eo pipefail
 
 cd /home/{repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git reset --hard
+git apply --whitespace=nowarn --3way /home/test.patch /home/fix.patch
 
 export PUPPETEER_SKIP_DOWNLOAD=true
+export TS_NODE_TRANSPILE_ONLY=true
 export ELECTRON_SKIP_BINARY_DOWNLOAD=true
 yarn install --ignore-engines || true
 yarn compile || yarn build || true
-./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 2>&1
+./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 --no-bail 2>&1
 """.format(repo=self.pr.repo),
             ),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("eclipse-theia", "theia_0_to_5140")

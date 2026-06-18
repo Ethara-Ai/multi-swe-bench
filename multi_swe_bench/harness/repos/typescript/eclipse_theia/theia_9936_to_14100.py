@@ -8,80 +8,10 @@ Lerna (``lerna run --scope "@theia/!(example-)*" test``).
 """
 
 import re
-from typing import Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-
-
-class TheiaNode16ImageBase(Image):
-    """Base Docker image: node:16-bullseye with the repo cloned.
-
-    Theia requires native compilation deps (libx11-dev, libxkbfile-dev,
-    libsecret-1-dev) for electron/browser backend packages, plus python3,
-    make, and g++ for node-gyp.
-    """
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:16-bullseye"
-
-    def image_tag(self) -> str:
-        return "base-node16"
-
-    def workdir(self) -> str:
-        return "base-node16"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/"
-                f"{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y \\
-    git \\
-    libx11-dev \\
-    libxkbfile-dev \\
-    libsecret-1-dev \\
-    python3 \\
-    make \\
-    g++ \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-
-"""
 
 
 class TheiaNode16ImageDefault(Image):
@@ -106,8 +36,29 @@ class TheiaNode16ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image:
-        return TheiaNode16ImageBase(self.pr, self.config)
+    def dependency(self) -> str:
+        return "node:16-bullseye"
+
+    def extra_packages(self) -> list[str]:
+        # build-essential (g++/make), git, and python3 are already in the
+        # default package set baked into Image.dockerfile(); only Theia's
+        # native-module headers (electron/keytar/node-pty backends) are extra.
+        return ["libx11-dev", "libxkbfile-dev", "libsecret-1-dev"]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. Stages the eval scripts + patches into /home/ (outside the git
+        # tree, so hardening leaves them untouched) and bakes the heavy
+        # yarn/npm install + compile into the image via prepare.sh.
+        return (
+            "COPY prepare.sh /home/prepare.sh\n"
+            "RUN bash /home/prepare.sh\n"
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh"
+        )
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -136,7 +87,6 @@ set -e
 
 cd /home/{repo}
 git reset --hard
-git checkout {base_sha}
 
 export PUPPETEER_SKIP_DOWNLOAD=true
 export ELECTRON_SKIP_BINARY_DOWNLOAD=true
@@ -144,7 +94,6 @@ yarn install --ignore-engines || true
 yarn compile || yarn build || true
 """.format(
                     repo=self.pr.repo,
-                    base_sha=self.pr.base.sha,
                 ),
             ),
             File(
@@ -157,7 +106,7 @@ set -eo pipefail
 cd /home/{repo}
 
 export PUPPETEER_SKIP_DOWNLOAD=true
-./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 2>&1
+./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 --no-bail 2>&1
 """.format(repo=self.pr.repo),
             ),
             File(
@@ -168,12 +117,13 @@ export PUPPETEER_SKIP_DOWNLOAD=true
 set -eo pipefail
 
 cd /home/{repo}
-git apply --whitespace=nowarn /home/test.patch
+git reset --hard
+git apply --whitespace=nowarn --3way /home/test.patch
 
 export PUPPETEER_SKIP_DOWNLOAD=true
 export ELECTRON_SKIP_BINARY_DOWNLOAD=true
 yarn compile || yarn build || true
-./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 2>&1
+./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 --no-bail 2>&1
 """.format(repo=self.pr.repo),
             ),
             File(
@@ -184,39 +134,17 @@ yarn compile || yarn build || true
 set -eo pipefail
 
 cd /home/{repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git reset --hard
+git apply --whitespace=nowarn --3way /home/test.patch /home/fix.patch
 
 export PUPPETEER_SKIP_DOWNLOAD=true
 export ELECTRON_SKIP_BINARY_DOWNLOAD=true
 yarn install --ignore-engines || true
 yarn compile || yarn build || true
-./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 2>&1
+./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 --no-bail 2>&1
 """.format(repo=self.pr.repo),
             ),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("eclipse-theia", "theia_9936_to_14100")
