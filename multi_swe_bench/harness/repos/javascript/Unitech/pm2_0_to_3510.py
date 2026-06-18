@@ -32,39 +32,47 @@ class _ImageBase(Image):
         return "ubuntu:latest"
 
     def image_tag(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        # Single shared toolchain base, reused by every PR and era. It is
+        # commit-agnostic (no clone/checkout/hardening), so it is shareable.
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
 
+    def extra_packages(self) -> list[str]:
+        # Node.js (v18), npm and bc from Ubuntu apt; the rest of the build
+        # tooling is provided by Image.default_packages.
+        return ["nodejs", "npm", "bc"]
+
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        # Toolchain ONLY -- deliberately no git clone/checkout/hardening here so
+        # the image stays commit-agnostic and shareable. The per-PR clone,
+        # checkout of BASE_COMMIT and git hardening live in _ImageDefault.
+        base_img = self.dependency()
+        default_packages = [
+            "ca-certificates", "curl", "build-essential", "git", "gnupg",
+            "make", "python3", "sudo", "wget",
+        ]
+        packages_str = " \\\n    ".join(default_packages + self.extra_packages())
+        apt_command = self._get_apt_update_command(packages_str, base_img)
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-RUN apt update && apt install -y git nodejs npm bc
-
-{code}
-
-{self.clear_env}
-
-"""
+        sections = [f"FROM {base_img}"]
+        if self.global_env:
+            sections.append(self.global_env)
+        sections.append(
+            "WORKDIR /home/\n"
+            "ENV DEBIAN_FRONTEND=noninteractive\n"
+            "ENV LANG=C.UTF-8\n"
+            "ENV LC_ALL=C.UTF-8"
+        )
+        sections.append(apt_command)
+        if self.clear_env:
+            sections.append(self.clear_env)
+        sections.append('CMD ["/bin/bash"]')
+        return "\n\n".join(sections) + "\n"
 
 
 class _ImageDefault(Image):
@@ -91,7 +99,39 @@ class _ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    # Bash/e2e orchestrator scripts that run *other* tests -- never run directly.
+    _SH_RUNNERS = {"e2e.sh", "unit.sh"}
+
+    def _runnable_test_files(self) -> list[str]:
+        """Test files touched by the test patch that the run scripts execute.
+        Prefers mocha .js specs; if the patch adds no runnable .js, falls back to
+        .sh e2e/bash tests so e2e-only PRs still exercise their f2p (instances
+        that have .js are unchanged). Excludes fixtures, master runners (e2e.sh,
+        unit.sh), pm2_* helpers and include.sh."""
+        seen: set[str] = set()
+        js: list[str] = []
+        sh: list[str] = []
+        for path in re.findall(r"^\+\+\+ b/(.+?)\s*$", self.pr.test_patch or "", re.M):
+            if path == "/dev/null" or not path.startswith("test/"):
+                continue
+            if "/fixtures/" in path or path in seen:
+                continue
+            name = path.rsplit("/", 1)[-1]
+            if path.endswith(".js"):
+                seen.add(path)
+                js.append(path)
+            elif (
+                path.endswith(".sh")
+                and name not in self._SH_RUNNERS
+                and not name.startswith("pm2_")
+                and name != "include.sh"
+            ):
+                seen.add(path)
+                sh.append(path)
+        return js if js else sh
+
     def files(self) -> list[File]:
+        test_files = " ".join(self._runnable_test_files())
         return [
             File(
                 ".",
@@ -145,56 +185,103 @@ npm install || true
                 "run.sh",
                 """#!/bin/bash
 
-cd /home/{pr.repo}
-NODE_ENV=test bash test/pm2_programmatic_tests.sh 2>&1 || true
+cd /home/{repo}
+export PATH="$PATH:/home/{repo}/node_modules/.bin"
+npm install 2>&1 || true
+TEST_FILES="{tf}"
+for f in $TEST_FILES; do
+  [ -f "$f" ] || continue
+  echo "[~] Running $f"
+  case "$f" in
+    *.sh) NODE_ENV=test timeout 300 bash "$f" 2>&1 || true ;;
+    *)    NODE_ENV=test timeout 300 mocha --retries 2 --timeout 60000 "$f" 2>&1 || true ;;
+  esac
+done
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, tf=test_files),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
 
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-NODE_ENV=test bash test/pm2_programmatic_tests.sh 2>&1 || true
+cd /home/{repo}
+export PATH="$PATH:/home/{repo}/node_modules/.bin"
+git apply --whitespace=nowarn /home/test.patch || git apply --whitespace=nowarn --reject /home/test.patch || true
+npm install 2>&1 || true
+TEST_FILES="{tf}"
+for f in $TEST_FILES; do
+  [ -f "$f" ] || continue
+  echo "[~] Running $f"
+  case "$f" in
+    *.sh) NODE_ENV=test timeout 300 bash "$f" 2>&1 || true ;;
+    *)    NODE_ENV=test timeout 300 mocha --retries 2 --timeout 60000 "$f" 2>&1 || true ;;
+  esac
+done
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, tf=test_files),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
 
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-NODE_ENV=test bash test/pm2_programmatic_tests.sh 2>&1 || true
+cd /home/{repo}
+export PATH="$PATH:/home/{repo}/node_modules/.bin"
+git apply --whitespace=nowarn --reject /home/test.patch /home/fix.patch || true
+npm install 2>&1 || true
+TEST_FILES="{tf}"
+for f in $TEST_FILES; do
+  [ -f "$f" ] || continue
+  echo "[~] Running $f"
+  case "$f" in
+    *.sh) NODE_ENV=test timeout 300 bash "$f" 2>&1 || true ;;
+    *)    NODE_ENV=test timeout 300 mocha --retries 2 --timeout 60000 "$f" 2>&1 || true ;;
+  esac
+done
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, tf=test_files),
             ),
         ]
 
     def dockerfile(self) -> str:
+        # _ImageBase is a shared toolchain image with NO repository, so the
+        # per-PR clone, checkout of BASE_COMMIT and git hardening happen here.
+        # This image has an Image dependency, so DockerfileEnhancer leaves it
+        # raw (no auto-hardening / no REPO_URL,BASE_COMMIT build args) -- hence
+        # everything is baked in explicitly below.
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        repo = self.pr.repo
+        repo_url = f"https://github.com/{self.pr.org}/{repo}.git"
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
-{copy_commands}
+ARG REPO_URL="{repo_url}"
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
-{prepare_commands}
+{copy_commands}
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{Image._HARDENING_BLOCK}
+
+RUN bash /home/prepare.sh
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -215,6 +302,8 @@ def _parse_mocha_log(test_log: str) -> TestResult:
 
     # era 1 spec() success marker: -----------> ✔ Test Name
     re_spec_pass = re.compile(r"^-*>\s*[✔✓]\s+(.+)$")
+    # e2e/bash harness fail marker: ######## ✘ Test Name
+    re_spec_fail = re.compile(r"^#{4,}\s*[✘]\s+(.+)$")
 
     for line in test_log.splitlines():
         clean = ansi_re.sub("", line).strip()
@@ -238,11 +327,24 @@ def _parse_mocha_log(test_log: str) -> TestResult:
                 failed_tests.add(test_name)
             continue
 
-        # Check era 1 spec() markers
+        # Check era 1 spec() / e2e markers
         spec_pass_match = re_spec_pass.match(clean)
         if spec_pass_match:
             passed_tests.add(spec_pass_match.group(1).strip())
             continue
+
+        spec_fail_match = re_spec_fail.match(clean)
+        if spec_fail_match:
+            failed_tests.add(spec_fail_match.group(1).strip())
+            continue
+
+    # PM2 specs reuse the same `it()` name across describe blocks (e.g.
+    # "should trigger message by name"), so one name can be reported as both
+    # passed and failed in a single run. TestResult requires the three sets to
+    # be disjoint, so collapse overlaps with failed taking precedence.
+    passed_tests -= failed_tests
+    skipped_tests -= failed_tests
+    skipped_tests -= passed_tests
 
     return TestResult(
         passed_count=len(passed_tests),
@@ -281,15 +383,7 @@ class PM2_0_TO_3510(Instance):
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-        return (
-            "bash -c '"
-            "cd /home/pm2 && "
-            "git apply --whitespace=nowarn --reject /home/test.patch /home/fix.patch; "
-            "npm install 2>&1 && "
-            "export PATH=$PATH:/home/pm2/node_modules/.bin && "
-            "if [ -f test/pm2_programmatic_tests.sh ]; then NODE_ENV=test bash test/pm2_programmatic_tests.sh 2>&1; elif [ -f test/unit.sh ]; then NODE_ENV=test bash test/unit.sh 2>&1; fi || true"
-            "'"
-        )
+        return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
         return _parse_mocha_log(test_log)
