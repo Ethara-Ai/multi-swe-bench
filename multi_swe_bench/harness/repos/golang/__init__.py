@@ -1,4 +1,5 @@
 from multi_swe_bench.harness.repos.golang.beego import *
+from multi_swe_bench.harness.repos.golang.gofiber import *
 from multi_swe_bench.harness.repos.golang.caddyserver import *
 from multi_swe_bench.harness.repos.golang.evanw import *
 from multi_swe_bench.harness.repos.golang.cli import *

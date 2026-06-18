@@ -21,10 +21,16 @@ class FiberImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+        # Returning a string lets the base Image.dockerfile() build the clone,
+        # the ${BASE_COMMIT} checkout and the hardening block, and lets
+        # DockerfileEnhancer inject the REPO_URL/BASE_COMMIT ARGs + infra
+        # (per image.py). go 1.16 / bullseye matches the v2.1.x era (go.mod
+        # `go 1.14`, Nov 2020) and still has live apt repositories.
+        return "golang:1.16-bullseye"
 
     def image_tag(self) -> str:
-        return "base"
+        base_sha = self.pr.base.sha[:8] if getattr(self.pr.base, "sha", None) else "base"
+        return f"base-{base_sha}"
 
     def workdir(self) -> str:
         return "base"
@@ -32,27 +38,10 @@ class FiberImageBase(Image):
     def files(self) -> list[File]:
         return []
 
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-{code}
-
-{self.clear_env}
-
-"""
+    def extra_setup(self) -> str:
+        # Runs in WORKDIR /home/fiber after the ${BASE_COMMIT} checkout.
+        # Warm the module cache so the offline test runs are stable.
+        return "RUN go mod download || true"
 
 
 class FiberImageDefault(Image):
@@ -88,43 +77,6 @@ class FiberImageDefault(Image):
                 ".",
                 "test.patch",
                 f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-go test -v -count=1 ./... || true
-
-""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -172,18 +124,15 @@ go test -v -count=1 ./...
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 
-{prepare_commands}
-
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
