@@ -18,7 +18,16 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 class TailwindImageBase(Image):
-    """Base image: clone repo on a given Node version.
+    """Toolchain-only base image on a given Node version.
+
+    It deliberately does NOT clone the repo. A single ``base-{interval}`` tag is
+    shared by every PR in the interval, but each PR has a different ``base.sha``.
+    Cloning here would let DockerfileEnhancer (which processes string-dependency
+    images) rewrite the hardcoded clone into a ``git checkout ${BASE_COMMIT}`` +
+    hardening sequence pinned to whichever PR triggered the shared base build,
+    pruning every other PR's commit out of git history and breaking them. The
+    clone + checkout + hardening therefore happen per-PR in ``ImageDefault``
+    (see ``build_pr_dockerfile``) instead.
 
     Args:
         node_image: Docker image name (e.g. "node:18", "node:20")
@@ -62,13 +71,10 @@ class TailwindImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = "RUN git clone https://github.com/{org}/{repo}.git /home/{repo}".format(
-                org=self.pr.org, repo=self.pr.repo
-            )
-        else:
-            code = "COPY {repo} /home/{repo}".format(repo=self.pr.repo)
-
+        # Toolchain only: no repo fetch here (see class docstring). With no
+        # `git clone`/`COPY repo` line, DockerfileEnhancer leaves this base
+        # untouched apart from its proxy/cert infra block, so the shared base
+        # is never pinned/hardened to a single PR's commit.
         return """FROM {image_name}
 
 {global_env}
@@ -78,16 +84,75 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
 RUN apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
 
-{code}
-
 {clear_env}
 
 """.format(
             image_name=image_name,
             global_env=self.global_env,
-            code=code,
             clear_env=self.clear_env,
         )
+
+
+# ---------------------------------------------------------------------------
+# Shared per-PR Dockerfile builder
+# ---------------------------------------------------------------------------
+
+
+def build_pr_dockerfile(image: Image) -> str:
+    """Build the per-PR Dockerfile for any tailwind era ``ImageDefault``.
+
+    The per-PR image chains to a base *Image* (not a string), so
+    ``DockerfileEnhancer`` returns this dockerfile verbatim and does NOT
+    auto-inject git-history hardening. We therefore clone, check out
+    ``${BASE_COMMIT}``, and apply ``Image._HARDENING_BLOCK`` manually here so
+    the fix / future commits cannot be read out of git history (reward
+    hacking). ``BASE_COMMIT`` is pinned to *this* PR's ``base.sha``, and
+    ``REPO_URL`` is provided as an ARG (the enhancer is bypassed, so neither is
+    injected for us). This mirrors the documented two-stage hardening pattern
+    used by the headscale harness.
+    """
+    base = image.dependency()
+    name = base.image_name()
+    tag = base.image_tag()
+    pr = image.pr
+
+    copy_commands = ""
+    for file in image.files():
+        copy_commands += "COPY {name} /home/\n".format(name=file.name)
+
+    return """FROM {name}:{tag}
+
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT="{base_sha}"
+
+{global_env}
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{copy_commands}
+RUN bash /home/prepare.sh
+
+{hardening}
+
+{clear_env}
+
+CMD ["/bin/bash"]
+""".format(
+        name=name,
+        tag=tag,
+        org=pr.org,
+        repo=pr.repo,
+        base_sha=pr.base.sha,
+        global_env=image.global_env,
+        copy_commands=copy_commands,
+        hardening=Image._HARDENING_BLOCK,
+        clear_env=image.clear_env,
+    )
 
 
 # ---------------------------------------------------------------------------

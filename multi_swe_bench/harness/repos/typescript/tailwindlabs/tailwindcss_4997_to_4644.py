@@ -14,6 +14,7 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 from .tailwindcss import (
     TailwindImageBase,
+    build_pr_dockerfile,
     tailwindcss_parse_log,
     _CHECK_GIT_CHANGES_SH,
     _V2LATE_PREPARE_SH,
@@ -97,31 +98,7 @@ class ImageDefault(Image):
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += "COPY {name} /home/\n".format(name=file.name)
-
-        return """FROM {name}:{tag}
-
-{global_env}
-
-{copy_commands}
-
-RUN bash /home/prepare.sh
-
-{clear_env}
-
-""".format(
-            name=name,
-            tag=tag,
-            global_env=self.global_env,
-            copy_commands=copy_commands,
-            clear_env=self.clear_env,
-        )
+        return build_pr_dockerfile(self)
 
 
 @Instance.register("tailwindlabs", _INTERVAL_NAME)
