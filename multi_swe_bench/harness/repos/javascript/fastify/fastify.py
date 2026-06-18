@@ -36,14 +36,55 @@ class ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        org, repo = self.pr.org, self.pr.repo
+
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} base Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates curl git gnupg make sudo wget \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 WORKDIR /home/
 
@@ -113,13 +154,38 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -e
+set -eux
 
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach {pr.base.sha}
 bash /home/check_git_changes.sh
+git remote remove origin 2>/dev/null || true
+git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all
+git reflog expire --expire-unreachable=now --all
+git gc --prune=now --aggressive
+git repack -a -d -l --quiet
+rm -f .git/objects/info/alternates
+git config --local gc.auto 0
+git config --local fetch.recurseSubmodules false
+git config --local remote.pushDefault ""
+test "$(git rev-parse HEAD)" = "$(git rev-parse "{pr.base.sha}")"
+test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"
+test -z "$(git remote)"
+test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+if [ -f .gitmodules ]; then
+    git submodule foreach --recursive '
+        git checkout --detach HEAD
+        git remote remove origin 2>/dev/null || true
+        git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+        git reflog expire --expire=now --all
+        git reflog expire --expire-unreachable=now --all
+        git gc --prune=now --aggressive
+        rm -f .git/objects/info/alternates
+    '
+fi
 
 # Detect tap major version and unit script from package.json
 TAP_MAJOR=$(node -e "try{{let t=require('./package.json').devDependencies.tap||'0';console.log(t.replace(/[^0-9.]/g,'').split('.')[0])}}catch(e){{console.log('0')}}")
@@ -180,7 +246,8 @@ fi
 set -e
 
 cd /home/{pr.repo}
-git apply  --exclude package.json --whitespace=nowarn /home/test.patch /home/fix.patch
+git apply  --exclude package.json --whitespace=nowarn /home/test.patch
+git apply  --exclude package.json --whitespace=nowarn /home/fix.patch
 if node -e "process.exit(require('./package.json').scripts.unit ? 0 : 1)" 2>/dev/null; then
     npm run unit -- --reporter=spec
 else
