@@ -195,7 +195,15 @@ RUN mkdir -p $CARGO_HOME && \\
     cp $CARGO_HOME/config.toml $CARGO_HOME/config
 """
 
-        return f"""FROM {image_name}
+        # `# syntax` opt-out: this is a SHARED base (one per crates.io snapshot,
+        # reused by every PR on that snapshot). DockerfileEnhancer would otherwise
+        # rewrite the clone to `git checkout ${{BASE_COMMIT}}` + hardening, pinning
+        # the shared base to a single commit and gc-pruning it — which breaks every
+        # other PR's `git checkout {{base.sha}}`. The base must keep FULL history;
+        # the per-PR image (RustClippyImageDefault) checks out + hardens to its own
+        # base commit instead.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
@@ -366,6 +374,35 @@ cargo test
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Anti-reward-hacking HEAD strip. The per-PR image's dependency() returns
+        # an Image, so DockerfileEnhancer skips it (it only hardens str-dependency
+        # images) — we must embed the hardening ourselves, mirroring
+        # Image._HARDENING_BLOCK but with the PR's literal base sha (no
+        # ${BASE_COMMIT} build-arg exists on this stage). After prepare.sh has
+        # checked out base.sha, this detaches HEAD there and strips every other
+        # ref/remote/commit so the model can't `git log/show/fetch` the fix or any
+        # future commit.
+        sha = self.pr.base.sha
+        repo = self.pr.repo
+        hardening = f"""RUN set -eux; \\
+    cd /home/{repo}; \\
+    git checkout --detach {sha}; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse {sha})"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)\""""
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -374,8 +411,11 @@ cargo test
 
 {prepare_commands}
 
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 

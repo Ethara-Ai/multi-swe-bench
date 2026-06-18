@@ -71,7 +71,13 @@ class TldrawVersionBase(Image):
         else:
             yarn_setup = "RUN npm install -g yarn@1 || true"
 
-        return """FROM {image_name}
+        # SHARED base (tag base-<interval>, reused by every PR in the era). The
+        # `# syntax` directive makes DockerfileEnhancer.enhance() skip it, so the
+        # enhancer won't rewrite the clone to checkout ${{BASE_COMMIT}} + gc-prune
+        # and pin the shared base to a single commit (which breaks every other PR).
+        # Per-PR hardening is embedded in each era's ImageDefault instead.
+        return """# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {global_env}
 
@@ -267,6 +273,30 @@ def tldraw_parse_log(test_log: str) -> TestResult:
 # Shared shell script templates
 # ---------------------------------------------------------------------------
 
+# Per-PR anti-cheat hardening. The per-PR ImageDefault depends on an Image (the
+# shared base), so DockerfileEnhancer emits its Dockerfile verbatim — it only
+# auto-injects hardening into str-dependency/base images. So we embed it here,
+# appended after prepare.sh has `git checkout {{base_sha}}`. Detach at base.sha,
+# drop origin + every ref + reflog, gc-prune unreachable objects, then self-audit
+# (HEAD==base.sha, no refs/remotes, rev-list --all==HEAD) so the fix commit can't
+# be read out of git history via git log/show/fetch. Literal base.sha (no
+# ${{BASE_COMMIT}} ARG in this image).
+_PER_PR_HARDENING = """RUN set -eux; \\
+    cd /home/{repo}; \\
+    git checkout --detach {base_sha}; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all || true; \\
+    git reflog expire --expire-unreachable=now --all || true; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse {base_sha})"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)\""""
+
 _CHECK_GIT_CHANGES_SH = """#!/bin/bash
 set -e
 
@@ -324,54 +354,39 @@ elif [ -f packages/tldraw/package.json ]; then
 fi
 """
 
-_ERA2_RUN_TESTS_SH = """#!/bin/bash
-cd /home/{repo}
-
-# Era 2: use yarn test-ci which handles both lazyrepo (v2.x) and vitest (v3+)
-echo "run_tests: era 2, trying yarn test-ci"
-OUTPUT=$(NODE_OPTIONS="--max_old_space_size=4096" yarn test-ci 2>&1) || true
-echo "$OUTPUT"
-
-# If test-ci failed due to lazyrepo dependency (refresh-assets etc), fall back to direct test runner
-if echo "$OUTPUT" | grep -q "Failed tasks:\|failed"; then
-    if ! echo "$OUTPUT" | grep -qE "PASS |FAIL |✓|✗|Tests.*passed"; then
-        echo "run_tests: test-ci had non-test failures, trying direct vitest/jest"
-        # Try vitest first (v3+)
-        if [ -f vitest.config.ts ] || [ -f vitest.config.mts ]; then
-            NODE_OPTIONS="--max_old_space_size=4096" npx vitest run 2>&1 || true
-        else
-            # Fall back to jest via workspace
-            NODE_OPTIONS="--max_old_space_size=4096" yarn run -T jest --ci --runInBand 2>&1 || true
-        fi
-    fi
-fi
+# SCOPED test runner (shared by both eras). Runs ONLY the test files touched by
+# test.patch (passed as "$@"), not the whole monorepo. Running `yarn test-ci`
+# over the full workspace caused the test runner to execute DIFFERENT package
+# subsets between the test-stage and fix-stage (lazyrepo/vitest scope drift) plus
+# whole-monorepo build failures, which inflated n2p with hundreds of bogus
+# none->pass tests. Pinning to the patch's own test files yields the genuine
+# f2p signal (verified on pr-7326: false n2p=231 -> true f2p=2).
+#
+# Per file: find the owning workspace package (packages/X or apps/X), cd in, and
+# run that package's runner (vitest for v3+ eras, jest otherwise) on the relative
+# path. Intentionally BRACE-FREE so the era configs' .format(repo=...) call is a
+# harmless no-op (no {placeholder} and no bash ${}/{} to escape).
+_SCOPED_RUN_TESTS_SH = """#!/bin/bash
+cd /home/tldraw
+if [ -z "$1" ]; then echo "run_tests: no test files passed"; exit 0; fi
+for f in "$@"; do
+  pkg=$(echo "$f" | cut -d/ -f1-2)
+  rel=$(echo "$f" | cut -d/ -f3-)
+  if [ ! -d "/home/tldraw/$pkg" ]; then echo "run_tests: package $pkg absent, skip $f"; continue; fi
+  echo "run_tests: $pkg :: $rel"
+  cd "/home/tldraw/$pkg"
+  if ls vitest.config.* >/dev/null 2>&1; then
+    NODE_OPTIONS=--max_old_space_size=4096 npx vitest run "$rel" 2>&1 || true
+  else
+    NODE_OPTIONS=--max_old_space_size=4096 npx jest "$rel" --ci 2>&1 || true
+  fi
+  cd /home/tldraw
+done
 """
 
-_ERA1_RUN_TESTS_SH = """#!/bin/bash
-cd /home/{repo}
+_ERA2_RUN_TESTS_SH = _SCOPED_RUN_TESTS_SH
 
-# Era 1: detect lerna vs simple yarn test
-if [ -f lerna.json ]; then
-    # Check if workspace:* protocol is used (lerna can't handle it, need yarn berry)
-    if grep -rq '"workspace:\*"\|"workspace:\^"' packages/*/package.json 2>/dev/null; then
-        echo "run_tests: workspace protocol detected, using yarn test-ci"
-        NODE_OPTIONS="--max_old_space_size=4096" yarn test-ci 2>&1 || true
-    else
-        # Try lerna run test:ci first
-        echo "run_tests: lerna monorepo, trying test:ci"
-        OUTPUT=$(NODE_OPTIONS="--max_old_space_size=4096" npx lerna run test:ci --stream 2>&1) || true
-        echo "$OUTPUT"
-        # If lerna found no packages with test:ci, fall back to test
-        if echo "$OUTPUT" | grep -q "No packages found with the lifecycle script"; then
-            echo "run_tests: test:ci not found, falling back to yarn test"
-            NODE_OPTIONS="--max_old_space_size=4096" yarn test --ci --runInBand 2>&1 || true
-        fi
-    fi
-else
-    echo "run_tests: simple monorepo, running yarn test"
-    NODE_OPTIONS="--max_old_space_size=4096" yarn test --ci --runInBand 2>&1 || true
-fi
-"""
+_ERA1_RUN_TESTS_SH = _SCOPED_RUN_TESTS_SH
 
 _RUN_SH = """#!/bin/bash
 set -e

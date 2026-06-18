@@ -48,7 +48,13 @@ class ImageBase(Image):
         else:
             code = "COPY {repo} /home/{repo}".format(repo=self.pr.repo)
 
-        return """FROM {image_name}
+        # SHARED base (tag base-<interval>) — the `# syntax` directive makes
+        # DockerfileEnhancer.enhance() skip it, so the enhancer doesn't rewrite the
+        # clone to checkout ${{BASE_COMMIT}} + gc-prune and pin the shared base to a
+        # single commit (which breaks every other PR). Per-PR hardening is embedded
+        # in ImageDefault below.
+        return """# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {global_env}
 
@@ -223,12 +229,17 @@ class NuxtAva(Instance):
         #   ✔ test name
         #   ✖ test name
         #   - test name (skipped)
+        # Ava colorizes its reporter output, so each "✔ name" line is actually
+        # "\x1b[32m✔\x1b[39m name" — strip ANSI escapes first or the ✔/✖ anchors
+        # never match and every test is mis-counted as 0.
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+
         re_pass = re.compile(r"^\s*[✔✓]\s+(.+?)$")
         re_fail = re.compile(r"^\s*[✖✗×]\s+(.+?)$")
         re_skip = re.compile(r"^\s*[-]\s+(.+?)$")
 
         for line in test_log.splitlines():
-            line = line.strip()
+            line = ansi_escape.sub("", line).strip()
             if not line:
                 continue
 

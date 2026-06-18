@@ -14,6 +14,7 @@ from .tldraw import (
     _RUN_SH,
     _TEST_RUN_SH,
     _FIX_RUN_SH,
+    _PER_PR_HARDENING,
 )
 
 _NODE_IMAGE = "node:16-bookworm"
@@ -98,6 +99,10 @@ class ImageDefault(Image):
         for file in self.files():
             copy_commands += "COPY {name} /home/\n".format(name=file.name)
 
+        hardening = _PER_PR_HARDENING.format(
+            repo=self.pr.repo, base_sha=self.pr.base.sha
+        )
+
         return """FROM {name}:{tag}
 
 {global_env}
@@ -106,6 +111,8 @@ class ImageDefault(Image):
 
 RUN bash /home/prepare.sh
 
+{hardening}
+
 {clear_env}
 
 """.format(
@@ -113,6 +120,7 @@ RUN bash /home/prepare.sh
             tag=tag,
             global_env=self.global_env,
             copy_commands=copy_commands,
+            hardening=hardening,
             clear_env=self.clear_env,
         )
 

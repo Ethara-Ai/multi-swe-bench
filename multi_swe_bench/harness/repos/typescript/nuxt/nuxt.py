@@ -41,12 +41,19 @@ class ImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        # SHARED base (tag "base", reused by every Vitest-era PR). The `# syntax`
+        # directive makes DockerfileEnhancer.enhance() return this Dockerfile
+        # unchanged; otherwise it rewrites the clone to `git checkout
+        # ${{BASE_COMMIT}}` + hardening + gc-prune, pinning the shared base to ONE
+        # commit and pruning it — which breaks every other PR's `git checkout
+        # {{base.sha}}` in prepare.sh. Per-PR hardening lives in ImageDefault.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
 WORKDIR /home/
-RUN apt update && apt install -y git 
+RUN apt update && apt install -y git
 RUN npm install -g pnpm
 RUN apt install -y jq
 
@@ -277,6 +284,11 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 pnpm install || true
+# `pnpm build:stub` runs `unbuild --stub` in every package; early Nuxt 3 often
+# can't resolve unbuild from the workspace (engine warns + partial install), so
+# `command not found: unbuild` aborts build:stub and no tests run. Install it
+# globally so it's always on PATH, and keep the workspace add as a fallback.
+npm install -g unbuild || true
 pnpm add -w unbuild || true
 
 """.format(pr=self.pr),

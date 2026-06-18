@@ -6,59 +6,6 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class UltralyticsImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "python:3.11-bookworm"
-
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git libgl1 libglib2.0-0 \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-WORKDIR /home/{self.pr.repo}
-"""
-
-
 class UltralyticsImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -73,7 +20,11 @@ class UltralyticsImageDefault(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return UltralyticsImageBase(self.pr, self.config)
+        # Returning a str base image makes DockerfileEnhancer.enhance() treat this
+        # as a buildable image: it standardizes the `git clone` line, passes
+        # REPO_URL/BASE_COMMIT build args, and auto-injects the git-history
+        # hardening block (single-commit history, no refs/remotes/reflog).
+        return "python:3.11-bookworm"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -81,7 +32,24 @@ class UltralyticsImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def _test_files(self) -> str:
+        """Test files touched by test.patch (under tests/, *.py).
+
+        Running only these instead of the whole tests/ suite isolates the PR's
+        f2p signal and avoids flaky unrelated failures (downloads/timeouts) that
+        otherwise dilute or mask the fail->pass transition. Mirrors the tldraw
+        config's approach.
+        """
+        seen = set()
+        out = []
+        for m in re.findall(r"diff --git a/(\S+)", self.pr.test_patch or ""):
+            if m.startswith("tests/") and m.endswith(".py") and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return " ".join(out)
+
     def files(self) -> list[File]:
+        test_files = self._test_files()
         return [
             File(".", "fix.patch", self.pr.fix_patch),
             File(".", "test.patch", self.pr.test_patch),
@@ -106,8 +74,11 @@ git reset --hard
 git checkout --force {base_sha}
 git clean -fd
 
-# Install CPU-only torch (avoids massive CUDA download)
-pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Install CPU-only torch, PINNED to 2.2.2 (released before the torch 2.6
+# weights_only=True default flip). Unpinned torch (2.6+/2.12) breaks ultralytics
+# 8.0-8.2.x with mass `NameError/weights_only` model-load failures; 2.2.2 defaults
+# weights_only=False and is supported across the dataset's 8.0->8.3 range.
+pip install --no-cache-dir torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cpu
 
 # Install ultralytics with dev deps (handles both setup.py and pyproject.toml eras)
 pip install --no-cache-dir -e '.[dev]' || pip install --no-cache-dir -e '.'
@@ -115,22 +86,16 @@ pip install --no-cache-dir -e '.[dev]' || pip install --no-cache-dir -e '.'
 # Install pytest if not already present (fallback for very old PRs)
 pip install --no-cache-dir pytest pytest-cov 2>/dev/null || true
 
-# Patch torch.load for old ultralytics versions (pre-8.2) that don't pass weights_only=False
-# torch>=2.6 changed default to weights_only=True, breaking old code
-python3 -c "
-import site, os
-sc_path = os.path.join(site.getsitepackages()[0], 'sitecustomize.py')
-with open(sc_path, 'w') as f:
-    f.write('''import torch
-_orig_load = torch.load
-def _patched_load(*args, **kwargs):
-    if \"weights_only\" not in kwargs:
-        kwargs[\"weights_only\"] = False
-    return _orig_load(*args, **kwargs)
-torch.load = _patched_load
-''')
-print(f'Created {{sc_path}}')
-"
+# Pin numpy<2 LAST so it wins: torch 2.2.2 is built against the numpy 1.x C-ABI,
+# and torch/ultralytics deps otherwise pull numpy 2.x -> `RuntimeError: Numpy is
+# not available` on every model load. numpy 1.26.4 satisfies ultralytics (>=1.23)
+# across the 8.0->8.4 range.
+pip install --no-cache-dir "numpy<2"
+
+# NOTE: no torch.load monkeypatch needed. torch is pinned to 2.2.2, which still
+# defaults weights_only=False, so model loads work across the 8.0->8.4 range.
+# (The old sitecustomize patch was both redundant under this pin and broken by
+# bash double-quote nesting -> `NameError: name 'weights_only' is not defined`.)
 
 # Warm up: verify import works
 python3 -c "import ultralytics; print(f'ultralytics {{ultralytics.__version__}} ready')"
@@ -142,8 +107,12 @@ python3 -c "import ultralytics; print(f'ultralytics {{ultralytics.__version__}} 
                 """#!/bin/bash
 set -eo pipefail
 cd /home/{repo}
-pytest tests/ --ignore=tests/test_cuda.py --tb=short -q 2>&1
-""".format(repo=self.pr.repo),
+TARGET="{test_files}"
+RUN=""
+for f in $TARGET; do [ -f "$f" ] && RUN="$RUN $f"; done
+[ -z "$RUN" ] && RUN="tests/"
+pytest $RUN --ignore=tests/test_cuda.py --tb=short -rA 2>&1
+""".format(repo=self.pr.repo, test_files=test_files),
             ),
             File(
                 ".",
@@ -160,12 +129,18 @@ if ! git apply --whitespace=nowarn /home/test.patch; then
     git apply --whitespace=nowarn --reject /home/test.patch || true
 fi
 
-# Reinstall in case test patch modified setup files
-pip install --no-cache-dir -e '.[dev]' 2>/dev/null || pip install --no-cache-dir -e '.' 2>/dev/null || true
+# NOTE: ultralytics is installed editable (-e) in prepare.sh, so source-level
+# patches are picked up without reinstall. We deliberately do NOT re-run
+# `pip install -e .[dev]` here -- it would re-resolve and bump numpy back to 2.x,
+# re-breaking torch 2.2.2 (`RuntimeError: Numpy is not available`).
 
-# Run tests
-pytest tests/ --ignore=tests/test_cuda.py --tb=short -q 2>&1
-""".format(repo=self.pr.repo),
+# Run only the test files touched by test.patch (isolates the f2p signal)
+TARGET="{test_files}"
+RUN=""
+for f in $TARGET; do [ -f "$f" ] && RUN="$RUN $f"; done
+[ -z "$RUN" ] && RUN="tests/"
+pytest $RUN --ignore=tests/test_cuda.py --tb=short -rA 2>&1
+""".format(repo=self.pr.repo, test_files=test_files),
             ),
             File(
                 ".",
@@ -185,26 +160,49 @@ if ! git apply --whitespace=nowarn /home/fix.patch; then
     git apply --whitespace=nowarn --reject /home/fix.patch || true
 fi
 
-# Reinstall in case patches modified setup files
-pip install --no-cache-dir -e '.[dev]' 2>/dev/null || pip install --no-cache-dir -e '.' 2>/dev/null || true
+# NOTE: ultralytics is installed editable (-e) in prepare.sh, so source-level
+# patches are picked up without reinstall. We deliberately do NOT re-run
+# `pip install -e .[dev]` here -- it would re-resolve and bump numpy back to 2.x,
+# re-breaking torch 2.2.2 (`RuntimeError: Numpy is not available`).
 
-# Run tests
-pytest tests/ --ignore=tests/test_cuda.py --tb=short -q 2>&1
-""".format(repo=self.pr.repo),
+# Run only the test files touched by test.patch (isolates the f2p signal)
+TARGET="{test_files}"
+RUN=""
+for f in $TARGET; do [ -f "$f" ] && RUN="$RUN $f"; done
+[ -z "$RUN" ] && RUN="tests/"
+pytest $RUN --ignore=tests/test_cuda.py --tb=short -rA 2>&1
+""".format(repo=self.pr.repo, test_files=test_files),
             ),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        repo = self.pr.repo
 
-        copy_commands = "\n".join(
-            f"COPY {f.name} /home/" for f in self.files()
-        )
-        return f"""FROM {name}:{tag}
+        copy_commands = "\n".join(f"COPY {f.name} /home/" for f in self.files())
+
+        # NOTE: no `# syntax=...` directive here so DockerfileEnhancer.enhance()
+        # runs: it injects the proxy/cert/label infrastructure, REPO_URL/BASE_COMMIT
+        # ARGs, and the git-history hardening block right before the final CMD.
+        # The clone uses "${REPO_URL}" and checkout uses ${BASE_COMMIT}; both are
+        # supplied as build args because dependency() returns a str.
+        return f"""FROM python:3.11-bookworm
 
 {self.global_env}
+
+WORKDIR /home/
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git libgl1 libglib2.0-0 \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
 
 {copy_commands}
 
@@ -212,6 +210,7 @@ RUN bash /home/prepare.sh
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -252,7 +251,9 @@ class Ultralytics(Instance):
         ansi_re = re.compile(r"\x1b\[[0-9;]*m")
         log = ansi_re.sub("", log)
 
-        # tests/test_python.py::test_workflow PASSED
+        # --- Real-name parsers (preferred). All produce stable pytest node IDs. ---
+
+        # tests/test_python.py::test_workflow PASSED   (verbose, name-first)
         verbose_re = re.compile(
             r"^(tests/\S+::\S+)\s+(PASSED|FAILED|ERROR|SKIPPED)",
             re.MULTILINE,
@@ -267,19 +268,24 @@ class Ultralytics(Instance):
             elif status == "SKIPPED":
                 skipped_tests.add(test_name)
 
-        # tests/test_python.py .F.sxX..
-        compact_re = re.compile(r"^(tests/\S+\.py)\s+([.FEsxX]+)", re.MULTILINE)
-        for m in compact_re.finditer(log):
-            test_file = m.group(1)
-            results = m.group(2)
-            for i, symbol in enumerate(results):
-                test_name = f"{test_file}::test_{i + 1}"
-                if symbol == ".":
+        # `pytest -rA` short-summary block is STATUS-FIRST, one line per test:
+        #   PASSED tests/test_python.py::test_workflow
+        #   FAILED tests/test_python.py::test_x - AssertionError
+        #   SKIPPED [1] tests/test_python.py::test_y
+        status_first_re = re.compile(
+            r"^(PASSED|FAILED|ERROR|SKIPPED)\s+(?:\[\d+\]\s+)?(tests/\S+::\S+)",
+            re.MULTILINE,
+        )
+        for m in status_first_re.finditer(log):
+            status, test_name = m.group(1), m.group(2)
+            if status == "PASSED":
+                if test_name not in failed_tests:
                     passed_tests.add(test_name)
-                elif symbol in ("F", "E"):
-                    failed_tests.add(test_name)
-                elif symbol in ("s", "x", "X"):
-                    skipped_tests.add(test_name)
+            elif status in ("FAILED", "ERROR"):
+                failed_tests.add(test_name)
+                passed_tests.discard(test_name)
+            elif status == "SKIPPED":
+                skipped_tests.add(test_name)
 
         # FAILED tests/test_python.py::test_workflow - AssertionError
         failed_summary_re = re.compile(
@@ -289,6 +295,26 @@ class Ultralytics(Instance):
             test_name = m.group(1)
             failed_tests.add(test_name)
             passed_tests.discard(test_name)
+
+        # --- Fallback ONLY if no real node IDs were found at all. ---
+        # The compact progress line (`tests/test_python.py .F.sxX..`) has no test
+        # names, so we synthesize positional ones (::test_1, ::test_2, ...). These
+        # are UNSTABLE across stages and create spurious f2p/n2p churn, so we use
+        # them only when -rA/verbose output is entirely absent (e.g. a crash before
+        # the summary). With `pytest -rA` in the run scripts this should never fire.
+        if not (passed_tests or failed_tests or skipped_tests):
+            compact_re = re.compile(r"^(tests/\S+\.py)\s+([.FEsxX]+)", re.MULTILINE)
+            for m in compact_re.finditer(log):
+                test_file = m.group(1)
+                results = m.group(2)
+                for i, symbol in enumerate(results):
+                    test_name = f"{test_file}::test_{i + 1}"
+                    if symbol == ".":
+                        passed_tests.add(test_name)
+                    elif symbol in ("F", "E"):
+                        failed_tests.add(test_name)
+                    elif symbol in ("s", "x", "X"):
+                        skipped_tests.add(test_name)
 
         return TestResult(
             passed_count=len(passed_tests),

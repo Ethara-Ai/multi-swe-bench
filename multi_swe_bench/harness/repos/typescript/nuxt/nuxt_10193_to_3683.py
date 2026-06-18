@@ -47,7 +47,13 @@ class ImageBase(Image):
         else:
             code = "COPY {repo} /home/{repo}".format(repo=self.pr.repo)
 
-        return """FROM {image_name}
+        # SHARED base (tag base-<interval>) — the `# syntax` directive makes
+        # DockerfileEnhancer.enhance() skip it, so the enhancer doesn't rewrite the
+        # clone to checkout BASE_COMMIT + gc-prune and pin the shared base to a
+        # single commit (which breaks every other PR). Per-PR hardening is embedded
+        # in ImageDefault below.
+        return """# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {global_env}
 
@@ -324,11 +330,15 @@ _RUN_TESTS_SH = """#!/bin/bash
 cd /home/{repo}
 TEST_FILES="$@"
 
-# Nuxt v2 uses jest; use local binary to avoid npx downloading wrong version
+# Nuxt v2 uses jest. Without --ci --forceExit --runInBand, jest waits on lingering
+# async/open handles (dev server, watchers) and never exits — the run hangs at 0%
+# CPU producing no output. timeout is a hard backstop. Local binary avoids npx
+# fetching the wrong version.
+JEST_FLAGS="--verbose --no-coverage --ci --forceExit --runInBand"
 if [ -n "$TEST_FILES" ]; then
-    ./node_modules/.bin/jest --verbose --no-coverage $TEST_FILES 2>&1 || true
+    timeout 1800 ./node_modules/.bin/jest $JEST_FLAGS $TEST_FILES 2>&1 || true
 else
-    ./node_modules/.bin/jest --verbose --no-coverage 2>&1 || true
+    timeout 1800 ./node_modules/.bin/jest $JEST_FLAGS 2>&1 || true
 fi
 """
 
