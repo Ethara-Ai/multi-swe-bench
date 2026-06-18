@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 from typing import Optional, Union
 
@@ -35,7 +37,45 @@ def _filter_binary_patches(patch_content: str) -> str:
     return '\n'.join(result)
 
 
-class CapnprotoImageBase(Image):
+def _select_toolchain(pr: PullRequest) -> tuple[str, str, str]:
+    """Map a PR to its (base_image, tag_suffix, compiler) toolchain triple.
+
+    Kept as a free function so the toolchain base, the shared repo image, and
+    the per-PR image all agree on the same era without duplicating the rules.
+    """
+    # PR #1730: fix patch requires C++20 (coroutines), gcc:10 can't compile it
+    _clang_overrides = {1730}
+    # PR #2385: fix patch requires C++23 (#include <print>), clang-14 can't handle it
+    # PR #2410: base has linker bug (missing kj-async link), fix adds it + upgrades to C++23
+    #           needs gcc:latest for C++23 support; linker bug in base is expected
+    _gcc_latest_overrides = {2385, 2410}
+
+    if pr.number in _clang_overrides:
+        return ("ubuntu:22.04", "clang-14", "clang")
+    if pr.number in _gcc_latest_overrides:
+        return ("gcc:latest", "latest", "gcc")
+    if pr.number <= 1730:
+        return ("gcc:10", "cpp-10", "gcc")
+    elif pr.number <= 2409:
+        return ("ubuntu:22.04", "clang-14", "clang")
+    return ("gcc:latest", "latest", "gcc")
+
+
+class CapnprotoToolchainBase(Image):
+    """Level 1: toolchain-only base image (shared across all PRs of an era).
+
+    IMPORTANT: this image must NOT clone the repository. image.py's
+    DockerfileEnhancer force-injects a "checkout ${BASE_COMMIT} + strip all
+    history + remove origin" hardening block into ANY image whose dependency()
+    is a string (an external base image) and that performs a `git clone`.
+    Because this base image is shared by every PR of an era, pinning it to a
+    single BASE_COMMIT and gc-pruning the rest of history would make
+    `git checkout <base.sha>` fail for every other PR sharing the era. So the
+    clone lives in CapnprotoImageRepo (whose dependency() is an Image, which the
+    enhancer leaves untouched), preserving full history. This image only
+    provides the C/C++ build toolchain.
+    """
+
     def __init__(
         self,
         pr: PullRequest,
@@ -75,11 +115,6 @@ class CapnprotoImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
         # Clang-based images need clang installed explicitly
         if self._compiler == "clang":
             extra_packages = "clang \\\n    git \\\n    "
@@ -88,6 +123,9 @@ class CapnprotoImageBase(Image):
             extra_packages = ""
             env_prefix = ""
 
+        # No `git clone` here on purpose — see the class docstring. The string
+        # dependency means DockerfileEnhancer runs over this Dockerfile, but with
+        # no clone/COPY it only injects proxy/cert/label infra (no hardening).
         return f"""FROM {image_name}
 
 {env_prefix}{self.global_env}
@@ -103,7 +141,79 @@ RUN apt-get update && apt-get install -y \\
     build-essential \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
+{self.clear_env}
+
+"""
+
+
+class CapnprotoImageRepo(Image):
+    """Level 2: shared full-clone image (one per era, built once).
+
+    Depends on CapnprotoToolchainBase (an Image, not a string), so the
+    DockerfileEnhancer returns this Dockerfile verbatim — no BASE_COMMIT
+    pinning, no history stripping, no origin removal. The repository is cloned
+    once with its complete history at master HEAD, which keeps every PR's
+    base.sha reachable for the per-PR checkout done in prepare.sh.
+    """
+
+    def __init__(
+        self,
+        pr: PullRequest,
+        config: Config,
+        base_image: str,
+        tag_suffix: str,
+        compiler: str = "gcc",
+    ):
+        self._pr = pr
+        self._config = config
+        self._base_image = base_image
+        self._tag_suffix = tag_suffix
+        self._compiler = compiler
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return CapnprotoToolchainBase(
+            self.pr,
+            self._config,
+            self._base_image,
+            self._tag_suffix,
+            self._compiler,
+        )
+
+    def image_tag(self) -> str:
+        return f"repo-{self._tag_suffix}"
+
+    def workdir(self) -> str:
+        return f"repo-{self._tag_suffix}"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_full_name()
+
+        # Full-history clone, left at master HEAD. The per-PR prepare.sh checks
+        # out the exact base.sha; harden.sh then strips history per-PR.
+        clone = (
+            f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
+            f"/home/{self.pr.repo}"
+        )
+
+        return f"""FROM {name}
+
+{self.global_env}
+
+WORKDIR /home/
+
+{clone}
 
 {self.clear_env}
 
@@ -111,6 +221,8 @@ RUN apt-get update && apt-get install -y \\
 
 
 class CapnprotoImageDefault(Image):
+    """Level 3: per-PR image. Checks out base.sha and strips history in-image."""
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -124,39 +236,9 @@ class CapnprotoImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        # PR #1730: fix patch requires C++20 (coroutines), gcc:10 can't compile it
-        _clang_overrides = {1730}
-        # PR #2385: fix patch requires C++23 (#include <print>), clang-14 can't handle it
-        # PR #2410: base has linker bug (missing kj-async link), fix adds it + upgrades to C++23
-        #           needs gcc:latest for C++23 support; linker bug in base is expected (causes run/test failures)
-        _gcc_latest_overrides = {2385, 2410}
-
-        if self.pr.number in _clang_overrides:
-            return CapnprotoImageBase(
-                self.pr,
-                self._config,
-                base_image="ubuntu:22.04",
-                tag_suffix="clang-14",
-                compiler="clang",
-            )
-        if self.pr.number in _gcc_latest_overrides:
-            return CapnprotoImageBase(
-                self.pr, self._config, base_image="gcc:latest", tag_suffix="latest"
-            )
-        if self.pr.number <= 1730:
-            return CapnprotoImageBase(
-                self.pr, self._config, base_image="gcc:10", tag_suffix="cpp-10"
-            )
-        elif self.pr.number <= 2409:
-            return CapnprotoImageBase(
-                self.pr,
-                self._config,
-                base_image="ubuntu:22.04",
-                tag_suffix="clang-14",
-                compiler="clang",
-            )
-        return CapnprotoImageBase(
-            self.pr, self._config, base_image="gcc:latest", tag_suffix="latest"
+        base_image, tag_suffix, compiler = _select_toolchain(self.pr)
+        return CapnprotoImageRepo(
+            self.pr, self._config, base_image, tag_suffix, compiler
         )
 
     def image_tag(self) -> str:
@@ -166,8 +248,8 @@ class CapnprotoImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def _cmake_flags(self) -> str:
-        base = self.dependency()
-        if isinstance(base, CapnprotoImageBase) and base._compiler == "clang":
+        _, _, compiler = _select_toolchain(self.pr)
+        if compiler == "clang":
             return "-DBUILD_TESTING=ON -DCMAKE_CXX_COMPILER=clang++"
         if self.pr.number <= 1730:
             return '-DBUILD_TESTING=ON -DCMAKE_CXX_FLAGS="-Wno-narrowing"'
@@ -274,6 +356,59 @@ cd src && ctest --output-on-failure 2>&1 || true
 
 """.format(pr=self.pr, cmake_flags=cmake_flags),
             ),
+            File(
+                ".",
+                "harden.sh",
+                # NOTE: raw content — NOT .format()ed — so ${VAR} / ^{commit}
+                # braces stay literal. base.sha arrives as $1 from the Dockerfile.
+                #
+                # Anti-reward-hacking hardening applied to the per-PR image AFTER
+                # prepare.sh. image.py's DockerfileEnhancer normally injects this,
+                # but only for string-dependency images that clone — doing that
+                # here would re-pin and history-strip the SHARED toolchain/repo
+                # image and break every other PR's base.sha checkout. So the clone
+                # lives in the shared repo image (full history, needed so every
+                # era's base.sha stay reachable) and the per-PR image strips
+                # history here instead. prepare.sh leaves HEAD detached exactly at
+                # base.sha, so base.sha stays reachable (test-run/fix-run still
+                # apply patches against it) while the real fix — every commit after
+                # base.sha on master, plus the origin remote and all branch/tag
+                # refs — is removed.
+                """#!/bin/bash
+set -e
+cd /home/capnproto
+
+BASE_SHA="$1"
+# Record the real-fix tip (master) BEFORE cutting history, to assert removal.
+FUTURE_SHA="$(git rev-parse origin/master 2>/dev/null || true)"
+
+git checkout --detach HEAD
+git remote remove origin 2>/dev/null || true
+git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+  | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all || true
+git reflog expire --expire-unreachable=now --all || true
+git gc --prune=now --aggressive || true
+git repack -a -d -l --quiet || true
+rm -f .git/objects/info/alternates
+git config --local gc.auto 0
+git config --local fetch.recurseSubmodules false || true
+git config --local remote.pushDefault "" || true
+
+# --- Assertions: fail the build if the image is still cheatable -------------
+test -z "$(git remote)"                                                       # no origin to fetch
+test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"  # no branch/tag/remote refs
+test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"          # no history beyond HEAD
+git cat-file -e "${BASE_SHA}^{commit}"                                         # base.sha must remain reachable
+if [ -n "$FUTURE_SHA" ] && [ "$FUTURE_SHA" != "$BASE_SHA" ]; then
+  if git cat-file -e "${FUTURE_SHA}^{commit}" 2>/dev/null; then
+    echo "HARDENING FAILED: future commit ${FUTURE_SHA} still present" >&2
+    exit 1
+  fi
+fi
+echo "HARDENING OK: origin & refs removed, future history pruned, base.sha reachable"
+""",
+            ),
         ]
 
     def dockerfile(self) -> str:
@@ -286,6 +421,9 @@ cd src && ctest --output-on-failure 2>&1 || true
             copy_commands += f"COPY {file.name} /home/\n"
 
         prepare_commands = "RUN bash /home/prepare.sh"
+        # Strip origin/refs/future-history AFTER prepare.sh so the per-PR eval
+        # image cannot be reward-hacked via `git log`/`git show`/`git fetch`.
+        harden_commands = f"RUN bash /home/harden.sh {self.pr.base.sha}"
 
         return f"""FROM {name}:{tag}
 
@@ -294,6 +432,8 @@ cd src && ctest --output-on-failure 2>&1 || true
 {copy_commands}
 
 {prepare_commands}
+
+{harden_commands}
 
 {self.clear_env}
 
