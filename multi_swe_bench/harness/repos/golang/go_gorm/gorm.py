@@ -69,14 +69,51 @@ class GormImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        org, repo = self.pr.org, self.pr.repo
+
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} base Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 WORKDIR /home/
 
@@ -151,7 +188,7 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -e
+set -eux
 
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sqlite3 mariadb-server postgresql >/dev/null 2>&1
@@ -160,18 +197,32 @@ rm -rf /var/lib/apt/lists/*
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach {pr.base.sha}
 bash /home/check_git_changes.sh
-
-go mod download || true
-go test -v -count=1 ./... || true
-
-if [ -d tests ]; then
-  cd tests
-  go get -t ./... || true
-  go mod tidy || true
-  go test -v -count=1 ./... || true
-  cd ..
+git remote remove origin 2>/dev/null || true
+git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all
+git reflog expire --expire-unreachable=now --all
+git gc --prune=now --aggressive
+git repack -a -d -l --quiet
+rm -f .git/objects/info/alternates
+git config --local gc.auto 0
+git config --local fetch.recurseSubmodules false
+git config --local remote.pushDefault ""
+test "$(git rev-parse HEAD)" = "$(git rev-parse "{pr.base.sha}")"
+test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"
+test -z "$(git remote)"
+test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+if [ -f .gitmodules ]; then
+    git submodule foreach --recursive '
+        git checkout --detach HEAD
+        git remote remove origin 2>/dev/null || true
+        git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+        git reflog expire --expire=now --all
+        git reflog expire --expire-unreachable=now --all
+        git gc --prune=now --aggressive
+        rm -f .git/objects/info/alternates
+    '
 fi
 
 """.format(pr=self.pr),
@@ -228,7 +279,7 @@ set -e
 bash /home/start_dbs.sh
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply /home/fix.patch
 go test -v -count=1 ./...
 
 if [ -d tests ]; then
@@ -301,6 +352,16 @@ class Gorm(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        def get_base_name(test_name: str) -> str:
+            for dialect in ("sqlite/", "mysql/"):
+                if test_name.startswith(dialect):
+                    test_name = test_name[len(dialect):]
+                    break
+            index = test_name.rfind("/")
+            if index == -1:
+                return test_name
+            return test_name[:index]
+
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
