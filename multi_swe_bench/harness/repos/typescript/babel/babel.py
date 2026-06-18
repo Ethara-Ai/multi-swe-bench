@@ -1,12 +1,12 @@
 import re
 from typing import Optional, Union
-import textwrap
+
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class BabelImageBase(Image):
+class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -19,59 +19,11 @@ class BabelImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
+    def dependency(self) -> str:
         return "node:22-bookworm"
 
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y git make python3
-RUN corepack enable
-{code}
-
-{self.clear_env}
-
-"""
-
-
-class BabelImageDefault(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Optional[Image]:
-        return BabelImageBase(self.pr, self._config)
+    def image_prefix(self) -> str:
+        return "envagent"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -171,62 +123,45 @@ BABEL_ENV=test yarn jest --verbose --ci || true
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
+        dockerfile_content = """
+# This is a template for creating a Dockerfile to test patches
+# LLM should fill in the appropriate values based on the context
 
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
+# Choose an appropriate base image based on the project's requirements - replace node:22-bookworm with actual base image
+# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
+FROM node:22-bookworm
 
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
+## Set noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
 
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p $HOME && \\
-                        touch $HOME/.npmrc && \\
-                        echo "proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "https-proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "strict-ssl=false" >> $HOME/.npmrc
-                """
-                )
+# Install basic requirements
+# For example: RUN apt-get update && apt-get install -y git
+# For example: RUN yum install -y git
+# For example: RUN apk add --no-cache git
+RUN apt-get update && apt-get install -y git make python3
+RUN corepack enable
 
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f $HOME/.npmrc
-                """
-                )
-        return f"""FROM {name}:{tag}
+# Ensure bash is available
+RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
 
-{self.global_env}
+WORKDIR /home/
+COPY fix.patch /home/
+COPY test.patch /home/
+RUN git clone https://github.com/babel/babel.git /home/babel
 
-{proxy_setup}
-
-{copy_commands}
-
-{prepare_commands}
-
-{proxy_cleanup}
-
-{self.clear_env}
-
+WORKDIR /home/babel
+RUN git reset --hard
+RUN git checkout {pr.base.sha}
 """
+        dockerfile_content += f"""
+{copy_commands}
+"""
+        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("babel", "babel")
@@ -241,7 +176,7 @@ class Babel(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return BabelImageDefault(self.pr, self._config)
+        return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
