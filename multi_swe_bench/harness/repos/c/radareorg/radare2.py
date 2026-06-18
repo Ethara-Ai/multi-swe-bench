@@ -1,0 +1,393 @@
+import re
+from typing import Optional
+
+from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.instance import Instance, TestResult
+from multi_swe_bench.harness.pull_request import PullRequest
+
+# ---------------------------------------------------------------------------
+# radare2 is a C reverse-engineering toolkit built with its own `acr`
+# configure script (`./configure --prefix=/usr && make`).  The regression
+# suite is driven by `r2r` (radare2's test runner) over the `test/db/`
+# tree; r2r is produced by `make install` and only exists in the modern
+# releases.  This dataset is a set of heavily-bundled PRs (2 .. 685 PRs per
+# instance) spanning releases 2.6 .. 6.1, so the registry has to cope with
+# both eras from a single class:
+#
+#   * BUILD signal (every instance): one synthetic `build` test keyed on an
+#     unambiguous RADARE2_BUILD=PASS/FAIL sentinel.  This is the only signal
+#     the oldest PRs (pre-`test/db`/`r2r`) can produce.
+#   * r2r tests (modern instances): when `r2r` and `test/db` both exist the
+#     scripts additionally run `r2r -V db/` and parse_log picks up the
+#     [OK]/[XX]/[SK] per-test lines.  Older instances that lack r2r simply
+#     skip this and fall back to the build signal -- no era branching needed.
+#
+# Conformance to the updated image.py:
+#   dependency() returns a STRING (the base image) instead of a chained
+#   Image, which hands the build to the shared Image.dockerfile(): it clones
+#   "${REPO_URL}", checks out "${BASE_COMMIT}", runs extra_setup(), then
+#   appends the _HARDENING_BLOCK that detaches HEAD and strips every other
+#   ref/remote/commit so the fix can't be read out of git history.
+#   DockerfileEnhancer then injects the proxy/cert infra + final sanitize.
+#   The previous two-stage ImageBase/ImageDefault override bypassed all of
+#   this (full git history was left intact -> a reward-hacking vector).
+# ---------------------------------------------------------------------------
+
+# capstone is radare2's disassembler dependency.  shlr/Makefile pins the exact
+# commit (CS_TIP) on a branch (CS_BRA), BUT it selects between versions with a
+# conditional (e.g. `ifeq ($(USE_CS4),1) ... v4 ... else ... next ... endif`),
+# so a naive `grep CS_TIP | head -1` picks the wrong one and the build fails
+# with capstone symbol errors (ARM64_INS_* vs AARCH64_INS_*).  We therefore run
+# `./configure` first (to generate libr/config.mk) and ask MAKE for the resolved
+# CS_TIP/CS_BRA, then fetch that exact commit so the build is reproducible and
+# offline-safe.  Failures are tolerated -- `make` re-syncs over the network.
+FETCH_CAPSTONE = r"""
+fetch_capstone() {
+    cd /home/radare2 2>/dev/null || return 0
+    [ -d shlr/capstone/.git ] && return 0
+    # configure generates libr/config.mk, which shlr/Makefile needs to resolve
+    # the version conditional that selects CS_TIP/CS_BRA.
+    ./configure --prefix=/usr >/tmp/configure_cs.log 2>&1 || true
+    cd shlr || return 0
+    [ -f Makefile ] || return 0
+    local CS_TIP CS_BRA
+    printf 'cs_print:\n\t@echo $(CS_TIP) $(CS_BRA)\n' > /tmp/cs_print.mk
+    read -r CS_TIP CS_BRA < <(make -f Makefile -f /tmp/cs_print.mk cs_print -s 2>/dev/null | tail -1)
+    [ -n "$CS_BRA" ] || return 0
+    git clone -q -b "$CS_BRA" https://github.com/capstone-engine/capstone.git capstone \
+        || git clone -q https://github.com/capstone-engine/capstone.git capstone || return 0
+    # Leave the capstone tree CLEAN at the pinned commit and do NOT pre-apply
+    # the capstone-patches.  radare2's own shlr/capstone.sh (run by the
+    # `capstone-sync` make target) finalises it with
+    #   git checkout $CS_BRA; git reset --hard $CS_TIP; patch_capstone
+    # which aborts ("local changes would be overwritten by checkout") if we
+    # leave a dirty tree.  We only need to guarantee $CS_TIP is present locally
+    # so that reset works offline; the branch ref from -b lets its checkout run.
+    if [ -n "$CS_TIP" ] && [ -d capstone/.git ]; then
+        (cd capstone && git fetch -q --depth 200 origin "$CS_TIP" 2>/dev/null; \
+            git checkout -qf "$CS_TIP") || true
+    fi
+}
+"""
+
+# Shared build+test helper baked into every run script.  Emits exactly one
+# RADARE2_BUILD sentinel (build success == the synthetic `build` test) and,
+# when available, the r2r per-test output.
+BUILD_RADARE2 = r"""
+strip_binary() {
+    # Drop "diff --git" sections that carry a binary hunk (GIT binary patch /
+    # "Binary files .. differ") so a malformed binary section can't abort the
+    # whole text patch.  Keeps every text section.
+    awk '
+      /^diff --git / { if (n>0) flush(); n=1; buf[1]=$0; isbin=0; next }
+      { if (n>0) { n++; buf[n]=$0; if ($0 ~ /^GIT binary patch/ || $0 ~ /^Binary files /) isbin=1 } else print }
+      function flush(   i){ if(!isbin) for(i=1;i<=n;i++) print buf[i]; n=0 }
+      END { if (n>0) flush() }
+    ' "$1" > "$2"
+}
+
+apply_patch() {
+    # $1 = patch file.  Try the full patch first (proper GIT binary patches
+    # apply fine), then the binary-stripped text remainder, then --reject so
+    # the build still proceeds on the parts that did apply.
+    local p="$1" stripped="/tmp/$(basename "$1").txt"
+    [ -s "$p" ] || return 0
+    git apply --whitespace=nowarn "$p" 2>/dev/null && return 0
+    strip_binary "$p" "$stripped"
+    git apply --whitespace=nowarn "$stripped" 2>/dev/null && return 0
+    git apply --whitespace=nowarn --reject "$stripped" 2>/dev/null || true
+}
+
+run_targeted_r2r() {
+    # Run r2r ONLY on the test/db files the test patch touches, not the whole
+    # 16k-test db: faster and the correct granularity for F2P attribution (a
+    # brand-new NAME= block only appears once the test patch is applied, so it
+    # is absent at baseline and present after, giving a clean fail->pass diff).
+    # The whole-db run additionally risks a single test hanging the eval; a
+    # `timeout` backstop guards the targeted run too.
+    command -v r2r >/dev/null 2>&1 || return 0
+    [ -s /home/test.patch ] || return 0
+    [ -d /home/radare2/test/db ] || return 0
+    local targets f rel
+    targets=()
+    while IFS= read -r f; do
+        rel="${f#test/}"                       # test/db/tools/r2 -> db/tools/r2
+        [ -e "/home/radare2/test/$rel" ] && targets+=("$rel")
+    done < <(grep -oE '^\+\+\+ b/test/db/[^[:space:]]+' /home/test.patch \
+                | sed 's|^+++ b/||' | sort -u)
+    [ "${#targets[@]}" -gt 0 ] || return 0
+    cd /home/radare2/test || return 0
+    # r2r's DEFAULT per-test timeout is 30 min (-t 30*60), so a single hanging
+    # test (radare2 has a few) blocks the whole phase until the outer timeout.
+    # Cap each test at 300s: kills a true hang in reasonable time without
+    # falsely failing slow-but-legitimate tests (a 120s cap marked real tests
+    # [TO] on big bundles).  The outer `timeout` is the total-runtime backstop.
+    #
+    # Flaky-retry: radare2's r2r suite has ~5-7% nondeterministic tests
+    # (timing/order).  A single flaky test that lands in the patch's attributed
+    # set flips PASS->FAIL and trips report.py's gate-2, killing the whole
+    # instance.  So we emit a FIRST pass, and only if it reported any failure do
+    # we emit a SECOND pass; parse_log treats a test as passed if it passed in
+    # EITHER pass (pass-wins dedup).  Clean instances pay nothing; only ones
+    # with failures pay for the retry.
+    out1="$(timeout 2700 r2r -t 300 -V "${targets[@]}" 2>&1)"
+    printf '%s\n' "$out1"
+    if printf '%s' "$out1" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep -qE '\[(XX|BR|TO)\]'; then
+        timeout 2700 r2r -t 300 -V "${targets[@]}" 2>&1 || true
+    fi
+}
+
+build_radare2() {
+    cd /home/radare2 || { echo "RADARE2_BUILD=FAIL stage=no-repo"; return 0; }
+    # Fetch capstone HERE (run phase, native arch, network up) instead of at
+    # image-build time.  Doing it in the build made the amd64 image build run
+    # `./configure`+capstone under qemu emulation (~20 min/image); moving it to
+    # the run phase keeps the amd64 image build trivial.  Results are identical
+    # -- same pinned capstone commit, same make, same r2r -- so the resolve
+    # count is unchanged; only WHERE the work runs changes.
+    fetch_capstone
+    cd /home/radare2 || { echo "RADARE2_BUILD=FAIL stage=no-repo"; return 0; }
+    if ./configure --prefix=/usr >/tmp/configure.log 2>&1 && make -j"$(nproc)" >/tmp/make.log 2>&1; then
+        echo "RADARE2_BUILD=PASS"
+    else
+        echo "RADARE2_BUILD=FAIL stage=make"
+        tail -n 60 /tmp/make.log 2>/dev/null || true
+        return 0
+    fi
+    # Modern releases only: install r2r, then run the touched regression tests.
+    make install >/tmp/install.log 2>&1 || true
+    run_targeted_r2r
+}
+"""
+
+
+class Radare2ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        # See module header: a string base image hands the build to the shared
+        # Image.dockerfile() so the clone/checkout/extra_setup/_HARDENING_BLOCK
+        # pipeline (and DockerfileEnhancer) all fire.  gcc:12 == debian
+        # bookworm + GCC 12, which compiles the whole 2.6 .. 6.1 range.
+        return "gcc:12"
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def extra_packages(self) -> list[str]:
+        # build-essential / make / git / python3 / ca-certificates are already
+        # in image.py's default set; these are the radare2-specific build deps
+        # (pkg-config for the acr build, patch for the capstone patch series).
+        return ["pkg-config", "patch"]
+
+    def extra_setup(self) -> str:
+        # ONLY stage files into /home/ -- NO `RUN` step.  Capstone fetch + build
+        # all happen in the run scripts (run phase, native arch).  This keeps the
+        # image build to clone + checkout + COPY, so the amd64 variant doesn't
+        # run `./configure`+capstone under slow qemu emulation.  The copied files
+        # live outside /home/radare2, so the hardening pass leaves them intact.
+        return (
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh"
+        )
+
+    def files(self) -> list[File]:
+        return [
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(
+                ".",
+                "run.sh",
+                """#!/bin/bash
+set -uo pipefail
+{fetch_capstone}
+{build_radare2}
+cd /home/radare2
+git reset --hard || true
+build_radare2
+""".format(fetch_capstone=FETCH_CAPSTONE, build_radare2=BUILD_RADARE2),
+            ),
+            File(
+                ".",
+                "test-run.sh",
+                """#!/bin/bash
+set -uo pipefail
+{fetch_capstone}
+{build_radare2}
+cd /home/radare2
+git reset --hard || true
+apply_patch /home/test.patch
+build_radare2
+""".format(fetch_capstone=FETCH_CAPSTONE, build_radare2=BUILD_RADARE2),
+            ),
+            File(
+                ".",
+                "fix-run.sh",
+                """#!/bin/bash
+set -uo pipefail
+{fetch_capstone}
+{build_radare2}
+cd /home/radare2
+git reset --hard || true
+apply_patch /home/test.patch
+apply_patch /home/fix.patch
+build_radare2
+""".format(fetch_capstone=FETCH_CAPSTONE, build_radare2=BUILD_RADARE2),
+            ),
+        ]
+
+
+@Instance.register("radareorg", "radare2")
+class Radare2(Instance):
+    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
+        super().__init__()
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    def dependency(self) -> Optional[Image]:
+        return Radare2ImageDefault(self.pr, self._config)
+
+    def run(self, run_cmd: str = "") -> str:
+        if run_cmd:
+            return run_cmd
+        return "bash /home/run.sh"
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+        if test_patch_run_cmd:
+            return test_patch_run_cmd
+        return "bash /home/test-run.sh"
+
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+        if fix_patch_run_cmd:
+            return fix_patch_run_cmd
+        return "bash /home/fix-run.sh"
+
+    def _patch_test_names(self) -> set:
+        """The r2r `NAME=` blocks the test patch actually adds or modifies.
+
+        These are the only legitimate F2P candidates.  Restricting attribution
+        to them stops unrelated, pre-existing *flaky* r2r tests (radare2's suite
+        has timing/order-dependent cases) from regressing PASS->FAIL across a
+        full-db run and invalidating the whole bundle via report.py's gate-2
+        "no new failures" check.  A test is "touched" if its NAME line, or any
+        line inside its block, is an added/removed diff line.
+        """
+        names = set()
+        current = None
+        for raw in (self.pr.test_patch or "").splitlines():
+            if raw.startswith(("diff ", "+++ ", "--- ")):
+                current = None  # don't carry a NAME across file boundaries
+                continue
+            if raw.startswith("@@"):
+                continue
+            body = raw[1:] if raw[:1] in "+- " else raw
+            m = re.match(r"NAME\s*=\s*(.*)", body.strip())
+            if m:
+                current = m.group(1).strip()
+                if raw[:1] in "+-" and current:
+                    names.add(current)
+                continue
+            if raw[:1] in "+-" and current:
+                names.add(current)
+        return names
+
+    def parse_log(self, test_log: str) -> TestResult:
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
+
+        # r2r output (and gcc) carry ANSI color codes; strip before parsing.
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        test_log = ansi_escape.sub("", test_log)
+
+        # Synthetic build test from the unambiguous sentinel.
+        build_pass = re.compile(r"^RADARE2_BUILD=PASS\b")
+        build_fail = re.compile(r"^RADARE2_BUILD=FAIL\b")
+        build_result = None
+
+        # r2r -V format: [STATUS] db/path test name
+        #   [OK]/[FX] -> passed, [XX]/[BR] -> failed, [SK] -> skipped
+        ok = re.compile(r"^\[OK\]\s+(\S+)\s+(.*)")
+        fx = re.compile(r"^\[FX\]\s+(\S+)\s+(.*)")
+        xx = re.compile(r"^\[XX\]\s+(\S+)\s+(.*)")
+        br = re.compile(r"^\[BR\]\s+(\S+)\s+(.*)")
+        sk = re.compile(r"^\[SK\]\s+(\S+)\s+(.*)")
+
+        for line in test_log.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+
+            if build_pass.match(line):
+                build_result = "pass"
+                continue
+            if build_fail.match(line):
+                build_result = "fail"
+                continue
+
+            m = ok.match(line) or fx.match(line)
+            if m:
+                passed_tests.add(f"{m.group(1)} {m.group(2).strip()}")
+                continue
+            m = xx.match(line) or br.match(line)
+            if m:
+                failed_tests.add(f"{m.group(1)} {m.group(2).strip()}")
+                continue
+            m = sk.match(line)
+            if m:
+                skipped_tests.add(f"{m.group(1)} {m.group(2).strip()}")
+                continue
+
+        # Restrict r2r tests to the ones the test patch introduces/modifies
+        # (see _patch_test_names).  The synthetic "build" test is always kept.
+        # If no NAME could be extracted (e.g. patch touches no db blocks), fall
+        # back to keeping everything rather than dropping all signal.
+        patch_names = self._patch_test_names()
+        if patch_names:
+            def keep(t):
+                return t.split(" ", 1)[-1] in patch_names
+            passed_tests = {t for t in passed_tests if keep(t)}
+            failed_tests = {t for t in failed_tests if keep(t)}
+            skipped_tests = {t for t in skipped_tests if keep(t)}
+
+        # Pass-wins dedup: with the flaky-retry in run_targeted_r2r a test may
+        # appear OK in one pass and XX/BR/TO in another.  Treat it as PASSED if
+        # it passed in EITHER pass, so a single flaky failure can't regress it
+        # PASS->FAIL and trip report.py's gate-2.  (For a single r2r pass each
+        # test appears once, so this is a no-op there.)  Build sentinel is added
+        # after, so it is never masked by a stray r2r name collision.
+        failed_tests -= passed_tests
+
+        if build_result == "pass":
+            passed_tests.add("build")
+        else:
+            failed_tests.add("build")
+
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
+        )

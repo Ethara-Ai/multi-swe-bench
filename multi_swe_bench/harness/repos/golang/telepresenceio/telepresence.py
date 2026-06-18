@@ -1,5 +1,5 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -10,22 +10,81 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #
 # Discovery (dataset analysis):
 #  - 72-PR Go range #1864..#4094, almost all on `release/v2` branch
-#    (a few on release/v2.x tags).
+#    (a few on release/v2.x tags). base.sha is the start of a version-range
+#    window (e.g. v2.3.7..v2.4.0); each instance bundles 2..48 merged PRs.
 #  - Multi-module repo: ./go.mod, ./rpc/go.mod, ./cmd/cobraparser/go.mod,
 #    ./cmd/teleroute/go.mod. Per-package `go test` must run from the nearest
 #    ancestor go.mod, so the runner walks up from each test pkg path.
-#  - Go directive recently moved to `go 1.26.0` (very fresh); older PRs use
-#    earlier versions, so GOTOOLCHAIN=auto is required.
+#  - Go directive climbs across the range (early v2.3 ~go1.16, latest moved to
+#    `go 1.26.0`), so GOTOOLCHAIN=auto is required to honour each base.sha's
+#    own go.mod/toolchain directive.
 #  - At least one file uses cgo (pkg/client/cli/env/syntax_test.go) — keep
-#    CGO_ENABLED=1 + a C toolchain.
-#  - Test files in cmd/ (49 PRs), integration_test/ (20 PRs), pkg/ (3 PRs).
-#    integration_test/ typically needs a real k8s cluster — those tests
-#    fail/skip without one and aren't the resolvable signal. cmd/ and pkg/
-#    unit tests are the recoverable bulk.
+#    CGO_ENABLED=1 + a C toolchain (build-essential + pkg-config).
+#  - Test files in cmd/ (49 PRs), pkg/ (55 PRs), integration_test/ (62 PRs).
+#    integration_test/ needs a real k8s cluster — those tests fail/skip without
+#    one and aren't the recoverable signal. cmd/ and pkg/ unit tests are the
+#    recoverable bulk (8 PRs touch ONLY integration_test/ → no unit signal).
 #  - Per-PR: the test_patch's `*_test.go` files identify the Go packages to
 #    exercise; `go test` runs from each pkg's nearest go.mod ancestor.
 #    Runs are fenced with `### TLPKG ###` markers so test ids stay unique
 #    across packages.
+#
+# Conformed to the hardened image.py contract:
+#  - dependency() returns a STRING base image so the shared Image.dockerfile()
+#    owns the build: it clones "${REPO_URL}", checks out "${BASE_COMMIT}", runs
+#    extra_setup(), and appends the _HARDENING_BLOCK that strips every other
+#    ref/commit so the fix can't be read out of git history. DockerfileEnhancer
+#    then injects the proxy/cert infra + final sanitize pass. None of that fires
+#    when dockerfile() is overridden, which is why the old two-stage build (its
+#    own base-image class + custom dockerfile) bypassed the anti-cheat hardening.
+
+
+# Era map: the go.mod `go` directive at each instance's base.sha, read by
+# `git show <base.sha>:go.mod` across all 72 records. The toolchain climbs
+# 1.15 -> 1.26 over the range. GOTOOLCHAIN=auto can only UPGRADE (and can only
+# auto-download >= go1.21), so it cannot rescue old-era code from a too-new
+# toolchain: e.g. at v2.3.7 the dep dlib@v1.2.4 re-declares
+# `context.WithoutCancel`, which entered the stdlib in go1.21 -> build fails on
+# any toolchain >= 1.21. So each instance must build on a base image matching
+# its era's go minor. Keyed by PR number (the instance id) rather than a number
+# interval because #2548 is a backport: low number, but release_line 2.19 / go
+# 1.22 (its base.sha is on the v2.19 line), so number ranges would misroute it.
+_GO_MINOR_BY_PR = {
+    # go 1.15
+    1864: "1.15", 1876: "1.15",
+    # go 1.16
+    1951: "1.16", 1998: "1.16", 2024: "1.16",
+    # go 1.17
+    2067: "1.17", 2079: "1.17", 2137: "1.17", 2141: "1.17", 2159: "1.17",
+    2186: "1.17", 2370: "1.17", 2424: "1.17", 2432: "1.17", 2483: "1.17",
+    2488: "1.17", 2531: "1.17", 2538: "1.17",
+    # go 1.18
+    2576: "1.18", 2577: "1.18", 2600: "1.18", 2633: "1.18", 2636: "1.18",
+    2644: "1.18", 2648: "1.18", 2709: "1.18", 2711: "1.18", 2754: "1.18",
+    2767: "1.18", 2806: "1.18", 2807: "1.18",
+    # go 1.19
+    2862: "1.19", 2877: "1.19", 2897: "1.19", 2912: "1.19", 2991: "1.19",
+    3045: "1.19", 3070: "1.19", 3079: "1.19", 3129: "1.19", 3140: "1.19",
+    3172: "1.19", 3225: "1.19", 3245: "1.19", 3312: "1.19", 3354: "1.19",
+    3359: "1.19",
+    # go 1.21 (toolchain go1.21.3)
+    3385: "1.21", 3507: "1.21",
+    # go 1.22 (toolchain go1.22.2) — note 2548 is a v2.19 backport
+    2548: "1.22", 3626: "1.22",
+    # go 1.23
+    3694: "1.23", 3707: "1.23", 3746: "1.23", 3749: "1.23",
+    # go 1.24
+    3825: "1.24", 3837: "1.24", 3890: "1.24", 3896: "1.24", 3899: "1.24",
+    3904: "1.24", 3909: "1.24", 3953: "1.24", 3961: "1.24",
+    # go 1.25
+    3991: "1.25", 3994: "1.25", 4016: "1.25",
+    # go 1.26
+    4038: "1.26", 4069: "1.26", 4083: "1.26", 4091: "1.26", 4094: "1.26",
+}
+
+# golang base images that ship on Debian buster/bullseye (<= go1.20). Their apt
+# mirrors have moved to archive.debian.org, so the default apt-get update 404s.
+_OLD_DEBIAN_GO = ("1.15", "1.16", "1.17", "1.18", "1.19", "1.20")
 
 
 def _test_pkgs(patch: str) -> list[str]:
@@ -43,61 +102,6 @@ def _test_pkgs(patch: str) -> list[str]:
     return sorted(pkgs)
 
 
-class TelepresenceImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "golang:1-bookworm"
-
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GOTOOLCHAIN=auto
-ENV CGO_ENABLED=1
-WORKDIR /home/
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git curl ca-certificates build-essential pkg-config \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-
-"""
-
-
 class TelepresenceImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -111,8 +115,29 @@ class TelepresenceImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return TelepresenceImageBase(self.pr, self._config)
+    def dependency(self) -> str:
+        # Era-matched base image (see _GO_MINOR_BY_PR). For >= 1.21 eras the
+        # go.mod also carries a `toolchain` directive; GOTOOLCHAIN=auto (set in
+        # extra_setup) then upgrades to that exact patch (e.g. golang:1.21 ->
+        # go1.21.3) on top of the matching minor. Unknown PRs fall back to a
+        # recent toolchain. Returning a string hands the build to the shared
+        # Image.dockerfile() (clone + checkout ${BASE_COMMIT} + _HARDENING_BLOCK).
+        minor = _GO_MINOR_BY_PR.get(self.pr.number, "1.24")
+        return f"golang:{minor}"
+
+    def _get_apt_update_command(self, packages_str: str, base_img: str) -> str:
+        # golang:1.15..1.20 are built on Debian buster/bullseye, whose apt repos
+        # have moved to archive.debian.org. The base image name doesn't match
+        # DEPRECATED_DEBIAN_IMAGES, so the default apt-get update would 404.
+        # Force the archive-rewrite branch (hand the parent a buster tag), and
+        # make the whole step non-fatal: the golang image already ships git,
+        # gcc, curl and ca-certificates, so a failed extra-package install still
+        # leaves a working build/test toolchain.
+        dep = self.dependency()
+        if any(dep.startswith(f"golang:{v}") for v in _OLD_DEBIAN_GO):
+            cmd = super()._get_apt_update_command(packages_str, "debian:buster")
+            return cmd + " || true"
+        return super()._get_apt_update_command(packages_str, base_img)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -120,53 +145,68 @@ class TelepresenceImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def extra_packages(self) -> list[str]:
+        # build-essential is already in the default package set; pkg-config is
+        # needed by the cgo test package (pkg/client/cli/env/syntax_test.go).
+        return ["pkg-config"]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
+        # block. Sets persistent Go env, stages the runtime helper scripts +
+        # patches into /home/, and warms the module cache via prepare.sh. The
+        # copied files live outside /home/{repo}, so the hardening pass (which
+        # only operates inside the git tree) leaves them untouched.
+        #   - GOTOOLCHAIN=auto: honour each base.sha's go/toolchain directive.
+        #   - CGO_ENABLED=1: the syntax_test.go cgo package.
+        #   - GOWORK=off: keep each sub-module's own go.mod authoritative
+        #     (avoids -mod conflicts if a future release adds go.work).
+        return (
+            "ENV GOTOOLCHAIN=auto\n"
+            "ENV CGO_ENABLED=1\n"
+            "ENV GOWORK=off\n"
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY run_tests.sh /home/run_tests.sh\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "COPY prepare.sh /home/prepare.sh\n"
+            "RUN bash /home/prepare.sh"
+        )
+
     def files(self) -> list[File]:
         repo = self.pr.repo
-        sha = self.pr.base.sha
         pkgs = _test_pkgs(self.pr.test_patch)
         pkg_list = " ".join(pkgs) if pkgs else "."
 
-        check_git = """#!/bin/bash
-set -e
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-echo "check_git_changes: No uncommitted changes"
-exit 0
-"""
-
         prepare = """#!/bin/bash
+# Repo is already cloned + checked out at ${BASE_COMMIT} and hardened by
+# Image.dockerfile(), so this script no longer performs any git checkout. It
+# only warms the Go module/build caches so the eval runs don't need network.
 set -e
 cd /home/__REPO__
-git config --global --add safe.directory /home/__REPO__
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout __SHA__
-bash /home/check_git_changes.sh
+git reset --hard || true
 
-go mod download 2>/dev/null || true
-""".replace("__REPO__", repo).replace("__SHA__", sha)
+export GOWORK=off
+go mod download 2>&1 || true
+go build ./... 2>&1 || true
+""".replace("__REPO__", repo)
 
-        # Multi-module aware runner: walk up from each test pkg dir to find
-        # its nearest go.mod ancestor; run `go test` from there with the
-        # relative path. Also disable workspace mode (GOWORK=off) to keep
-        # each sub-module's own go.mod authoritative — avoids -mod conflicts
-        # if a future telepresence release adds go.work.
+        # Multi-module aware runner: walk up from each test pkg dir to find its
+        # nearest go.mod ancestor; run `go test` from there with the relative
+        # path. GOWORK=off keeps each sub-module's own go.mod authoritative.
+        # GOEXPERIMENT=jsonv2 is enabled per-modroot ONLY when the resolved
+        # toolchain accepts it — newest PRs (go 1.26+) import encoding/json/v2,
+        # but an older toolchain (pinned by a `toolchain` directive under
+        # GOTOOLCHAIN=auto) would hard-error on an unknown experiment name.
         run_tests = """#!/bin/bash
 set -uo pipefail
 cd /home/__REPO__
 
 export GOWORK=off
-unset GOFLAGS
-# telepresence on go 1.26+ imports encoding/json/v2 (Go's experimental
-# JSON v2 API); enable the experiment so tests can compile. Older PRs
-# on earlier Go versions ignore unknown experiment names.
-export GOEXPERIMENT=jsonv2
+unset GOFLAGS 2>/dev/null || true
+export GOTOOLCHAIN=auto
+export CGO_ENABLED=1
 
 for pkg in __PKGS__; do
   [ -d "$pkg" ] || continue
@@ -183,7 +223,6 @@ for pkg in __PKGS__; do
     modroot="."
   fi
   # Compute relative path inside the module's root.
-  # Three cases: pkg IS the module root; modroot is repo root; sub-path.
   if [ "$modroot" = "$pkg" ]; then
     rel="."
   elif [ "$modroot" = "." ]; then
@@ -192,7 +231,18 @@ for pkg in __PKGS__; do
     rel="${pkg#$modroot/}"
   fi
   echo "### TLPKG: $pkg ###"
-  (cd "$modroot" && go mod download 2>/dev/null || true; go test -v -count=1 -vet=off -timeout=20m "./$rel/" 2>&1) || true
+  (
+    cd "$modroot"
+    EXP=""
+    # `go env` validates GOEXPERIMENT, so this enables jsonv2 only on a
+    # toolchain that actually recognises it (go1.25+) and silently skips it on
+    # older eras (where the name is unknown and would hard-error every command).
+    if GOEXPERIMENT=jsonv2 go env GOVERSION >/dev/null 2>&1; then
+      EXP="jsonv2"
+    fi
+    GOEXPERIMENT="$EXP" go mod download 2>/dev/null || true
+    GOEXPERIMENT="$EXP" go test -v -count=1 -vet=off -timeout=20m "./$rel/" 2>&1
+  ) || true
 done
 """.replace("__REPO__", repo).replace("__PKGS__", pkg_list)
 
@@ -212,7 +262,8 @@ bash /home/run_tests.sh
         # Per-file split-apply: `git apply --3way` is all-or-nothing across the
         # whole patch — if any single hunk fails the 3way merge, none of the
         # patch's NEW files get created either. Split by `diff --git` boundaries
-        # and apply each file's hunks independently.
+        # and apply each file's hunks independently. Bundle patches are large
+        # (some fix.patch > 400 KB) so this materially improves apply coverage.
         apply_split = """split_apply() {
   local pf="$1"
   local td
@@ -256,36 +307,12 @@ bash /home/run_tests.sh
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(".", "check_git_changes.sh", check_git),
             File(".", "prepare.sh", prepare),
             File(".", "run_tests.sh", run_tests),
             File(".", "run.sh", run_sh),
             File(".", "test-run.sh", test_run),
             File(".", "fix-run.sh", fix_run),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("telepresenceio", "telepresence")
