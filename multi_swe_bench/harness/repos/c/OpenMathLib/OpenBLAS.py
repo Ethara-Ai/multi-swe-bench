@@ -41,14 +41,24 @@ class OpenBLASImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
 WORKDIR /home/
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
-RUN apt update && apt install -y cmake
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl build-essential git gnupg make cmake python3 sudo wget \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 {code}
 
@@ -116,13 +126,38 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -e
+set -eux
 
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach {pr.base.sha}
 bash /home/check_git_changes.sh
+git remote remove origin 2>/dev/null || true
+git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all
+git reflog expire --expire-unreachable=now --all
+git gc --prune=now --aggressive
+git repack -a -d -l --quiet
+rm -f .git/objects/info/alternates
+git config --local gc.auto 0
+git config --local fetch.recurseSubmodules false
+git config --local remote.pushDefault ""
+test "$(git rev-parse HEAD)" = "$(git rev-parse "{pr.base.sha}")"
+test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"
+test -z "$(git remote)"
+test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+if [ -f .gitmodules ]; then
+    git submodule foreach --recursive '
+        git checkout --detach HEAD
+        git remote remove origin 2>/dev/null || true
+        git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+        git reflog expire --expire=now --all
+        git reflog expire --expire-unreachable=now --all
+        git gc --prune=now --aggressive
+        rm -f .git/objects/info/alternates
+    '
+fi
 mkdir build
 
 """.format(pr=self.pr),
@@ -230,7 +265,7 @@ class OpenBLAS(Instance):
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
 
-        return f"bash -c 'set -e; cd /home/OpenBLAS && git apply --whitespace=nowarn /home/test.patch /home/fix.patch; {self._BUILD_AND_TEST}'"
+        return f"bash -c 'set -e; cd /home/OpenBLAS && git apply --whitespace=nowarn /home/fix.patch; {self._BUILD_AND_TEST}'"
 
     def parse_log(self, test_log: str) -> TestResult:
         passed_tests = set()
