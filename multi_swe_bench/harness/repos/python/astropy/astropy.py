@@ -82,7 +82,7 @@ pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}
                 """#!/bin/bash
 set -e
 cd /home/{repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/fix.patch
 pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}
 """.format(
                     repo=self.pr.repo, test_files=test_files_str
@@ -120,14 +120,18 @@ class Astropy(Instance):
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
+        import base64
+        test_b64 = base64.b64encode(self.pr.test_patch.encode()).decode()
         test_files = self._test_files_str()
-        return f'bash -c "cd /home/{self.pr.repo} && git apply --whitespace=nowarn /home/test.patch && pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}"'
+        return f'bash -c "cd /home/{self.pr.repo} && echo {test_b64} | base64 -d | git apply --whitespace=nowarn && pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}"'
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
+        import base64
+        fix_b64 = base64.b64encode(self.pr.fix_patch.encode()).decode()
         test_files = self._test_files_str()
-        return f'bash -c "cd /home/{self.pr.repo} && git apply --whitespace=nowarn /home/test.patch /home/fix.patch && pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}"'
+        return f'bash -c "cd /home/{self.pr.repo} && echo {fix_b64} | base64 -d | git apply --whitespace=nowarn && pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}"'
 
     def parse_log(self, test_log: str) -> TestResult:
         test_status_map = {}
