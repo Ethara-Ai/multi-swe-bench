@@ -1,12 +1,12 @@
 import re
 from typing import Optional, Union
-
+import textwrap
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageDefault(Image):
+class BabelImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -19,11 +19,69 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
+    def dependency(self) -> Union[str, "Image"]:
         return "node:22-bookworm"
 
-    def image_prefix(self) -> str:
-        return "envagent"
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+{self.global_env}
+
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl build-essential git gnupg make python3 sudo wget \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+RUN corepack enable
+{code}
+
+{self.clear_env}
+
+"""
+
+
+class BabelImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image | None:
+        return BabelImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -68,12 +126,37 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -e
+set -eux
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach {pr.base.sha}
 bash /home/check_git_changes.sh
+git remote remove origin 2>/dev/null || true
+git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all
+git reflog expire --expire-unreachable=now --all
+git gc --prune=now --aggressive
+git repack -a -d -l --quiet
+rm -f .git/objects/info/alternates
+git config --local gc.auto 0
+git config --local fetch.recurseSubmodules false
+git config --local remote.pushDefault ""
+test "$(git rev-parse HEAD)" = "$(git rev-parse "{pr.base.sha}")"
+test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"
+test -z "$(git remote)"
+test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+if [ -f .gitmodules ]; then
+    git submodule foreach --recursive '
+        git checkout --detach HEAD
+        git remote remove origin 2>/dev/null || true
+        git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+        git reflog expire --expire=now --all
+        git reflog expire --expire-unreachable=now --all
+        git gc --prune=now --aggressive
+        rm -f .git/objects/info/alternates
+    '
+fi
 
 corepack enable || true
 YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
@@ -112,7 +195,7 @@ BABEL_ENV=test yarn jest --verbose --ci || true
                 """#!/bin/bash
 set -e
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/fix.patch
 corepack enable || true
 YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
 make build || true
@@ -123,45 +206,62 @@ BABEL_ENV=test yarn jest --verbose --ci || true
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        prepare_commands = "RUN bash /home/prepare.sh"
+        proxy_setup = ""
+        proxy_cleanup = ""
 
-# Choose an appropriate base image based on the project's requirements - replace node:22-bookworm with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM node:22-bookworm
+        if self.global_env:
+            proxy_host = None
+            proxy_port = None
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
+            for line in self.global_env.splitlines():
+                match = re.match(
+                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
+                )
+                if match:
+                    proxy_host = match.group(2)
+                    proxy_port = match.group(3)
+                    break
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git make python3
-RUN corepack enable
+            if proxy_host and proxy_port:
+                proxy_setup = textwrap.dedent(
+                    f"""
+                    RUN mkdir -p $HOME && \\
+                        touch $HOME/.npmrc && \\
+                        echo "proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
+                        echo "https-proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
+                        echo "strict-ssl=false" >> $HOME/.npmrc
+                """
+                )
 
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+                proxy_cleanup = textwrap.dedent(
+                    """
+                    RUN rm -f $HOME/.npmrc
+                """
+                )
+        return f"""FROM {name}:{tag}
 
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/babel/babel.git /home/babel
+{self.global_env}
 
-WORKDIR /home/babel
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
+{proxy_setup}
+
 {copy_commands}
+
+{prepare_commands}
+
+{proxy_cleanup}
+
+{self.clear_env}
+
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("babel", "babel")
@@ -176,7 +276,7 @@ class Babel(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+        return BabelImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
