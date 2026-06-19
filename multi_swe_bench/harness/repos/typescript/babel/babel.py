@@ -195,7 +195,7 @@ BABEL_ENV=test yarn jest --verbose --ci || true
                 """#!/bin/bash
 set -e
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 corepack enable || true
 YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
 make build || true

@@ -1,6 +1,5 @@
 import re
 from typing import Optional, Union
-import textwrap
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
@@ -34,10 +33,10 @@ class BabelBerryImageBase(Image):
         return "node:16-slim"
 
     def image_tag(self) -> str:
-        return "base-berry-jest"
+        return f"base-berry-jest-{self.pr.base.sha[:8]}"
 
     def workdir(self) -> str:
-        return "base-berry-jest"
+        return f"base-berry-jest-{self.pr.base.sha[:8]}"
 
     def files(self) -> list[File]:
         return []
@@ -48,23 +47,42 @@ class BabelBerryImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        apt_cmd = ("RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
-                   "    sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \\\n"
-                   "    sed -i '/bullseye-updates/d' /etc/apt/sources.list && \\\n"
-                   "    apt-get update && apt-get install -y --no-install-recommends git make python3 && rm -rf /var/lib/apt/lists/*")
-        parts = [f"FROM {image_name}"]
-        if self.global_env:
-            parts.append(self.global_env)
-        parts.append("WORKDIR /home/")
-        parts.append(apt_cmd)
-        parts.append(code)
-        if self.clear_env:
-            parts.append(self.clear_env)
-        return "\n".join(parts) + "\n"
+        apt_cmd = (
+            "RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
+            "    sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \\\n"
+            "    sed -i '/bullseye-updates/d' /etc/apt/sources.list && \\\n"
+            "    apt-get update && apt-get install -y --no-install-recommends ca-certificates git make python3 && rm -rf /var/lib/apt/lists/*"
+        )
+
+        label = (
+            f'LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\\n'
+            f'      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
+        sections = [
+            "# syntax=docker/dockerfile:1.6",
+            f"FROM {image_name}",
+            (
+                "ARG TARGETARCH\n"
+                f'ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"\n'
+                "ARG BASE_COMMIT"
+            ),
+            "ENV DEBIAN_FRONTEND=noninteractive \\\n    LANG=C.UTF-8 \\\n    TZ=UTC",
+            label,
+            "WORKDIR /home/",
+            apt_cmd,
+            code,
+            f"WORKDIR /home/{self.pr.repo}",
+            "RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}",
+            Image._HARDENING_BLOCK.strip(),
+            'CMD ["/bin/bash"]',
+        ]
+        return "\n\n".join(sections) + "\n"
 
 
 class BabelBerryImageDefault(Image):
@@ -128,16 +146,11 @@ exit 0
                 """#!/bin/bash
 set -e
 cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
 YARN_BIN=$(find .yarn/releases -name 'yarn-*.cjs' | head -1)
 node $YARN_BIN install || true
-
 """.format(pr=self.pr),
             ),
+
             File(
                 ".",
                 "run.sh",
@@ -185,55 +198,18 @@ BABEL_ENV=test node $YARN_BIN node $(node $YARN_BIN bin jest) --verbose --ci || 
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        copy_commands = "\n".join(f"COPY {file.name} /home/" for file in self.files())
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
-
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p $HOME && \\
-                        touch $HOME/.npmrc && \\
-                        echo "proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "https-proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "strict-ssl=false" >> $HOME/.npmrc
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f $HOME/.npmrc
-                """
-                )
-        parts = [f"FROM {name}:{tag}"]
-        if self.global_env:
-            parts.append(self.global_env)
-        if proxy_setup:
-            parts.append(proxy_setup)
-        parts.append(copy_commands)
-        parts.append(prepare_commands)
-        if proxy_cleanup:
-            parts.append(proxy_cleanup)
-        if self.clear_env:
-            parts.append(self.clear_env)
-        return "\n".join(parts) + "\n"
+        sections = [
+            f"FROM {name}:{tag}",
+            f'ARG BASE_COMMIT="{self.pr.base.sha}"',
+            copy_commands,
+            "RUN bash /home/prepare.sh",
+            f"WORKDIR /home/{self.pr.repo}",
+            Image._HARDENING_BLOCK.strip(),
+            'CMD ["/bin/bash"]',
+        ]
+        return "\n\n".join(sections) + "\n"
 
 
 @Instance.register("babel", "babel_berry_jest")
@@ -253,19 +229,16 @@ class babel_berry_jest(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
