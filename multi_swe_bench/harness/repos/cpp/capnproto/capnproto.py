@@ -125,11 +125,10 @@ class CapnprotoToolchainBase(Image):
 
         # No `git clone` here on purpose — see the class docstring. The string
         # dependency means DockerfileEnhancer runs over this Dockerfile, but with
-        # no clone/COPY it only injects proxy/cert/label infra (no hardening).
+        # no clone/COPY — DockerfileEnhancer injects label infra (no hardening).
         return f"""FROM {image_name}
 
-{env_prefix}{self.global_env}
-
+{env_prefix}
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y \\
@@ -140,8 +139,6 @@ RUN apt-get update && apt-get install -y \\
     pkg-config \\
     build-essential \\
     && rm -rf /var/lib/apt/lists/*
-
-{self.clear_env}
 
 """
 
@@ -209,13 +206,9 @@ class CapnprotoImageRepo(Image):
 
         return f"""FROM {name}
 
-{self.global_env}
-
 WORKDIR /home/
 
 {clone}
-
-{self.clear_env}
 
 """
 
@@ -427,15 +420,11 @@ echo "HARDENING OK: origin & refs removed, future history pruned, base.sha reach
 
         return f"""FROM {name}:{tag}
 
-{self.global_env}
-
 {copy_commands}
 
 {prepare_commands}
 
 {harden_commands}
-
-{self.clear_env}
 
 """
 

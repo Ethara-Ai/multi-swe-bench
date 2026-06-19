@@ -43,13 +43,9 @@ class SeaweedfsImageBase(Image):
 
         return f"""FROM {image_name}
 
-{self.global_env}
-
 WORKDIR /home/
 
 {code}
-
-{self.clear_env}
 
 """
 
@@ -209,8 +205,6 @@ go test -v -count=1 ./...
 
 ARG BASE_COMMIT="{self.pr.base.sha}"
 
-{self.global_env}
-
 {copy_commands}
 
 {prepare_commands}
@@ -218,8 +212,6 @@ ARG BASE_COMMIT="{self.pr.base.sha}"
 WORKDIR /home/{self.pr.repo}
 
 {_HARDENING_BLOCK}
-
-{self.clear_env}
 
 """
 
