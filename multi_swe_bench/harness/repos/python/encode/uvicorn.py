@@ -41,7 +41,13 @@ class UvicornImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        # SHARED base (tag "base", reused by every PR). The `# syntax` directive
+        # makes DockerfileEnhancer.enhance() skip it; otherwise it rewrites the
+        # clone to checkout ${{BASE_COMMIT}} + hardening + gc-prune, pinning the
+        # shared base to one commit and breaking every other PR's checkout.
+        # Per-PR hardening lives in the Default image.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
@@ -221,6 +227,32 @@ fi
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Per-PR anti-cheat hardening. dependency() returns an Image, so
+        # DockerfileEnhancer emits this Dockerfile verbatim (it only auto-injects
+        # hardening into str-dependency images) — so we embed it here after
+        # prepare.sh (which has `git checkout {base.sha}`, no extra commit). Detach
+        # at base.sha, drop origin + every ref + reflog, gc-prune the fix/future
+        # commits, then 4-way audit so the fix can't be read via git log/show/fetch.
+        repo = self.pr.repo
+        base_sha = self.pr.base.sha
+        hardening = (
+            "RUN set -eux; \\\n"
+            f"    cd /home/{repo}; \\\n"
+            f"    git checkout --detach {base_sha}; \\\n"
+            "    git remote remove origin 2>/dev/null || true; \\\n"
+            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d; \\\n"
+            "    git reflog expire --expire=now --all || true; \\\n"
+            "    git reflog expire --expire-unreachable=now --all || true; \\\n"
+            "    git gc --prune=now --aggressive; \\\n"
+            "    git repack -a -d -l --quiet; \\\n"
+            "    rm -f .git/objects/info/alternates; \\\n"
+            "    git config --local gc.auto 0; \\\n"
+            f'    test "$(git rev-parse HEAD)" = "$(git rev-parse {base_sha})"; \\\n'
+            '    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\\n'
+            '    test -z "$(git remote)"; \\\n'
+            '    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
+        )
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -228,6 +260,8 @@ fi
 {copy_commands}
 
 {prepare_commands}
+
+{hardening}
 
 {self.clear_env}
 
