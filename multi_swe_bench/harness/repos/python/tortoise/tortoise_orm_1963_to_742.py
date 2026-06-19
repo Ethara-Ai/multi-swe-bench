@@ -45,7 +45,13 @@ class ImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        # SHARED base (era-wide tag, reused by every PR in this interval). The
+        # `# syntax` directive makes DockerfileEnhancer.enhance() skip it; else it
+        # rewrites the clone to checkout ${{BASE_COMMIT}} + hardening + gc-prune,
+        # pinning the shared base to one commit and breaking every other PR.
+        # Per-PR hardening lives in ImageDefault below.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
@@ -142,7 +148,13 @@ cd /home/{pr.repo} && pip install -e . || true
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-TORTOISE_TEST_DB=sqlite://:memory: pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors --ignore=tests/test_default.py --ignore=tests/test_two_databases.py
+pip install -q pytest-timeout >/dev/null 2>&1 || true
+PYTHONUNBUFFERED=1 TORTOISE_TEST_DB=sqlite://:memory: timeout --signal=KILL 1800 python - <<'PYEOF'
+import os, sys, pytest
+rc = pytest.main(["tests/", "-v", "--no-header", "-rA", "--tb=no", "-p", "no:cacheprovider", "--continue-on-collection-errors", "--ignore=tests/test_default.py", "--ignore=tests/test_two_databases.py", "--timeout=180"])
+sys.stdout.flush(); sys.stderr.flush()
+os._exit(int(rc))
+PYEOF
 
 """.format(pr=self.pr),
             ),
@@ -155,7 +167,13 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-TORTOISE_TEST_DB=sqlite://:memory: pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors --ignore=tests/test_default.py --ignore=tests/test_two_databases.py
+pip install -q pytest-timeout >/dev/null 2>&1 || true
+PYTHONUNBUFFERED=1 TORTOISE_TEST_DB=sqlite://:memory: timeout --signal=KILL 1800 python - <<'PYEOF'
+import os, sys, pytest
+rc = pytest.main(["tests/", "-v", "--no-header", "-rA", "--tb=no", "-p", "no:cacheprovider", "--continue-on-collection-errors", "--ignore=tests/test_default.py", "--ignore=tests/test_two_databases.py", "--timeout=180"])
+sys.stdout.flush(); sys.stderr.flush()
+os._exit(int(rc))
+PYEOF
 
 """.format(pr=self.pr),
             ),
@@ -168,7 +186,13 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix
     echo "Error: git apply failed" >&2
     exit 1
 fi
-TORTOISE_TEST_DB=sqlite://:memory: pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors --ignore=tests/test_default.py --ignore=tests/test_two_databases.py
+pip install -q pytest-timeout >/dev/null 2>&1 || true
+PYTHONUNBUFFERED=1 TORTOISE_TEST_DB=sqlite://:memory: timeout --signal=KILL 1800 python - <<'PYEOF'
+import os, sys, pytest
+rc = pytest.main(["tests/", "-v", "--no-header", "-rA", "--tb=no", "-p", "no:cacheprovider", "--continue-on-collection-errors", "--ignore=tests/test_default.py", "--ignore=tests/test_two_databases.py", "--timeout=180"])
+sys.stdout.flush(); sys.stderr.flush()
+os._exit(int(rc))
+PYEOF
 
 """.format(pr=self.pr),
             ),
@@ -185,6 +209,33 @@ TORTOISE_TEST_DB=sqlite://:memory: pytest tests/ -v --no-header -rA --tb=no -p n
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Per-PR anti-cheat hardening. dependency() returns an Image, so
+        # DockerfileEnhancer emits this Dockerfile verbatim (it only auto-injects
+        # hardening into str-dependency images). The shared base only clones the
+        # repo; the per-PR checkout happens in prepare.sh (git checkout base.sha).
+        # Detach at base.sha, drop origin + every ref + reflog, gc-prune the
+        # fix/future commits, then 4-way audit so the fix can't be read via
+        # git log/show/fetch.
+        repo = self.pr.repo
+        base_sha = self.pr.base.sha
+        hardening = (
+            "RUN set -eux; \\\n"
+            f"    cd /home/{repo}; \\\n"
+            f"    git checkout --detach {base_sha}; \\\n"
+            "    git remote remove origin 2>/dev/null || true; \\\n"
+            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d; \\\n"
+            "    git reflog expire --expire=now --all || true; \\\n"
+            "    git reflog expire --expire-unreachable=now --all || true; \\\n"
+            "    git gc --prune=now --aggressive; \\\n"
+            "    git repack -a -d -l --quiet; \\\n"
+            "    rm -f .git/objects/info/alternates; \\\n"
+            "    git config --local gc.auto 0; \\\n"
+            f'    test "$(git rev-parse HEAD)" = "$(git rev-parse {base_sha})"; \\\n'
+            '    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\\n'
+            '    test -z "$(git remote)"; \\\n'
+            '    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
+        )
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -192,6 +243,8 @@ TORTOISE_TEST_DB=sqlite://:memory: pytest tests/ -v --no-header -rA --tb=no -p n
 {copy_commands}
 
 {prepare_commands}
+
+{hardening}
 
 {self.clear_env}
 
