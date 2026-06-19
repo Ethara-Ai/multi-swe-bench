@@ -99,10 +99,10 @@ class GqlgenImageBase(Image):
         return "golang:1.25-bookworm"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -120,63 +120,44 @@ class GqlgenImageBase(Image):
         # would pin this shared base to whichever PR built it first and prune
         # away every other PR's commit ("reference is not a tree").
         #
-        # Because we opt out of the enhancer we reproduce its proxy/cert infra
-        # here so build-env parity (MITM proxy) is kept and per-PR images
-        # inherit it via FROM. The git-history hardening that the enhancer
-        # would normally add is instead applied per-PR in GqlgenImageDefault,
-        # AFTER prepare.sh checks out the PR's base commit.
+        # No proxy/cert/MITM injection (removed per build-env policy). The
+        # git-history hardening that the enhancer would normally add is instead
+        # applied per-PR in GqlgenImageDefault, AFTER prepare.sh checks out the
+        # PR's base commit -- keeping this ONE shared base reusable by every PR.
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
+        org = self.pr.org
+        hardening = Image._HARDENING_BLOCK.rstrip("\n")
 
         return f"""# syntax=docker/dockerfile:1.6
-
 FROM {image_name}
 
 ARG TARGETARCH
-ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
-ARG BASE_COMMIT=""
-ARG http_proxy=""
-ARG https_proxy=""
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG no_proxy="localhost,127.0.0.1,::1"
-ARG NO_PROXY="localhost,127.0.0.1,::1"
-ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
 
 ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
     TZ=UTC \\
-    http_proxy=${{http_proxy}} \\
-    https_proxy=${{https_proxy}} \\
-    HTTP_PROXY=${{HTTP_PROXY}} \\
-    HTTPS_PROXY=${{HTTPS_PROXY}} \\
-    no_proxy=${{no_proxy}} \\
-    NO_PROXY=${{NO_PROXY}} \\
-    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
-    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+    LANG=C.UTF-8 \\
+    GOTOOLCHAIN=auto
 
-{self.global_env}
-
-ENV GOTOOLCHAIN=auto
-
-RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
-{code}
+WORKDIR /home/{repo}
 
-{self.clear_env}
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{hardening}
 
 CMD ["/bin/bash"]
 """
