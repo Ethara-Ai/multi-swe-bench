@@ -36,37 +36,39 @@ class ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        return f"""FROM {image_name}
 
-        sections = [
-            f"FROM {image_name}",
-            self.global_env,
-            "WORKDIR /home/",
-            "RUN apt-get update && apt-get install -y --no-install-recommends git jq xvfb && rm -rf /var/lib/apt/lists/*",
-            code,
-            self.clear_env,
-        ]
-        return "\n".join(s for s in sections if s) + "\n"
+{self.global_env}
+
+WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends git jq xvfb unzip && rm -rf /var/lib/apt/lists/*
+
+# Install bun
+RUN curl -fsSL https://bun.sh/install | bash
+ENV BUN_INSTALL="/root/.bun"
+ENV PATH="$BUN_INSTALL/bin:$PATH"
+
+{self.clear_env}
+"""
 
 
 _PREPARE_SCRIPT = """#!/bin/bash
 set -e
 
+git clone https://github.com/{org}/{repo}.git /home/{repo}
 cd /home/{repo}
-git reset --hard
 bash /home/check_git_changes.sh
 git checkout {sha}
 bash /home/check_git_changes.sh
 
-npm install --no-audit --no-fund || true
-if [ -d webview-ui ]; then
-  (cd webview-ui && npm install --no-audit --no-fund) || true
+bun install || true
+
+if [ -d webview-ui ] && [ -f webview-ui/package.json ]; then
+  (cd webview-ui && npm install --legacy-peer-deps || true)
 fi
+
 if [ -d cli ] && [ -f cli/package.json ]; then
-  (cd cli && npm install --no-audit --no-fund) || true
+  (cd cli && bun install || true)
 fi
 """
 
@@ -81,8 +83,8 @@ _GIT_APPLY_EXCLUDES = (
 _TEST_SCRIPT = """set +e
 cd /home/{repo}
 
-if npm run 2>/dev/null | grep -qE '^  protos$'; then
-  npm run protos > /dev/null 2>&1 || true
+if grep -q '"protos"' package.json 2>/dev/null; then
+  bun run protos > /dev/null 2>&1 || true
 fi
 
 REQ_ARGS="--require ts-node/register --require source-map-support/register"
@@ -91,22 +93,22 @@ if [ -f src/test/requires.ts ]; then
 fi
 
 if [ -f .mocharc.json ] || [ -f .mocharc.js ] || [ -f .mocharc.cjs ]; then
-  TS_NODE_PROJECT=./tsconfig.unit-test.json npx --no-install mocha --reporter spec $REQ_ARGS 2>&1
+  TS_NODE_PROJECT=./tsconfig.unit-test.json node_modules/.bin/mocha --reporter spec $REQ_ARGS 2>&1
 fi
 
-if npm run 2>/dev/null | grep -qE '^  compile-tests$'; then
-  npm run compile-tests 2>&1 || true
+if grep -q '"compile-tests"' package.json 2>/dev/null; then
+  bun run compile-tests 2>&1 || true
   if compgen -G 'out/**/*.test.js' > /dev/null; then
-    npx --no-install mocha --reporter spec --timeout 20000 'out/**/*.test.js' 2>&1 || true
+    node_modules/.bin/mocha --reporter spec --timeout 20000 'out/**/*.test.js' 2>&1 || true
   fi
 fi
 
 if [ -d webview-ui ] && [ -f webview-ui/package.json ]; then
-  (cd webview-ui && npx --no-install vitest run --reporter=verbose 2>&1) || true
+  (cd webview-ui && node_modules/.bin/vitest run --reporter=verbose 2>&1) || true
 fi
 
 if [ -d cli ] && [ -f cli/package.json ]; then
-  (cd cli && npx --no-install vitest run --reporter=verbose 2>&1) || true
+  (cd cli && node_modules/.bin/vitest run --reporter=verbose 2>&1) || true
 fi
 """
 
@@ -160,7 +162,7 @@ exit 0
             File(
                 ".",
                 "prepare.sh",
-                _PREPARE_SCRIPT.format(repo=self.pr.repo, sha=self.pr.base.sha),
+                _PREPARE_SCRIPT.format(org=self.pr.org, repo=self.pr.repo, sha=self.pr.base.sha),
             ),
             File(
                 ".",
@@ -171,14 +173,14 @@ exit 0
                 ".",
                 "test-run.sh",
                 "#!/bin/bash\ncd /home/{repo}\n".format(repo=self.pr.repo)
-                + "git apply --reject --exclude=package-lock.json --exclude=webview-ui/package-lock.json --exclude=cli/package-lock.json --whitespace=nowarn /home/test.patch || true\n"
+                + "git apply --reject --exclude=package-lock.json --exclude=webview-ui/package-lock.json --exclude=cli/package-lock.json --exclude=bun.lockb --whitespace=nowarn /home/test.patch || true\n"
                 + _TEST_SCRIPT.format(repo=self.pr.repo),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 "#!/bin/bash\ncd /home/{repo}\n".format(repo=self.pr.repo)
-                + "git apply --reject --exclude=package-lock.json --exclude=webview-ui/package-lock.json --exclude=cli/package-lock.json --whitespace=nowarn /home/test.patch /home/fix.patch || true\n"
+                + "git apply --reject --exclude=package-lock.json --exclude=webview-ui/package-lock.json --exclude=cli/package-lock.json --exclude=bun.lockb --whitespace=nowarn /home/test.patch /home/fix.patch || true\n"
                 + _TEST_SCRIPT.format(repo=self.pr.repo),
             ),
         ]
@@ -189,14 +191,23 @@ exit 0
         tag = image.image_tag()
 
         copy_commands = "\n".join(f"COPY {f.name} /home/" for f in self.files())
-        sections = [
-            f"FROM {name}:{tag}",
-            self.global_env,
-            copy_commands,
-            "RUN bash /home/prepare.sh",
-            self.clear_env,
-        ]
-        return "\n".join(s for s in sections if s) + "\n"
+
+        return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+
+{self.global_env}
+
+{copy_commands}
+
+RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{self._HARDENING_BLOCK}
+
+{self.clear_env}
+"""
 
 
 @Instance.register("cline", "cline")
@@ -239,9 +250,10 @@ class Cline(Instance):
         mocha_fail_num = re.compile(r"^\s*\d+\)\s+(.+?)\s*$")
         mocha_pending = re.compile(r"^\s*-\s+(.+?)\s*$")
 
-        vitest_pass = re.compile(r"^\s*[✓✔]\s+(?:\S+\s+)?(\S+\.(?:test|spec)\.[jt]sx?)(?:\s+>\s+(.+?))?(?:\s+\(\d+ms\))?\s*$")
-        vitest_fail = re.compile(r"^\s*[×✗✘]\s+(?:\S+\s+)?(\S+\.(?:test|spec)\.[jt]sx?)(?:\s+>\s+(.+?))?(?:\s+\(\d+ms\))?\s*$")
-        vitest_skip = re.compile(r"^\s*[↓⊝]\s+(?:\S+\s+)?(\S+\.(?:test|spec)\.[jt]sx?)(?:\s+>\s+(.+?))?(?:\s+\(\d+ms\))?\s*$")
+        # trailing timing: both "(1ms)" and bare "1ms" formats
+        vitest_pass = re.compile(r"^\s*[✓✔]\s+(?:\S+\s+)?(\S+\.(?:test|spec)\.[jt]sx?)(?:\s+>\s+(.+?))?(?:\s+\d+ms|\s+\(\d+ms\))?\s*$")
+        vitest_fail = re.compile(r"^\s*[×✗✘]\s+(?:\S+\s+)?(\S+\.(?:test|spec)\.[jt]sx?)(?:\s+>\s+(.+?))?(?:\s+\d+ms|\s+\(\d+ms\))?\s*$")
+        vitest_skip = re.compile(r"^\s*[↓⊝]\s+(?:\S+\s+)?(\S+\.(?:test|spec)\.[jt]sx?)(?:\s+>\s+(.+?))?(?:\s+\d+ms|\s+\(\d+ms\))?\s*$")
 
         in_failure_listing = False
 
