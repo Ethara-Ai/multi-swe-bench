@@ -21,13 +21,13 @@ class FastfetchImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        # Returning a string (rather than a chained Image) lets the shared
-        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
-        # checks out "${BASE_COMMIT}", runs extra_setup(), and appends the
-        # _HARDENING_BLOCK that strips every other ref/commit so the fix can't be
-        # read out of git history. DockerfileEnhancer then injects the proxy/cert
-        # infra and the final sanitize pass. None of that fires when dockerfile()
-        # is overridden, which is why the previous two-stage build bypassed it.
+        # Returning a string (rather than a chained Image) keeps this a single,
+        # self-contained per-PR image and lets DockerfileEnhancer inject the
+        # shared infra (ARG REPO_URL / BASE_COMMIT / TARGETARCH, env, labels)
+        # after the FROM line. The build itself is owned by dockerfile() below,
+        # which clones "${REPO_URL}", checks out "${BASE_COMMIT}", runs
+        # extra_setup(), and embeds Image._HARDENING_BLOCK verbatim so the fix
+        # commit can't be read out of git history at eval time.
         #
         # debian:bookworm (GCC 12), NOT debian:latest (GCC 14): this dataset
         # spans fastfetch releases 1.5 .. 2.52. Legacy C in the old releases
@@ -63,6 +63,62 @@ class FastfetchImageDefault(Image):
             "COPY prepare.sh /home/prepare.sh\n"
             "RUN bash /home/prepare.sh"
         )
+
+    def dockerfile(self) -> str:
+        # Self-contained Dockerfile generation for this registry. We deliberately
+        # do NOT defer to the inherited Image.dockerfile(): the full build is
+        # spelled out here so the hardening pass is explicit and guaranteed at
+        # this layer. The hardening text is pulled verbatim from image.py
+        # (Image._HARDENING_BLOCK) so it stays in lockstep with the shared policy
+        # instead of drifting from a hand-copied duplicate.
+        base_img = self.dependency()
+
+        default_packages = [
+            "ca-certificates",
+            "curl",
+            "build-essential",
+            "git",
+            "gnupg",
+            "make",
+            "python3",
+            "sudo",
+            "wget",
+        ]
+        all_packages = default_packages + self.extra_packages()
+        packages_str = " \\\n    ".join(all_packages)
+        apt_command = self._get_apt_update_command(packages_str, base_img)
+
+        extra_setup = self.extra_setup()
+
+        sections = [f"FROM {base_img}"]
+
+        if self.global_env:
+            sections.append(self.global_env)
+
+        sections.append(
+            "WORKDIR /home/\nENV DEBIAN_FRONTEND=noninteractive\nENV LANG=C.UTF-8"
+        )
+
+        sections.append(apt_command)
+        sections.append(f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}')
+        sections.append(f"WORKDIR /home/{self.pr.repo}")
+        sections.append("RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}")
+
+        if extra_setup:
+            sections.append(extra_setup)
+
+        # Hardening block sourced verbatim from image.py. Strips every ref,
+        # remote, and unreachable object (incl. submodules) so the fix commit
+        # cannot be recovered from git history. MUST run after clone/checkout
+        # and extra_setup so the working tree is at ${BASE_COMMIT} first.
+        sections.append(Image._HARDENING_BLOCK)
+
+        if self.clear_env:
+            sections.append(self.clear_env)
+
+        sections.append('CMD ["/bin/bash"]')
+
+        return "\n\n".join(sections) + "\n"
 
     def files(self) -> list[File]:
         cmake_configure = "cmake -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug .."
