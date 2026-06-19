@@ -115,13 +115,45 @@ ln -sf "$(pwd)/cmd/vendor" "$(pwd)/gopath/src"
 export GOPATH="$(pwd)/gopath:/go"
 export GO111MODULE=off"""
 
+# NOTE on -mod=mod: several etcd release lines (notably 3.4) ship an
+# *inconsistent* committed vendor/ tree (incomplete vendor/modules.txt) at the
+# tested base SHAs.  Whenever a vendor/ dir is present, Go >=1.14 auto-selects
+# -mod=vendor and then fails to compile ("cannot find package .../vendor/...").
+# Running `go mod vendor`/`go mod tidy` to repair it instead rewrites go.mod and
+# yields the opposite error ("no required module provides package").  Either way
+# nothing compiles and every test reports (0,0,0) -- a pure build/env failure,
+# not a real fix signal.  Forcing -mod=mod makes Go ignore the broken vendor dir
+# and resolve modules from GOPROXY, which compiles cleanly.  GOSUMDB=off avoids
+# checksum-db lookups (the legacy GONOSUMCHECK/GONOSUMDB vars are no-ops on
+# modern Go).
 _GO_ENV_MODULE = """\
 export GO111MODULE=on
 export GOTOOLCHAIN=auto
+export GOSUMDB=off
 export GONOSUMCHECK=*
 export GONOSUMDB=*
 export GOPROXY=https://proxy.golang.org
-export GOFLAGS=-p=1"""
+export GOFLAGS="-mod=mod -p=1"
+# etcd refuses to start on non-amd64 arches unless this is set; without it every
+# e2e test that spawns the real etcd/etcdctl binary fails on arm64 hosts.
+export ETCD_UNSUPPORTED_ARCH="$(go env GOARCH)\""""
+
+# Build the etcd/etcdctl binaries before running tests.  The e2e suites
+# (tests/e2e/...) spawn the real binaries as subprocesses; without them the
+# e2e tests fail with "binary not found" -- an *environmental* failure rather
+# than a genuine fix-to-pass signal.  Building here makes those f2p/n2p tests
+# genuine.  Guarded with `|| true` so a build hiccup never aborts the test run
+# (the unit/integration tests still execute and report).
+_BUILD_BINARIES = """\
+# --- build etcd/etcdctl so e2e tests can spawn real binaries ---
+export BINDIR="$(pwd)/bin"
+mkdir -p "$BINDIR"
+( make build ) || ( ./build.sh ) || ( ./build ) || true
+export PATH="$BINDIR:$PATH"
+export ETCD_BIN_DIR="$BINDIR"
+export ETCD_BIN_PATH="$BINDIR/etcd"
+export ETCDCTL_BIN_PATH="$BINDIR/etcdctl"
+# ----------------------------------------------------------------"""
 
 _MULTI_MOD_FIND = (
     "find . -name 'go.mod' -not -path './vendor/*' -not -path './.git/*' | sort"
@@ -222,9 +254,7 @@ def _single_module_prepare(pr: PullRequest) -> str:
         f"\n"
         f"{_GO_ENV_MODULE}\n"
         f"\n"
-        f"go mod vendor || true\n"
         f"go mod download || true\n"
-        f"go mod tidy || true\n"
         f"go test -v -count=1 ./... || true\n"
     )
 
@@ -236,6 +266,10 @@ def _single_module_run(pr: PullRequest) -> str:
         f"\n"
         f"cd /home/etcd\n"
         f"{_GO_ENV_MODULE}\n"
+        f"\n"
+        f"go mod download || true\n"
+        f"{_BUILD_BINARIES}\n"
+        f"\n"
         f"go test -v -count=1 ./...\n"
     )
 
@@ -251,9 +285,9 @@ def _single_module_test_run(pr: PullRequest) -> str:
         f"\n"
         f"{_GO_ENV_MODULE}\n"
         f"\n"
-        f"go mod vendor || true\n"
         f"go mod download || true\n"
-        f"go mod tidy || true\n"
+        f"{_BUILD_BINARIES}\n"
+        f"\n"
         f"go test -v -count=1 ./...\n"
     )
 
@@ -271,9 +305,9 @@ def _single_module_fix_run(pr: PullRequest) -> str:
         f"\n"
         f"{_GO_ENV_MODULE}\n"
         f"\n"
-        f"go mod vendor || true\n"
         f"go mod download || true\n"
-        f"go mod tidy || true\n"
+        f"{_BUILD_BINARIES}\n"
+        f"\n"
         f"go test -v -count=1 ./...\n"
     )
 
@@ -299,7 +333,6 @@ def _multi_module_prepare(pr: PullRequest) -> str:
         f'  dir=$(dirname "$modfile")\n'
         f'  echo "=== Preparing module: $dir ==="\n'
         f'  (cd "$dir" && go mod download) || true\n'
-        f'  (cd "$dir" && go mod tidy) || true\n'
         f'  (cd "$dir" && go test -v -count=1 ./...) || true\n'
         f"done\n"
     )
@@ -312,6 +345,8 @@ def _multi_module_run(pr: PullRequest) -> str:
         f"\n"
         f"cd /home/etcd\n"
         f"{_GO_ENV_MODULE}\n"
+        f"\n"
+        f"{_BUILD_BINARIES}\n"
         f"\n"
         f"{_MULTI_MOD_FIND} | while read modfile; do\n"
         f'  dir=$(dirname "$modfile")\n'
@@ -335,8 +370,9 @@ def _multi_module_test_run(pr: PullRequest) -> str:
         f"{_MULTI_MOD_FIND} | while read modfile; do\n"
         f'  dir=$(dirname "$modfile")\n'
         f'  (cd "$dir" && go mod download) || true\n'
-        f'  (cd "$dir" && go mod tidy) || true\n'
         f"done\n"
+        f"\n"
+        f"{_BUILD_BINARIES}\n"
         f"\n"
         f"{_MULTI_MOD_FIND} | while read modfile; do\n"
         f'  dir=$(dirname "$modfile")\n'
@@ -361,10 +397,10 @@ def _multi_module_fix_run(pr: PullRequest) -> str:
         f"\n"
         f"{_MULTI_MOD_FIND} | while read modfile; do\n"
         f'  dir=$(dirname "$modfile")\n'
-        f'  (cd "$dir" && go mod vendor) || true\n'
         f'  (cd "$dir" && go mod download) || true\n'
-        f'  (cd "$dir" && go mod tidy) || true\n'
         f"done\n"
+        f"\n"
+        f"{_BUILD_BINARIES}\n"
         f"\n"
         f"{_MULTI_MOD_FIND} | while read modfile; do\n"
         f'  dir=$(dirname "$modfile")\n'
@@ -407,7 +443,37 @@ _FIX_RUN_FN = {
 # Image classes
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# THREE-LEVEL REGISTRY
+#
+# The pipeline's DockerfileEnhancer (multi_swe_bench/harness/image.py) appends a
+# "clone-hardening" block to ANY image whose ``dependency()`` returns a *string*
+# (a raw Docker tag).  That block runs ``git checkout --detach ${BASE_COMMIT}``,
+# removes ``origin``, deletes every ref, and ``git gc --prune``s unreachable
+# objects.  If the image that gets hardened is *shared* across PRs (one image per
+# Go version), it is pinned to whichever PR built first and stripped of the other
+# PRs' commits -> their ``git checkout <base.sha>`` fails -> 0 resolved.
+#
+# To survive this, only the per-PR leaf may depend on a string.  We therefore use
+# three levels:
+#
+#   1. EtcdImageBase  (toolchain)  FROM golang:X.Y  -- dependency() -> str.
+#        The enhancer runs but, because this image performs NO ``git clone``,
+#        its final-sanitize step is a no-op: only the harmless proxy/cert infra
+#        block is injected, never the hardening block.  Shared per Go version.
+#   2. EtcdImageRepo  (full clone) FROM base-goX_Y  -- dependency() -> Image.
+#        The enhancer returns this dockerfile verbatim (no hardening), so the
+#        clone keeps ``origin`` + every ref + full history.  Shared per Go
+#        version; never pinned to a base.sha.
+#   3. EtcdImageDefault (per PR)   FROM repo-goX_Y  -- dependency() -> Image.
+#        Also returned verbatim.  prepare.sh checks out this PR's base.sha from
+#        the full history present in level 2.
+# ---------------------------------------------------------------------------
+
+
 class EtcdImageBase(Image):
+    """Level 1: shared Go toolchain image.  No source clone (keeps the
+    enhancer's hardening block from ever being appended)."""
 
     def __init__(self, pr: PullRequest, config: Config, go_version: str):
         self._pr = pr
@@ -436,22 +502,6 @@ class EtcdImageBase(Image):
 
     def dockerfile(self) -> str:
         go_image = self.dependency()
-        gopath_dir = f"/go/src/github.com/coreos/{self.pr.repo}"
-
-        if self.config.need_clone:
-            clone_code = (
-                f"RUN mkdir -p /go/src/github.com/coreos /go/src/go.etcd.io && \\\n"
-                f"    git clone https://github.com/{self.pr.org}/{self.pr.repo}.git {gopath_dir} && \\\n"
-                f"    ln -sf {gopath_dir} /home/{self.pr.repo} && \\\n"
-                f"    ln -sf {gopath_dir} /go/src/go.etcd.io/{self.pr.repo}"
-            )
-        else:
-            clone_code = (
-                f"COPY {self.pr.repo} {gopath_dir}\n"
-                f"RUN mkdir -p /go/src/go.etcd.io && \\\n"
-                f"    ln -sf {gopath_dir} /home/{self.pr.repo} && \\\n"
-                f"    ln -sf {gopath_dir} /go/src/go.etcd.io/{self.pr.repo}"
-            )
 
         return f"""FROM {go_image}
 
@@ -461,8 +511,6 @@ class EtcdImageBase(Image):
 
 WORKDIR /home/
 
-{clone_code}
-
 {self.clear_env}
 
 ENV GOPATH=/go
@@ -471,6 +519,62 @@ ENV GOTOOLCHAIN=auto
 ENV GONOSUMCHECK=*
 ENV GONOSUMDB=*
 ENV GOPROXY=https://proxy.golang.org
+"""
+
+
+class EtcdImageRepo(Image):
+    """Level 2: shared full clone of the repo on top of the toolchain.  Because
+    ``dependency()`` returns an Image, the enhancer leaves this dockerfile
+    untouched -- the clone retains ``origin`` and the complete history, so any
+    PR's base.sha remains checkout-able from level 3."""
+
+    def __init__(self, pr: PullRequest, config: Config, go_version: str):
+        self._pr = pr
+        self._config = config
+        self._go_version = go_version
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return EtcdImageBase(self.pr, self.config, self._go_version)
+
+    def image_tag(self) -> str:
+        return f"repo-go{self._go_version.replace('.', '_')}"
+
+    def workdir(self) -> str:
+        return self.image_tag()
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        base_image = self.dependency()
+        name = base_image.image_name()
+        tag = base_image.image_tag()
+        gopath_dir = f"/go/src/github.com/coreos/{self.pr.repo}"
+
+        clone_code = (
+            f"RUN mkdir -p /go/src/github.com/coreos /go/src/go.etcd.io && \\\n"
+            f"    git clone https://github.com/{self.pr.org}/{self.pr.repo}.git {gopath_dir} && \\\n"
+            f"    ln -sf {gopath_dir} /home/{self.pr.repo} && \\\n"
+            f"    ln -sf {gopath_dir} /go/src/go.etcd.io/{self.pr.repo}"
+        )
+
+        return f"""FROM {name}:{tag}
+
+{self.global_env}
+
+WORKDIR /home/
+
+{clone_code}
+
+{self.clear_env}
 """
 
 
@@ -491,7 +595,7 @@ class EtcdImageDefault(Image):
 
     def dependency(self) -> Image:
         go_version = _resolve_go_version(self.pr, self._strategy)
-        return EtcdImageBase(self.pr, self.config, go_version)
+        return EtcdImageRepo(self.pr, self.config, go_version)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -691,6 +795,34 @@ for _sn, _sk, _versions in _VERSIONED_TAGS:
             {"STRATEGY": _sk},
         )
         Instance.register("etcd-io", _reg_key)(_cls)
+
+
+# ---------------------------------------------------------------------------
+# Bundle number_interval registrations.
+#
+# Release-bundled instances carry number_interval="etcd_<first>_to_<last>"
+# (first/last PR number of the bundle).  Instance.create() routes on
+# f"{org}/{number_interval}" *before* falling back to the tag, so every bundle
+# interval that appears in the dataset must be registered here.  The strategy
+# is fixed per bundle; the Go version is still resolved from pr.tag (which the
+# records retain), so routing stays identical to the tag-based path.
+# ---------------------------------------------------------------------------
+
+_NUMBER_INTERVALS: list[tuple[str, str]] = [
+    ("etcd_14410_to_14442", "etcd_single_module"),
+    ("etcd_14530_to_14675", "etcd_single_module"),
+    ("etcd_15038_to_15280", "etcd_single_module"),
+    ("etcd_15774_to_15860", "etcd_multi_module"),
+    ("etcd_15788_to_15861", "etcd_single_module"),
+]
+
+for _interval, _strategy in _NUMBER_INTERVALS:
+    _cls = type(
+        f"_Etcd_{_interval}",
+        (_EtcdInstanceBase,),
+        {"STRATEGY": _strategy},
+    )
+    Instance.register("etcd-io", _interval)(_cls)
 
 
 # ---------------------------------------------------------------------------
