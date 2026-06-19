@@ -27,10 +27,10 @@ class ImageBase(Image):
         return "envagent"
 
     def image_tag(self) -> str:
-        return "base_python38_poetry"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base_python38_poetry"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -40,32 +40,47 @@ class ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
+        org = self.pr.org
 
-        # SHARED base (era-wide tag, reused by every PR in this interval). The
-        # `# syntax` directive makes DockerfileEnhancer.enhance() skip it; else it
-        # rewrites the clone to checkout ${{BASE_COMMIT}} + hardening + gc-prune,
-        # pinning the shared base to one commit and breaking every other PR.
-        # Per-PR hardening lives in ImageDefault below.
+        # Base image: reference infra format + anti-cheat hardening, built per PR
+        # (checks out and hardens at this PR's base.sha). The syntax directive
+        # keeps DockerfileEnhancer.enhance() from rewriting it.
+        hardening = Image._HARDENING_BLOCK.rstrip("\n")
+
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    TZ=UTC \\
+    LANG=C.UTF-8
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 RUN apt-get update && apt-get install -y --no-install-recommends git bash build-essential && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
 
 RUN pip install --upgrade pip setuptools wheel || true
 RUN pip install asynctest pytest aiosqlite pypika ciso8601 pyyaml iso8601 pytz asyncpg aiomysql || true
-RUN cd /home/{self.pr.repo} && pip install -e . || true
+RUN cd /home/{repo} && pip install -e . || true
 
-{self.clear_env}
+{hardening}
 
+CMD ["/bin/bash"]
 """
 
 

@@ -27,10 +27,10 @@ class ImageBase(Image):
         return "envagent"
 
     def image_tag(self) -> str:
-        return "base_python312_uv"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base_python312_uv"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -40,26 +40,47 @@ class ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
+        org = self.pr.org
 
-        return f"""FROM {image_name}
+        # Base image: reference infra format + anti-cheat hardening, built per PR
+        # (checks out and hardens at this PR's base.sha). The syntax directive
+        # keeps DockerfileEnhancer.enhance() from rewriting it.
+        hardening = Image._HARDENING_BLOCK.rstrip("\n")
 
-{self.global_env}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    TZ=UTC \\
+    LANG=C.UTF-8
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 RUN apt-get update && apt-get install -y --no-install-recommends git bash build-essential && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
 
 RUN pip install --upgrade pip setuptools wheel || true
 RUN pip install uv || true
-RUN cd /home/{self.pr.repo} && (uv sync --frozen --all-groups --extra asyncpg --extra aiomysql --extra accel --extra psycopg --extra asyncodbc || pip install -e . || true)
+RUN cd /home/{repo} && (uv sync --frozen --all-groups --extra asyncpg --extra aiomysql --extra accel --extra psycopg --extra asyncodbc || pip install -e . || true)
 
-{self.clear_env}
+{hardening}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -142,7 +163,12 @@ uv sync --frozen --all-groups --extra asyncpg --extra aiomysql --extra accel --e
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-TORTOISE_TEST_DB=sqlite://:memory: uv run pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors
+PYTHONUNBUFFERED=1 TORTOISE_TEST_DB=sqlite://:memory: timeout --signal=KILL 1800 uv run --with pytest-timeout python - <<'PYEOF'
+import os, sys, pytest
+rc = pytest.main(["tests/", "-v", "--no-header", "-rA", "--tb=no", "-p", "no:cacheprovider", "--continue-on-collection-errors", "--timeout=180"])
+sys.stdout.flush(); sys.stderr.flush()
+os._exit(int(rc))
+PYEOF
 
 """.format(pr=self.pr),
             ),
@@ -155,7 +181,12 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-TORTOISE_TEST_DB=sqlite://:memory: uv run pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors
+PYTHONUNBUFFERED=1 TORTOISE_TEST_DB=sqlite://:memory: timeout --signal=KILL 1800 uv run --with pytest-timeout python - <<'PYEOF'
+import os, sys, pytest
+rc = pytest.main(["tests/", "-v", "--no-header", "-rA", "--tb=no", "-p", "no:cacheprovider", "--continue-on-collection-errors", "--timeout=180"])
+sys.stdout.flush(); sys.stderr.flush()
+os._exit(int(rc))
+PYEOF
 
 """.format(pr=self.pr),
             ),
@@ -168,7 +199,12 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix
     echo "Error: git apply failed" >&2
     exit 1
 fi
-TORTOISE_TEST_DB=sqlite://:memory: uv run pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors
+PYTHONUNBUFFERED=1 TORTOISE_TEST_DB=sqlite://:memory: timeout --signal=KILL 1800 uv run --with pytest-timeout python - <<'PYEOF'
+import os, sys, pytest
+rc = pytest.main(["tests/", "-v", "--no-header", "-rA", "--tb=no", "-p", "no:cacheprovider", "--continue-on-collection-errors", "--timeout=180"])
+sys.stdout.flush(); sys.stderr.flush()
+os._exit(int(rc))
+PYEOF
 
 """.format(pr=self.pr),
             ),
@@ -185,6 +221,33 @@ TORTOISE_TEST_DB=sqlite://:memory: uv run pytest tests/ -v --no-header -rA --tb=
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Per-PR anti-cheat hardening. dependency() returns an Image, so
+        # DockerfileEnhancer emits this Dockerfile verbatim (it only auto-injects
+        # hardening into str-dependency images). The shared base only clones the
+        # repo; the per-PR checkout happens in prepare.sh (git checkout base.sha).
+        # Detach at base.sha, drop origin + every ref + reflog, gc-prune the
+        # fix/future commits, then 4-way audit so the fix can't be read via
+        # git log/show/fetch.
+        repo = self.pr.repo
+        base_sha = self.pr.base.sha
+        hardening = (
+            "RUN set -eux; \\\n"
+            f"    cd /home/{repo}; \\\n"
+            f"    git checkout --detach {base_sha}; \\\n"
+            "    git remote remove origin 2>/dev/null || true; \\\n"
+            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d; \\\n"
+            "    git reflog expire --expire=now --all || true; \\\n"
+            "    git reflog expire --expire-unreachable=now --all || true; \\\n"
+            "    git gc --prune=now --aggressive; \\\n"
+            "    git repack -a -d -l --quiet; \\\n"
+            "    rm -f .git/objects/info/alternates; \\\n"
+            "    git config --local gc.auto 0; \\\n"
+            f'    test "$(git rev-parse HEAD)" = "$(git rev-parse {base_sha})"; \\\n'
+            '    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\\n'
+            '    test -z "$(git remote)"; \\\n'
+            '    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
+        )
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -192,6 +255,8 @@ TORTOISE_TEST_DB=sqlite://:memory: uv run pytest tests/ -v --no-header -rA --tb=
 {copy_commands}
 
 {prepare_commands}
+
+{hardening}
 
 {self.clear_env}
 
