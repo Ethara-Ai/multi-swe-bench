@@ -1,27 +1,3 @@
-"""Crossplane harness (release-1.6 .. release-1.9 era).
-
-The dataset bundles backport PRs whose base commits live on the
-``release-1.6`` .. ``release-1.9`` branches (crossplane v1.6.x .. v1.9.x).
-Every one of those commits declares ``go 1.16``/``go 1.17`` in go.mod, so the
-whole bundle builds and tests cleanly on the ``golang:1.17`` toolchain.  Using
-``golang:latest`` (Go 1.24+) makes the old module graph fail to compile, which
-turns every test into a spurious environmental/build failure -- exactly what we
-must avoid for genuine f2p / n2p.
-
-Registry layout (three levels) is deliberate.  ``image.py``'s
-``DockerfileEnhancer`` rewrites and *hardens* (pins ``BASE_COMMIT`` + strips
-``origin`` and all refs) any image whose ``dependency()`` is a *string* and that
-contains a ``git clone``.  A shared base image hardened that way is pinned to a
-single commit, so the per-PR ``git checkout {base.sha}`` can no longer resolve
--> 0 resolved.  To stay safe:
-
-  * Level 1 (toolchain) has a *string* dependency but **no clone** -> the
-    enhancer only injects infra (proxy/certs/labels), never hardening.
-  * Level 2 (repo) and Level 3 (per-PR) have an *Image* dependency, so the
-    enhancer returns their Dockerfiles untouched.  The full clone (all
-    branches + tags, ``origin`` intact) survives, and each PR can detach onto
-    its own ``base.sha`` (release-branch commits included).
-"""
 
 import re
 from typing import Optional, Union
@@ -31,14 +7,109 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 # crossplane v1.6 (go 1.16) .. v1.9 (go 1.17) all build/test on the 1.17
-# toolchain. 1.17 is forward-compatible with the older go.mod directive.
+# toolchain (1.17 is forward-compatible with the older go.mod directive).
 _GO_IMAGE = "golang:1.17"
 
 
-class CrossplaneImageBase(Image):
-    """Level 1 -- toolchain only.  String dependency, *no* clone, so the
-    DockerfileEnhancer adds infra but never the clone-hardening block.  Shared
-    across every PR (constant tag)."""
+# ---------------------------------------------------------------------------
+# Build-context scripts (COPY'd into the image, run at build/eval time).
+# ---------------------------------------------------------------------------
+
+# Warms the go module + build cache at base.sha so the three eval runs start
+# from a compiled state.  Runs BEFORE the hardening strip, so it may still see
+# the full clone; `|| true` keeps a flaky baseline from breaking the build.
+_INSTALL_SH = """#!/bin/bash
+set -e
+
+git config --global --add safe.directory /home/crossplane || true
+cd /home/crossplane
+
+go mod download || true
+go build ./... >/dev/null 2>&1 || true
+go test -count=1 ./... >/dev/null 2>&1 || true
+"""
+
+# Baseline: clean base.sha, no patches.  Full `./...` matches the golden p2p
+# set (which spans many packages).  base.sha is still checkout-able after the
+# hardening strip because it is HEAD (reachable, not pruned).
+_RUN_SH = """#!/bin/bash
+set -uxo pipefail
+
+cd /home/crossplane
+git reset --hard
+git checkout {pr.base.sha}
+
+go test -v -count=1 -timeout 30m ./...
+"""
+
+# Test patch only: the new tests exercise behaviour the fix has not introduced
+# yet, so they fail (or their package fails to compile) -- genuine f2p / n2p.
+_TEST_RUN_SH = """#!/bin/bash
+set -uxo pipefail
+
+cd /home/crossplane
+git reset --hard
+git checkout {pr.base.sha}
+git apply --whitespace=nowarn /home/test.patch
+
+go test -v -count=1 -timeout 30m ./...
+"""
+
+# Test + fix patches: production fix present, the suite passes.
+_FIX_RUN_SH = """#!/bin/bash
+set -uxo pipefail
+
+cd /home/crossplane
+git reset --hard
+git checkout {pr.base.sha}
+git apply --whitespace=nowarn /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch
+
+go test -v -count=1 -timeout 30m ./...
+"""
+
+# Archive-resilient apt: golang:1.17 is Debian bullseye, currently live on
+# deb.debian.org but near end-of-life.  Try a normal `apt-get update` first and
+# fall back to archive.debian.org (dropping -updates) when the mirror has been
+# retired -- mirrors the stretch/buster handling image.py applies for
+# deprecated bases, but keyed off runtime reachability rather than a fixed list.
+_APT_INSTALL = (
+    "RUN { apt-get update 2>/dev/null || "
+    "{ sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && "
+    "sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && "
+    "sed -i '/-updates/d' /etc/apt/sources.list && "
+    "apt-get update; }; } && \\\n"
+    "    apt-get install -y --no-install-recommends \\\n"
+    "    ca-certificates \\\n"
+    "    curl \\\n"
+    "    build-essential \\\n"
+    "    git \\\n"
+    "    gnupg \\\n"
+    "    make \\\n"
+    "    python3 \\\n"
+    "    sudo \\\n"
+    "    wget \\\n"
+    "    patch \\\n"
+    "    && rm -rf /var/lib/apt/lists/*"
+)
+
+
+class CrossplaneImageDefault(Image):
+    """Single-level per-PR image (mirrors the canonical image.py template).
+
+    ``dependency()`` returns a *string* (the Go toolchain image), so the
+    pipeline's ``DockerfileEnhancer`` engages: it prepends the
+    ``# syntax``/proxy/cert/label infra block and standardises the
+    ``${REPO_URL}``/``${BASE_COMMIT}`` clone+checkout.  The Dockerfile below
+    carries everything else image.py expects -- apt install, the
+    ``git clone "${REPO_URL}"`` / ``git checkout ${BASE_COMMIT}`` pair, the
+    verbatim ``Image._HARDENING_BLOCK`` strip (origin/refs/reflog/gc + the four
+    post-condition asserts + the submodule pass), and the final ``CMD``.
+
+    Each PR builds its own self-contained image, so there is no shared base for
+    the enhancer to pin+strip -- the pin-and-strip hazard that previously forced
+    a 3-level layout does not apply to the single-level form.
+    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -56,108 +127,6 @@ class CrossplaneImageBase(Image):
         return _GO_IMAGE
 
     def image_tag(self) -> str:
-        return "base-go1.17"
-
-    def workdir(self) -> str:
-        return "base-go1.17"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        # The official golang image already ships git, make and gcc, so no apt
-        # install is required (avoids deprecated-Debian archive breakage).
-        # GOFLAGS=-mod=mod lets `go test` reconcile go.mod/go.sum after the
-        # release-range fix patch touches dependency versions, instead of the
-        # readonly mode hard-failing on a missing-sum.
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV GOFLAGS=-mod=mod
-ENV GOTOOLCHAIN=local
-
-WORKDIR /home/
-
-{self.clear_env}
-"""
-
-
-class CrossplaneImageRepo(Image):
-    """Level 2 -- one shared full clone.  Image dependency => the enhancer
-    leaves this Dockerfile untouched, so the clone keeps every branch/tag and
-    its ``origin`` remote (needed because the PR base commits live on
-    ``release-*`` branches, not on the default branch's first-parent history)."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return CrossplaneImageBase(self.pr, self.config)
-
-    def image_tag(self) -> str:
-        return "repo-go1.17"
-
-    def workdir(self) -> str:
-        return "repo-go1.17"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-WORKDIR /home/
-
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
-RUN git config --global --add safe.directory /home/{self.pr.repo}
-
-{self.clear_env}
-"""
-
-
-class CrossplaneImageDefault(Image):
-    """Level 3 -- per-PR image.  Image dependency => untouched by the enhancer.
-    Detaches the shared clone onto this PR's base.sha and warms the build/module
-    cache so the three eval runs start from a clean, compiled base state."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return CrossplaneImageRepo(self.pr, self.config)
-
-    def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
@@ -165,125 +134,49 @@ class CrossplaneImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-""".format(),
-            ),
-            # Build-time: pin the shared clone onto this PR's base commit and
-            # warm the module/build cache. `|| true` so a (rare) flaky baseline
-            # test never breaks the image build -- the genuine baseline is
-            # captured later by run.sh.
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git config --global --add safe.directory /home/{pr.repo}
-git reset --hard
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-go test -count=1 ./... >/dev/null 2>&1 || true
-""".format(pr=self.pr),
-            ),
-            # Baseline: clean base.sha, no patches. Full `./...` matches the
-            # golden p2p set (which spans many packages across the repo).
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -uxo pipefail
-
-cd /home/{pr.repo}
-git reset --hard
-git checkout {pr.base.sha}
-
-go test -v -count=1 -timeout 30m ./...
-""".format(pr=self.pr),
-            ),
-            # Test patch only: the new tests exercise behaviour the fix has not
-            # introduced yet, so they fail (or their package fails to compile,
-            # leaving them absent) -- genuine f2p / n2p candidates.
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -uxo pipefail
-
-cd /home/{pr.repo}
-git reset --hard
-git checkout {pr.base.sha}
-git apply --whitespace=nowarn /home/test.patch
-
-go test -v -count=1 -timeout 30m ./...
-""".format(pr=self.pr),
-            ),
-            # Test + fix patches: production fix present, the suite passes.
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -uxo pipefail
-
-cd /home/{pr.repo}
-git reset --hard
-git checkout {pr.base.sha}
-git apply --whitespace=nowarn /home/fix.patch
-git apply --whitespace=nowarn /home/test.patch
-
-go test -v -count=1 -timeout 30m ./...
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "install.sh", _INSTALL_SH),
+            File(".", "run.sh", _RUN_SH.format(pr=self.pr)),
+            File(".", "test-run.sh", _TEST_RUN_SH.format(pr=self.pr)),
+            File(".", "fix-run.sh", _FIX_RUN_SH.format(pr=self.pr)),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        image_name = self.dependency()
 
         copy_commands = ""
         for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+            copy_commands += f"COPY {file.name} /home/{file.name}\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
+        return f"""FROM {image_name}
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
 
-{prepare_commands}
+{_APT_INSTALL}
+
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+ENV GOFLAGS=-mod=mod
+ENV GOTOOLCHAIN=local
+
+{copy_commands}
+RUN bash /home/install.sh || true
+
+{Image._HARDENING_BLOCK}
 
 {self.clear_env}
+
+CMD ["/bin/bash"]
 """
 
 
