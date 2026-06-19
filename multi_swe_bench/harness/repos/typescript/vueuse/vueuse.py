@@ -132,6 +132,56 @@ class VueuseImageDefault(Image):
             "RUN bash /home/prepare.sh"
         )
 
+    def dockerfile(self) -> str:
+        # Self-contained Dockerfile that emits the BuildKit syntax directive
+        # up front. DockerfileEnhancer.enhance() returns the content unchanged
+        # whenever that directive is present, so this registry NEVER receives
+        # proxy / CA-cert / MITM injection regardless of the image.py in use.
+        # We therefore declare the REPO_URL/BASE_COMMIT ARGs and the hardening
+        # block ourselves so the build stays correct without the enhancer.
+        base_img = self.dependency()
+        if isinstance(base_img, Image):
+            base_img = base_img.image_full_name()
+        org, repo = self.pr.org, self.pr.repo
+        repo_url = f"https://github.com/{org}/{repo}.git"
+
+        default_packages = [
+            "ca-certificates", "curl", "build-essential", "git",
+            "gnupg", "make", "python3", "sudo", "wget",
+        ]
+        packages_str = " \\\n    ".join(default_packages + self.extra_packages())
+        apt_command = self._get_apt_update_command(packages_str, base_img)
+
+        sections = [
+            "# syntax=docker/dockerfile:1.6",
+            f"FROM {base_img}",
+            (
+                "ARG TARGETARCH\n"
+                f'ARG REPO_URL="{repo_url}"\n'
+                "ARG BASE_COMMIT"
+            ),
+            (
+                "ENV DEBIAN_FRONTEND=noninteractive \\\n"
+                "    LANG=C.UTF-8 \\\n"
+                "    TZ=UTC"
+            ),
+            (
+                f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+                f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
+                f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+                '      org.opencontainers.image.authors="https://www.ethara.ai/"'
+            ),
+            "WORKDIR /home/",
+            apt_command,
+            f'RUN git clone "${{REPO_URL}}" /home/{repo}',
+            f"WORKDIR /home/{repo}",
+            "RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}",
+            self.extra_setup(),
+            Image._HARDENING_BLOCK,
+            'CMD ["/bin/bash"]',
+        ]
+        return "\n\n".join(s for s in sections if s) + "\n"
+
     def _prepare_body(self) -> str:
         era = self._era()
         if era == "yarn":

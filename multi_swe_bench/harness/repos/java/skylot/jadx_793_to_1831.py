@@ -5,7 +5,6 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 from multi_swe_bench.harness.repos.java.skylot._common import (
-    _GRADLE_PROXY_SETUP,
     _binary_extract_shell,
     _binary_restore_shell,
     _extract_end_tag,
@@ -112,8 +111,6 @@ class JadxJdk11ImageDefault(Image):
             f"cd /home/{repo}\n"
             "git reset --hard || true\n"
             "\n"
-            + _GRADLE_PROXY_SETUP
-            + "\n"
             + bin_extract
             + "\n"
             "./gradlew --no-daemon assemble || true\n"

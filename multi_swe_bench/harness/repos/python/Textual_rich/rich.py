@@ -14,9 +14,15 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #     "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that detaches HEAD and
 #     strips every other ref/remote/commit. That closes the reward-hacking hole
 #     where the fix could be read straight out of git history (git log / show /
-#     diff origin). DockerfileEnhancer then injects the proxy/cert infra. None
-#     of that fires when dockerfile() is overridden, which is what the previous
-#     two-stage build did.
+#     diff origin).
+#   * SELF-CONTAINED, proxy/cert-free: dockerfile() below emits the *complete*
+#     Dockerfile (including the "# syntax=docker/dockerfile:1.6" directive and a
+#     hand-rolled infra block with NO proxy / CA-cert / MITM lines). Because
+#     DockerfileEnhancer.enhance() returns any Dockerfile that already carries
+#     that syntax directive unchanged, the enhancer's proxy/cert injection never
+#     runs for rich — regardless of which image.py builds it (even a tree whose
+#     image.py still injects the MITM proxy). The proxy removal is a property of
+#     this registry, not of the shared image.py.
 #   * extra_setup() runs after "git checkout ${BASE_COMMIT}" and before the
 #     hardening pass. We install rich (editable) at the base commit and COPY the
 #     eval scripts + patches into /home/ (outside /home/rich, so the hardening
@@ -72,6 +78,45 @@ class ImageDefault(Image):
         # String dependency -> Image.dockerfile() clones, checks out
         # ${BASE_COMMIT}, and appends the hardening block. See module docstring.
         return "python:3.12-bookworm"
+
+    def dockerfile(self) -> str:
+        # Self-contained Dockerfile generation: emit the COMPLETE Dockerfile with
+        # our own infra block — NO proxy args, NO CA-cert symlinks, NO MITM mount.
+        #
+        # The shared Image.dockerfile() body (FROM + apt + clone + checkout +
+        # extra_setup + hardening + CMD) never carries proxy/cert — that is added
+        # only by DockerfileEnhancer. We prepend the "# syntax=..." directive,
+        # which makes DockerfileEnhancer.enhance() return this string unchanged
+        # (see its early-return on SYNTAX_DIRECTIVE). Result: rich images are
+        # proxy/cert-free no matter which image.py builds them.
+        body = super().dockerfile()
+        org, repo = self.pr.org, self.pr.repo
+        repo_url = f"https://github.com/{org}/{repo}.git"
+
+        infra = (
+            "ARG TARGETARCH\n"
+            f'ARG REPO_URL="{repo_url}"\n'
+            "ARG BASE_COMMIT\n"
+            "\n"
+            "ENV DEBIAN_FRONTEND=noninteractive \\\n"
+            "    LANG=C.UTF-8 \\\n"
+            "    TZ=UTC\n"
+            "\n"
+            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
+
+        lines = body.split("\n")
+        from_idx = next(
+            i for i, ln in enumerate(lines) if ln.strip().upper().startswith("FROM ")
+        )
+        out = ["# syntax=docker/dockerfile:1.6", ""]
+        out += lines[: from_idx + 1]
+        out += ["", infra]
+        out += lines[from_idx + 1 :]
+        return "\n".join(out)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"

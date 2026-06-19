@@ -176,28 +176,3 @@ def _binary_restore_shell(fix_patch: str, test_patch: str, end_tag: str) -> str:
             )
     lines.append('# --- end binary restore ---')
     return '\n'.join(lines) + '\n'
-
-
-# Gradle reads proxy settings from gradle.properties, not from the http_proxy
-# environment variable. jadx's prepare.sh runs `./gradlew assemble`, which hits
-# the network, so when the build is behind a proxy this translates it. No-op
-# when no proxy is set (the common case). Raw string: the `\n` are for printf and
-# the ${...} are shell, so this must NOT be passed through str.format().
-_GRADLE_PROXY_SETUP = r'''# Translate an http(s) proxy into Gradle's gradle.properties (no-op if unset).
-PROXY_URL="${http_proxy:-${HTTP_PROXY:-}}"
-if [ -n "$PROXY_URL" ]; then
-    PROXY_HP="${PROXY_URL#*://}"; PROXY_HP="${PROXY_HP%%/*}"
-    PROXY_HOST="${PROXY_HP%%:*}"
-    PROXY_PORT="${PROXY_HP##*:}"
-    case "$PROXY_PORT" in ''|*[!0-9]*) PROXY_PORT="" ;; esac
-    if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
-        mkdir -p ~/.gradle
-        grep -q systemProp.http.proxyHost ~/.gradle/gradle.properties 2>/dev/null || {
-            printf 'systemProp.http.proxyHost=%s\n' "$PROXY_HOST"  >> ~/.gradle/gradle.properties
-            printf 'systemProp.http.proxyPort=%s\n' "$PROXY_PORT"  >> ~/.gradle/gradle.properties
-            printf 'systemProp.https.proxyHost=%s\n' "$PROXY_HOST" >> ~/.gradle/gradle.properties
-            printf 'systemProp.https.proxyPort=%s\n' "$PROXY_PORT" >> ~/.gradle/gradle.properties
-        }
-    fi
-fi
-'''
