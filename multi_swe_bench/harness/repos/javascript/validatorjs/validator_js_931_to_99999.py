@@ -1,13 +1,14 @@
 """validatorjs/validator.js config for the modern era: PR number 931..99999
 (node:20-bookworm + npm + mocha with @babel/register).
 
-Conformant with image.py: dependency() returns a base-image *string* so the
-shared Image.dockerfile() owns the build (clone "${REPO_URL}" -> checkout
-"${BASE_COMMIT}" -> extra_setup() -> _HARDENING_BLOCK), and DockerfileEnhancer
-injects the proxy/cert infra + final sanitize pass. The previous version of
-this file overrode dockerfile() and returned a chained Image, which made
-DockerfileEnhancer bail out early (no syntax directive, no hardening, no infra)
-and shared a single base-v2 layer across PRs with different base commits.
+Conformant with image.py: dependency() returns a base-image *string* and the
+self-contained dockerfile() below mirrors the canonical single-level template
+(see CrossplaneImageDefault) -- clone "${REPO_URL}" -> checkout "${BASE_COMMIT}"
+-> prepare.sh -> verbatim Image._HARDENING_BLOCK -> CMD. Because dependency()
+stays a string, DockerfileEnhancer still engages and prepends the # syntax +
+ARG REPO_URL/BASE_COMMIT + ENV/label infra (its repo-fetch standardiser skips
+"${REPO_URL}" clones, so the embedded clone/checkout + hardening survive). Each
+PR builds its own image -- no shared base layer to pin+strip across commits.
 """
 
 import re
@@ -32,13 +33,12 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        # Returning a string (rather than a chained Image) lets the shared
-        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
-        # checks out "${BASE_COMMIT}", runs extra_setup(), and appends the
-        # _HARDENING_BLOCK that strips every other ref/commit so the fix can't be
-        # read out of git history. DockerfileEnhancer then injects the proxy/cert
-        # infra and the final sanitize pass. None of that fires when dockerfile()
-        # is overridden, which is why the previous two-stage build bypassed it.
+        # Single-level per-PR base. Returning a *string* (not a chained Image)
+        # keeps the pipeline's DockerfileEnhancer engaged so it still prepends
+        # the # syntax + ARG REPO_URL/BASE_COMMIT + ENV/label infra. The
+        # self-contained dockerfile() below embeds the clone/checkout and the
+        # verbatim Image._HARDENING_BLOCK, so the fix can't be read out of git
+        # history. Each PR builds its own image -- no shared base to pin+strip.
         return "node:20-bookworm"
 
     def image_tag(self) -> str:
@@ -47,21 +47,57 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    def extra_setup(self) -> str:
-        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. Stages the helper scripts + patches into /home/ and runs
-        # prepare.sh, which installs node_modules + builds so the eval scripts
-        # run offline. node_modules lives inside the repo but is untracked, so
-        # the hardening pass (which only rewrites git history) leaves it intact.
-        return (
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh\n"
-            "COPY prepare.sh /home/prepare.sh\n"
-            "RUN bash /home/prepare.sh"
-        )
+    def dockerfile(self) -> str:
+        # Self-contained single-level Dockerfile mirroring the canonical
+        # image.py template (see CrossplaneImageDefault). dependency() stays a
+        # string, so DockerfileEnhancer still engages and prepends the infra
+        # block; its repo-fetch standardiser skips "${REPO_URL}" clones, so the
+        # clone/checkout + verbatim Image._HARDENING_BLOCK below survive intact.
+        # prepare.sh installs node_modules + builds (network is available at
+        # build time, before the hardening strip); node_modules is untracked so
+        # the history rewrite leaves it in place for the offline eval runs.
+        image_name = self.dependency()
+
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/{file.name}\n"
+
+        return f"""FROM {image_name}
+
+{self.global_env}
+
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    curl \\
+    build-essential \\
+    git \\
+    gnupg \\
+    make \\
+    python3 \\
+    sudo \\
+    wget \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{copy_commands}
+RUN bash /home/prepare.sh
+
+{Image._HARDENING_BLOCK}
+
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
 
     def files(self) -> list[File]:
         return [
