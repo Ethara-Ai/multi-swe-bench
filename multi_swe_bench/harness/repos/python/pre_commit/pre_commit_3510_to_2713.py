@@ -7,8 +7,21 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 REPO_DIR = "pre-commit"
 
-# PRs: [2713, 2725, 2726, 2729, 2843, 2879, 2889, 2908, 2991, 3033, 3102, 3122, 3169, 3199, 3207, 3304, 3323, 3390, 3439, 3510]
-# Python 3.8 | pip + setup.py | ubuntu:22.04
+# PRs: [2713..3510] | Python 3.9 (bookworm)
+#
+# Conformed to the hardened image.py contract:
+#   * dependency() returns a *string* base image, so the shared
+#     Image.dockerfile() owns the build: it clones "${REPO_URL}", checks out
+#     "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that detaches HEAD and
+#     deletes every other ref / remote / unreachable commit. That closes the
+#     reward-hacking hole where the fix could be recovered from git history
+#     (git log / show / diff origin/...). DockerfileEnhancer then injects the
+#     proxy / cert / REPO_URL + BASE_COMMIT infra. None of that fired while the
+#     old dockerfile() override hand-rolled its own FROM + clone + checkout.
+#   * apt packages -> extra_packages(); pip / gem / git-config -> install.sh,
+#     warmed in extra_setup() and re-run by the run scripts. The eval scripts and
+#     both patches are COPYed into /home/ (outside /home/pre-commit) so the
+#     history scrub -- which only rewrites the git tree -- leaves them intact.
 
 
 class ImageDefault(Image):
@@ -25,6 +38,8 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
+        # String dependency -> Image.dockerfile() clones, checks out
+        # ${BASE_COMMIT}, and appends the hardening block. See module docstring.
         return "python:3.9-slim-bookworm"
 
     def image_prefix(self) -> str:
@@ -36,112 +51,83 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def extra_packages(self) -> list[str]:
+        # pre-commit's suite exercises hooks written in several languages, so the
+        # toolchains must be present. make / git / build-essential / curl / ...
+        # already come from Image.dockerfile()'s default package set.
+        return ["golang", "ruby", "rustc", "npm", "nodejs", "patch"]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening pass.
+        # Bake the eval scripts + both patches in (build_dataset.run_instance does
+        # NOT mount fix.patch at runtime, so the fix stage reads the baked copy),
+        # then warm the install into an image layer.
+        return (
+            "ENV PIP_ROOT_USER_ACTION=ignore\n"
+            "ENV PIP_DISABLE_PIP_VERSION_CHECK=1\n"
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY install.sh /home/install.sh\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "RUN bash /home/install.sh || true\n"
+        )
+
     def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(".", "check_git_changes.sh", """#!/bin/bash
-set -e
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-echo "check_git_changes: No uncommitted changes"
-exit 0
-"""),
-            File(".", "prepare.sh", f"""#!/bin/bash
-set -e
-cd /home/{REPO_DIR}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {self.pr.base.sha}
-bash /home/check_git_changes.sh
-apt-get update && apt-get install -y --no-install-recommends \
-    golang ruby rustc npm nodejs make \
-    && rm -rf /var/lib/apt/lists/*
+        install = """#!/bin/bash
+# Warm the environment at the (already checked-out, history-scrubbed) base
+# commit and re-run at test time so a patch that adds a dependency still
+# installs. Everything is guarded with || true: one failing optional dep must
+# not abort the build or the test run.
+set -uo pipefail
+cd /home/__REPO_DIR__
+git config --global user.email "you@example.com" || true
+git config --global user.name "Your Name" || true
+git config --global --add safe.directory '*' || true
 gem install bundler || true
-git config --global user.email "you@example.com"
-git config --global user.name "Your Name"
-pip install -e . || pip install . || true
-pip install -r requirements-dev.txt || true
-"""),
-            File(".", "run.sh", f"""#!/bin/bash
-set -e
-cd /home/{REPO_DIR}
-pytest --no-header -rA --tb=no -p no:cacheprovider
-"""),
-            File(".", "test-run.sh", f"""#!/bin/bash
-set -e
-cd /home/{REPO_DIR}
-if ! git apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
-pytest --no-header -rA --tb=no -p no:cacheprovider -o continue_on_collection_errors=true || true
-"""),
-            File(".", "fix-run.sh", f"""#!/bin/bash
-set -e
-cd /home/{REPO_DIR}
-if ! git apply --whitespace=nowarn /home/test.patch; then
-    echo "git apply test.patch failed, trying patch command..." >&2
-    patch --batch --fuzz=5 -p1 -i /home/test.patch || {{ echo "Error: test patch apply failed" >&2; exit 1; }}
-fi
-if ! git apply --whitespace=nowarn /home/fix.patch; then
-    echo "git apply fix.patch failed, trying patch command..." >&2
-    patch --batch --fuzz=5 -p1 -i /home/fix.patch || {{ echo "Error: fix patch apply failed" >&2; exit 1; }}
-fi
-pytest --no-header -rA --tb=no -p no:cacheprovider
-"""),
-        ]
+__PIP__"""
 
-    def dockerfile(self) -> str:
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/"
-                f"{self.pr.org}/{self.pr.repo}.git /home/{REPO_DIR}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{REPO_DIR}"
-
-        return f"""FROM python:3.9-slim-bookworm
-
-{self.global_env}
-
-WORKDIR /home/
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git build-essential ca-certificates curl patch \
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-WORKDIR /home/{REPO_DIR}
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
-{copy_commands}
-
-RUN bash /home/prepare.sh
-
-{self.clear_env}
-
-CMD ["/bin/bash"]
+        run_sh = """#!/bin/bash
+set -uo pipefail
+export CI=true
+bash /home/install.sh || true
+cd /home/__REPO_DIR__
+pytest --no-header -rA --tb=no -p no:cacheprovider -v --continue-on-collection-errors || true
 """
+
+        test_run = """#!/bin/bash
+set -uo pipefail
+export CI=true
+cd /home/__REPO_DIR__
+git apply --whitespace=nowarn /home/test.patch || patch --batch --fuzz=5 -p1 -i /home/test.patch || echo "git apply test.patch failed (continuing)"
+bash /home/install.sh || true
+pytest --no-header -rA --tb=no -p no:cacheprovider -v --continue-on-collection-errors || true
+"""
+
+        fix_run = """#!/bin/bash
+set -uo pipefail
+export CI=true
+cd /home/__REPO_DIR__
+git apply --whitespace=nowarn /home/test.patch || patch --batch --fuzz=5 -p1 -i /home/test.patch || echo "git apply test.patch failed (continuing)"
+git apply --whitespace=nowarn /home/fix.patch || patch --batch --fuzz=5 -p1 -i /home/fix.patch || echo "git apply fix.patch failed (continuing)"
+bash /home/install.sh || true
+pytest --no-header -rA --tb=no -p no:cacheprovider -v --continue-on-collection-errors || true
+"""
+
+        install = install.replace("__REPO_DIR__", REPO_DIR).replace("__PIP__", 'pip install -e . || pip install . || true\npip install -r requirements-dev.txt || pip install pytest pytest-env coverage || true\npip install pytest || true\n')
+        run_sh = run_sh.replace("__REPO_DIR__", REPO_DIR)
+        test_run = test_run.replace("__REPO_DIR__", REPO_DIR)
+        fix_run = fix_run.replace("__REPO_DIR__", REPO_DIR)
+
+        return [
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "install.sh", install),
+            File(".", "run.sh", run_sh),
+            File(".", "test-run.sh", test_run),
+            File(".", "fix-run.sh", fix_run),
+        ]
 
 
 @Instance.register("pre-commit", "pre-commit_3510_to_2713")
@@ -166,7 +152,7 @@ class PreCommit3510To2713(Instance):
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-        return f'bash -c "cd /home/{REPO_DIR} && (git apply --whitespace=nowarn /home/test.patch 2>/dev/null || patch --batch --fuzz=5 -p1 -i /home/test.patch || exit 1) && pytest --no-header -rA --tb=no -p no:cacheprovider -o continue_on_collection_errors=true; true"'
+        return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
@@ -208,7 +194,7 @@ class PreCommit3510To2713(Instance):
             for match in skipped_re.finditer(summary_content):
                 skipped_tests.add(match.group(1).strip())
 
-        # Cleanup: failed tests should not be in passed
+        # Cleanup: failed tests should not be in passed/skipped
         passed_tests.difference_update(failed_tests)
         skipped_tests.difference_update(failed_tests)
 

@@ -6,3 +6,4 @@ from multi_swe_bench.harness.repos.python.pre_commit.pre_commit_3510_to_2713 imp
 from multi_swe_bench.harness.repos.python.pre_commit.pre_commit_3586_to_3578 import *
 from multi_swe_bench.harness.repos.python.pre_commit.pre_commit_886_to_468 import *
 from multi_swe_bench.harness.repos.python.pre_commit.pre_commit_956_to_916 import *
+from multi_swe_bench.harness.repos.python.pre_commit.pre_commit_dispatch import *

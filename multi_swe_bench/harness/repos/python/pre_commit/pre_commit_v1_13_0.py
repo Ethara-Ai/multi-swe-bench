@@ -5,6 +5,24 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+REPO_DIR = "pre-commit"
+
+# tag v1.13.0 | Python 3.7 (buster, EOL)
+#
+# Conformed to the hardened image.py contract:
+#   * dependency() returns a *string* base image, so the shared
+#     Image.dockerfile() owns the build: it clones "${REPO_URL}", checks out
+#     "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that detaches HEAD and
+#     deletes every other ref / remote / unreachable commit. That closes the
+#     reward-hacking hole where the fix could be recovered from git history
+#     (git log / show / diff origin/...). DockerfileEnhancer then injects the
+#     proxy / cert / REPO_URL + BASE_COMMIT infra. None of that fired while the
+#     old dockerfile() override hand-rolled its own FROM + clone + checkout.
+#   * apt packages -> extra_packages(); pip / gem / git-config -> install.sh,
+#     warmed in extra_setup() and re-run by the run scripts. The eval scripts and
+#     both patches are COPYed into /home/ (outside /home/pre-commit) so the
+#     history scrub -- which only rewrites the git tree -- leaves them intact.
+
 
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -20,6 +38,8 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
+        # String dependency -> Image.dockerfile() clones, checks out
+        # ${BASE_COMMIT}, and appends the hardening block. See module docstring.
         return "python:3.7"
 
     def image_prefix(self) -> str:
@@ -31,122 +51,94 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    @staticmethod
+    def _is_deprecated_debian(base_img: str) -> bool:
+        # This era pins an EOL Debian suite (buster/stretch) whose image name is
+        # "python:*-slim-<suite>", which Image.DEPRECATED_DEBIAN_IMAGES does NOT
+        # match (it only knows the bare "debian:<suite>" / "gcc:*" tags). Force
+        # True so the inherited _get_apt_update_command rewrites sources.list to
+        # archive.debian.org before apt-get update -- otherwise the base build
+        # 404s on the dead deb.debian.org mirror. Registry-only; image.py is left
+        # untouched.
+        return True
+
+    def extra_packages(self) -> list[str]:
+        # pre-commit's suite exercises hooks written in several languages, so the
+        # toolchains must be present. make / git / build-essential / curl / ...
+        # already come from Image.dockerfile()'s default package set.
+        return ["golang", "ruby", "rustc", "npm", "nodejs", "patch"]
+
+    def extra_setup(self) -> str:
+        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening pass.
+        # Bake the eval scripts + both patches in (build_dataset.run_instance does
+        # NOT mount fix.patch at runtime, so the fix stage reads the baked copy),
+        # then warm the install into an image layer.
+        return (
+            "ENV PIP_ROOT_USER_ACTION=ignore\n"
+            "ENV PIP_DISABLE_PIP_VERSION_CHECK=1\n"
+            "COPY fix.patch /home/fix.patch\n"
+            "COPY test.patch /home/test.patch\n"
+            "COPY install.sh /home/install.sh\n"
+            "COPY run.sh /home/run.sh\n"
+            "COPY test-run.sh /home/test-run.sh\n"
+            "COPY fix-run.sh /home/fix-run.sh\n"
+            "RUN bash /home/install.sh || true\n"
+        )
+
     def files(self) -> list[File]:
+        install = """#!/bin/bash
+# Warm the environment at the (already checked-out, history-scrubbed) base
+# commit and re-run at test time so a patch that adds a dependency still
+# installs. Everything is guarded with || true: one failing optional dep must
+# not abort the build or the test run.
+set -uo pipefail
+cd /home/__REPO_DIR__
+git config --global user.email "you@example.com" || true
+git config --global user.name "Your Name" || true
+git config --global --add safe.directory '*' || true
+gem install bundler || true
+__PIP__"""
+
+        run_sh = """#!/bin/bash
+set -uo pipefail
+export CI=true
+bash /home/install.sh || true
+cd /home/__REPO_DIR__
+pytest --no-header -rA --tb=no -p no:cacheprovider -v --continue-on-collection-errors || true
+"""
+
+        test_run = """#!/bin/bash
+set -uo pipefail
+export CI=true
+cd /home/__REPO_DIR__
+git apply --whitespace=nowarn /home/test.patch || patch --batch --fuzz=5 -p1 -i /home/test.patch || echo "git apply test.patch failed (continuing)"
+bash /home/install.sh || true
+pytest --no-header -rA --tb=no -p no:cacheprovider -v --continue-on-collection-errors || true
+"""
+
+        fix_run = """#!/bin/bash
+set -uo pipefail
+export CI=true
+cd /home/__REPO_DIR__
+git apply --whitespace=nowarn /home/test.patch || patch --batch --fuzz=5 -p1 -i /home/test.patch || echo "git apply test.patch failed (continuing)"
+git apply --whitespace=nowarn /home/fix.patch || patch --batch --fuzz=5 -p1 -i /home/fix.patch || echo "git apply fix.patch failed (continuing)"
+bash /home/install.sh || true
+pytest --no-header -rA --tb=no -p no:cacheprovider -v --continue-on-collection-errors || true
+"""
+
+        install = install.replace("__REPO_DIR__", REPO_DIR).replace("__PIP__", 'pip install -e . || pip install . || true\npip install -r requirements-dev.txt || pip install pytest pytest-env coverage || true\npip install pytest || true\n')
+        run_sh = run_sh.replace("__REPO_DIR__", REPO_DIR)
+        test_run = test_run.replace("__REPO_DIR__", REPO_DIR)
+        fix_run = fix_run.replace("__REPO_DIR__", REPO_DIR)
+
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """ls
-###ACTION_DELIMITER###
-pip install -r requirements-dev.txt
-###ACTION_DELIMITER###
-pytest --no-header -rA --tb=no -p no:cacheprovider
-###ACTION_DELIMITER###
-apt-get install -y golang
-###ACTION_DELIMITER###
-apt-get install -y ruby
-###ACTION_DELIMITER###
-apt-get install -y rustc
-###ACTION_DELIMITER###
-pytest --no-header -rA --tb=no -p no:cacheprovider
-###ACTION_DELIMITER###
-git config --global user.email "you@example.com" && git config --global user.name "Your Name"
-###ACTION_DELIMITER###
-pytest --no-header -rA --tb=no -p no:cacheprovider
-###ACTION_DELIMITER###
-apt-get update
-###ACTION_DELIMITER###
-gem install bundler
-###ACTION_DELIMITER###
-
-###ACTION_DELIMITER###
-echo "pytest --no-header -rA --tb=no -p no:cacheprovider" > /home/pre-commit/test_commands.sh""",
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-pytest --no-header -rA --tb=no -p no:cacheprovider
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-pytest --no-header -rA --tb=no -p no:cacheprovider
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-pytest --no-header -rA --tb=no -p no:cacheprovider
-
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "install.sh", install),
+            File(".", "run.sh", run_sh),
+            File(".", "test-run.sh", test_run),
+            File(".", "fix-run.sh", fix_run),
         ]
-
-    def dockerfile(self) -> str:
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
-
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.7
-
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/pre-commit/pre-commit.git /home/pre-commit
-
-WORKDIR /home/pre-commit
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
-{copy_commands}
-"""
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("pre-commit", "pre-commit_v1_13_0")
@@ -166,28 +158,24 @@ class PRE_COMMIT_V1_13_0(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
-        # Implement the log parsing logic here
-        # This will parse verbose logs like fix-patch-run.log and test-patch-run.log
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
+
+        # Verbose pytest output: tests/foo/bar.py::test_name PASSED/FAILED/SKIPPED
         verbose_re = re.compile(
             r"^(tests/.*?::\S+)\s+(PASSED|FAILED|SKIPPED)", re.MULTILINE
         )
@@ -199,28 +187,25 @@ class PRE_COMMIT_V1_13_0(Instance):
                 failed_tests.add(test_name)
             elif status == "SKIPPED":
                 skipped_tests.add(test_name)
-        # This will parse the summary for failed and errored tests from any log file
+
+        # Short test summary (-rA shows PASSED/FAILED/SKIPPED/ERROR)
         summary_re = re.compile(
             r"^=+\s+short test summary info\s+=+((?:.|\n)*?)^=+.+=$", re.MULTILINE
         )
         summary_match = summary_re.search(log)
         if summary_match:
             summary_content = summary_match.group(1)
-            failed_re = re.compile(r"^(?:FAILED|ERROR) (.*?)(?: - .*)?$", re.MULTILINE)
+            failed_re = re.compile(r"^(?:FAILED|ERROR) (.*?)(?:\ - .*)?$", re.MULTILINE)
             for match in failed_re.finditer(summary_content):
                 failed_tests.add(match.group(1).strip())
-        # This will find non-verbose passed tests.
-        test_re = re.compile(
-            r"^(tests/.*\.py) (?:\.+|s+|F+|E+)+\s+\[\s+\d+%\]", re.MULTILINE
-        )
-        for test_file_match in test_re.finditer(log):
-            # extract the dots and the test file name
-            test_file = test_file_match.group(1)
-            # we need to get the test names from the test file.
-            # we can't do that from the log file, so we will just add the file name
-            # to the passed tests.
-            passed_tests.add(test_file)
-        # Final cleanup. If a test is in failed_tests, it should not be in passed_tests or skipped_tests.
+            passed_re = re.compile(r"^PASSED (.*?)$", re.MULTILINE)
+            for match in passed_re.finditer(summary_content):
+                passed_tests.add(match.group(1).strip())
+            skipped_re = re.compile(r"^SKIPPED (.*?)(?:\ - .*)?$", re.MULTILINE)
+            for match in skipped_re.finditer(summary_content):
+                skipped_tests.add(match.group(1).strip())
+
+        # Cleanup: failed tests should not be in passed/skipped
         passed_tests.difference_update(failed_tests)
         skipped_tests.difference_update(failed_tests)
 
