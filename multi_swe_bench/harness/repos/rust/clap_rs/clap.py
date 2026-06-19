@@ -37,11 +37,17 @@ class ClapImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
 
 {self.global_env}
 
@@ -51,6 +57,7 @@ WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -143,7 +150,7 @@ cargo test
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn /home/test.patch
 cargo test
 
 """.format(pr=self.pr),
@@ -155,7 +162,8 @@ cargo test
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch
+git apply --whitespace=nowarn /home/fix.patch
 cargo test
 
 """.format(pr=self.pr),
@@ -175,14 +183,20 @@ cargo test
 
         return f"""FROM {name}:{tag}
 
+ARG BASE_COMMIT="{self.pr.base.sha}"
+
 {self.global_env}
 
 {copy_commands}
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{Image._HARDENING_BLOCK}
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
