@@ -1,0 +1,24 @@
+# gitleaks configuration for multi-swe-bench (MSB-SEC-001).
+#
+# Keeps the full default ruleset and adds ONE narrow allowlist: the
+# auto-generated per-instance scripts under `multi_swe_bench/harness/repos/**`
+# each carry an `@Instance.register("<org>", "<instance-slug>")` decorator. The
+# high-entropy instance slug (e.g. "napi_rs_1658_to_730") trips the
+# `generic-api-key` entropy heuristic, producing false positives — these are
+# registration identifiers, not credentials.
+#
+# Scope is deliberately minimal: only findings whose matched LINE is an
+# `@Instance.register(...)` decorator are suppressed. Any other secret pattern
+# (including a real token elsewhere in the same generated file) is still
+# reported.
+
+[extend]
+# Inherit gitleaks' built-in rules; do not replace them.
+useDefault = true
+
+[allowlist]
+description = "Instance registration decorators in generated repos/** scripts are identifiers, not secrets"
+regexTarget = "line"
+regexes = [
+    '''@Instance\.register\(''',
+]

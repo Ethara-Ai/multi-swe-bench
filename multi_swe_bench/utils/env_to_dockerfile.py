@@ -5,7 +5,34 @@ Usage:
     python -m multi_swe_bench.utils.env_to_dockerfile
 """
 
+import re
 from typing import List, Tuple
+
+# A POSIX environment-variable name. Generated ENV instructions interpolate the
+# name verbatim, so only validated identifiers are emitted — a crafted name
+# (e.g. one containing a newline) can never break out of the ENV line and inject
+# a RUN/FROM directive. Every real env var name is already a valid identifier,
+# so nothing legitimate is dropped.
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def is_valid_env_name(name: str) -> bool:
+    return bool(name and _ENV_NAME_RE.match(name))
+
+
+def escape_env_value(value: str) -> str:
+    """Make ``value`` safe inside a double-quoted ENV instruction.
+
+    Escapes backslashes and quotes and neutralises CR/LF so a crafted value
+    cannot terminate the quoted string and inject further Dockerfile directives.
+    Values without these characters are returned unchanged (no behaviour change).
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "")
+        .replace("\n", "\\n")
+    )
 
 
 def parse_env_output(env_output: str) -> List[Tuple[str, str]]:
@@ -90,11 +117,9 @@ def generate_dockerfile(
     ]
 
     for var_name, var_value in env_vars:
-        # Filter out empty env vars
-        if var_name and var_name.strip():
-            # Escape double quotes
-            escaped_value = var_value.replace('"', '\\"')
-            dockerfile_lines.append(f'ENV {var_name}="{escaped_value}"')
+        # Only emit validated identifiers; escape the value so it cannot break out.
+        if is_valid_env_name(var_name):
+            dockerfile_lines.append(f'ENV {var_name}="{escape_env_value(var_value)}"')
 
     return "\n".join(dockerfile_lines)
 
@@ -111,8 +136,7 @@ def generate_dockerfile_from_env_vars(
 
     # Delete env vars
     for var_name, _ in delete_env_vars:
-        # Filter out empty env vars
-        if var_name and var_name.strip():
+        if is_valid_env_name(var_name):
             dockerfile_lines.append(f'ENV {var_name}=""')
 
     if delete_env_vars:
@@ -120,11 +144,8 @@ def generate_dockerfile_from_env_vars(
 
     # Add and change env vars
     for var_name, var_value in add_and_change_env_vars:
-        # Filter out empty env vars
-        if var_name and var_name.strip():
-            # Escape double quotes
-            escaped_value = var_value.replace('"', '\\"')
-            dockerfile_lines.append(f'ENV {var_name}="{escaped_value}"')
+        if is_valid_env_name(var_name):
+            dockerfile_lines.append(f'ENV {var_name}="{escape_env_value(var_value)}"')
 
     return "\n".join(dockerfile_lines)
 

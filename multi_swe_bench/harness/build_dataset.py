@@ -529,7 +529,6 @@ class CliArgs:
         return False
 
     def check_commit_hashes(self):
-        error_happened = False
         for repo, repo_commits in tqdm(
             self.repo_commits.items(), desc="Checking commit hashes"
         ):
@@ -542,13 +541,11 @@ class CliArgs:
             if not is_clean:
                 self.logger.error(error_msg)
                 self.skips.add(repo_commits.skip_id)
-                error_happened = True
                 continue
 
             commit_hashes = git_util.get_all_commit_hashes(repo_dir, self.logger)
             if len(commit_hashes) == 0:
                 self.logger.error(f"No commit hashes found in {repo.repo_full_name}")
-                error_happened = True
                 self.skips.add(repo_commits.skip_id)
                 continue
 
@@ -560,11 +557,11 @@ class CliArgs:
                     self.logger.error(
                         f"Commit hash not found in {repo.repo_full_name}:pr-{pr_number}: {commit_hash}"
                     )
-                    error_happened = True
                     self.skips.add(repo_commits.skip_id)
 
-        # if error_happened:
-        #     raise ValueError("Check commit hashes failed, please check the logs.")
+        # Note: offending PRs are recorded in self.skips above. A hard failure
+        # here (raising when any commit hash is missing) is intentionally
+        # disabled; re-enable by raising if/when strict checking is desired.
 
     def build_image(self, image: Image):
         workdir = self.workdir / image.pr.org / image.pr.repo / BUILD_IMAGE_WORKDIR

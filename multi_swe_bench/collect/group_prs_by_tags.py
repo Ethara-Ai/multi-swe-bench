@@ -66,6 +66,7 @@ from github import Auth, Github, GithubException
 from tqdm import tqdm
 
 from multi_swe_bench.collect.util import get_tokens
+from multi_swe_bench.utils.safe_subprocess import safe_run
 
 
 # GitHub compare API hard limit
@@ -99,7 +100,7 @@ def _run_git(
 ) -> subprocess.CompletedProcess[str]:
     """Run a git command in the given repo path."""
     cmd = ["git", "-C", str(repo_path)] + args
-    return subprocess.run(
+    return safe_run(
         cmd,
         capture_output=True,
         text=True,
@@ -234,7 +235,7 @@ def _ensure_repo_cloned(org: str, repo: str, cache_dir: str) -> Optional[Path]:
         # Fetch latest + tags
         print(f"  Fetching latest for cached {org}/{repo}")
         try:
-            subprocess.run(
+            safe_run(
                 ["git", "-C", str(repo_path), "fetch", "--tags", "--force", "--quiet"],
                 capture_output=True,
                 text=True,
@@ -251,7 +252,7 @@ def _ensure_repo_cloned(org: str, repo: str, cache_dir: str) -> Optional[Path]:
     print(f"  Cloning {org}/{repo} (bare, blobless)...")
     url = f"https://github.com/{org}/{repo}.git"
     try:
-        result = subprocess.run(
+        result = safe_run(
             ["git", "clone", "--bare", "--filter=blob:none", url, str(repo_path)],
             capture_output=True,
             text=True,
@@ -429,7 +430,7 @@ def _collect_prs_for_pair(
     use_date_fallback = False
     comparison_shas: set[str] = set()
 
-    g = get_github(random.choice(tokens))
+    g = get_github(random.choice(tokens))  # nosec B311 - non-crypto token load-balancing, not a security context
     r = g.get_repo(f"{org}/{repo}")
 
     try:
@@ -446,7 +447,7 @@ def _collect_prs_for_pair(
     except GithubException as e:
         if len(tokens) > 1:
             try:
-                g = get_github(random.choice(tokens))
+                g = get_github(random.choice(tokens))  # nosec B311 - non-crypto token load-balancing, not a security context
                 r = g.get_repo(f"{org}/{repo}")
                 comparison = r.compare(base_sha, head_sha)
                 if comparison.total_commits > _COMPARE_COMMITS_CAP:

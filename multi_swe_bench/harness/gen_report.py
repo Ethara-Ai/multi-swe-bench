@@ -371,7 +371,11 @@ class CliArgs:
                                     number_interval = getattr(pr, 'number_interval', '')
                                     tag = getattr(pr, 'tag', '')
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).debug(
+                                    "dataset metadata lookup for %s failed; using defaults",
+                                    task_id,
+                                    exc_info=True,
+                                )
                             task = ReportTask(org, repo, number, instance_dir, number_interval=number_interval, tag=tag)
                             if not self.check_specific(task.id):
                                 continue
@@ -554,7 +558,14 @@ class CliArgs:
         _ = self.dataset
         tasks = self.collect_report_tasks(EVALUATION_WORKDIR)
         reports, invalid_reports, failed_tasks = self.gen_eval_reports(tasks)
-        final_report = FinalReport.from_reports(reports, invalid_reports, failed_tasks)
+        # Fail-closed denominator (MSB-ROLLOUT-004): the dataset is the set of
+        # instances that were supposed to be graded. Any dataset instance that
+        # produced no terminal report (dropped on disk, filtered, or errored
+        # silently) is reconciled into `error` so it cannot inflate the pass
+        # rate by quietly leaving the denominator.
+        final_report = FinalReport.from_reports(
+            reports, invalid_reports, failed_tasks, expected_ids=set(self.dataset)
+        )
         with open(self.output_dir / FINAL_REPORT_FILE, "w", encoding="utf-8") as f:
             f.write(final_report.to_json(indent=4, ensure_ascii=False))
 

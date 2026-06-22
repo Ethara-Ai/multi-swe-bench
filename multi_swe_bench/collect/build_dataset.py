@@ -66,7 +66,7 @@ def get_parser() -> argparse.ArgumentParser:
 
 def extract_patches(pull: dict, token: str) -> tuple[str, str]:
     headers = {"Authorization": f"Bearer {token}"}
-    patch = requests.get(pull["diff_url"], headers=headers).text
+    patch = requests.get(pull["diff_url"], headers=headers, timeout=30).text
     test_patch = ""
     fix_patch = ""
     if (
@@ -111,7 +111,7 @@ def extract_patches_from_compare(pull: dict, token: str) -> tuple[str, str]:
     compare_url = (
         f"https://api.github.com/repos/{org}/{repo}/compare/{base_sha}...{head_sha}"
     )
-    response = requests.get(compare_url, headers=headers)
+    response = requests.get(compare_url, headers=headers, timeout=30)
     if response.status_code != 200:
         raise Exception(
             f"Failed to fetch patch: {response.status_code} - {response.text[:300]}"
@@ -207,7 +207,7 @@ def main(
             for attempt in range(retry_attempts):
                 try:
                     fix_patch, test_patch = extract_patches_from_compare(
-                        pr, random.choice(tokens)
+                        pr, random.choice(tokens)  # nosec B311 - non-crypto token load-balancing, not a security context
                     )
                     pr["fix_patch"] = fix_patch
                     pr["test_patch"] = test_patch

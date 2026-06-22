@@ -223,7 +223,7 @@ def main(tokens: list[str], out_dir: Path, org: str, repo: str, max_tags: int = 
     print(f"Repo: {repo}")
     print(f"Max tags: {max_tags}")
 
-    g = get_github(random.choice(tokens))
+    g = get_github(random.choice(tokens))  # nosec B311 - non-crypto token load-balancing, not a security context
     r = g.get_repo(f"{org}/{repo}")
 
     tag_records: list[dict] = []

@@ -116,7 +116,7 @@ class GitHubScraper:
         for attempt in range(self.max_retries):
             try:
                 response: requests.Response = requests.get(
-                    url, headers=headers, params=params
+                    url, headers=headers, params=params, timeout=30
                 )
                 response.raise_for_status()
 
@@ -240,7 +240,7 @@ def main() -> None:
     args = parser.parse_args()
 
     scraper = GitHubScraper()
-    token = random.choice(get_tokens(args.token))
+    token = random.choice(get_tokens(args.token))  # nosec B311 - non-crypto token load-balancing, not a security context
     scraper.fetch_repositories(
         language=args.language,
         min_stars=args.min_stars,

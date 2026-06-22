@@ -6,6 +6,20 @@ from typing import Optional, Union
 
 from multi_swe_bench.harness.pull_request import PullRequest
 from multi_swe_bench.harness.test_result import get_modified_files
+from multi_swe_bench.utils.env_to_dockerfile import escape_env_value, is_valid_env_name
+
+# A GitHub org/repo component charset. Validated before interpolation into a
+# generated Dockerfile RUN/WORKDIR/path, so a name carrying shell metacharacters
+# (`;`, `$(...)`, backticks, spaces, newlines) cannot inject commands into the
+# generated build. Every real GitHub repo name matches this — nothing legitimate
+# is rejected.
+_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_path_component(name: str, kind: str = "repo") -> str:
+    if not name or not _PATH_COMPONENT_RE.match(name):
+        raise ValueError(f"unsafe {kind} for Dockerfile interpolation: {name!r}")
+    return name
 
 
 @dataclass
@@ -96,8 +110,10 @@ RUN if [ -f .gitmodules ]; then \\
 
         valid_env_vars = []
         for key, value in self.config.global_env.items():
-            if key and key.strip():
-                valid_env_vars.append(f"ENV {key}={value}")
+            # Only emit validated identifiers; quote + escape the value so neither
+            # a crafted key nor value can inject further Dockerfile directives.
+            if is_valid_env_name(key):
+                valid_env_vars.append(f'ENV {key}="{escape_env_value(str(value))}"')
 
         return "\n".join(valid_env_vars)
 
@@ -114,7 +130,7 @@ RUN if [ -f .gitmodules ]; then \\
 
         valid_env_vars = []
         for key in self.config.global_env.keys():
-            if key and key.strip():
+            if is_valid_env_name(key):
                 valid_env_vars.append(f'ENV {key}=""')
 
         return "\n".join(valid_env_vars)
@@ -205,7 +221,10 @@ RUN if [ -f .gitmodules ]; then \\
         packages_str = " \\\n    ".join(all_packages)
         apt_command = self._get_apt_update_command(packages_str, base_img)
 
-        clone_section = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
+        # Validate the PR repo name before it is interpolated into RUN/WORKDIR
+        # paths, so a name with shell metacharacters cannot inject build commands.
+        repo = _safe_path_component(self.pr.repo)
+        clone_section = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
 
         extra_setup = self.extra_setup()
 
@@ -221,7 +240,7 @@ RUN if [ -f .gitmodules ]; then \\
 
         sections.append(apt_command)
         sections.append(clone_section)
-        sections.append(f"WORKDIR /home/{self.pr.repo}")
+        sections.append(f"WORKDIR /home/{repo}")
         sections.append("RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}")
 
         if extra_setup:
@@ -336,6 +355,8 @@ class DockerfileEnhancer:
 
     @classmethod
     def _standardize_repo_fetch(cls, content: str, repo: str) -> str:
+        # Validate before interpolating repo into RUN/WORKDIR paths (no injection).
+        repo = _safe_path_component(repo)
         replacement = (
             f'RUN git clone "${{REPO_URL}}" /home/{repo}\n'
             f"\n"

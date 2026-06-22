@@ -101,7 +101,7 @@ def main(tokens, out_dir: Path, filtered_prs_file: Path):
         out_file_path.write_text("")
         return
 
-    g = get_github(random.choice(tokens))
+    g = get_github(random.choice(tokens))  # nosec B311 - non-crypto token load-balancing, not a security context
     r = g.get_repo(f"{org}/{repo}")
 
     print(f"Fetching {len(target_issues)} specific issues by number...")

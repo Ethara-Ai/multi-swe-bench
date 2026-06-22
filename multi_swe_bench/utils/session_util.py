@@ -18,6 +18,7 @@ from swerex.utils.free_port import find_free_port
 from swerex.exceptions import CommandTimeoutError
 
 from multi_swe_bench.utils.env_to_dockerfile import diff_env_vars
+from multi_swe_bench.utils.safe_subprocess import safe_popen, safe_run
 
 
 class BuildDockerfileError(Exception):
@@ -73,7 +74,8 @@ class MultiSweBenchDockerDeployment(DockerDeployment):
             image_id = self._config.image
         if self._config.port is None:
             self._config.port = find_free_port()
-        assert self._container_name is None
+        if self._container_name is not None:
+            raise RuntimeError("container already started (self._container_name is set)")
         self._container_name = self._get_container_name()
         token = self._get_token()
         platform_arg = []
@@ -105,8 +107,9 @@ class MultiSweBenchDockerDeployment(DockerDeployment):
             f"Starting container {self._container_name} with image {self._config.image} serving on port {self._config.port}"
         )
         self.logger.debug(f"Command: {cmd_str!r}")
-        # shell=True required for && etc.
-        self._container_process = subprocess.Popen(
+        # List-form argv (no shell): cmds is a list, so there is no shell-injection
+        # surface even though the docker command is assembled from config values.
+        self._container_process = safe_popen(
             cmds, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         self._hooks.on_custom_step("Starting runtime")
@@ -358,7 +361,7 @@ async def run_and_save_logs_and_generate_dockerfile(
             deployment._container_name, post_image_name
         )
         try:
-            result = subprocess.run(
+            result = safe_run(
                 save_image_cmd, capture_output=True, text=True, timeout=600
             )
             if result.returncode != 0:
@@ -419,7 +422,7 @@ async def push_icm_image(envagent_image_name: str, name: str, logger: logging.Lo
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            result = subprocess.run(
+            result = safe_run(
                 push_image_cmd, capture_output=True, text=True, timeout=600
             )
             if result.returncode == 0:

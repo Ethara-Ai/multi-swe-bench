@@ -113,7 +113,8 @@ def get_tokens(tokens) -> list[str]:
         print(f"Error: {e}")
         sys.exit(1)
 
-    assert token_list, "No tokens provided."
+    if not token_list:
+        raise ValueError("No tokens provided.")
     return token_list
 
 

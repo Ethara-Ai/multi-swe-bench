@@ -56,7 +56,7 @@ def main(tokens: list[str], out_dir: Path, org: str, repo: str):
     print(f"Org: {org}")
     print(f"Repo: {repo}")
 
-    g = get_github(random.choice(tokens))
+    g = get_github(random.choice(tokens))  # nosec B311 - non-crypto token load-balancing, not a security context
     r = g.get_repo(f"{org}/{repo}")
 
     def datetime_serializer(obj):

@@ -14,7 +14,7 @@
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Iterable, Optional, Tuple, Union
 
 from dataclasses_json import config, dataclass_json
 
@@ -315,24 +315,105 @@ class FinalReport:
         reports: list[Report],
         invalid_reports: list[Report],
         failed_tasks: list[ReportTask] = [],
+        expected_ids: Optional[Iterable[str]] = None,
     ) -> "FinalReport":
-        submitted_ids = (
-            [report.id for report in reports]
-            + [report.id for report in invalid_reports]
-            + [task.id for task in failed_tasks]
-        )
-        completed_ids = [report.id for report in reports] + [
-            report.id for report in invalid_reports
-        ]
-        incomplete_ids = [task.id for task in failed_tasks]
+        """Reconcile per-instance reports into a final report (MSB-ROLLOUT-004).
+
+        Counts are recomputed fail-closed from the raw buckets rather than
+        trusted as list lengths, so a dropped, duplicated, or miscounted
+        instance cannot silently move the pass rate:
+
+        * No instance may appear in more than one terminal bucket
+          (resolved / unresolved / error), nor twice within one bucket — a
+          collision means upstream report generation is inconsistent, so we
+          refuse to emit a report (``ValueError``).
+        * When ``expected_ids`` is given (the set of instances that were
+          supposed to be graded, e.g. ``set(self.dataset)``), every expected
+          instance that produced no terminal result was *silently dropped* and
+          is folded into ``error`` (never ``resolved``), keeping the denominator
+          honest. A graded instance outside ``expected_ids`` is also an
+          inconsistency and raises.
+        * The reconciled buckets must satisfy
+          ``resolved + unresolved + error == submitted`` (and, when expected is
+          given, ``submitted == len(expected_ids)``) or the report is rejected.
+        """
         resolved_ids = [report.id for report in reports]
         unresolved_ids = [report.id for report in invalid_reports]
-        empty_patch_ids = []
         error_ids = [task.id for task in failed_tasks]
 
+        resolved_set = set(resolved_ids)
+        unresolved_set = set(unresolved_ids)
+        error_set = set(error_ids)
+
+        # Duplicate within a single bucket?
+        if (
+            len(resolved_ids) != len(resolved_set)
+            or len(unresolved_ids) != len(unresolved_set)
+            or len(error_ids) != len(error_set)
+        ):
+            raise ValueError(
+                "Inconsistent reports: duplicate instance id within a single "
+                "bucket (resolved/unresolved/error); refusing to emit a final "
+                "report."
+            )
+
+        # Same instance in more than one terminal bucket?
+        cross = (
+            (resolved_set & unresolved_set)
+            | (resolved_set & error_set)
+            | (unresolved_set & error_set)
+        )
+        if cross:
+            raise ValueError(
+                f"Inconsistent reports: instance(s) {sorted(cross)} appear in "
+                "more than one of resolved/unresolved/error; refusing to emit a "
+                "final report."
+            )
+
+        # Fail-closed reconciliation against the expected instance set.
+        if expected_ids is not None:
+            expected_set = set(expected_ids)
+            graded = resolved_set | unresolved_set | error_set
+            extra = graded - expected_set
+            if extra:
+                raise ValueError(
+                    f"Inconsistent reports: scored instance(s) {sorted(extra)} "
+                    "are not in the expected set; refusing to emit a final "
+                    "report."
+                )
+            missing = sorted(expected_set - graded)
+            if missing:
+                # Dropped instances count as error (never resolved).
+                error_ids = error_ids + missing
+                error_set = set(error_ids)
+
+        completed_ids = resolved_ids + unresolved_ids
+        incomplete_ids = list(error_ids)
+        empty_patch_ids: list[str] = []
+        submitted_ids = resolved_ids + unresolved_ids + list(error_ids)
+
+        # Invariant gate: the buckets must reconcile or we refuse to score.
+        n_submitted = len(submitted_ids)
+        if len(resolved_ids) + len(unresolved_ids) + len(error_ids) != n_submitted:
+            raise ValueError(
+                "Inconsistent reports: resolved+unresolved+error != submitted; "
+                "refusing to emit a final report."
+            )
+        if len(completed_ids) + len(incomplete_ids) != n_submitted:
+            raise ValueError(
+                "Inconsistent reports: completed+incomplete != submitted; "
+                "refusing to emit a final report."
+            )
+        if expected_ids is not None and n_submitted != len(expected_set):
+            raise ValueError(
+                "Inconsistent reports: submitted "
+                f"({n_submitted}) != expected ({len(expected_set)}); refusing to "
+                "emit a final report."
+            )
+
         final_report = FinalReport(
-            total_instances=len(reports) + len(invalid_reports) + len(failed_tasks),
-            submitted_instances=len(submitted_ids),
+            total_instances=n_submitted,
+            submitted_instances=n_submitted,
             completed_instances=len(completed_ids),
             incomplete_instances=len(incomplete_ids),
             resolved_instances=len(resolved_ids),
@@ -345,7 +426,7 @@ class FinalReport:
             resolved_ids=resolved_ids,
             unresolved_ids=unresolved_ids,
             empty_patch_ids=empty_patch_ids,
-            error_ids=error_ids,
+            error_ids=list(error_ids),
         )
 
         return final_report

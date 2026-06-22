@@ -155,3 +155,22 @@ def get_modified_files(patch: str) -> list[str]:
             source_files.append(file.source_file)
     source_files = [x[2:] for x in source_files if x.startswith("a/")]
     return source_files
+
+
+def fix_patch_tampers_with_tests(fix_patch: str, test_patch: str) -> list[str]:
+    """Reward-hacking guard (MSB-REWARD-003).
+
+    Return the gold test files (the files the gold ``test_patch`` modifies) that
+    the agent's ``fix_patch`` *also* modifies. A non-empty result means the fix
+    patch edits the very tests that determine pass/fail — i.e. the agent is gaming
+    the score — and the instance must not be run/scored.
+
+    A malformed ``fix_patch`` returns ``[]`` (it will fail to apply anyway); the
+    gold ``test_patch`` is trusted to parse.
+    """
+    gold_test_files = set(get_modified_files(test_patch))
+    try:
+        agent_files = set(get_modified_files(fix_patch))
+    except Exception:
+        return []
+    return sorted(gold_test_files & agent_files)

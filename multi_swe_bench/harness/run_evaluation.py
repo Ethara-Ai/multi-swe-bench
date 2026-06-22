@@ -762,6 +762,31 @@ class CliArgs:
             )
             return
 
+        # Reward-hacking guard (MSB-REWARD-003): the agent's fix patch MUST NOT
+        # modify any gold test file. If it does, it can game the score by editing
+        # the very tests that determine pass/fail. Reject deterministically: do not
+        # run the (gameable) fix, so the fix stage captures no results and the
+        # report is marked invalid (unresolved) downstream. This enforces, at the
+        # grader, the "you MUST NOT modify the tests" contract the agent is given,
+        # and complements the per-image `git checkout {base} {test_files}` restore.
+        from multi_swe_bench.harness.test_result import fix_patch_tampers_with_tests
+
+        tampered = fix_patch_tampers_with_tests(
+            self.patches[instance.pr.id].fix_patch, instance.pr.test_patch
+        )
+        if tampered:
+            msg = (
+                "REWARD-HACKING GUARD (MSB-REWARD-003): the submitted fix patch "
+                f"modifies gold test file(s) {tampered}; rejected without scoring "
+                "(the agent may not modify the tests that determine the score)."
+            )
+            self.logger.error(f"{instance.name()}: {msg}")
+            with open(
+                instance_dir / FIX_PATCH_RUN_LOG_FILE, "w", encoding="utf-8"
+            ) as f:
+                f.write(msg + "\n")
+            return
+
         def run_and_save_output(
             image_full_name: str, run_command: str, output_path: Path
         ):

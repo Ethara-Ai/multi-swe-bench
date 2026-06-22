@@ -273,7 +273,7 @@ from multi_swe_bench.harness.repos.python.sql_machine_learning import *
 from multi_swe_bench.harness.repos.python.sqlalchemy import *
 from multi_swe_bench.harness.repos.python.sqlfluff import *
 from multi_swe_bench.harness.repos.python.stac_utils import *
-from multi_swe_bench.harness.repos.python.stanfordnlp import *
+# from multi_swe_bench.harness.repos.python.stanfordnlp import *  # module not present
 from multi_swe_bench.harness.repos.python.statsmodels import *
 from multi_swe_bench.harness.repos.python.stfc import *
 from multi_swe_bench.harness.repos.python.streamlit import *

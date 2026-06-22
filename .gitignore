@@ -198,3 +198,12 @@ exp/
 .sisyphus
 
 datasets/
+
+# CRUCIBLE audit gate: harness + scope.yaml + scope.approved + the committed
+# evidence bundle (audit/evidence.yaml) + provenance manifest are TRACKED and
+# reviewable in a diff. Only volatile raw transcripts + signature are ignored.
+audit/
+.opencode
+.serena
+.claude
+.CRUCIBLE

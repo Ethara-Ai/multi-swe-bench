@@ -120,7 +120,7 @@ def main(tokens: list[str], out_dir: Path, prs_file: Path, skip_commit_message: 
     print(f"Repo: {repo}")
 
     if not skip_commit_message:
-        g = get_github(random.choice(tokens))
+        g = get_github(random.choice(tokens))  # nosec B311 - non-crypto token load-balancing, not a security context
         r = g.get_repo(f"{org}/{repo}")
 
     # Determine output filename based on mode

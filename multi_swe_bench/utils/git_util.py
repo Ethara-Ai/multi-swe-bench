@@ -18,6 +18,8 @@ from pathlib import Path
 
 from git import GitError, Repo
 
+from multi_swe_bench.utils.safe_subprocess import safe_run
+
 
 def exists(path: Path) -> bool:
     if not path.exists():
@@ -30,7 +32,7 @@ def is_clean(path: Path) -> tuple[bool, str]:
     if not exists(path):
         return False, f"Repository not found: {path}"
 
-    result = subprocess.run(
+    result = safe_run(
         ["git", "-C", str(path), "status", "--porcelain"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -55,7 +57,7 @@ def clone_repository(destination: Path, org: str, repo: str):
         env["http_proxy"] = os.environ["http_proxy"]
     if "https_proxy" in os.environ:
         env["https_proxy"] = os.environ["https_proxy"]
-    subprocess.run(
+    safe_run(
         ["git", "clone", repo_url, str(repo_path)],
         check=True,
         env=env,
@@ -77,5 +79,5 @@ def get_all_commit_hashes(repo_path: Path, logger: logging.Logger) -> set[str]:
 
 
 def clean(repo_dir):
-    subprocess.run(["git", "reset", "--hard"], cwd=repo_dir, check=True)
-    subprocess.run(["git", "clean", "-fd"], cwd=repo_dir, check=True)
+    safe_run(["git", "reset", "--hard"], cwd=repo_dir, check=True)
+    safe_run(["git", "clean", "-fd"], cwd=repo_dir, check=True)

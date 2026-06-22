@@ -21,6 +21,8 @@ from typing import Optional, Union
 
 import docker
 
+from multi_swe_bench.utils.safe_subprocess import safe_popen, safe_run
+
 docker_client = docker.from_env(timeout=600)
 
 
@@ -136,7 +138,7 @@ def _get_container_builder() -> str | None:
     flag works correctly.
     """
     try:
-        result = subprocess.run(
+        result = safe_run(
             ["docker", "buildx", "ls"],
             capture_output=True,
             text=True,
@@ -147,7 +149,7 @@ def _get_container_builder() -> str | None:
                 if name:
                     return name
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("buildx builder detection failed", exc_info=True)
     return None
 
 
@@ -162,7 +164,7 @@ def _run_buildx(
     logger.info(f"Running buildx{f' ({label})' if label else ''}: {cmd_str}")
 
     try:
-        process = subprocess.Popen(
+        process = safe_popen(
             cmd,
             cwd=workdir,
             stdout=subprocess.PIPE,
@@ -203,9 +205,6 @@ def _build_with_buildx(
     A second pass then loads the native platform into the local daemon from
     the buildx cache (--load is incompatible with OCI output in a single pass).
     """
-    platforms = [p.strip() for p in platform.split(",")]
-    is_multi_platform = len(platforms) > 1
-
     builder = _get_container_builder()
 
     cmd = [
@@ -249,7 +248,7 @@ def _build_with_buildx(
     if output_tar:
         oci_dir = Path(str(output_tar) + ".d")
         oci_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
+        safe_run(
             ["tar", "-xf", str(output_tar), "-C", str(oci_dir)],
             check=True,
         )

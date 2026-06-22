@@ -47,6 +47,21 @@ from tqdm import tqdm
 from unidiff import PatchSet
 
 from multi_swe_bench.collect.util import get_tokens, optional_int
+from multi_swe_bench.utils.safe_subprocess import safe_run
+
+# A git object id: 7-64 hex chars (covers SHA-1 = 40 and SHA-256 = 64, and
+# abbreviated forms). PR-derived SHAs are validated against this before being
+# passed to git, so a crafted value (e.g. one starting with "-") can never be
+# misread by git as an option/argument (argument injection). Any legitimate git
+# SHA passes unchanged — nothing valid is rejected.
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+
+def _validate_sha(value: str, name: str) -> str:
+    """Return ``value`` if it is a well-formed git SHA, else raise ValueError."""
+    if not value or not _SHA_RE.match(value):
+        raise ValueError(f"{name} is not a valid git SHA: {value!r}")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +91,7 @@ class RepoCloneCache:
             # Fetch latest to ensure we have the needed commits
             print(f"  Fetching latest for cached {org}/{repo}")
             try:
-                subprocess.run(
+                safe_run(
                     ["git", "-C", str(repo_path), "fetch", "--quiet"],
                     capture_output=True,
                     text=True,
@@ -93,7 +108,7 @@ class RepoCloneCache:
         print(f"  Cloning {org}/{repo} (bare, blobless)...")
         url = f"https://github.com/{org}/{repo}.git"
         try:
-            result = subprocess.run(
+            result = safe_run(
                 [
                     "git",
                     "clone",
@@ -123,12 +138,16 @@ class RepoCloneCache:
 
     def get_diff(self, org: str, repo: str, base_sha: str, head_sha: str) -> str:
         """Generate diff locally using git diff on the cached bare clone."""
-        if not base_sha or not head_sha:
-            raise ValueError("base_sha and head_sha must be non-empty")
+        # Validate the PR-derived SHAs are well-formed git object ids before they
+        # reach git, so a crafted value cannot be misinterpreted as a git option
+        # (argument injection). The diff revision range is then a known-safe token.
+        base_sha = _validate_sha(base_sha, "base_sha")
+        head_sha = _validate_sha(head_sha, "head_sha")
+        rev_range = f"{base_sha}...{head_sha}"
         repo_path = self.ensure_cloned(org, repo)
         try:
-            result = subprocess.run(
-                ["git", "-C", str(repo_path), "diff", f"{base_sha}...{head_sha}"],
+            result = safe_run(
+                ["git", "-C", str(repo_path), "diff", rev_range, "--"],
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -503,7 +522,7 @@ def main(
                         repo,
                         base_sha,
                         head_sha,
-                        random.choice(tokens),
+                        random.choice(tokens),  # nosec B311 - non-crypto token load-balancing, not a security context
                         clone_cache,
                     )
                     break
