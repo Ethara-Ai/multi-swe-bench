@@ -1,5 +1,4 @@
 import re
-import textwrap
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -32,10 +31,12 @@ class ApolloImageBase(Image):
         return "eclipse-temurin:8" if self._use_java8() else "eclipse-temurin:11"
 
     def image_tag(self) -> str:
-        return "base-java8" if self._use_java8() else "base"
+        suffix = "java8" if self._use_java8() else "java11"
+        return f"base-{suffix}"
 
     def workdir(self) -> str:
-        return "base-java8" if self._use_java8() else "base"
+        suffix = "java8" if self._use_java8() else "java11"
+        return f"base-{suffix}"
 
     def files(self) -> list[File]:
         return []
@@ -46,26 +47,89 @@ class ApolloImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        label = (
+            f'LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\\n'
+            f'      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
 
-{self.global_env}
+        maven_mirror = (
+            "RUN mkdir -p ~/.m2 && cat > ~/.m2/settings.xml <<'MAVENEOF'\n"
+            '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"\n'
+            '          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n'
+            '          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">\n'
+            "    <mirrors>\n"
+            "        <mirror>\n"
+            "            <id>aliyunmaven</id>\n"
+            "            <mirrorOf>central</mirrorOf>\n"
+            "            <name>Aliyun Maven Mirror</name>\n"
+            "            <url>https://maven.aliyun.com/repository/public</url>\n"
+            "        </mirror>\n"
+            "    </mirrors>\n"
+            "</settings>\n"
+            "MAVENEOF"
+        )
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-WORKDIR /home/
-RUN apt-get update && apt-get install -y git maven
+        # Hardening for the shared base image anchors at HEAD (not a PR-specific
+        # BASE_COMMIT). This preserves the full git history so every PR image can
+        # git-checkout its own base SHA in prepare.sh, regardless of era.
+        base_hardening = (
+            "RUN set -eux; \\\n"
+            "    git checkout --detach HEAD; \\\n"
+            "    git remote remove origin 2>/dev/null || true; \\\n"
+            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\\n"
+            "        | xargs -r -n1 git update-ref -d; \\\n"
+            "    git reflog expire --expire=now --all; \\\n"
+            "    git reflog expire --expire-unreachable=now --all; \\\n"
+            "    rm -f .git/objects/info/alternates; \\\n"
+            "    git config --local gc.auto 0; \\\n"
+            "    git config --local fetch.recurseSubmodules false; \\\n"
+            "    git config --local remote.pushDefault \"\"; \\\n"
+            "    test -z \"$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)\"; \\\n"
+            "    test -z \"$(git remote)\""
+        )
 
-{code}
+        base_hardening_submodules = (
+            "RUN if [ -f .gitmodules ]; then \\\n"
+            "        git submodule foreach --recursive ' \\\n"
+            "            git checkout --detach HEAD; \\\n"
+            "            git remote remove origin 2>/dev/null || true; \\\n"
+            "            git for-each-ref --format=\"%(refname)\" refs/heads refs/remotes refs/tags refs/replace \\\n"
+            "                | xargs -r -n1 git update-ref -d; \\\n"
+            "            git reflog expire --expire=now --all; \\\n"
+            "            git reflog expire --expire-unreachable=now --all; \\\n"
+            "            git gc --prune=now; \\\n"
+            "            rm -f .git/objects/info/alternates; \\\n"
+            "        '; \\\n"
+            "    fi"
+        )
 
-
-{self.clear_env}
-
-"""
+        sections = [
+            "# syntax=docker/dockerfile:1.6",
+            f"FROM {image_name}",
+            (
+                "ARG TARGETARCH\n"
+                f'ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"\n'
+                "ARG BASE_COMMIT"
+            ),
+            "ENV DEBIAN_FRONTEND=noninteractive \\\n    LANG=C.UTF-8 \\\n    TZ=UTC",
+            label,
+            "WORKDIR /home/",
+            "RUN apt-get update && apt-get install -y --no-install-recommends git maven && rm -rf /var/lib/apt/lists/*",
+            code,
+            maven_mirror,
+            f"WORKDIR /home/{self.pr.repo}",
+            "RUN mvn install -DskipTests || true",
+            base_hardening,
+            base_hardening_submodules,
+            'CMD ["/bin/bash"]',
+        ]
+        return "\n\n".join(sections) + "\n"
 
 
 class ApolloImageDefault(Image):
@@ -130,9 +194,9 @@ exit 0
 set -e
 
 cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
+git reset --hard
+git clean -fdx
 bash /home/check_git_changes.sh
 if [ ! -f ~/.m2/settings.xml ]; then
     mkdir -p ~/.m2 && cat <<EOF > ~/.m2/settings.xml
@@ -197,7 +261,10 @@ set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn \
+  --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' \
+  --exclude='*.gif' --exclude='*.svg' --exclude='*.ico' \
+  /home/test.patch /home/fix.patch
 mvn clean test -Dstyle.color=never
 
 """.format(pr=self.pr),
@@ -209,73 +276,25 @@ mvn clean test -Dstyle.color=never
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        file_names = " ".join(file.name for file in self.files())
+        copy_command = f"COPY {file_names} /home/"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
-
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                RUN mkdir -p ~/.m2 && \\
-                    if [ ! -f ~/.m2/settings.xml ]; then \\
-                        echo '<?xml version="1.0" encoding="UTF-8"?>' > ~/.m2/settings.xml && \\
-                        echo '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"' >> ~/.m2/settings.xml && \\
-                        echo '          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"' >> ~/.m2/settings.xml && \\
-                        echo '          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">' >> ~/.m2/settings.xml && \\
-                        echo '</settings>' >> ~/.m2/settings.xml; \\
-                    fi && \\
-                    sed -i '$d' ~/.m2/settings.xml && \\
-                    echo '<proxies>' >> ~/.m2/settings.xml && \\
-                    echo '    <proxy>' >> ~/.m2/settings.xml && \\
-                    echo '        <id>example-proxy</id>' >> ~/.m2/settings.xml && \\
-                    echo '        <active>true</active>' >> ~/.m2/settings.xml && \\
-                    echo '        <protocol>http</protocol>' >> ~/.m2/settings.xml && \\
-                    echo '        <host>{proxy_host}</host>' >> ~/.m2/settings.xml && \\
-                    echo '        <port>{proxy_port}</port>' >> ~/.m2/settings.xml && \\
-                    echo '        <username></username>' >> ~/.m2/settings.xml && \\
-                    echo '        <password></password>' >> ~/.m2/settings.xml && \\
-                    echo '        <nonProxyHosts></nonProxyHosts>' >> ~/.m2/settings.xml && \\
-                    echo '    </proxy>' >> ~/.m2/settings.xml && \\
-                    echo '</proxies>' >> ~/.m2/settings.xml && \\
-                    echo '</settings>' >> ~/.m2/settings.xml
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN sed -i '/<proxies>/,/<\\/proxies>/d' ~/.m2/settings.xml
-                """
-                )
         return f"""FROM {name}:{tag}
 
-{self.global_env}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-{proxy_setup}
+WORKDIR /home/{self.pr.repo}
 
-{copy_commands}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
-{prepare_commands}
+{copy_command}
 
-{proxy_cleanup}
+RUN bash /home/prepare.sh
 
-{self.clear_env}
+{Image._HARDENING_BLOCK}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -313,7 +332,6 @@ class Apollo(Instance):
 
     def parse_log(self, test_log: str) -> TestResult:
         clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-        re_running = re.compile(r"Running (.+)")
         re_result = re.compile(
             r"Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+), Time elapsed: .+ - in (.+)"
         )
