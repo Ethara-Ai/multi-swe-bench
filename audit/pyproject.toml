@@ -1,0 +1,73 @@
+[project]
+name = "crucible-audit"
+version = "0.1.0"
+description = "CRUCIBLE adversarial audit gate for multi-swe-bench"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.12",
+    "pyyaml>=6.0",
+]
+
+# Scanners are split out so `provision` can install the heavy/optional tier
+# explicitly: `uv sync --extra scanners`. Native binaries (osv-scanner,
+# gitleaks, hadolint, trivy) are installed out-of-band by `audit provision`.
+[project.optional-dependencies]
+scanners = [
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+    "semgrep>=1.80",
+    "ruff>=0.6",
+]
+dev = [
+    "pytest>=8.0",
+    "hypothesis>=6.100",
+]
+
+[project.scripts]
+audit = "audit:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Flat module layout: modules live directly under audit/ and import each other
+# by bare name. Every module MUST be listed here so the wheel is importable.
+[tool.hatch.build.targets.wheel]
+include = [
+    "audit.py",
+    "models.py",
+    "recon.py",
+    "tools.py",
+    "policy.py",
+    "normalize.py",
+    "domain.py",
+    "dockerfiles.py",
+    "cvss.py",
+    "recall.py",
+    "verifier.py",
+    "provenance.py",
+    "evidence.py",
+    "scopelib.py",
+]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "audit"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+# E501: long evidence/message strings tolerated.
+# B008: Typer's `arg: T = typer.Option(...)` REQUIRES a call in the default —
+#       the documented framework idiom, not a mutable-default bug.
+# UP042: `class X(str, Enum)` kept deliberately over `StrEnum`; the gate's
+#        identity/hashing is sensitive to `str(member)` semantics and the
+#        explicit `.value` access is load-bearing. Migrating is a behaviour risk.
+ignore = ["E501", "B008", "UP042"]

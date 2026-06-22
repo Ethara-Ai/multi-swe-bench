@@ -1,0 +1,193 @@
+approved_scope_digest: c470afa372329674d079aac56d915cf60c95ce1273e1de1c9cd83c3d19a971f0
+evidence_sha256: 035a47fded740d5767931e54fdf6be4ca94183fd6f98782d8761b0f0582a0646
+git_dirty: true
+git_sha: 23bd558266ce7add66308507812bb64f6fb0980b
+policy_version: 1
+runs:
+- argv:
+  - semgrep
+  - --config=p/owasp-top-ten
+  - --config=p/r2c-security-audit
+  - --config=p/secrets
+  - --config=.crucible/semgrep
+  - --metrics=off
+  - --sarif
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: 0
+  run_id: CMD-001
+  status: ok
+  stdout_artifact: artifacts/CMD-001.stdout.txt.gz
+  stdout_artifact_sha256: a0c10f5dbefae73123dafdcafe2c212135012affaba7b3811919c9c0c2b5e4d7
+  tool: semgrep
+- argv:
+  - bandit
+  - -r
+  - multi_swe_bench
+  - -f
+  - json
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: 1
+  run_id: CMD-002
+  status: nonzero_exit
+  stdout_artifact: artifacts/CMD-002.stdout.txt.gz
+  stdout_artifact_sha256: 73a1fa054ffa265eca7d494edcdb385c4e5f1d38946ef9dbe372c4925849f889
+  tool: bandit
+- argv:
+  - pip-audit
+  - --format
+  - json
+  - -r
+  - requirements.txt
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: 0
+  run_id: CMD-003
+  status: ok
+  stdout_artifact: artifacts/CMD-003.stdout.txt.gz
+  stdout_artifact_sha256: ea6f9b903f1d2b0529fc85bbc90ed348fa68576b4430307a3fce4468553b356c
+  tool: pip-audit
+- argv:
+  - osv-scanner
+  - --format
+  - json
+  - -r
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: 0
+  run_id: CMD-004
+  status: ok
+  stdout_artifact: artifacts/CMD-004.stdout.txt.gz
+  stdout_artifact_sha256: b4a0a08ac1051bd9285185a931924295e772059bd267290a8e88ae9776b00327
+  tool: osv-scanner
+- argv:
+  - gitleaks
+  - detect
+  - --config
+  - .gitleaks.toml
+  - --report-format
+  - json
+  - --report-path
+  - '-'
+  - --log-opts=--all
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: 0
+  run_id: CMD-005
+  status: ok
+  stdout_artifact: artifacts/CMD-005.stdout.txt.gz
+  stdout_artifact_sha256: 398750a1e9631b2eb374080644b511b10eca275f714a0aef17c0bf44829663b7
+  tool: gitleaks
+- argv:
+  - ruff
+  - check
+  - --output-format
+  - json
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: 1
+  run_id: CMD-006
+  status: nonzero_exit
+  stdout_artifact: artifacts/CMD-006.stdout.txt.gz
+  stdout_artifact_sha256: 5b1d71294c1113f8213e2cb3fcb9ff0b4db0987169eeac16a290f2b9bb841c6a
+  tool: ruff
+- argv:
+  - ruff
+  - format
+  - --check
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: 1
+  run_id: CMD-007
+  status: nonzero_exit
+  stdout_artifact: artifacts/CMD-007.stdout.txt.gz
+  stdout_artifact_sha256: a7829d0001ee35173369e7f43c6393b2ff40b3ccbf03e166013b05d49f4c2ead
+  tool: ruff-format
+- argv:
+  - __audit_unresolvable__
+  - -m
+  - pytest
+  - -q
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: null
+  run_id: CMD-008
+  status: tool_blocked
+  stdout_artifact: null
+  stdout_artifact_sha256: null
+  tool: pytest
+- argv:
+  - hadolint
+  - --format
+  - json
+  - '-'
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: 1
+  run_id: CMD-009
+  status: nonzero_exit
+  stdout_artifact: artifacts/CMD-009.stdout.txt.gz
+  stdout_artifact_sha256: 83182a96fb0974ad95b16e255e0b8c021996ee7eadff1ee4380069d8b8d9242c
+  tool: hadolint
+- argv:
+  - trivy
+  - config
+  - --format
+  - json
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  exit_code: 0
+  run_id: CMD-010
+  status: ok
+  stdout_artifact: artifacts/CMD-010.stdout.txt.gz
+  stdout_artifact_sha256: 738945ba0979a17d16482e99c0348eb98c905f8225094d99f3369da5fd9aef4e
+  tool: trivy
+schema_version: 1
+scope_digest: c470afa372329674d079aac56d915cf60c95ce1273e1de1c9cd83c3d19a971f0
+sources:
+- line_count: 261
+  path: multi_swe_bench/collect/build_dataset.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/build_dataset.py
+  sha256: 79a1e36487b42011586b9ad3a3a009cc96f793d31ee70ed4a7245e1ab7ae4e68
+  type: source
+- line_count: 255
+  path: multi_swe_bench/collect/crawl_repos.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/crawl_repos.py
+  sha256: ce948648d258ec16d63b91c049571f470934fa3ea21ed73bdce42ceb9156ec73
+  type: source
+- line_count: 988
+  path: multi_swe_bench/harness/build_dataset.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/build_dataset.py
+  sha256: b52b132730a3d68bddf3190d8a6b4a0eed7ed8dafbce73214eb28b42beacc178
+  type: source
+- line_count: 617
+  path: multi_swe_bench/harness/gen_report.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/gen_report.py
+  sha256: 7724eb9e08afc2d0b881b4051869e10a21af891f4c1ce6bb2e980c4eba9dfee7
+  type: source
+- line_count: 551
+  path: multi_swe_bench/harness/image.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/image.py
+  sha256: 91a68683538716214ad20bbc59e226e45c79d0776bbb2a31d39305ba6aed1b55
+  type: source
+- line_count: 432
+  path: multi_swe_bench/harness/report.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/report.py
+  sha256: b098479ebca12ed7b69e1fcaac8cc66e5ed8066a1f066b477a931fafed08df0b
+  type: source
+- line_count: 917
+  path: multi_swe_bench/harness/run_evaluation.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/run_evaluation.py
+  sha256: 9a30fd6e9e654cb5462f62444201f4cffb008603673c63533025263a12fc0f79
+  type: source
+- line_count: 176
+  path: multi_swe_bench/harness/test_result.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/test_result.py
+  sha256: be0554b247245fdf2f1e763ed04c8728b522367a6742a144abdf8336430d3f9b
+  type: source
+- line_count: 332
+  path: multi_swe_bench/utils/docker_util.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/utils/docker_util.py
+  sha256: 9c9fd08b94090efe2eb5704d1e8ab1cadf078615d0fdcabcae6cbc2af494446d
+  type: source
+- line_count: 237
+  path: multi_swe_bench/utils/env_to_dockerfile.py
+  realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/utils/env_to_dockerfile.py
+  sha256: bdc23f508a778cf0396e113e595ffd5aeb422626c5beb8fcb939559388f60f8c
+  type: source

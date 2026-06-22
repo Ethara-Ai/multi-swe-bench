@@ -1,0 +1,138 @@
+# CRUCIBLE custom Semgrep pack — "Harbor-domain" rules for THIS repo.
+#
+# These encode the source->sink and reward-integrity defects that off-the-shelf
+# packs (p/owasp-top-ten, p/r2c-security-audit, p/secrets) do NOT ship for a
+# SWE-bench dataset-creation / grading pipeline. They are deliberately narrow
+# (high precision over recall) because the deterministic Bucket-D checks in
+# audit/domain.py carry the authoritative recall; these are the SAST corroborators.
+#
+# Referenced by the approved semgrep argv: --config=.crucible/semgrep
+# (see audit/scope.yaml required_instruments[semgrep].approved_argv).
+
+rules:
+  # --- command injection into the container exec / docker layer ----------------
+  - id: harbor-subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: >-
+      subprocess called with shell=True. In the harness this runs untrusted
+      patch/agent-derived strings through a shell — command injection. Use an
+      argv list and shell=False.
+    metadata:
+      floor_class: command-injection
+      category: security
+    patterns:
+      - pattern: subprocess.$F(..., shell=True, ...)
+
+  - id: harbor-os-system-call
+    languages: [python]
+    severity: ERROR
+    message: >-
+      os.system() executes a shell string; PR/org/repo metadata flowing into it
+      is an OS command-injection sink. Use subprocess with an argv list.
+    metadata:
+      floor_class: os-command
+      category: security
+    pattern: os.system(...)
+
+  - id: harbor-docker-exec-fstring
+    languages: [python]
+    severity: WARNING
+    message: >-
+      A docker exec/run command is built from an f-string / .format(). If any
+      interpolated value derives from instance metadata (org/repo/ref/patch) this
+      is a command-injection sink in the generated container step.
+    metadata:
+      floor_class: command-injection
+      category: security
+    patterns:
+      - metavariable-pattern:
+          metavariable: $CMD
+          patterns:
+            - pattern-either:
+                - pattern: f"...{...}..."
+                - pattern: "$S.format(...)"
+      - pattern-either:
+          - pattern: $CLIENT.exec_run($CMD, ...)
+          - pattern: $CLIENT.exec_create(..., $CMD, ...)
+          - pattern: subprocess.$F([..., $CMD, ...], ...)
+
+  # --- unsafe deserialization --------------------------------------------------
+  - id: harbor-unsafe-yaml-load
+    languages: [python]
+    severity: ERROR
+    message: >-
+      yaml.load() without SafeLoader deserializes arbitrary Python objects. Use
+      yaml.safe_load() — instance/registry YAML is attacker-influenceable.
+    metadata:
+      floor_class: unsafe-deserialization
+      category: security
+    patterns:
+      - pattern: yaml.load($X)
+      - pattern-not: yaml.load($X, Loader=yaml.SafeLoader)
+
+  - id: harbor-pickle-loads
+    languages: [python]
+    severity: ERROR
+    message: >-
+      pickle.load/loads on dataset/cache content is an arbitrary-code-execution
+      deserialization sink. Use a structured, non-executable format (json).
+    metadata:
+      floor_class: unsafe-deserialization
+      category: security
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+
+  # --- reward-provenance / grading-integrity (the Harbor domain) ---------------
+  - id: harbor-pass-rate-from-list-len
+    languages: [python]
+    severity: WARNING
+    message: >-
+      A resolved/pass count appears to be taken from len() of a CSV/list rather
+      than recomputed from raw per-test trial verdicts. Pass rate must derive
+      from the raw {run,test,fix} stages, not a pre-aggregated row count.
+    metadata:
+      floor_class: rollout-miscount
+      category: correctness
+    patterns:
+      - pattern-either:
+          - pattern: $N = len($ROWS)
+          - pattern: $N = len(list(...))
+      # Require a grading/reward term in the assigned name. Deliberately does NOT
+      # match the bare token "count": generic pagination/collection counters
+      # (fetched_count, page_count, repo_count, result_count) are not reward
+      # signals and were the source of false positives. A genuine reward count
+      # (pass_count, resolved_count, num_passed, reward, f2p_count) still matches
+      # because the name carries pass/resolved/reward/verdict/bucket vocabulary.
+      - metavariable-regex:
+          metavariable: $N
+          regex: (?i).*(passed|pass_|_pass|resolved|reward|verdict|f2p|p2p|s2p|n2p|pass_rate|score).*
+
+  - id: harbor-reward-default-pass
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Reward/verdict defaults to a passing value when a key is missing
+      (.get(..., "PASS"|True|1)). A missing reward must fail closed, never
+      default to pass — this is a reward-hack surface.
+    metadata:
+      floor_class: agent-writable-reward
+      category: correctness
+    pattern-either:
+      - pattern: $D.get($K, "PASS")
+      - pattern: $D.get($K, "resolved")
+      - pattern: $D.get($K, True)
+
+  - id: harbor-eval-on-metadata
+    languages: [python]
+    severity: ERROR
+    message: >-
+      eval()/exec() on a value reachable from instance metadata is an
+      arbitrary-code-execution sink.
+    metadata:
+      floor_class: code-injection
+      category: security
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)

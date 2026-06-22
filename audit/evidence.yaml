@@ -1,0 +1,1689 @@
+schema_version: 1
+recon:
+  project_root: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  git_sha: 23bd558266ce7add66308507812bb64f6fb0980b
+  git_dirty: true
+  git_shallow: false
+  timestamp_epoch: 1782128373.305367
+  os_platform: macOS-26.5.1-arm64-arm-64bit-Mach-O
+  python_version: 3.13.1
+  network_online: true
+  loc_by_language:
+    python: 1008671
+  product_types:
+  - agent-evaluation-harness
+  - dataset-collection-pipeline
+  - container-build-tooling
+  - cli
+  surfaces:
+    harness_runner:
+      present: true
+      paths:
+      - multi_swe_bench/harness/run_evaluation.py
+      - multi_swe_bench/harness/build_dataset.py
+      - multi_swe_bench/harness/image.py
+      - multi_swe_bench/utils/docker_util.py
+      - multi_swe_bench/utils/session_util.py
+      notes: 'Runs untrusted agent patches inside containers and parses their output.
+        Trust boundary: the AGENT (inside container) vs the VERIFIER (grader).'
+    agent_trajectories:
+      present: false
+      notes: "This repo does NOT generate trajectories \u2014 it produces the JSONL\
+        \ dataset consumed by a SEPARATE downstream repo for trajectory generation.\
+        \ No transcripts in tree by design; not a coverage gap here."
+    environment_dataset:
+      present: true
+      paths:
+      - multi_swe_bench/harness/repos/**
+      - multi_swe_bench/harness/dataset.py
+      - multi_swe_bench/harness/instance.py
+      - multi_swe_bench/harness/pull_request.py
+      notes: 'Each instance carries org/repo/PR + gold test_patch + fix_patch. The
+        instance id is the join key across datasets/reports/predictions. No committed
+        train/test split files; no checksums/manifest. Licensing: Apache-2.0.'
+    rubrics_grading:
+      present: true
+      paths:
+      - multi_swe_bench/harness/report.py
+      - multi_swe_bench/harness/test_result.py
+      - multi_swe_bench/harness/gen_report.py
+      notes: Reward = resolved/unresolved derived from three test stages (run / test-patch
+        / fix-patch). fix_patch_tampers_with_tests() blocks an agent editing gold
+        tests. FinalReport.from_reports recomputes counts from raw buckets (MSB-ROLLOUT-004).
+        These are the reward-provenance & rollout- integrity surfaces.
+    client_deliverables:
+      present: true
+      paths:
+      - multi_swe_bench/harness/build_dataset.py
+      - multi_swe_bench/harness/gen_report.py
+      external_artifact: /Users/apple/Documents/handoff/audit2.0/dataset/output/dandavison__delta-945.jsonl
+      notes: 'PRIMARY deliverable is the JSONL dataset (see deliverable_dataset above):
+        gold fix_patch/test_patch + reward buckets per record. Any emitted summary
+        stat must reconcile with the raw records.'
+    mock_synthetic_data:
+      present: true
+      paths:
+      - tests/
+      notes: Test fixtures only; risk is leakage of fixture data into a real report
+        (low).
+    test_suite:
+      present: true
+      paths:
+      - tests/
+      - pytest.ini
+      - tests/conftest.py
+      framework: pytest
+      notes: Existing self-tests cover Report.check, reward-hack guard, reconcile,
+        pull_request identity. Reusable as negative-control substrate.
+    docker_containers:
+      present: true
+      paths:
+      - multi_swe_bench/harness/image.py
+      - multi_swe_bench/utils/env_to_dockerfile.py
+      - multi_swe_bench/utils/docker_util.py
+      - scripts/download_images.sh
+      - scripts/images_*.txt
+      notes: "No committed Dockerfile at root \u2014 Dockerfiles are GENERATED at\
+        \ run time. hadolint/trivy have no static Dockerfile to scan -> declared coverage\
+        \ gap; instrument the generator's emitted Dockerfile string instead."
+    git_history:
+      present: true
+      paths:
+      - .git
+      - multi_swe_bench/collect/.repo_cache/**
+      notes: "Full history (1070 commits), non-shallow. .repo_cache holds TRACKED\
+        \ bare git mirrors of third-party target repos (uptrace/bun, eslint, beego,\
+        \ ~20MB) committed into the tree \u2014 blob-bloat + a foreign-history surface.\
+        \ Secrets must be scanned over working tree AND full history (--log-opts=--all)."
+  tool_pins:
+  - name: semgrep
+    present: true
+    version: 1.167.0
+    db_version: 1.167.0
+    db_digest: null
+  - name: bandit
+    present: true
+    version: bandit 1.9.4
+    db_version: bandit 1.9.4
+    db_digest: null
+  - name: gitleaks
+    present: true
+    version: 8.30.1
+    db_version: 8.30.1
+    db_digest: null
+  - name: osv-scanner
+    present: true
+    version: 'osv-scanner version: 2.3.8'
+    db_version: 'osv-scanner version: 2.3.8'
+    db_digest: null
+  - name: pip-audit
+    present: true
+    version: pip-audit 2.10.1
+    db_version: pip-audit 2.10.1
+    db_digest: null
+  - name: trivy
+    present: true
+    version: 'Version: 0.71.1'
+    db_version: 'Version: 0.71.1'
+    db_digest: null
+  - name: hadolint
+    present: true
+    version: Haskell Dockerfile Linter 2.14.0
+    db_version: Haskell Dockerfile Linter 2.14.0
+    db_digest: null
+  - name: ruff
+    present: true
+    version: ruff 0.15.18
+    db_version: ruff 0.15.18
+    db_digest: null
+required_instruments:
+- bandit
+- dataset_leakage_check
+- dockerfile_generation_check
+- gitleaks
+- hadolint
+- osv-scanner
+- pip-audit
+- pytest
+- report_claim_artifact_check
+- reward_bucket_consistency_check
+- reward_provenance_check
+- ruff
+- ruff-format
+- semgrep
+- trivy
+allowlist_excluded:
+  multi_swe_bench/harness/repos: 15221
+runs:
+- run_id: CMD-001
+  tool: semgrep
+  argv:
+  - semgrep
+  - --config=p/owasp-top-ten
+  - --config=p/r2c-security-audit
+  - --config=p/secrets
+  - --config=.crucible/semgrep
+  - --metrics=off
+  - --sarif
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: ok
+  exit_code: 0
+  duration_sec: 38.30322813987732
+  stdout_artifact: artifacts/CMD-001.stdout.txt.gz
+  stdout_sha256: 6e51dd9c4eeef113a0d233fc4676917354fd09424ba549131fbdc19613b3aac4
+  stdout_excerpt: "{\"version\":\"2.1.0\",\"runs\":[{\"invocations\":[{\"executionSuccessful\"\
+    :true,\"toolExecutionNotifications\":[{\"descriptor\":{\"id\":\"Syntax error\"\
+    },\"level\":\"warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/beego__beego.git/hooks/pre-push.sample:47:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/beego__beego.git/hooks/pre-rebase.sample:41:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/beego__beego.git/hooks/push-to-checkout.sample:26:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/eslint__eslint.git/hooks/pre-push.sample:47:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/eslint__eslint.git/hooks/pre-rebase.sample:41:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/eslint__eslint.git/hooks/push-to-checkout.sample:26:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/uptrace__bun.git/hooks/pre-push.sample:47:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/uptrace__bun.git/hooks/pre-rebase.sample:41:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/uptrace__bun.git/hooks/push-to-checkout.sample:26:\\\
+    n `2` was unexpected\"}}]}],\"results\":[{\"fingerprints\":{\"matchBasedId/v1\"\
+    :\"requires login\"},\"locations\":[{\"physicalLocation\":{\"artifactLocation\"\
+    :{\"uri\":\"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/cpp/crankyoldgit/base.Dockerfile\"\
+    ,\"uriBaseId\":\"%SRCROOT%\"},\"region\":{\"endColumn\":18,\"endLine\":62,\"snippet\"\
+    :{\"text\":\"CMD [\\\"/bin/bash\\\"]\"},\"startColumn\":1,\"startLine\":62}}}],\"\
+    message\":{\"text\":\"By not specifying a USER, a program in the container may\
+    \ run as 'root'. This is a security hazard. If an attacker can control a process\
+    \ running as root, they may have control over the container. Ensure that the last\
+    \ USER in a Dockerfile is a USER other than 'root'.\"},\"properties\":{},\"ruleId\"\
+    :\"dockerfile.security.missing-user.missing-user\"},{\"fingerprints\":{\"matchBasedId/v1\"\
+    :\"requires login\"},\"locations\":[{\"physicalLocation\":{\"artifactLocation\"\
+    :{\"uri\":\"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/java/Blankj/AndroidUtilCode.py\"\
+    ,\"uriBaseId\":\"%SRCROOT%\"},\"region\":{\"endColumn\":43,\"endLine\":612,\"\
+    snippet\":{\"text\":\"        import xml.etree.ElementTree as ET\"},\"startColumn\"\
+    :9,\"startLine\":612}}}],\"message\":{\"text\":\"The Python documentation recommends\
+    \ using `defusedxml` instead of `xml` because the native Python `xml` library\
+    \ is vulnerable to XML External Entity (XXE) attacks. These attacks can leak confidential\
+    \ data and \\\"XML bombs\\\" can cause denial of service.\"},\"properties\":{},\"\
+    ruleId\":\"python.lang.security.use-defused-xml.use-defused-xml\"},{\"fingerprints\"\
+    :{\"matchBasedId/v1\":\"requires login\"},\"locations\":[{\"physicalLocation\"\
+    :{\"artifactLocation\":{\"uri\":\"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/javascript/_4ian/GDevelop.py\"\
+    ,\"uriBaseId\":\"%SRCROOT%\"},\"region\":{\"endColumn\":35,\"endLine\":3,\"snippet\"\
+    :{\"text\":\"import xml.etree.ElementTree as ET\"},\"startColumn\":1,\"startLine\"\
+    :3}}}],\"message\":{\"text\":\"The Python documentation recommends using `defusedxml`\
+    \ instead of `xml` because the native Python `xml` library is vulnerable to XML\
+    \ External Entity (XXE) attacks. These attacks can leak confidential data and\
+    \ \\\"XML bombs\\\" can cause denial of service.\"},\"properties\":{},\"ruleId\"\
+    :\"python.lang.security.use-defused-xml.use-defused-xml\"}],\"tool\":{\"driver\"\
+    :{\"name\":\"Semgrep OSS\",\"rules\":[{\"defaultConfiguration\":{\"level\":\"\
+    warning\"},\"fullDescription\":{\"text\":\"Data is being eval'd from a `curl`\
+    \ command. An attacker with control of the server in the `curl` command could\
+    \ inject malicious code into the `eval`, resulting in a system comrpomise. Avoid\
+    \ eval'ing untrusted data if you can. If you must do this, consider checking the\
+    \ SHA sum of the content returned by the server to verify its integrity.\"},\"\
+    help\":{\"markdown\":\"Data is being eval'd from a `curl` command. An attacker\
+    \ with control of the server in the `curl` command could inject malicious code\
+    \ into the `eval`, resulting in a system comrpomise. Avoid eval'ing untrusted\
+    \ data if you can. If you must do this, consider checking the SHA sum of the content\
+    \ returned by the server to verify its integrity.\\n\\n#### \U0001F48E Enable\
+    \ cross-file analysis and Pro rules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\\\
+    n\\n<b>References:</b>\\n - [Semgrep Rule](https://semgrep.dev/r/bash.curl.security.curl-eval.curl-eval)\\\
+    n - [https://owasp.org/Top10/A03_2021-Injection](https://owasp.org/Top10/A03_2021-Injection)\\\
+    n\",\"text\":\"Data is being eval'd from a `curl` command. An attacker with control\
+    \ of the server in the `curl` command could inject malicious code into the `eval`,\
+    \ resulting in a system comrpomise. Avoid eval'ing untrusted data if you can.\
+    \ If you must do this, consider checking the SHA sum of the content returned by\
+    \ the server to verify its integrity.\\n\U0001F48E Enable cross-file analysis\
+    \ and Pro rules for free at sg.run/pro\"},\"helpUri\":\"https://semgrep.dev/r/bash.curl.security.curl-eval.curl-eval\"\
+    ,\"id\":\"bash.curl.security.curl-eval.curl-eval\",\"name\":\"bash.curl.security.curl-eval.curl-eval\"\
+    ,\"properties\":{\"precision\":\"very-high\",\"tags\":[\"CWE-95: Improper Neutralization\
+    \ of Directives in Dynamically Evaluated Code ('Eval Injection')\",\"MEDIUM CONFIDENCE\"\
+    ,\"OWASP-A03:2021 - Injection\",\"OWASP-A05:2025 - Injection\",\"security\"]},\"\
+    shortDescription\":{\"text\":\"Semgrep Finding: bash.curl.security.curl-eval.curl-eval\"\
+    }},{\"defaultConfiguration\":{\"level\":\"error\"},\"fullDescription\":{\"text\"\
+    :\"Variable '$VAR' was freed twice. This can lead to undefined behavior.\"},\"\
+    help\":{\"markdown\":\"Variable '$VAR' was freed twice. This can lead to undefined\
+    \ behavior.\\n\\n#### \U0001F48E Enable cross-file analysis and Pro rules for\
+    \ free at <a href='https://sg.run/pro'>sg.run/pro</a>\\n\\n<b>References:</b>\\\
+    n - [Semgrep Rule](https://semgrep.dev/r/c.lang.security.double-free.double-free)\\\
+    n - [https://cwe.mitre.org/data/definitions/415.html](https://cwe.mitre.org/data/definitions/415.html)\\\
+    n - [https://owasp.org/www-community/vulnerabilities/Doubly_freeing_memory](https://owasp.org/www-community/vulnerabilities/Doubly_freeing_memory)\\\
+    n\",\"text\":\"Variable '$VAR' was freed twice. This can lead to undefined behavior.\\\
+    n\U0001F48E Enable cross-file analysis and Pro rules for free at sg.run/pro\"\
+    },\"helpUri\":\"https://semgrep.dev/r/c.lang.security.double-free.double-free\"\
+    ,\"id\":\"c.lang.security.double-free.double-free\",\"name\":\"c.lang.security.double-free.double-free\"\
+    ,\"properties\":{\"precision\":\"very-high\",\"tags\":[\"CWE-415: Double Free\"\
+    ,\"LOW CONFIDENCE\",\"OWASP-A01:2017 - Injection\",\"OWASP-A03:2021 - Injection\"\
+    ,\"OWASP-A05:2025 - Injection\",\"security\"]},\"shortDescription\":{\"text\"\
+    :\"Semgrep Finding: c.lang.security.double-free.double-free\"}},{\"defaultConfiguration\"\
+    :{\"level\":\n...[1435484 bytes elided]...\nrules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\\\
+    n\\n<b>References:</b>\\n - [Semgrep Rule](https://semgrep.dev/r/yaml.openapi.security.openai-consequential-action-false.openai-consequential-action-false)\\\
+    n - [https://platform.openai.com/docs/actions/consequential-flag](https://platform.openai.com/docs/actions/consequential-flag)\\\
+    n - [https://owasp.org/Top10/A04_2021-Insecure_Design/](https://owasp.org/Top10/A04_2021-Insecure_Design/)\\\
+    n - [https://owasp.org/www-project-top-10-for-large-language-model-applications/assets/PDF/OWASP-Top-10-for-LLMs-2023-v1_1.pdf](https://owasp.org/www-project-top-10-for-large-language-model-applications/assets/PDF/OWASP-Top-10-for-LLMs-2023-v1_1.pdf)\\\
+    n\",\"text\":\"Found 'x-openai-isConsequential: false' in a state-changing HTTP\
+    \ method: $METHOD $PATH. This Action configuration will enable the 'Always Allow'\
+    \ option for state-changing HTTP methods, such as POST, PUT, PATCH, or DELETE.\
+    \ The risk of a user selecting the 'Always Allow' button is that the agent could\
+    \ perform unintended actions on behalf of the user. When working with sensitive\
+    \ functionality, it is always best to include a Human In The Loop (HITL) type\
+    \ of control. Consider the trade-off between security  and user friction and then\
+    \ make a risk-based decision about this function.\\n\U0001F48E Enable cross-file\
+    \ analysis and Pro rules for free at sg.run/pro\"},\"helpUri\":\"https://semgrep.dev/r/yaml.openapi.security.openai-consequential-action-false.openai-consequential-action-false\"\
+    ,\"id\":\"yaml.openapi.security.openai-consequential-action-false.openai-consequential-action-false\"\
+    ,\"name\":\"yaml.openapi.security.openai-consequential-action-false.openai-consequential-action-false\"\
+    ,\"properties\":{\"precision\":\"very-high\",\"tags\":[\"CWE-441: Unintended Proxy\
+    \ or Intermediary ('Confused Deputy')\",\"HIGH CONFIDENCE\",\"OWASP-A04:2021 Insecure\
+    \ Design\",\"OWASP-LLM08:2023 - Excessive Agency\",\"security\"]},\"shortDescription\"\
+    :{\"text\":\"Semgrep Finding: yaml.openapi.security.openai-consequential-action-false.openai-consequential-action-false\"\
+    }},{\"defaultConfiguration\":{\"level\":\"error\"},\"fullDescription\":{\"text\"\
+    :\"Basic authentication is considered weak and should be avoided.  Use a different\
+    \ authentication scheme, such of OAuth2, OpenID Connect, or mTLS.\"},\"help\"\
+    :{\"markdown\":\"Basic authentication is considered weak and should be avoided.\
+    \  Use a different authentication scheme, such of OAuth2, OpenID Connect, or mTLS.\\\
+    n\\n#### \U0001F48E Enable cross-file analysis and Pro rules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\\\
+    n\\n<b>References:</b>\\n - [Semgrep Rule](https://semgrep.dev/r/yaml.openapi.security.use-of-basic-authentication.use-of-basic-authentication)\\\
+    n - [https://cwe.mitre.org/data/definitions/287.html](https://cwe.mitre.org/data/definitions/287.html)\\\
+    n - [https://owasp.org/Top10/A04_2021-Insecure_Design/](https://owasp.org/Top10/A04_2021-Insecure_Design/)\\\
+    n - [https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/](https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/)\\\
+    n\",\"text\":\"Basic authentication is considered weak and should be avoided.\
+    \  Use a different authentication scheme, such of OAuth2, OpenID Connect, or mTLS.\\\
+    n\U0001F48E Enable cross-file analysis and Pro rules for free at sg.run/pro\"\
+    },\"helpUri\":\"https://semgrep.dev/r/yaml.openapi.security.use-of-basic-authentication.use-of-basic-authentication\"\
+    ,\"id\":\"yaml.openapi.security.use-of-basic-authentication.use-of-basic-authentication\"\
+    ,\"name\":\"yaml.openapi.security.use-of-basic-authentication.use-of-basic-authentication\"\
+    ,\"properties\":{\"precision\":\"very-high\",\"tags\":[\"CWE-287: Improper Authentication\"\
+    ,\"HIGH CONFIDENCE\",\"OWASP-A04:2021 Insecure Design\",\"OWASP-A07:2021 Identification\
+    \ and Authentication Failures\",\"security\"]},\"shortDescription\":{\"text\"\
+    :\"Semgrep Finding: yaml.openapi.security.use-of-basic-authentication.use-of-basic-authentication\"\
+    }}],\"semanticVersion\":\"1.167.0\"}}}],\"$schema\":\"https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json\"\
+    }\n"
+  parsed_ok: true
+- run_id: CMD-002
+  tool: bandit
+  argv:
+  - bandit
+  - -r
+  - multi_swe_bench
+  - -f
+  - json
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: nonzero_exit
+  exit_code: 1
+  duration_sec: 22.32139015197754
+  stdout_artifact: artifacts/CMD-002.stdout.txt.gz
+  stdout_sha256: 086f884c6fd16ef2e3849d7ae99476a6f3c881b84601cd6a51eb2368dbcb9878
+  stdout_excerpt: "Working... \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\
+    \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\
+    \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\
+    \u2501\u2501\u2501\u2501\u2501 100% 0:00:21\n{\n  \"errors\": [],\n  \"generated_at\"\
+    : \"2026-06-22T11:40:37Z\",\n  \"metrics\": {\n    \"_totals\": {\n      \"CONFIDENCE.HIGH\"\
+    : 41,\n      \"CONFIDENCE.LOW\": 179,\n      \"CONFIDENCE.MEDIUM\": 10,\n    \
+    \  \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 46,\n      \"SEVERITY.MEDIUM\": 184,\n      \"SEVERITY.UNDEFINED\": 0,\n   \
+    \   \"loc\": 755103,\n      \"nosec\": 0,\n      \"skipped_tests\": 11\n    },\n\
+    \    \"multi_swe_bench/__init__.py\": {\n      \"CONFIDENCE.HIGH\": 0,\n     \
+    \ \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"CONFIDENCE.UNDEFINED\"\
+    : 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\"\
+    : 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"loc\": 0,\n      \"nosec\": 0,\n\
+    \      \"skipped_tests\": 0\n    },\n    \"multi_swe_bench/collect/__init__.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 0,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n   \
+    \ },\n    \"multi_swe_bench/collect/build_dataset.py\": {\n      \"CONFIDENCE.HIGH\"\
+    : 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 208,\n      \"nosec\": 0,\n      \"skipped_tests\": 1\n    },\n    \"multi_swe_bench/collect/build_lht_dataset.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 1,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 1,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 495,\n      \"nosec\": 0,\n      \"skipped_tests\": 1\n \
+    \   },\n    \"multi_swe_bench/collect/crawl_repos.py\": {\n      \"CONFIDENCE.HIGH\"\
+    : 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 208,\n      \"nosec\": 0,\n      \"skipped_tests\": 1\n    },\n    \"multi_swe_bench/collect/filter_prs.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 127,\n      \"nosec\": 0,\n      \"skipped_tests\": 1\n \
+    \   },\n    \"multi_swe_bench/collect/get_all_prs.py\": {\n      \"CONFIDENCE.HIGH\"\
+    : 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 80,\n      \"nosec\": 0,\n      \"skipped_tests\": 1\n    },\n    \"multi_swe_bench/collect/get_from_repos_pipeline.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 213,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n \
+    \   },\n    \"multi_swe_bench/collect/get_lht_pipeline.py\": {\n      \"CONFIDENCE.HIGH\"\
+    : 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 158,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n    },\n    \"multi_swe_bench/collect/get_pipeline.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 119,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n \
+    \   },\n    \"multi_swe_bench/collect/get_related_issues.py\": {\n      \"CONFIDENCE.HIGH\"\
+    : 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 99,\n      \"nosec\": 0,\n      \"skipped_tests\": 1\n    },\n    \"multi_swe_bench/collect/get_version_tags.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 219,\n      \"nosec\": 0,\n      \"skipped_tests\": 1\n \
+    \   },\n    \"multi_swe_bench/collect/group_prs_by_tags.py\": {\n      \"CONFIDENCE.HIGH\"\
+    : 1,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 1,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 595,\n      \"nosec\": 0,\n      \"skipped_tests\": 2\n    },\n    \"multi_swe_bench/collect/merge_prs_with_issues.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 47,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n  \
+    \  },\n    \"multi_swe_bench/collect/util.py\": {\n      \"CONFIDENCE.HIGH\":\
+    \ 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 91,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n    },\n    \"multi_swe_bench/harness/__init__.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 1,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n   \
+    \ },\n    \"multi_swe_bench/harness/build_dataset.py\": {\n      \"CONFIDENCE.HIGH\"\
+    : 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 848,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n    },\n    \"multi_swe_bench/harness/constant.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 13,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n  \
+    \  },\n    \"multi_swe_bench/harness/dataset.py\": {\n      \"CONFIDENCE.HIGH\"\
+    : 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 59,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n    },\n    \"multi_swe_bench/harness/gen_report.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 520,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n \
+    \   },\n    \"multi_swe_bench/harness/image.py\": {\n      \"CONFIDENCE.HIGH\"\
+    : 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"\
+    CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
+    : 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\": 0,\n      \"\
+    loc\": 437,\n      \"nosec\": 0,\n      \"skipped_tests\": 0\n    },\n    \"multi_swe_bench/harness/instance.py\"\
+    : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
+    : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
+    SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
+    : 0,\n      \"loc\": 44,\n      \"nosec\": 0,\n...[2277970 bytes elided]...\n\
+    \ 50,\n        51,\n        52,\n        53,\n        54,\n        55,\n     \
+    \   56,\n        57,\n        58,\n        59,\n        60,\n        61,\n   \
+    \     62,\n        63,\n        64,\n        65\n      ],\n      \"more_info\"\
+    : \"https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html\"\
+    ,\n      \"test_id\": \"B608\",\n      \"test_name\": \"hardcoded_sql_expressions\"\
+    \n    },\n    {\n      \"code\": \"22 class TestStatus(Enum):\\n23     PASS =\
+    \ \\\"PASS\\\"\\n24     FAIL = \\\"FAIL\\\"\\n\",\n      \"col_offset\": 11,\n\
+    \      \"end_col_offset\": 17,\n      \"filename\": \"multi_swe_bench/harness/test_result.py\"\
+    ,\n      \"issue_confidence\": \"MEDIUM\",\n      \"issue_cwe\": {\n        \"\
+    id\": 259,\n        \"link\": \"https://cwe.mitre.org/data/definitions/259.html\"\
+    \n      },\n      \"issue_severity\": \"LOW\",\n      \"issue_text\": \"Possible\
+    \ hardcoded password: 'PASS'\",\n      \"line_number\": 23,\n      \"line_range\"\
+    : [\n        23\n      ],\n      \"more_info\": \"https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html\"\
+    ,\n      \"test_id\": \"B105\",\n      \"test_name\": \"hardcoded_password_string\"\
+    \n    },\n    {\n      \"code\": \"17 import shlex\\n18 import subprocess\\n19\
+    \ from pathlib import Path\\n\",\n      \"col_offset\": 0,\n      \"end_col_offset\"\
+    : 17,\n      \"filename\": \"multi_swe_bench/utils/docker_util.py\",\n      \"\
+    issue_confidence\": \"HIGH\",\n      \"issue_cwe\": {\n        \"id\": 78,\n \
+    \       \"link\": \"https://cwe.mitre.org/data/definitions/78.html\"\n      },\n\
+    \      \"issue_severity\": \"LOW\",\n      \"issue_text\": \"Consider possible\
+    \ security implications associated with the subprocess module.\",\n      \"line_number\"\
+    : 18,\n      \"line_range\": [\n        18\n      ],\n      \"more_info\": \"\
+    https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess\"\
+    ,\n      \"test_id\": \"B404\",\n      \"test_name\": \"blacklist\"\n    },\n\
+    \    {\n      \"code\": \"15 import logging\\n16 import subprocess\\n17 from pathlib\
+    \ import Path\\n\",\n      \"col_offset\": 0,\n      \"end_col_offset\": 17,\n\
+    \      \"filename\": \"multi_swe_bench/utils/git_util.py\",\n      \"issue_confidence\"\
+    : \"HIGH\",\n      \"issue_cwe\": {\n        \"id\": 78,\n        \"link\": \"\
+    https://cwe.mitre.org/data/definitions/78.html\"\n      },\n      \"issue_severity\"\
+    : \"LOW\",\n      \"issue_text\": \"Consider possible security implications associated\
+    \ with the subprocess module.\",\n      \"line_number\": 16,\n      \"line_range\"\
+    : [\n        16\n      ],\n      \"more_info\": \"https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess\"\
+    ,\n      \"test_id\": \"B404\",\n      \"test_name\": \"blacklist\"\n    },\n\
+    \    {\n      \"code\": \"22 import shutil\\n23 import subprocess\\n24 from collections.abc\
+    \ import Sequence\\n\",\n      \"col_offset\": 0,\n      \"end_col_offset\": 17,\n\
+    \      \"filename\": \"multi_swe_bench/utils/safe_subprocess.py\",\n      \"issue_confidence\"\
+    : \"HIGH\",\n      \"issue_cwe\": {\n        \"id\": 78,\n        \"link\": \"\
+    https://cwe.mitre.org/data/definitions/78.html\"\n      },\n      \"issue_severity\"\
+    : \"LOW\",\n      \"issue_text\": \"Consider possible security implications associated\
+    \ with the subprocess module.\",\n      \"line_number\": 23,\n      \"line_range\"\
+    : [\n        23\n      ],\n      \"more_info\": \"https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess\"\
+    ,\n      \"test_id\": \"B404\",\n      \"test_name\": \"blacklist\"\n    },\n\
+    \    {\n      \"code\": \"2 import shlex\\n3 import subprocess\\n4 import time\\\
+    n\",\n      \"col_offset\": 0,\n      \"end_col_offset\": 17,\n      \"filename\"\
+    : \"multi_swe_bench/utils/session_util.py\",\n      \"issue_confidence\": \"HIGH\"\
+    ,\n      \"issue_cwe\": {\n        \"id\": 78,\n        \"link\": \"https://cwe.mitre.org/data/definitions/78.html\"\
+    \n      },\n      \"issue_severity\": \"LOW\",\n      \"issue_text\": \"Consider\
+    \ possible security implications associated with the subprocess module.\",\n \
+    \     \"line_number\": 3,\n      \"line_range\": [\n        3\n      ],\n    \
+    \  \"more_info\": \"https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess\"\
+    ,\n      \"test_id\": \"B404\",\n      \"test_name\": \"blacklist\"\n    }\n \
+    \ ]\n}"
+  parsed_ok: true
+- run_id: CMD-003
+  tool: pip-audit
+  argv:
+  - pip-audit
+  - --format
+  - json
+  - -r
+  - requirements.txt
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: ok
+  exit_code: 0
+  duration_sec: 5.908935785293579
+  stdout_artifact: artifacts/CMD-003.stdout.txt.gz
+  stdout_sha256: a004302d978c901ab761298eb4907964956742766c4eddd12295c20edc7e80e0
+  stdout_excerpt: '{"dependencies": [{"name": "annotated-doc", "version": "0.0.4",
+    "vulns": []}, {"name": "annotated-types", "version": "0.7.0", "vulns": []}, {"name":
+    "anyio", "version": "4.14.0", "vulns": []}, {"name": "bashlex", "version": "0.18",
+    "vulns": []}, {"name": "certifi", "version": "2026.6.17", "vulns": []}, {"name":
+    "cffi", "version": "2.0.0", "vulns": []}, {"name": "charset-normalizer", "version":
+    "3.4.7", "vulns": []}, {"name": "click", "version": "8.4.1", "vulns": []}, {"name":
+    "cryptography", "version": "49.0.0", "vulns": []}, {"name": "dataclasses-json",
+    "version": "0.6.7", "vulns": []}, {"name": "marshmallow", "version": "3.26.2",
+    "vulns": []}, {"name": "typing-inspect", "version": "0.9.0", "vulns": []}, {"name":
+    "docker", "version": "7.1.0", "vulns": []}, {"name": "fastapi", "version": "0.138.0",
+    "vulns": []}, {"name": "gitdb", "version": "4.0.12", "vulns": []}, {"name": "smmap",
+    "version": "5.0.3", "vulns": []}, {"name": "gitpython", "version": "3.1.50", "vulns":
+    []}, {"name": "h11", "version": "0.16.0", "vulns": []}, {"name": "idna", "version":
+    "3.18", "vulns": []}, {"name": "markdown-it-py", "version": "4.2.0", "vulns":
+    []}, {"name": "mdurl", "version": "0.1.2", "vulns": []}, {"name": "mypy-extensions",
+    "version": "1.1.0", "vulns": []}, {"name": "pexpect", "version": "4.9.0", "vulns":
+    []}, {"name": "ptyprocess", "version": "0.7.0", "vulns": []}, {"name": "pycparser",
+    "version": "3.0", "vulns": []}, {"name": "pydantic", "version": "2.13.4", "vulns":
+    []}, {"name": "pydantic-core", "version": "2.46.4", "vulns": []}, {"name": "pygithub",
+    "version": "2.9.1", "vulns": []}, {"name": "pygments", "version": "2.20.0", "vulns":
+    []}, {"name": "pyjwt", "version": "2.13.0", "vulns": []}, {"name": "pynacl", "version":
+    "1.6.2", "vulns": []}, {"name": "python-multipart", "version": "0.0.32", "vulns":
+    []}, {"name": "pyyaml", "version": "6.0.3", "vulns": []}, {"name": "requests",
+    "version": "2.34.2", "vulns": []}, {"name": "urllib3", "version": "2.7.0", "vulns":
+    []}, {"name": "rich", "version": "15.0.0", "vulns": []}, {"name": "starlette",
+    "version": "1.3.1", "vulns": []}, {"name": "swe-rex", "version": "1.4.0", "vulns":
+    []}, {"name": "toml", "version": "0.10.2", "vulns": []}, {"name": "tqdm", "version":
+    "4.68.3", "vulns": []}, {"name": "typing-extensions", "version": "4.15.0", "vulns":
+    []}, {"name": "typing-inspection", "version": "0.4.2", "vulns": []}, {"name":
+    "unidiff", "version": "0.7.5", "vulns": []}, {"name": "uvicorn", "version": "0.49.0",
+    "vulns": []}], "fixes": []}
+
+    '
+  parsed_ok: true
+- run_id: CMD-004
+  tool: osv-scanner
+  argv:
+  - osv-scanner
+  - --format
+  - json
+  - -r
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: ok
+  exit_code: 0
+  duration_sec: 1.7186088562011719
+  stdout_artifact: artifacts/CMD-004.stdout.txt.gz
+  stdout_sha256: 0137472bffd70bd42f3e8a8bf1abd78161b07a9e5c9e76c44ebaa3f0519896ef
+  stdout_excerpt: "{\n  \"results\": [],\n  \"experimental_config\": {\n    \"licenses\"\
+    : {\n      \"summary\": false,\n      \"allowlist\": null\n    }\n  }\n}\n"
+  parsed_ok: true
+- run_id: CMD-005
+  tool: gitleaks
+  argv:
+  - gitleaks
+  - detect
+  - --config
+  - .gitleaks.toml
+  - --report-format
+  - json
+  - --report-path
+  - '-'
+  - --log-opts=--all
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: ok
+  exit_code: 0
+  duration_sec: 21.810400247573853
+  stdout_artifact: artifacts/CMD-005.stdout.txt.gz
+  stdout_sha256: c67c5ede38b4814f45b34d773fda2d6227d81b7a15c94bdfebf08c14a90e2faa
+  stdout_excerpt: '[]
+
+    '
+  parsed_ok: true
+- run_id: CMD-006
+  tool: ruff
+  argv:
+  - ruff
+  - check
+  - --output-format
+  - json
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: nonzero_exit
+  exit_code: 1
+  duration_sec: 0.23901891708374023
+  stdout_artifact: artifacts/CMD-006.stdout.txt.gz
+  stdout_sha256: f388b093e8aacd7d1b44b333adc6e2b44e6126519ee919934781b138a1a85317
+  stdout_excerpt: "[\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 46,\n      \"row\": 1\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 1\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.c import *`\
+    \ used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 1,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 48,\n      \"row\": 2\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 2\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.cpp import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 2,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 51,\n      \"row\": 3\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 3\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.golang import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 3,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 49,\n      \"row\": 4\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 4\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.java import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 4,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 55,\n      \"row\": 5\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 5\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.javascript\
+    \ import *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 5,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 51,\n      \"row\": 6\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 6\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.python import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 6,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 49,\n      \"row\": 7\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 7\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.rust import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 7,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 55,\n      \"row\": 8\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 8\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.typescript\
+    \ import *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 8,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 49,\n      \"row\": 9\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 9\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.ruby import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 9,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 48,\n      \"row\": 10\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 10\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.php import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 10,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 50,\n      \"row\": 11\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 11\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.swift import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 11,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 51,\n      \"row\": 12\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 12\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.kotlin import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 12,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 50,\n      \"row\": 13\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 13\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.scala import\
+    \ *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 13,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 51,\n      \"row\": 14\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 14\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.csharp import\
+    \ *` used; una\n...[11339939 bytes elided]...\n403\",\n    \"end_location\": {\n\
+    \      \"column\": 71,\n      \"row\": 1\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/typescript/withastro/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 1\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.typescript.withastro.astro\
+    \ import *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 1,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 67,\n      \"row\": 1\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/typescript/wulkano/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 1\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.typescript.wulkano.kap\
+    \ import *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 1,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 72,\n      \"row\": 1\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/typescript/xtermjs/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 1\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.typescript.xtermjs.xterm_js\
+    \ import *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 1,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F841\",\n    \"end_location\"\
+    : {\n      \"column\": 32,\n      \"row\": 366\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/typescript/xtermjs/xterm_js.py\"\
+    ,\n    \"fix\": {\n      \"applicability\": \"unsafe\",\n      \"edits\": [\n\
+    \        {\n          \"content\": \"\",\n          \"end_location\": {\n    \
+    \        \"column\": 1,\n            \"row\": 367\n          },\n          \"\
+    location\": {\n            \"column\": 1,\n            \"row\": 366\n        \
+    \  }\n        }\n      ],\n      \"message\": \"Remove assignment to unused variable\
+    \ `in_failure_list`\"\n    },\n    \"location\": {\n      \"column\": 17,\n  \
+    \    \"row\": 366\n    },\n    \"message\": \"Local variable `in_failure_list`\
+    \ is assigned to but never used\",\n    \"name\": \"unused-variable\",\n    \"\
+    noqa_row\": 366,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/unused-variable\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 69,\n      \"row\": 1\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/typescript/yarnpkg/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 1\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.typescript.yarnpkg.berry\
+    \ import *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 1,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  },\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
+    : {\n      \"column\": 82,\n      \"row\": 2\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/typescript/yarnpkg/__init__.py\"\
+    ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
+    : 2\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.typescript.yarnpkg.berry_3318_to_2161\
+    \ import *` used; unable to detect undefined names\",\n    \"name\": \"undefined-local-with-import-star\"\
+    ,\n    \"noqa_row\": 2,\n    \"severity\": \"error\",\n    \"url\": \"https://docs.astral.sh/ruff/rules/undefined-local-with-import-star\"\
+    \n  }\n]"
+  parsed_ok: true
+- run_id: CMD-007
+  tool: ruff-format
+  argv:
+  - ruff
+  - format
+  - --check
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: nonzero_exit
+  exit_code: 1
+  duration_sec: 0.08543586730957031
+  stdout_artifact: artifacts/CMD-007.stdout.txt.gz
+  stdout_sha256: 245ed640f9b34b695fec66070d44e8362bd36a5a8c4071b868f3f432914ba0e0
+  stdout_excerpt: 'Would reformat: multi_swe_bench/collect/build_dataset.py
+
+    Would reformat: multi_swe_bench/collect/build_lht_dataset.py
+
+    Would reformat: multi_swe_bench/collect/filter_prs.py
+
+    Would reformat: multi_swe_bench/collect/get_lht_pipeline.py
+
+    Would reformat: multi_swe_bench/collect/get_pipeline.py
+
+    Would reformat: multi_swe_bench/collect/group_prs_by_tags.py
+
+    Would reformat: multi_swe_bench/collect/util.py
+
+    Would reformat: multi_swe_bench/harness/build_dataset.py
+
+    Would reformat: multi_swe_bench/harness/gen_report.py
+
+    Would reformat: multi_swe_bench/harness/image.py
+
+    Would reformat: multi_swe_bench/harness/repos/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/DarkFlippers/unleashed_firmware.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/FluidSynth/fluidsynth.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/RediSearch/RediSearch.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/Wabri/Fly_By_Wire.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/awslabs/aws_c_mqtt.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/dankamongmen/notcurses_0_to_228.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/dankamongmen/notcurses_229_to_348.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/dankamongmen/notcurses_349_to_99999.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/danmar/cppcheck.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/dunst_project/dunst.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/fastfetch_cli/fastfetch.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/fluent/fluentbit.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/goatshriek/stumpless.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/htop_dev/htop.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/jarun/nnn.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/libuv/libuv.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/mpv_player/mpv.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/mpv_player/mpv_11495.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/mpv_player/mpv_5803.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/mpv_player/mpv_7069_to_5803.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/mpv_player/mpv_8954.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/nanopb/nanopb.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/netdata/netdata.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/netdata/netdata_7436_to_1986.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/qbittorrent/qbittorrent_19470_to_17723.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/qbittorrent/qbittorrent_22252_to_19024.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/radareorg/radare2.py
+
+    Would reformat: multi_swe_bench/harness/repos/c/timescale/timescaledb.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/AMReXCodes/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/AMReXCodes/amrex.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/ArduPilot/ardupilot.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/LizardByte/sunshine.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/NVIDIA/tensorrt.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/capnproto/capnproto.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/carbon_language/carbon_lang.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/ccache/ccache.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/celeritas_project/celeritas.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/doctest/doctest.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/electron/electron.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/envoyproxy/envoy.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/envoyproxy/envoy_base.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/ericniebler/range_v3.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/ericniebler/range_v3_base.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/facebookresearch/faiss.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/ggml_org/llama_cpp.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/google/flatbuffers_8488_to_4130.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/google/flatbuffers_base.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/google/or_tools_2074_to_316.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/google/or_tools_4639_to_3383.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/google/or_tools_base.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/grpc/grpc.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/lballabio/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/microsoft/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/microsoft/lightgbm.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/msgpack/msgpack_c_1138_to_877.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/msgpack/msgpack_c_1145_to_876.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/msgpack/msgpack_c_875_to_556.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/msgpack/msgpack_c_base.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/nlohmann/json.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/omnigres/omnigres.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/openmm/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/openmm/openmm.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/roc_streaming/roc_toolkit.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/ros2/geometry2.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/ros2/geometry2_base.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/telegramdesktop/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/telegramdesktop/tdesktop_17068_to_6619.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/telegramdesktop/tdesktop_30470_to_17181.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/uNetworking/uWebSockets_1383_to_1249.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/uNetworking/uWebSockets_1862_to_1712.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/uNetworking/uWebSockets_503_to_402.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/uNetworking/uWebSockets_749_to_679.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/uNetworking/uWebSockets_924_to_879.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/zigrazor/cxxgraph.py
+
+    Would reformat: multi_swe_bench/harness/repos/cpp/zigrazor/cxxgraph_base.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/99designs/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/AlistGo/alist.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/Wei_Shaw/sub2api.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/__init__.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/anchore/syft.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/aquasecurity/tfsec.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/aquasecurity/trivy_10135_to_8119.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/aquasecurity/trivy_3855_to_81.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/aquasecurity/trivy_7939_to_4070.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/argoproj/argo_cd.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/bluenviron/mediamtx.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/cert_manager/cert_manager.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/cockroachdb/cockroach.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/concourse/concourse.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/crossplane/crossplane.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/dagger/dagger_10210_to_6117.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/dagger/dagger_12949_to_9395.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/dagger/dagger_6001_to_1150.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/dolthub/dolt.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/etcd_io/etcd.py
+
+    Would reformat: multi_swe_bench/harness/repos/golang/fatedier/frp_0
+
+    ...[44390 bytes elided]...
+
+    ch/harness/repos/typescript/thenewboston_blockchain/website_1413_to_1350.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1415_to_1354.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1416_to_1355.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1417_to_1299.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1419_to_1361.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1421_to_1347.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1424_to_1380.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1426_to_1359.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1427_to_1377.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1431_to_1336.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1443_to_1360.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1448_to_1337.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1449_to_1340.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1450_to_1379.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1452_to_1367.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1455_to_1364.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1456_to_1376.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1458_to_1341.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1460_to_1447.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1461_to_1342.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1466_to_1351.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1469_to_1344.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1482_to_1480.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1496_to_1368.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1515_to_1343.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1518_to_1349.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/thenewboston_blockchain/website_1519_to_1378.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/tldraw/tldraw.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/tldraw/tldraw_0_to_565.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/tldraw/tldraw_3952_to_99999.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/toeverything/AFFiNE.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/urql_graphql/urql.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/vega/vega_lite.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/vueuse/vueuse.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/website/base.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/wei-socialify/socialify.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/wulkano/kap.py
+
+    Would reformat: multi_swe_bench/harness/repos/typescript/xtermjs/xterm_js.py
+
+    Would reformat: multi_swe_bench/harness/run_evaluation.py
+
+    Would reformat: multi_swe_bench/utils/docker_util.py
+
+    Would reformat: multi_swe_bench/utils/safe_subprocess.py
+
+    Would reformat: multi_swe_bench/utils/session_util.py
+
+    Would reformat: tests/test_final_report_reconcile.py
+
+    675 files would be reformatted, 4228 files already formatted
+
+    '
+  parsed_ok: true
+- run_id: CMD-008
+  tool: pytest
+  argv:
+  - __audit_unresolvable__
+  - -m
+  - pytest
+  - -q
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: tool_blocked
+  exit_code: null
+  duration_sec: null
+  stdout_artifact: null
+  stdout_sha256: null
+  stdout_excerpt: "no interpreter with the project deps found \u2014 set AUDIT_PROJECT_PYTHON\
+    \ to run pytest"
+  parsed_ok: false
+- run_id: CMD-009
+  tool: hadolint
+  argv:
+  - hadolint
+  - --format
+  - json
+  - '-'
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: nonzero_exit
+  exit_code: 1
+  duration_sec: 0.06020927429199219
+  stdout_artifact: artifacts/CMD-009.stdout.txt.gz
+  stdout_sha256: 6a0b571544875e631231ab2aa949cae018669849491493f167db26ff8a68b5fc
+  stdout_excerpt: '[{"code":"DL3007","column":1,"file":"-","level":"warning","line":1,"message":"Using
+    latest is prone to errors if the image will ever update. Pin the version explicitly
+    to a release tag"}]'
+  parsed_ok: true
+- run_id: CMD-010
+  tool: trivy
+  argv:
+  - trivy
+  - config
+  - --format
+  - json
+  - /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  status: ok
+  exit_code: 0
+  duration_sec: 2.2749149799346924
+  stdout_artifact: artifacts/CMD-010.stdout.txt.gz
+  stdout_sha256: 590ac815ff541611f6310738f58f17735be4f3832c40d5aaa438c5110a28da65
+  stdout_excerpt: "{\n  \"SchemaVersion\": 2,\n  \"Trivy\": {\n    \"Version\": \"\
+    0.71.1\"\n  },\n  \"ReportID\": \"019eef22-66b4-7b1f-adaa-049019660619\",\n  \"\
+    CreatedAt\": \"2026-06-22T17:11:09.684731+05:30\",\n  \"ArtifactID\": \"sha256:d41b25af927c6f51ba9a813d6f4b302d1b2c2eec51a08d7ca6aa41a0ef780e3e\"\
+    ,\n  \"ArtifactName\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench\"\
+    ,\n  \"ArtifactType\": \"repository\",\n  \"Metadata\": {\n    \"RepoURL\": \"\
+    https://github.com/Ethara-Ai/multi-swe-bench\",\n    \"Branch\": \"main\",\n \
+    \   \"Commit\": \"23bd558266ce7add66308507812bb64f6fb0980b\",\n    \"CommitMsg\"\
+    : \"Pipeline Hardening and unit test cases addition along with command/argument\
+    \ injection hardening, generated-Dockerfile\\nsanitisation, assert/except hygiene,\
+    \ and a broken registry import\",\n    \"Author\": \"ankit kumar \\u003cankit.ethara@ethara.com\\\
+    u003e\",\n    \"Committer\": \"ankit kumar \\u003cankit.ethara@ethara.com\\u003e\"\
+    \n  },\n  \"Results\": [\n    {\n      \"Target\": \"multi_swe_bench/harness/repos/cpp/crankyoldgit/base.Dockerfile\"\
+    ,\n      \"Class\": \"config\",\n      \"Type\": \"dockerfile\",\n      \"MisconfSummary\"\
+    : {\n        \"Successes\": 24,\n        \"Failures\": 3\n      },\n      \"Misconfigurations\"\
+    : [\n        {\n          \"Type\": \"Dockerfile Security Check\",\n         \
+    \ \"ID\": \"DS-0001\",\n          \"Title\": \"':latest' tag used\",\n       \
+    \   \"Description\": \"When using a 'FROM' statement you should use a specific\
+    \ tag to avoid uncontrolled behavior when the image is updated.\",\n         \
+    \ \"Message\": \"Specify a tag in the 'FROM' statement for image 'gcc'\",\n  \
+    \        \"Namespace\": \"builtin.dockerfile.DS001\",\n          \"Query\": \"\
+    data.builtin.dockerfile.DS001.deny\",\n          \"Resolution\": \"Add a tag to\
+    \ the image in the 'FROM' statement\",\n          \"Severity\": \"MEDIUM\",\n\
+    \          \"PrimaryURL\": \"https://avd.aquasec.com/misconfig/ds-0001\",\n  \
+    \        \"References\": [\n            \"https://avd.aquasec.com/misconfig/ds-0001\"\
+    \n          ],\n          \"Status\": \"FAIL\",\n          \"CauseMetadata\":\
+    \ {\n            \"Provider\": \"Dockerfile\",\n            \"Service\": \"general\"\
+    ,\n            \"StartLine\": 2,\n            \"EndLine\": 2,\n            \"\
+    Code\": {\n              \"Lines\": [\n                {\n                  \"\
+    Number\": 2,\n                  \"Content\": \"FROM gcc:latest\",\n          \
+    \        \"IsCause\": true,\n                  \"Annotation\": \"\",\n       \
+    \           \"Truncated\": false,\n                  \"Highlighted\": \"FROM gcc:latest\"\
+    ,\n                  \"FirstCause\": true,\n                  \"LastCause\": true\n\
+    \                }\n              ]\n            }\n          }\n        },\n\
+    \        {\n          \"Type\": \"Dockerfile Security Check\",\n          \"ID\"\
+    : \"DS-0002\",\n          \"Title\": \"Image user should not be 'root'\",\n  \
+    \        \"Description\": \"Running containers with 'root' user can lead to a\
+    \ container escape situation. It is a best practice to run containers as non-root\
+    \ users, which can be done by adding a 'USER' statement to the Dockerfile.\",\n\
+    \          \"Message\": \"Specify at least 1 USER command in Dockerfile with non-root\
+    \ user as argument\",\n          \"Namespace\": \"builtin.dockerfile.DS002\",\n\
+    \          \"Query\": \"data.builtin.dockerfile.DS002.deny\",\n          \"Resolution\"\
+    : \"Add 'USER \\u003cnon root user name\\u003e' line to the Dockerfile\",\n  \
+    \        \"Severity\": \"HIGH\",\n          \"PrimaryURL\": \"https://avd.aquasec.com/misconfig/ds-0002\"\
+    ,\n          \"References\": [\n            \"https://docs.docker.com/develop/develop-images/dockerfile_best-practices/\"\
+    ,\n            \"https://avd.aquasec.com/misconfig/ds-0002\"\n          ],\n \
+    \         \"Status\": \"FAIL\",\n          \"CauseMetadata\": {\n            \"\
+    Provider\": \"Dockerfile\",\n            \"Service\": \"general\"\n          }\n\
+    \        },\n        {\n          \"Type\": \"Dockerfile Security Check\",\n \
+    \         \"ID\": \"DS-0026\",\n          \"Title\": \"No HEALTHCHECK defined\"\
+    ,\n          \"Description\": \"You should add HEALTHCHECK instruction in your\
+    \ docker container images to perform the health check on running containers.\"\
+    ,\n          \"Message\": \"Add HEALTHCHECK instruction in your Dockerfile\",\n\
+    \          \"Namespace\": \"builtin.dockerfile.DS026\",\n          \"Query\":\
+    \ \"data.builtin.dockerfile.DS026.deny\",\n          \"Resolution\": \"Add HEALTHCHECK\
+    \ instruction in Dockerfile\",\n          \"Severity\": \"LOW\",\n          \"\
+    PrimaryURL\": \"https://avd.aquasec.com/misconfig/ds-0026\",\n          \"References\"\
+    : [\n            \"https://blog.aquasec.com/docker-security-best-practices\",\n\
+    \            \"https://avd.aquasec.com/misconfig/ds-0026\"\n          ],\n   \
+    \       \"Status\": \"FAIL\",\n          \"CauseMetadata\": {\n            \"\
+    Provider\": \"Dockerfile\",\n            \"Service\": \"general\"\n          }\n\
+    \        }\n      ]\n    }\n  ]\n}\n"
+  parsed_ok: true
+normalized_issues:
+- tool: bandit
+  rule_id: B404
+  severity: MEDIUM
+  location_type: source
+  path: multi_swe_bench/collect/build_lht_dataset.py
+  line: 38
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: B404
+  message: Consider possible security implications associated with the subprocess
+    module.
+  cluster_fingerprint: 84cdc1ad6fd6ae55f20594468ec6a921ccdd8294df026997b4f4ac685ba54edb
+  issue_instance_id: c6c4e265793c971345931473f0d7f8e4b9a4897b82d76d874a9d3aae0bff47bc
+  occurrence_ordinal: 0
+- tool: bandit
+  rule_id: B404
+  severity: MEDIUM
+  location_type: source
+  path: multi_swe_bench/collect/group_prs_by_tags.py
+  line: 59
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: B404
+  message: Consider possible security implications associated with the subprocess
+    module.
+  cluster_fingerprint: 1348c8650527fbeb455384e0bbd6e8b28f7f191b2c2963e4c290530170e3a605
+  issue_instance_id: 47fc15b5be090cef6645b0e075242fc42b483e6ea68ee02544333677a037191c
+  occurrence_ordinal: 0
+- tool: bandit
+  rule_id: B105
+  severity: MEDIUM
+  location_type: source
+  path: multi_swe_bench/harness/test_result.py
+  line: 23
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: B105
+  message: 'Possible hardcoded password: ''PASS'''
+  cluster_fingerprint: 70bf6d81823a69a88f739187bd45d5226f0b1ce49b750c1069ff669c10155cea
+  issue_instance_id: 523e7c397647928b81209fc975123a410b0a080d4b20ac779b23908bfdfa55c4
+  occurrence_ordinal: 0
+- tool: bandit
+  rule_id: B404
+  severity: MEDIUM
+  location_type: source
+  path: multi_swe_bench/utils/docker_util.py
+  line: 18
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: B404
+  message: Consider possible security implications associated with the subprocess
+    module.
+  cluster_fingerprint: a730b599ed71421f2f0209961bd5392194bdd68dea43431142bca633166388ce
+  issue_instance_id: f51ed6a03e90779527a55b4b742cacf090ec8551c832a593ad1bcab46e446ee3
+  occurrence_ordinal: 0
+- tool: bandit
+  rule_id: B404
+  severity: MEDIUM
+  location_type: source
+  path: multi_swe_bench/utils/git_util.py
+  line: 16
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: B404
+  message: Consider possible security implications associated with the subprocess
+    module.
+  cluster_fingerprint: 48e4ffcedd031ef3b1d9e1436d72a24f562b86de3e347bb0d5049673e3878ebe
+  issue_instance_id: b76519faf0412ff8cc7154ebda8d87b8823a0b09a2947eee9f3a87e71a821237
+  occurrence_ordinal: 0
+- tool: bandit
+  rule_id: B404
+  severity: MEDIUM
+  location_type: source
+  path: multi_swe_bench/utils/safe_subprocess.py
+  line: 23
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: B404
+  message: Consider possible security implications associated with the subprocess
+    module.
+  cluster_fingerprint: 53b97b2cb0b5fd74da6b569e6a49420dc3f8442ae3e6797f3670fa68575ed6b7
+  issue_instance_id: 5a61cc9839018bf0015a64ac67a570e50ea9ca4276fed10055f833446c606c66
+  occurrence_ordinal: 0
+- tool: bandit
+  rule_id: B404
+  severity: MEDIUM
+  location_type: source
+  path: multi_swe_bench/utils/session_util.py
+  line: 3
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: B404
+  message: Consider possible security implications associated with the subprocess
+    module.
+  cluster_fingerprint: 5581e8586b1b0ee9635105d770668c6d776e7c886b8762114e0aa5c2a585d801
+  issue_instance_id: 544360895f19f1ceaa5f0571bf37b707e74b950fc2b0d5d422183f45ae45dcbc
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/collect/build_dataset.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/collect/build_dataset.py: file is not formatted (ruff
+    format --check)'
+  cluster_fingerprint: 5780c8c3dcc3e327ba0eea891aa00f3e694ca632747bfa54ab19f6e220066d40
+  issue_instance_id: a35777adfa8ada550fa9c31a9a29bca615278fadb2db530a3b4a3161da3041b0
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/collect/build_lht_dataset.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/collect/build_lht_dataset.py: file is not formatted (ruff
+    format --check)'
+  cluster_fingerprint: 94a72ee5f9b550e0b50f60fd90d2fa289c6f2a7fede4bd494ed2b6a4fa8d5665
+  issue_instance_id: 5ba01ac4a81785faf359d730a897527ab40992fc6da1bb5f1ea1648d0af6c46e
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/collect/filter_prs.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/collect/filter_prs.py: file is not formatted (ruff format
+    --check)'
+  cluster_fingerprint: a2f34b30b1b57776a4613c3a6ef277e9999dbce7f5fe017773eabfeba2fac5e7
+  issue_instance_id: 5838fbc4625f28b6c98d64e171caef44b5a586e6cb549e1e2cc0ae6b03d5716d
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/collect/get_lht_pipeline.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/collect/get_lht_pipeline.py: file is not formatted (ruff
+    format --check)'
+  cluster_fingerprint: bffa86d200e837b79eb3805a0bca9f84610f3195164a00f12d5c1209d6029214
+  issue_instance_id: 7d3c9f71d8557cc3b7e7997e529d55c63ef499aae6aab290c84bc796e9220be5
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/collect/get_pipeline.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/collect/get_pipeline.py: file is not formatted (ruff format
+    --check)'
+  cluster_fingerprint: c2b4ffbceb9e0e896845a8c113f66d49234d606fa720a6d3a10683199adcdd4e
+  issue_instance_id: a0224c4717066cf8115de691ce6acc6977b00851487643779568f3e095edbc65
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/collect/group_prs_by_tags.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/collect/group_prs_by_tags.py: file is not formatted (ruff
+    format --check)'
+  cluster_fingerprint: 42d722fdaf0fb31b6d74d8bb004dcf2235eef7fd0ccf63759703e8be36e44948
+  issue_instance_id: 55565f916c2caa340df855a787e0c3686158ece08817e9f6475d699710162409
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/collect/util.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/collect/util.py: file is not formatted (ruff format --check)'
+  cluster_fingerprint: a6fd2cffaa89c67963d84af2237729538917eeac5344fe1171e4eec8087b1e11
+  issue_instance_id: e04970ebc61009144f6a3e9ef53580e65460b6d4fa2d010c16b9b5c3d02986a5
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/harness/build_dataset.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/harness/build_dataset.py: file is not formatted (ruff
+    format --check)'
+  cluster_fingerprint: 73f3079a914bfcca293fce1f192875504aa067e83fcc18ac556ea0beecf21727
+  issue_instance_id: 311aa410ab48bcd4df6231fff03bb3bfb43466c452db15c63be6b6aad38b0da6
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/harness/gen_report.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/harness/gen_report.py: file is not formatted (ruff format
+    --check)'
+  cluster_fingerprint: 0fe8a6f193c21078df14567411f1762bff210e693ddcd7c0ba654ac3d7806eeb
+  issue_instance_id: 9825222d53758cb59b977154467dad524facdaffbf24ccc5f260b78abc78f8c5
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/harness/image.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/harness/image.py: file is not formatted (ruff format --check)'
+  cluster_fingerprint: 08930b82044d2ffa3f6bed6b401749d6fffc24415f432806042c6768409839ad
+  issue_instance_id: 63cd8b7b53edeec381f558a329f0439cce888ef4bf83c7ddd3351e405c76287c
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/harness/run_evaluation.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/harness/run_evaluation.py: file is not formatted (ruff
+    format --check)'
+  cluster_fingerprint: 7884b9ea2e5ffb8a0bfe6990223537f7e64f2b0781932143812f33c712a09d30
+  issue_instance_id: 5e4f5c9b1f44ed8c35242c3d396524dc80eac16f2c49986a2c728785e1b079e0
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/utils/docker_util.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/utils/docker_util.py: file is not formatted (ruff format
+    --check)'
+  cluster_fingerprint: 13944f44a7dafe183b5c14d4515f994440303dd472edb9b2eead5472e43bce79
+  issue_instance_id: d165277ba6201a84f4d87b46d85327ccaffd813966eb0ebf373cc8fc7695e0a0
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/utils/safe_subprocess.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/utils/safe_subprocess.py: file is not formatted (ruff
+    format --check)'
+  cluster_fingerprint: df937a62e1a87fb9199c622dc3e4cc7dc41b5de650ac473422a4c506e957a7bf
+  issue_instance_id: 373b9adbe56d24bcd107bebe908096ceece577d523ba7bf160e4a951762c1f7f
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: multi_swe_bench/utils/session_util.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'multi_swe_bench/utils/session_util.py: file is not formatted (ruff format
+    --check)'
+  cluster_fingerprint: ca6abe3d8b249ed2684ded28c7a95eb21dd40a0b55e32907432a6da944da3068
+  issue_instance_id: edc488e7fd264f7d71260e00c68322d5f4bccb9b63738b25fc2839bdcaf87f33
+  occurrence_ordinal: 0
+- tool: ruff-format
+  rule_id: ruff-format
+  severity: LOW
+  location_type: source
+  path: tests/test_final_report_reconcile.py
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'tests/test_final_report_reconcile.py: file is not formatted (ruff format
+    --check)'
+  cluster_fingerprint: f4874bf2802d5e0c01f91694b92777b5d360c842120cbf94f75383a759f48f97
+  issue_instance_id: 4df2beb361430477be5d580d9f44a405314c9008f91cac3e24bb052e9c3c95d4
+  occurrence_ordinal: 0
+- tool: hadolint
+  rule_id: DL3007
+  severity: MEDIUM
+  location_type: artifact
+  path: <generated Dockerfile>
+  line: 1
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: DL3007
+  message: 'hadolint DL3007: Using latest is prone to errors if the image will ever
+    update. Pin the version explicitly to a release tag'
+  cluster_fingerprint: 0baa66e4f8d899004f5505e34ed9e39f1bb84f2a6114522f2a1abc7c61081f97
+  issue_instance_id: 3c4a86ff5f1b577a6179cba9764f2a00e415e86735e13fb5955f3b29b5ea74d3
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/utils/env_to_dockerfile.py
+  line: 122
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/utils/env_to_dockerfile.py:122: RUN/ARG/ENV line interpolates\
+    \ a value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: 6efaa2137feb38fab5f01633efc6c31e912d8d409a2c05dd3df1823c9b96ea39
+  issue_instance_id: 012fdda09211b3cf603194a05a3de8b629d0db3ded87467b2267ff257e1651be
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/utils/env_to_dockerfile.py
+  line: 140
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/utils/env_to_dockerfile.py:140: RUN/ARG/ENV line interpolates\
+    \ a value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: 487b9ca47b220532dfa0bc99bf29278c62c466d269c2d7460011750704b2db45
+  issue_instance_id: f7e465a753d3d4082a2a47d8c30cb2d68c1049867b7a191a3250d4fc0da4f1e8
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/utils/env_to_dockerfile.py
+  line: 148
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/utils/env_to_dockerfile.py:148: RUN/ARG/ENV line interpolates\
+    \ a value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: 5f1a9642b137162559ed48d4e57a3e9f65ebd4da486f0b74154ae8d85203e67d
+  issue_instance_id: c8bdfe7082feca334b80571d62f462a2daf27f4c92424eae693b669ab6b62e9b
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/harness/image.py
+  line: 116
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/harness/image.py:116: RUN/ARG/ENV line interpolates a\
+    \ value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: 8f27bd92632dcbee4962be9ebf1a65dcb72c3c1d392c91f52d54a4c6e0d56c5f
+  issue_instance_id: 11949a81d370547806770af6cb96554b4507e6c1dc34056903e65ec9b11ec196
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/harness/image.py
+  line: 134
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/harness/image.py:134: RUN/ARG/ENV line interpolates a\
+    \ value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: b957ab051e2e5eb46bb37839231ab8aa8225ed85eda6b1ed0ba29b7da146a9df
+  issue_instance_id: 8494fd937e759fdf1b8870c679b01b348fbd4c1ca9ce63fc78e5c73c6d778f94
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/harness/image.py
+  line: 227
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/harness/image.py:227: RUN/ARG/ENV line interpolates a\
+    \ value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: fb2215f10022a3c5541631185c5ec2013d67de144ad26e35add18b9034632ab3
+  issue_instance_id: 3cd5b34515788d97967fcdc305fedc953a1e5e3aa0fdfc0683a871393733f1ed
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/harness/image.py
+  line: 361
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/harness/image.py:361: RUN/ARG/ENV line interpolates a\
+    \ value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: 9894f8ed26ac131493103a233096ddb5d9568d09097dd578041a62f2d6480d74
+  issue_instance_id: a93b921b45c53f5662cfb75bd74fe1053d663bbc374a8f419e4287a769912416
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/harness/image.py
+  line: 380
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/harness/image.py:380: RUN/ARG/ENV line interpolates a\
+    \ value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: c0bab8b0b3841214766fe22c73a10ceee704e0761c1b7e74037ee67ccfe8e5ed
+  issue_instance_id: 339aa845b38c2b8b1a8ddfccae8cd72e2c3652502dab7e18a5af4c45aecabc4d
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/harness/image.py
+  line: 382
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/harness/image.py:382: RUN/ARG/ENV line interpolates a\
+    \ value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: 4a683bad148883e4f209e89cdda4be57ece03003e54c60a7628907f51f4a5db2
+  issue_instance_id: cd88bb813049144ad93706131da07b1d6ae3c2780de79e0fbda6cae3f8fb1b5b
+  occurrence_ordinal: 0
+- tool: dockerfile_generation_check
+  rule_id: interpolated-run-line
+  severity: MEDIUM
+  location_type: artifact
+  path: multi_swe_bench/harness/image.py
+  line: 444
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: "multi_swe_bench/harness/image.py:444: RUN/ARG/ENV line interpolates a\
+    \ value \u2014 verify the source is trusted (org/repo/ref from PR metadata can\
+    \ inject shell)"
+  cluster_fingerprint: 8018ed2f2186f7edca1874ac60b5b7423b4a07610abb4fc97a684f0d6a036c77
+  issue_instance_id: 6d8fb840da577e57cbfe8f024b31f21b75fffa82dcd3df814260b47e4e7ce737
+  occurrence_ordinal: 0
+coverage_gaps:
+- gap_id: D-COVERAGE-GAP-repo-cache-history
+  surface: git_history
+  reason: Tracked third-party bare git mirrors under .repo_cache inflate clone size
+    and embed foreign history; secret scan covers them but provenance/bloat is flagged
+    not gated.
+  disposition_cap: HOLD
+- gap_id: D-COVERAGE-GAP-dockerfile-sample-no-interp
+  surface: docker_containers
+  reason: "cannot render generated Dockerfiles for hadolint: no interpreter with the\
+    \ project deps (set AUDIT_PROJECT_PYTHON). Surface uncovered \u2014 fail closed"
+  disposition_cap: HOLD
+not_run:
+- tool: pytest
+  status: tool_blocked

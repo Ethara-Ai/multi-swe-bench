@@ -1,0 +1,418 @@
+# CRUCIBLE scope artifact — Phase 0 output (READ-ONLY scoping result).
+#
+# This is the single machine-readable scope record. A human reviews it and, if
+# correct, writes sha256(this file) into audit/scope.approved to unlock Phase 1.
+# Re-scoping after approval invalidates the digest and re-triggers sign-off.
+#
+# Run type: FRESH SCAFFOLD (no pre-existing audit/ harness detected).
+
+schema_version: 1
+policy_version: 1                 # bump when required_instruments changes
+
+# ---------------------------------------------------------------------------
+# AUDIT FOCUS (human-directed at Phase 0.5 sign-off).
+# The reviewer directed: "check on the uncommitted code only" + "audit as-is
+# (dirty)". So the PRIMARY review target is the working-tree diff vs HEAD; full
+# -tree instruments still RUN (recall is whole-tree), but findings are ranked
+# with the changed surface first. The dirty tree caps disposition below SHIP by
+# design (R3-state) — accepted; the reviewer commits AFTER the audit.
+# ---------------------------------------------------------------------------
+audit_focus:
+  mode: working_tree_diff
+  base_ref: HEAD
+  changed_tracked:
+    - multi_swe_bench/harness/report.py          # +109 -- grading core (Report.check / FinalReport)
+    - multi_swe_bench/harness/run_evaluation.py  # +25  -- reward-hack guard enforcement
+    - multi_swe_bench/harness/test_result.py     # +19  -- fix_patch_tampers_with_tests guard
+    - multi_swe_bench/harness/gen_report.py      # +9   -- report emission
+    - multi_swe_bench/harness/build_dataset.py   # +9
+    - multi_swe_bench/collect/build_dataset.py   # +4
+    - multi_swe_bench/collect/crawl_repos.py     # +2
+    - multi_swe_bench/utils/docker_util.py       # -3
+  added_untracked:
+    - .gitleaks.toml
+    - pytest.ini
+    - tests/
+  full_tree_instruments_still_run: true          # recall gate is whole-tree; diff only ranks output
+
+project:
+  name: multi-swe-bench
+  root: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
+  description: >-
+    Multi-SWE-bench — the DATASET-CREATION half of a multilingual SWE-bench-style
+    pipeline. It crawls GitHub PRs, builds per-instance Docker environments, runs
+    the gold test/fix patches in-container to capture verdicts, and emits a JSONL
+    dataset (one record per resolved PR) PLUS the generated Dockerfiles. That
+    JSONL is the deliverable consumed downstream by a SEPARATE repo for agent
+    trajectory generation. The auditable codebase is this pure-Python framework;
+    the 4832 generated scripts under harness/repos/** are dataset/config defs.
+
+# The concrete deliverable this repo produces (lives OUTSIDE the repo root).
+deliverable_dataset:
+  example_path: /Users/apple/Documents/handoff/audit2.0/dataset/output/dandavison__delta-945.jsonl
+  format: jsonl                   # one record per resolved PR instance
+  record_schema:
+    prompt_visible:               # fields an agent WOULD see -> must NOT leak the solution
+      [org, repo, number, state, title, body, base, resolved_issues, lang]
+    gold_solution: fix_patch      # GOLD answer; leakage into prompt_visible = CRITICAL
+    gold_tests: test_patch        # gold test diff
+    reward_buckets:               # define the resolved/unresolved verdict
+      [fixed_tests, p2p_tests, f2p_tests, s2p_tests, n2p_tests]
+    identity: [uuid, number, tag, number_interval]
+  notes: >-
+    Reward integrity here = (a) buckets disjoint & self-consistent within a
+    record (a test cannot be both p2p and f2p; fixed_tests must reconcile);
+    (b) fix_patch (solution) not reachable from prompt_visible fields; (c) the
+    generated Dockerfile not injectable from instance metadata.
+
+git:
+  sha: f76744a8734b091712fb0fe650f2ad5910afdba5
+  dirty: true                     # 8 tracked files modified, untracked configs/tests present
+  shallow: false
+  commits: 1070
+  dirty_paths:
+    - multi_swe_bench/collect/build_dataset.py
+    - multi_swe_bench/collect/crawl_repos.py
+    - multi_swe_bench/harness/build_dataset.py
+    - multi_swe_bench/harness/gen_report.py
+    - multi_swe_bench/harness/report.py
+    - multi_swe_bench/harness/run_evaluation.py
+    - multi_swe_bench/harness/test_result.py
+    - multi_swe_bench/utils/docker_util.py
+  untracked_of_note:
+    - .gitleaks.toml          # prior hardening (MSB-SEC-001)
+    - pytest.ini              # prior hardening (MSB-SELFTEST-007)
+    - tests/                  # prior self-tests incl. reward-hacking & reconcile guards
+
+environment:
+  python: "3.12.13"
+  uv_installed: false           # AMBIGUITY: harness requires uv; provision step must install it
+  network: online
+
+ecosystems:
+  # The framework codebase is Python-only. Target-repo *references* span 16
+  # languages, but no compiled C/C++/Go/Rust/Java source of the framework
+  # exists to instrument — those languages appear only as registry metadata.
+  - language: python
+    manifests: [setup.py]
+    lockfile: requirements.txt  # pinned + hashed (uv pip compile --generate-hashes); was floating
+    loc_py_total: 4877
+    loc_py_framework: 36        # non-registry framework modules
+    loc_py_registry: 4832       # generated instance scripts (dataset/config)
+
+product_types:
+  - agent-evaluation-harness    # grades agent rollouts -> reward/resolved verdict
+  - dataset-collection-pipeline # crawl_repos / collect/** GitHub PR mining
+  - container-build-tooling      # programmatic Dockerfile generation + docker run
+  - cli                          # python -m entrypoints
+
+# ---------------------------------------------------------------------------
+# Deliverable surfaces (present/absent is itself a scoping RESULT).
+# ---------------------------------------------------------------------------
+surfaces:
+  harness_runner:
+    present: true
+    paths:
+      - multi_swe_bench/harness/run_evaluation.py   # orchestrates docker eval of patches
+      - multi_swe_bench/harness/build_dataset.py
+      - multi_swe_bench/harness/image.py            # builds images
+      - multi_swe_bench/utils/docker_util.py        # docker exec/run wrapper
+      - multi_swe_bench/utils/session_util.py
+    notes: >-
+      Runs untrusted agent patches inside containers and parses their output.
+      Trust boundary: the AGENT (inside container) vs the VERIFIER (grader).
+
+  agent_trajectories:
+    present: false
+    notes: >-
+      This repo does NOT generate trajectories — it produces the JSONL dataset
+      consumed by a SEPARATE downstream repo for trajectory generation. No
+      transcripts in tree by design; not a coverage gap here.
+
+  environment_dataset:
+    present: true
+    paths:
+      - multi_swe_bench/harness/repos/**            # 4832 generated instance scripts (16 langs)
+      - multi_swe_bench/harness/dataset.py
+      - multi_swe_bench/harness/instance.py
+      - multi_swe_bench/harness/pull_request.py     # instance id join key
+    notes: >-
+      Each instance carries org/repo/PR + gold test_patch + fix_patch. The
+      instance id is the join key across datasets/reports/predictions. No
+      committed train/test split files; no checksums/manifest. Licensing: Apache-2.0.
+
+  rubrics_grading:
+    present: true
+    paths:
+      - multi_swe_bench/harness/report.py           # Report.check() -> valid/resolved verdict
+      - multi_swe_bench/harness/test_result.py      # TestResult invariants, reward-hack guard
+      - multi_swe_bench/harness/gen_report.py       # aggregate report generation
+    notes: >-
+      Reward = resolved/unresolved derived from three test stages (run /
+      test-patch / fix-patch). fix_patch_tampers_with_tests() blocks an agent
+      editing gold tests. FinalReport.from_reports recomputes counts from raw
+      buckets (MSB-ROLLOUT-004). These are the reward-provenance & rollout-
+      integrity surfaces.
+
+  client_deliverables:
+    present: true
+    paths:
+      - multi_swe_bench/harness/build_dataset.py    # emits the JSONL dataset (the deliverable)
+      - multi_swe_bench/harness/gen_report.py       # emits dataset stats/report
+    external_artifact: /Users/apple/Documents/handoff/audit2.0/dataset/output/dandavison__delta-945.jsonl
+    notes: >-
+      PRIMARY deliverable is the JSONL dataset (see deliverable_dataset above):
+      gold fix_patch/test_patch + reward buckets per record. Any emitted summary
+      stat must reconcile with the raw records.
+
+  mock_synthetic_data:
+    present: true
+    paths:
+      - tests/                                       # fixtures/diffs used by self-tests
+    notes: Test fixtures only; risk is leakage of fixture data into a real report (low).
+
+  test_suite:
+    present: true
+    paths: [tests/, pytest.ini, tests/conftest.py]
+    framework: pytest
+    notes: >-
+      Existing self-tests cover Report.check, reward-hack guard, reconcile,
+      pull_request identity. Reusable as negative-control substrate.
+
+  docker_containers:
+    present: true
+    paths:
+      - multi_swe_bench/harness/image.py
+      - multi_swe_bench/utils/env_to_dockerfile.py  # generates Dockerfiles programmatically
+      - multi_swe_bench/utils/docker_util.py
+      - scripts/download_images.sh
+      - scripts/images_*.txt                         # referenced base/eval image tags
+    notes: >-
+      No committed Dockerfile at root — Dockerfiles are GENERATED at run time.
+      hadolint/trivy have no static Dockerfile to scan -> declared coverage gap;
+      instrument the generator's emitted Dockerfile string instead.
+
+  git_history:
+    present: true
+    paths: [".git", "multi_swe_bench/collect/.repo_cache/**"]
+    notes: >-
+      Full history (1070 commits), non-shallow. .repo_cache holds TRACKED bare
+      git mirrors of third-party target repos (uptrace/bun, eslint, beego, ~20MB)
+      committed into the tree — blob-bloat + a foreign-history surface. Secrets
+      must be scanned over working tree AND full history (--log-opts=--all).
+
+# ---------------------------------------------------------------------------
+# Required instruments — DERIVED from the surfaces, not producer-chosen.
+# Each maps to a surface; a surface with no automated instrument is a coverage gap.
+# ---------------------------------------------------------------------------
+required_instruments:
+  # --- taint-aware SAST (code-execution/injection on harness+grader) ---
+  - id: semgrep
+    category: sast_taint
+    required_when: [python]
+    critical_capable: true
+    evidence_class: static_reproducible
+    approved_argv:
+      - semgrep
+      - --config=p/owasp-top-ten
+      - --config=p/r2c-security-audit
+      - --config=p/secrets
+      - --config=.crucible/semgrep
+      - --metrics=off
+      - --sarif
+    forbidden_argv: ["--config=auto"]
+    notes: >-
+      Plus custom .crucible/semgrep rules for the Harbor domain: command/SQL
+      injection in docker exec strings, unsafe deserialization, reward read
+      outside verifier, agent-path reward writes, pass-rate-from-list-len.
+  - id: bandit
+    category: sast_python
+    required_when: [python]
+    critical_capable: true
+    evidence_class: static_reproducible
+    approved_argv: [bandit, -r, multi_swe_bench, -f, json]
+
+  # --- supply chain ---
+  - id: pip-audit
+    category: supply_chain
+    required_when: [python]
+    critical_capable: true
+    evidence_class: static_reproducible
+    approved_argv: [pip-audit, --format, json, -r, requirements.txt]
+    notes: CVSS>=9 / KEV / reachable-RCE floors CRITICAL. Audits the pinned requirements.txt (reproducible).
+  - id: osv-scanner
+    category: supply_chain
+    required_when: [python]
+    critical_capable: true
+    evidence_class: static_reproducible
+    approved_argv: [osv-scanner, --format, json, -r, .]
+
+  # --- secrets (working tree AND full history) ---
+  - id: gitleaks
+    category: secrets
+    required_when: [always]
+    critical_capable: true
+    evidence_class: static_reproducible
+    approved_argv: [gitleaks, detect, --config, .gitleaks.toml, --report-format, json, --log-opts=--all]
+    config_digest:
+      ".gitleaks.toml": 6dbe269f9847c898158f30c3787c2ff43fd5a3b3be42e0d5e53e4784855b15d8
+
+  # --- container (generated Dockerfiles) ---
+  - id: hadolint
+    category: container
+    required_when: [docker]
+    critical_capable: true
+    evidence_class: static_reproducible
+    approved_argv: [hadolint, --format, json, "-"]   # fed the generator's emitted Dockerfile
+    coverage_gap_reason: >-
+      No static Dockerfile in tree. Registry hadolint lints the FROM+ENV generator
+      output (env_to_dockerfile); dockerfile_sample_check additionally lints a
+      per-language sample of full per-instance Dockerfiles (with RUN layers). Residual
+      (no live build / not exhaustive) is reported by dockerfile_sample_check.
+  - id: trivy
+    category: container
+    required_when: [docker]
+    critical_capable: true
+    evidence_class: static_reproducible
+    approved_argv: [trivy, config, --format, json, .]
+
+  # --- bespoke domain-integrity (Bucket D, §1.5 — no scanner ships these) ---
+  # Reframed for DATASET CREATION: the deliverable is the JSONL records, not a
+  # runtime rollout. Checks run against the example dataset + the grader code.
+  - id: reward_provenance_check
+    category: domain_integrity
+    required_when: [rubrics_grading]
+    critical_capable: true
+    evidence_class: domain_integrity
+    notes: >-
+      In the grader code: reward derives from the verifier's parsed test stages
+      only; the agent fix_patch must not be able to edit gold tests
+      (fix_patch_tampers_with_tests guard, present in the diff). Verify the guard
+      is actually enforced in run_evaluation before scoring.
+  - id: reward_bucket_consistency_check   # replaces runtime rollout_integrity for this repo
+    category: domain_integrity
+    required_when: [environment_dataset]
+    critical_capable: true
+    evidence_class: domain_integrity
+    notes: >-
+      Per JSONL record, recompute/verify the reward buckets are disjoint and
+      self-consistent (a test in both p2p and f2p; fixed_tests not reconciling
+      with f2p/s2p/n2p; empty buckets where a verdict is claimed). A contradiction
+      that changes resolved/unresolved -> CRITICAL + BLOCK. Mirrors Report.check.
+  - id: report_claim_artifact_check
+    category: domain_integrity
+    required_when: [client_deliverables]
+    critical_capable: true
+    evidence_class: domain_integrity
+    notes: >-
+      Recompute any dataset-level summary/stat (record counts, per-lang totals,
+      resolved counts in gen_report output) from the raw JSONL records, fail-closed.
+  - id: dataset_leakage_check
+    category: domain_integrity
+    required_when: [environment_dataset]
+    critical_capable: true
+    evidence_class: domain_integrity
+    notes: >-
+      SHA-256 + 256-perm MinHash + containment of the gold fix_patch (solution)
+      against the agent-visible prompt fields (title/body/resolved_issues) within
+      a record, and cross-record duplicate detection. Solution reachable from the
+      prompt or Jaccard>=0.85 / containment>=0.80 -> CRITICAL + BLOCK.
+  - id: dockerfile_generation_check
+    category: domain_integrity
+    required_when: [docker]
+    critical_capable: true
+    evidence_class: domain_integrity
+    notes: >-
+      The Dockerfile is emitted from instance metadata (env_to_dockerfile.py).
+      Check for command/shell injection from untrusted org/repo/ref strings into
+      RUN/ARG lines, and unpinned/floating base-image tags. Feeds the emitted
+      Dockerfile string to hadolint (closes the static-Dockerfile coverage gap).
+
+  # --- hygiene tier (necessary, never sufficient) ---
+  - id: ruff
+    category: hygiene
+    required_when: [python]
+    critical_capable: false
+    evidence_class: static_reproducible
+    approved_argv: [ruff, check, --output-format, json, .]
+  - id: ruff-format
+    category: hygiene
+    required_when: [python]
+    critical_capable: false
+    evidence_class: static_reproducible
+    approved_argv: [ruff, format, --check, .]
+  - id: pytest
+    category: hygiene
+    required_when: [test_suite]
+    critical_capable: false
+    evidence_class: dynamic_live
+    approved_argv: [pytest, -q]
+    config_digest:
+      "pytest.ini": 9fb1310b19af5ae1422f40127131b698ad1c0404ca52563727f811be167ac2ff
+
+# ---------------------------------------------------------------------------
+# Command / config policy — the approved argv + config digests + ignore allow-list.
+# scope.approved binds this; live argv/config drift caps the disposition (§1.10).
+# ---------------------------------------------------------------------------
+command_config_policy:
+  ignore_allowlist:
+    # Only these exclusions are sanctioned; widening any ignore re-triggers sign-off.
+    - path: multi_swe_bench/harness/repos/**
+      reason: 4832 generated dataset/config scripts; SAST/secrets noise. STILL scanned by gitleaks (decorator allowlist only).
+    - path: multi_swe_bench/collect/.repo_cache/**
+      reason: tracked third-party bare git mirrors; not framework code.
+  config_digests:
+    ".gitleaks.toml": 6dbe269f9847c898158f30c3787c2ff43fd5a3b3be42e0d5e53e4784855b15d8
+    "pytest.ini": 9fb1310b19af5ae1422f40127131b698ad1c0404ca52563727f811be167ac2ff
+    "setup.py": 7a19f0081d9feee2fa2262e215080b4daa91c452db36d6c2ddf54dfcfb971c40
+    "requirements.txt": 69f7aeb4742075a6f633711d938a7ea861439574108f61b9c5251d730d103363
+
+# ---------------------------------------------------------------------------
+# Declared coverage gaps (a gap is a finding; caps disposition, never silent).
+# ---------------------------------------------------------------------------
+coverage_gaps:
+  # D-COVERAGE-GAP-dockerfile-static is no longer a SCOPE-declared gap (2026-06-22):
+  # the harness check `dockerfile_sample_check` (audit/dockerfiles.py) is now the
+  # single source of truth for the container-static surface. It renders a
+  # per-language sample of real instance Dockerfiles (with RUN layers) via the
+  # project interpreter and hadolint-lints them, emitting findings + a precise
+  # residual gap on success, or a fail-closed gap (no interpreter / driver crash /
+  # hadolint absent) otherwise. Residual (still caps HOLD): sample not exhaustive +
+  # no live `docker build`/`trivy image` scan.
+  # D-COVERAGE-GAP-no-lockfile CLOSED (2026-06-22): requirements.txt now pins +
+  # hashes the full transitive closure (uv pip compile --generate-hashes); pip-audit
+  # audits it (-r requirements.txt) and osv-scanner -r . auto-detects it. The dep
+  # set is reproducible. Digest pinned in command_config_policy.config_digests.
+  - id: D-COVERAGE-GAP-repo-cache-history
+    surface: git_history
+    reason: Tracked third-party bare git mirrors under .repo_cache inflate clone size and embed foreign history; secret scan covers them but provenance/bloat is flagged not gated.
+    disposition_cap: HOLD
+
+# ---------------------------------------------------------------------------
+# Ambiguities requiring human resolution at sign-off.
+# ---------------------------------------------------------------------------
+ambiguities:
+  # RESOLVED at Phase 0.5 sign-off:
+  #  * dirty-tree -> reviewer chose "audit as-is (dirty)"; SHIP unreachable until
+  #    committed+clean, accepted. Audit focus narrowed to the uncommitted diff.
+  #  * domain-check-target -> deliverable is the JSONL dataset at
+  #    deliverable_dataset.example_path; domain checks run against it (+ grader code).
+  # OPEN (need confirmation at sign-off, non-blocking defaults noted):
+  - id: uv-not-installed
+    default: provision installs uv
+    question: uv is not on PATH; provision will install it (network online). Confirm acceptable.
+  - id: registry-exclusion
+    default: excluded (dataset config, not framework attack surface)
+    question: >-
+      harness/repos/** (4832 generated scripts) excluded from SAST/hygiene as
+      dataset config. gitleaks still scans them. Confirm they are not an attack
+      surface needing SAST.
+  - id: native-scanner-install
+    default: install during provision
+    question: osv-scanner, gitleaks, hadolint, trivy are native binaries; confirm they may be installed during provision.
+  - id: dataset-path-external
+    default: read-only access to the example path
+    question: >-
+      The deliverable JSONL lives OUTSIDE the repo root
+      (audit2.0/dataset/output/). Confirm the harness may read it read-only as
+      the domain-check sample, or supply an in-tree copy.
