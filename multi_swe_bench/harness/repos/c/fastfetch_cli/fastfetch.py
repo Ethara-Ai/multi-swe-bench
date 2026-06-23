@@ -6,7 +6,26 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class FastfetchImageDefault(Image):
+class FastfetchImageBase(Image):
+    """Level 1: toolchain-only base image (shared per era).
+
+    dependency() returns a *string* (the Debian toolchain) and this Dockerfile
+    carries NO ``# syntax`` directive, so the DockerfileEnhancer engages and
+    prepends the ``# syntax``/ARG/ENV/LABEL infra block. IMPORTANT: this image
+    must NOT clone the repository -- a shared string-dependency image that
+    clones is force-pinned to a single ``${BASE_COMMIT}`` and history-stripped
+    by the enhancer, breaking ``git checkout`` for every other PR sharing the
+    base. So the clone lives in FastfetchImageDefault (an Image dependency, left
+    verbatim by the enhancer), done per-PR. This image only provides the C/CMake
+    build toolchain.
+
+    debian:bookworm (GCC 12), NOT debian:latest (GCC 14): this dataset spans
+    fastfetch releases 1.5 .. 2.52. Legacy C in the old releases (e.g.
+    tests/strbuf.c calling exit() without <stdlib.h>) only WARNS on GCC 12 but
+    is a hard ERROR on GCC 14 (-Werror=implicit-function-declaration is the
+    default there), so the oldest PRs fail to compile at baseline on
+    debian:latest. bookworm builds every release in range.
+    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -21,56 +40,23 @@ class FastfetchImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        # Returning a string (rather than a chained Image) keeps this a single,
-        # self-contained per-PR image and lets DockerfileEnhancer inject the
-        # shared infra (ARG REPO_URL / BASE_COMMIT / TARGETARCH, env, labels)
-        # after the FROM line. The build itself is owned by dockerfile() below,
-        # which clones "${REPO_URL}", checks out "${BASE_COMMIT}", runs
-        # extra_setup(), and embeds Image._HARDENING_BLOCK verbatim so the fix
-        # commit can't be read out of git history at eval time.
-        #
-        # debian:bookworm (GCC 12), NOT debian:latest (GCC 14): this dataset
-        # spans fastfetch releases 1.5 .. 2.52. Legacy C in the old releases
-        # (e.g. tests/strbuf.c calling exit() without <stdlib.h>) only WARNS on
-        # GCC 12 but is a hard ERROR on GCC 14 (-Werror=implicit-function-
-        # declaration is the default there), so the oldest PRs fail to compile
-        # at baseline on debian:latest. bookworm builds every release in range.
         return "debian:bookworm"
 
     def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
 
     def extra_packages(self) -> list[str]:
-        # fastfetch is a CMake/C project; build-essential and git are already in
-        # the default package set in Image.dockerfile().
+        # fastfetch is a CMake/C project; build-essential and git are in the
+        # default package set below.
         return ["cmake", "pkg-config"]
 
-    def extra_setup(self) -> str:
-        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. Stages the runtime helper scripts + patches into /home/ and
-        # creates the CMake build dir so the eval scripts run offline. The copied
-        # files live outside /home/{repo}, so the hardening pass (which only
-        # operates inside the git tree) leaves them untouched.
-        return (
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh\n"
-            "COPY prepare.sh /home/prepare.sh\n"
-            "RUN bash /home/prepare.sh"
-        )
-
     def dockerfile(self) -> str:
-        # Self-contained Dockerfile generation for this registry. We deliberately
-        # do NOT defer to the inherited Image.dockerfile(): the full build is
-        # spelled out here so the hardening pass is explicit and guaranteed at
-        # this layer. The hardening text is pulled verbatim from image.py
-        # (Image._HARDENING_BLOCK) so it stays in lockstep with the shared policy
-        # instead of drifting from a hand-copied duplicate.
         base_img = self.dependency()
 
         default_packages = [
@@ -88,37 +74,87 @@ class FastfetchImageDefault(Image):
         packages_str = " \\\n    ".join(all_packages)
         apt_command = self._get_apt_update_command(packages_str, base_img)
 
-        extra_setup = self.extra_setup()
+        # No `git clone` here on purpose (see docstring); no `# syntax` directive
+        # either, so the DockerfileEnhancer injects the ARG/ENV/LABEL infra block
+        # (but no clone/hardening, since this Dockerfile has no clone).
+        return f"""FROM {base_img}
 
-        sections = [f"FROM {base_img}"]
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
 
-        if self.global_env:
-            sections.append(self.global_env)
+{apt_command}
 
-        sections.append(
-            "WORKDIR /home/\nENV DEBIAN_FRONTEND=noninteractive\nENV LANG=C.UTF-8"
-        )
+CMD ["/bin/bash"]
+"""
 
-        sections.append(apt_command)
-        sections.append(f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}')
-        sections.append(f"WORKDIR /home/{self.pr.repo}")
-        sections.append("RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}")
 
-        if extra_setup:
-            sections.append(extra_setup)
+class FastfetchImageDefault(Image):
 
-        # Hardening block sourced verbatim from image.py. Strips every ref,
-        # remote, and unreachable object (incl. submodules) so the fix commit
-        # cannot be recovered from git history. MUST run after clone/checkout
-        # and extra_setup so the working tree is at ${BASE_COMMIT} first.
-        sections.append(Image._HARDENING_BLOCK)
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
 
-        if self.clear_env:
-            sections.append(self.clear_env)
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
 
-        sections.append('CMD ["/bin/bash"]')
+    @property
+    def config(self) -> Config:
+        return self._config
 
-        return "\n\n".join(sections) + "\n"
+    def dependency(self) -> Image:
+        return FastfetchImageBase(self.pr, self._config)
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
+        # Single COPY of all scripts/patches into /home/ (inline template style).
+        copy_files = " ".join(file.name for file in self.files())
+
+        # The shared toolchain base does NOT clone, so this per-PR image clones
+        # full history first, then checks out ${BASE_COMMIT} inline. Because this
+        # image's dependency() is an Image, the DockerfileEnhancer returns the
+        # Dockerfile verbatim -- the clone + hardening below are kept as written
+        # (and pinning here is correct: it is per-PR, not the shared base).
+        header = f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
+
+{self.global_env}
+
+WORKDIR /home/
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
+COPY {copy_files} /home/
+
+RUN bash /home/install.sh || true
+
+"""
+
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal.
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
 
     def files(self) -> list[File]:
         cmake_configure = "cmake -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug .."
@@ -136,14 +172,13 @@ class FastfetchImageDefault(Image):
             ),
             File(
                 ".",
-                "prepare.sh",
+                "install.sh",
                 """#!/bin/bash
-# Repo is already cloned + checked out at ${{BASE_COMMIT}} and hardened by
-# Image.dockerfile(), so this script no longer performs any git checkout. It
-# only resets the tree and creates the CMake build dir.
+# Repo is already cloned + checked out at the base commit inline in the
+# Dockerfile and hardened there; install.sh only resets the working tree and
+# creates the out-of-source CMake build dir (runs before the hardening strip).
 set -e
 
-mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 git reset --hard || true
 
