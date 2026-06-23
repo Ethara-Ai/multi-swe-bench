@@ -80,7 +80,7 @@ class Halo2227To7423ImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return "base-jdk17"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -93,26 +93,33 @@ class Halo2227To7423ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
+        org = self.pr.org
 
-        # This is a SHARED base (one per era, tag base-jdk17) reused by every PR
-        # in the era. The `# syntax` directive makes DockerfileEnhancer.enhance()
-        # return this Dockerfile unchanged; otherwise it would rewrite the clone
-        # to `git checkout ${BASE_COMMIT}` + hardening + gc-prune, pinning the
-        # shared base to ONE commit and pruning it — breaking every other PR's
-        # `git checkout <base.sha>` in prepare.sh. Per-PR hardening lives in the
-        # Default image instead.
+        # Base image: reference infra format + anti-cheat hardening, built per PR
+        # (checks out and hardens at this PR's base.sha; BASE_COMMIT is passed as a
+        # build-arg by the harness since dependency() is a str). The syntax
+        # directive keeps DockerfileEnhancer.enhance() from rewriting it. No
+        # proxy/cert/MITM injection. JDK17 + Node 22 toolchain is shared across
+        # PRs via Docker layer cache (identical layers before the clone).
+        hardening = Image._HARDENING_BLOCK.rstrip("\n")
+
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
 
-# DEBIAN_FRONTEND and LANG are injected by DockerfileEnhancer; only LC_ALL
-# needs setting here.
-ENV LC_ALL=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive \\
+    TZ=UTC \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
@@ -129,8 +136,7 @@ ENV JAVA_HOME=/usr/lib/jvm/zulu17
 ENV PATH=$JAVA_HOME/bin:$PATH
 
 # Node 22 — required by the ui/ subproject (:ui:pnpmSetup). Installed from the
-# official tarball (pinned, reproducible; avoids piping a remote script to a
-# shell). Arch detected at build time, so it works on amd64 and arm64.
+# official tarball (pinned, reproducible). Arch detected at build time.
 RUN NODE_VERSION=22.22.3 \\
     && ARCH="$(dpkg --print-architecture)" \\
     && if [ "$ARCH" = "amd64" ]; then NODE_ARCH=x64; else NODE_ARCH=arm64; fi \\
@@ -139,10 +145,16 @@ RUN NODE_VERSION=22.22.3 \\
     && rm /tmp/node.tar.gz \\
     && corepack enable
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
-{self.clear_env}
+WORKDIR /home/{repo}
 
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{hardening}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -333,56 +345,16 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
             '    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
         )
 
-        proxy_setup = ""
-        proxy_cleanup = ""
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p ~/.gradle && \\
-                        if [ ! -f "$HOME/.gradle/gradle.properties" ]; then \\
-                            touch "$HOME/.gradle/gradle.properties"; \\
-                        fi && \\
-                        if ! grep -q "systemProp.http.proxyHost" "$HOME/.gradle/gradle.properties"; then \\
-                            echo 'systemProp.http.proxyHost={proxy_host}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.http.proxyPort={proxy_port}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.https.proxyHost={proxy_host}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.https.proxyPort={proxy_port}' >> "$HOME/.gradle/gradle.properties"; \\
-                        fi && \\
-                        echo 'export GRADLE_USER_HOME=/root/.gradle' >> ~/.bashrc && \\
-                        /bin/bash -c "source ~/.bashrc"
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f ~/.gradle/gradle.properties
-                """
-                )
+        # No proxy/cert/MITM injection (removed per build-env policy).
         return f"""FROM {name}:{tag}
 
 {self.global_env}
-
-{proxy_setup}
 
 {copy_commands}
 
 {prepare_commands}
 
 {hardening}
-
-{proxy_cleanup}
 
 {self.clear_env}
 
