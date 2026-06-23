@@ -8,6 +8,23 @@ REPO_DIR = "locust"
 
 
 class ImageBase(Image):
+    """Level 1: toolchain-only base image (shared per Python-era).
+
+    dependency() returns a *string* (the Python toolchain) and this Dockerfile
+    carries NO ``# syntax`` directive, so the DockerfileEnhancer engages and
+    prepends the ``# syntax``/ARG/ENV/LABEL infra block. IMPORTANT: this image
+    must NOT clone the repository -- a shared string-dependency image that
+    clones is force-pinned to a single ``${BASE_COMMIT}`` and history-stripped
+    by the enhancer, breaking ``git checkout`` for every other PR sharing the
+    base. So the clone lives in ImageDefault (an Image dependency, left verbatim
+    by the enhancer), done per-PR. This image only provides the Python toolchain
+    and apt build deps for locust's native deps (pyzmq, gevent, lxml).
+
+    Two eras: PRs < 2500 need Python 3.8 (pyzmq compat), else Python 3.11. The
+    base tag is per-era (base-py38 / base-py311), shared across all PRs of that
+    era -- not per-sha, since the base no longer clones or pins anything.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -21,10 +38,6 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # Returning a string lets the base Image.dockerfile() build the clone,
-        # the ${BASE_COMMIT} checkout and the hardening block, and lets the
-        # DockerfileEnhancer inject proxy/cert/infra (per image.py).
-        # PRs before ~2500 need Python 3.8 due to pyzmq compatibility issues.
         if self._pr.number < 2500:
             return "python:3.8-slim"
         return "python:3.11-slim"
@@ -33,59 +46,33 @@ class ImageBase(Image):
         return "mswebench"
 
     def image_tag(self) -> str:
-        # Include the base commit so each PR's base image is pinned correctly.
-        # The hardening block in image.py detaches to ${BASE_COMMIT} and strips
-        # all refs/remotes; a per-sha tag prevents a shared base image from being
-        # pinned to a single PR's commit and breaking the others.
-        sha = self.pr.base.sha[:8] if getattr(self.pr.base, "sha", None) else "base"
-        if self._pr.number < 2500:
-            return f"base-py38-{sha}"
-        return f"base-{sha}"
+        return "base-py38" if self._pr.number < 2500 else "base-py311"
 
     def workdir(self) -> str:
-        # Keep the build context dir per-sha as well so concurrent base builds
-        # for different PRs do not overwrite each other's Dockerfile.
-        sha = self.pr.base.sha[:8] if getattr(self.pr.base, "sha", None) else "base"
-        if self._pr.number < 2500:
-            return f"base-py38-{sha}"
-        return f"base-{sha}"
+        return "base-py38" if self._pr.number < 2500 else "base-py311"
 
     def files(self) -> list[File]:
         return []
 
-    def extra_packages(self) -> list[str]:
-        # build-essential (from the default packages) already provides gcc/g++;
-        # these are the extra headers locust's native deps (pyzmq, gevent, lxml)
-        # need to build.
-        return [
-            "g++",
-            "python3-dev",
-            "libzmq3-dev",
-            "libev-dev",
-            "libxml2-dev",
-            "libxslt-dev",
-        ]
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
 
-    def extra_setup(self) -> str:
-        # Runs in WORKDIR /home/locust after the ${BASE_COMMIT} checkout and
-        # before the hardening block, so the editable install is wired to the
-        # pinned source and git history is still present.
-        lines = [
-            "RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel",
-        ]
-        if self._pr.number < 2500:
-            lines.append(
-                'RUN python -m pip install --no-cache-dir "gevent<23" "greenlet<3"'
-            )
-        lines.append(
-            'RUN python -m pip install --no-cache-dir -e ".[dev]" '
-            "|| python -m pip install --no-cache-dir -e ."
-        )
-        lines.append(
-            "RUN python -m pip install --no-cache-dir "
-            "pytest pytest-timeout mock pyquery cryptography retry"
-        )
-        return "\n".join(lines)
+        # No `git clone` here on purpose (see docstring); no `# syntax` directive
+        # either, so the DockerfileEnhancer injects the ARG/ENV/LABEL infra block
+        # (but no clone/hardening, since this Dockerfile has no clone).
+        return f"""FROM {image_name}
+
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates git build-essential g++ python3-dev \\
+    libzmq3-dev libev-dev libxml2-dev libxslt-dev \\
+    && rm -rf /var/lib/apt/lists/*
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+CMD ["/bin/bash"]
+"""
 
 
 class ImageDefault(Image):
@@ -113,10 +100,36 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def _install_sh(self) -> str:
+        # Editable install of the pinned source + test deps. Runs in the per-PR
+        # image AFTER the clone + ${BASE_COMMIT} checkout and BEFORE the
+        # hardening strip (full clone still present), mirroring the template's
+        # `RUN bash /home/install.sh`.
+        lines = [
+            "#!/bin/bash",
+            "set -e",
+            f"cd /home/{REPO_DIR}",
+            "python -m pip install --no-cache-dir --upgrade pip setuptools wheel",
+        ]
+        if self._pr.number < 2500:
+            lines.append(
+                'python -m pip install --no-cache-dir "gevent<23" "greenlet<3"'
+            )
+        lines.append(
+            'python -m pip install --no-cache-dir -e ".[dev]" '
+            '|| python -m pip install --no-cache-dir -e "."'
+        )
+        lines.append(
+            "python -m pip install --no-cache-dir "
+            "pytest pytest-timeout mock pyquery cryptography retry"
+        )
+        return "\n".join(lines) + "\n"
+
     def files(self) -> list[File]:
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "install.sh", self._install_sh()),
             File(
                 ".",
                 "run.sh",
@@ -150,20 +163,44 @@ python -m pytest locust/test/ -v --timeout=120 --timeout-method=thread
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        # Single COPY of all scripts/patches into /home/ (inline template style).
+        copy_files = " ".join(file.name for file in self.files())
 
-        return f"""FROM {name}:{tag}
+        # The shared toolchain base does NOT clone, so this per-PR image clones
+        # full history first, then checks out ${BASE_COMMIT} inline. Because this
+        # image's dependency() is an Image, the DockerfileEnhancer returns the
+        # Dockerfile verbatim -- the clone + hardening below are kept as written
+        # (and pinning here is correct: it is per-PR, not the shared base).
+        header = f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{REPO_DIR}
 
+WORKDIR /home/{REPO_DIR}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
+COPY {copy_files} /home/
+
+RUN bash /home/install.sh || true
+
+"""
+
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal.
+        tail = f"""
 {self.clear_env}
 
 CMD ["/bin/bash"]
 """
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("locustio", "locust_1791_to_99999")

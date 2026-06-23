@@ -94,21 +94,18 @@ _APT_INSTALL = (
 )
 
 
-class CrossplaneImageDefault(Image):
-    """Single-level per-PR image (mirrors the canonical image.py template).
+class CrossplaneImageBase(Image):
+    """Level 1: toolchain-only base image (shared by all PRs of the era).
 
     ``dependency()`` returns a *string* (the Go toolchain image), so the
-    pipeline's ``DockerfileEnhancer`` engages: it prepends the
-    ``# syntax``/proxy/cert/label infra block and standardises the
-    ``${REPO_URL}``/``${BASE_COMMIT}`` clone+checkout.  The Dockerfile below
-    carries everything else image.py expects -- apt install, the
-    ``git clone "${REPO_URL}"`` / ``git checkout ${BASE_COMMIT}`` pair, the
-    verbatim ``Image._HARDENING_BLOCK`` strip (origin/refs/reflog/gc + the four
-    post-condition asserts + the submodule pass), and the final ``CMD``.
-
-    Each PR builds its own self-contained image, so there is no shared base for
-    the enhancer to pin+strip -- the pin-and-strip hazard that previously forced
-    a 3-level layout does not apply to the single-level form.
+    pipeline's ``DockerfileEnhancer`` engages and prepends the
+    ``# syntax``/ARG/ENV/LABEL infra block. IMPORTANT: this image must NOT clone
+    the repository -- a shared string-dependency image that performs a
+    ``git clone`` is force-pinned to a single ``${BASE_COMMIT}`` and
+    history-stripped by the enhancer, which would break ``git checkout`` for
+    every other PR sharing the base. So the clone lives in CrossplaneImageDefault
+    (whose dependency() is an Image, left verbatim by the enhancer), done per-PR.
+    This image only provides the Go toolchain, apt deps, and Go build env.
     """
 
     def __init__(self, pr: PullRequest, config: Config):
@@ -127,6 +124,61 @@ class CrossplaneImageDefault(Image):
         return _GO_IMAGE
 
     def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        # No `git clone` here on purpose -- see the class docstring. The string
+        # dependency means DockerfileEnhancer injects the ARG/ENV/LABEL infra
+        # block (but no clone/hardening, since this Dockerfile has no clone).
+        return f"""FROM {_GO_IMAGE}
+
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+{_APT_INSTALL}
+
+ENV GOFLAGS=-mod=mod
+ENV GOTOOLCHAIN=local
+
+CMD ["/bin/bash"]
+"""
+
+
+class CrossplaneImageDefault(Image):
+    """Level 2: per-PR image (built on the shared toolchain base).
+
+    ``dependency()`` returns CrossplaneImageBase (an Image, not a string), so the
+    DockerfileEnhancer returns this Dockerfile verbatim -- no pin, no history
+    strip injected by the pipeline. The clone therefore lives here, per-PR: the
+    image clones full history, checks out ``${BASE_COMMIT}`` inline, COPYs the
+    scripts, warms the build cache (install.sh), then the verbatim
+    ``Image._HARDENING_BLOCK`` strips origin/refs/future history (with the four
+    post-condition asserts + submodule pass) while keeping base.sha reachable.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return CrossplaneImageBase(self.pr, self._config)
+
+    def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
@@ -143,41 +195,48 @@ class CrossplaneImageDefault(Image):
         ]
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/{file.name}\n"
+        # Single COPY of all scripts/patches into /home/ (inline template style).
+        copy_files = " ".join(file.name for file in self.files())
 
-        return f"""FROM {image_name}
+        # The shared toolchain base does NOT clone, so this per-PR image clones
+        # full history first, then checks out ${BASE_COMMIT} inline. Because this
+        # image's dependency() is an Image, the DockerfileEnhancer returns the
+        # Dockerfile verbatim -- the clone + hardening below are kept as written
+        # (and pinning here is correct: it is per-PR, not the shared base).
+        header = f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-
-{_APT_INSTALL}
-
-RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
 WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
+COPY {copy_files} /home/
 
-ENV GOFLAGS=-mod=mod
-ENV GOTOOLCHAIN=local
-
-{copy_commands}
 RUN bash /home/install.sh || true
 
-{Image._HARDENING_BLOCK}
+"""
 
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal.
+        tail = f"""
 {self.clear_env}
 
 CMD ["/bin/bash"]
 """
+        return header + Image._HARDENING_BLOCK + tail
 
 
 # number_interval used by this v1.6 .. v1.9 (go1.17 era) bundle. PRs carry

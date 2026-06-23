@@ -6,7 +6,21 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageDefault(Image):
+class ZodImageBase(Image):
+    """Level 1: toolchain-only base image (shared by all PRs of the era).
+
+    ``dependency()`` returns a *string* (the Node toolchain image) and this
+    Dockerfile carries NO ``# syntax`` directive, so the pipeline's
+    DockerfileEnhancer engages and prepends the ``# syntax``/ARG/ENV/LABEL infra
+    block. IMPORTANT: this image must NOT clone the repository -- a shared
+    string-dependency image that performs a ``git clone`` is force-pinned to a
+    single ``${BASE_COMMIT}`` and history-stripped by the enhancer, which would
+    break ``git checkout`` for every other PR sharing the base. So the clone
+    lives in ZodImageDefault (whose dependency() is an Image, left verbatim by
+    the enhancer), done per-PR. This image only provides the Node toolchain and
+    apt deps.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -22,8 +36,60 @@ class ImageDefault(Image):
     def dependency(self) -> str:
         return "node:20-bookworm"
 
-    def image_prefix(self) -> str:
-        return "envagent"
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+
+        # No `git clone` here on purpose (see docstring); no `# syntax` directive
+        # either, so the DockerfileEnhancer injects the ARG/ENV/LABEL infra block
+        # (but no clone/hardening, since this Dockerfile has no clone).
+        return f"""FROM {image_name}
+
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates git make python3 \\
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["/bin/bash"]
+"""
+
+
+class ZodImageDefault(Image):
+    """Level 2: per-PR image (built on the shared toolchain base).
+
+    ``dependency()`` returns ZodImageBase (an Image, not a string), so the
+    DockerfileEnhancer returns this Dockerfile verbatim -- no pin, no history
+    strip injected by the pipeline. The clone therefore lives here, per-PR: the
+    image clones full history, checks out ``${BASE_COMMIT}`` inline, COPYs the
+    scripts, warms the yarn cache (install.sh), then the verbatim
+    ``Image._HARDENING_BLOCK`` strips origin/refs/future history (with the four
+    post-condition asserts + submodule pass) while keeping base.sha reachable.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return ZodImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -45,36 +111,14 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
+                "install.sh",
+                # Checkout is done inline in the Dockerfile (RUN git checkout
+                # ${BASE_COMMIT}) and hardening is the inline Image._HARDENING_BLOCK;
+                # install.sh only warms the yarn cache while the full clone is
+                # still present (it runs BEFORE the hardening strip).
                 """#!/bin/bash
 set -e
 cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
 yarn install || true
 
 """.format(pr=self.pr),
@@ -119,44 +163,48 @@ yarn test --verbose --ci || true
         ]
 
     def dockerfile(self) -> str:
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        # Single COPY of all scripts/patches into /home/ (inline template style).
+        copy_files = " ".join(file.name for file in self.files())
 
-# Choose an appropriate base image based on the project's requirements - replace node:20-bookworm with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM node:20-bookworm
+        # The shared toolchain base does NOT clone, so this per-PR image clones
+        # full history first, then checks out ${BASE_COMMIT} inline. Because this
+        # image's dependency() is an Image, the DockerfileEnhancer returns the
+        # Dockerfile verbatim -- the clone + hardening below are kept as written
+        # (and pinning here is correct: it is per-PR, not the shared base).
+        header = f"""FROM {name}:{tag}
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git make python3
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+{self.global_env}
 
 WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/colinhacks/zod.git /home/zod
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
-WORKDIR /home/zod
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
+COPY {copy_files} /home/
+
+RUN bash /home/install.sh || true
+
 """
-        dockerfile_content += f"""
-{copy_commands}
+
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal.
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
 """
-        return dockerfile_content.format(pr=self.pr)
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("colinhacks", "zod")
@@ -171,7 +219,7 @@ class Zod(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+        return ZodImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
