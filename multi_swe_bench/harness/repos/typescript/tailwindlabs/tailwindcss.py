@@ -193,8 +193,121 @@ def tailwindcss_parse_log(test_log: str) -> TestResult:
 
 
 # ---------------------------------------------------------------------------
-# Single per-PR image: string dependency -> Image.dockerfile() owns the build
+# TWO-TIER images: ONE shared base per node-era (clone once + warm the common
+# dependency cache, NO base commit, reused by every PR of that era) and a thin
+# per-PR image on top (FROM base, checkout THIS PR's base commit, install only
+# the PR-specific deps, then harden git history). Mirrors the approved tfsec
+# pattern. Avoids per-PR base images (no duplicated clone/dep work, less time,
+# less storage).
 # ---------------------------------------------------------------------------
+
+
+def _base_spec(pr: PullRequest) -> tuple[str, str, str]:
+    """(node_image, base_tag_suffix, warm_ref) for the SHARED base of pr's era.
+
+    Two bases, keyed by node version (the only hard incompatibility — v0-v3 is
+    node:18 + npm/jest, v4 is node:20 + pnpm/vitest). Each clones the repo once
+    and warms the dependency cache from a representative ref so every PR of the
+    era reuses it. `warm_ref=""` means warm at the default branch (v4 for vitest).
+    """
+    if _era(pr) == "vitest":
+        return ("node:20", "vitest", "")
+    return ("node:18", "jest", "v3.4.18")
+
+
+class TailwindcssImageBase(Image):
+    """SINGLE shared base per node-era (tag `base-jest` / `base-vitest`), built
+    ONCE and reused as the FROM parent of every per-PR image of that era. It
+    clones the full repo history + keeps `origin` (so each per-PR image can
+    `git checkout` its own base commit) and warms the npm/pnpm cache from a
+    representative ref. It carries NO per-PR base commit and NO git hardening.
+
+    The leading `# syntax=docker/dockerfile:1.6` makes DockerfileEnhancer.enhance()
+    return this Dockerfile VERBATIM (it early-returns when the directive is
+    present). That deliberately (a) stops the enhancer rewriting the clone into a
+    `checkout ${BASE_COMMIT}` + history-strip that would pin this shared base to
+    whichever PR built it first, and (b) omits all proxy/cert/MITM injection. The
+    hardening is applied PER-PR in TailwindcssImageDefault, after that PR's
+    base commit is checked out -- keeping this base reusable by every PR.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return _base_spec(self.pr)[0]
+
+    def image_tag(self) -> str:
+        return f"base-{_base_spec(self.pr)[1]}"
+
+    def workdir(self) -> str:
+        return f"base-{_base_spec(self.pr)[1]}"
+
+    def files(self) -> list[File]:
+        return []
+
+    def _warm_install(self) -> str:
+        if _base_spec(self.pr)[0] == "node:20":
+            return (
+                "corepack enable 2>&1 || true; "
+                "corepack prepare pnpm@9.6.0 --activate 2>&1 || true; "
+                "command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@9.6.0 2>&1 || true; "
+                "pnpm install --no-frozen-lockfile --ignore-scripts 2>&1 || true"
+            )
+        return "npm install --ignore-scripts 2>&1 || true"
+
+    def dockerfile(self) -> str:
+        node_image, _suffix, warm_ref = _base_spec(self.pr)
+        org, repo = self.pr.org, self.pr.repo
+        checkout = (
+            f"git checkout {warm_ref} 2>/dev/null || true; \\\n    "
+            if warm_ref else ""
+        )
+        # Emitted verbatim (leading `# syntax` -> enhancer early-returns), so NO
+        # proxy build-args, NO proxy/SSL ENVs, NO CA-cert symlinks, NO MITM mount.
+        # `ca-certificates` is the standard CA bundle needed for HTTPS git clone /
+        # npm, not injected proxy/cert config.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {node_image}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} shared base image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates curl build-essential git gnupg make python3 sudo wget jq \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+# Warm the SHARED dependency cache from a representative ref so the common deps
+# are downloaded ONCE here instead of by every PR. Per-SHA differences are
+# filled in by each PR's prepare.sh. All best-effort (`|| true`) so a transient
+# install issue never fails the shared base build.
+RUN {checkout}{self._warm_install()}
+
+CMD ["/bin/bash"]
+"""
 
 
 class TailwindcssImageDefault(Image):
@@ -211,20 +324,18 @@ class TailwindcssImageDefault(Image):
         return self._config
 
     # --- image plumbing ------------------------------------------------
-    def dependency(self) -> Union[str, "Image"]:
-        # A string base image hands the build to Image.dockerfile(), which
-        # clones ${REPO_URL}, checks out ${BASE_COMMIT}, runs extra_setup(),
-        # then hardens git history.
-        return "node:20" if _era(self.pr) == "vitest" else "node:18"
+    def dependency(self) -> Image:
+        # Returns an Image (the shared base) -> DockerfileEnhancer.enhance()
+        # early-returns (dep is not a str) and leaves our dockerfile() verbatim.
+        # So no proxy/cert/MITM injection, and the hardening below is applied by
+        # hand (anchored on HEAD), which is what lets the base stay shared.
+        return TailwindcssImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
-
-    def extra_packages(self) -> list[str]:
-        return ["jq"]
 
     # Defense-in-depth against re-fetching the fix from GitHub by URL. The
     # hardening block deletes the cloned repo's `origin`, but a model could still
@@ -247,26 +358,73 @@ class TailwindcssImageDefault(Image):
         "    git config --system --unset-all credential.helper 2>/dev/null || true"
     )
 
-    def extra_setup(self) -> str:
-        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. Stages helper scripts + patches and installs dependencies.
-        # node_modules lives inside the repo but is untracked, so the hardening
-        # pass (which only rewrites git history) leaves it intact.
-        # Patches must be present BEFORE prepare.sh (it pre-fetches the deps the
-        # patches add). prepare.sh runs the one expensive install; the eval
-        # scripts are copied AFTER it so editing them reuses the cached deps.
-        # The git network lockdown is applied AFTER prepare.sh so the build-time
-        # dependency install can still reach github for any `git+`/`github:` deps.
-        return (
-            "COPY test.patch /home/test.patch\n"
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY prepare.sh /home/prepare.sh\n"
-            "RUN bash /home/prepare.sh\n"
-            f"{self._GIT_NET_LOCKDOWN}\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh"
-        )
+    def _harden(self) -> str:
+        """Git-history hardening for the per-PR image, applied AFTER prepare.sh
+        has checked out THIS PR's base commit -> the commit to KEEP is the
+        current HEAD (BASE_COMMIT is not a build-arg in FROM-an-image builds).
+        The shared base deliberately keeps full history + origin; this strips the
+        remote and every ref/commit not reachable from HEAD, so the evaluated
+        agent cannot recover the fix from git log/show. Mirrors the harness
+        _HARDENING_BLOCK, anchored on HEAD."""
+        repo = self.pr.repo
+        return f"""RUN set -eux; \\
+    cd /home/{repo}; \\
+    git checkout --detach HEAD; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/{repo}/.gitmodules ]; then \\
+        cd /home/{repo} && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi"""
+
+    def dockerfile(self) -> str:
+        # Two-tier: FROM the SHARED base (no proxy/cert/MITM — see
+        # TailwindcssImageBase). dependency() returns an Image, so
+        # DockerfileEnhancer.enhance() early-returns and leaves this verbatim.
+        # Order: stage patches + prepare.sh and RUN it (checkout this PR's base
+        # commit + install ONLY the PR-specific deps) -> git network lockdown ->
+        # per-PR git-history hardening -> COPY the eval scripts last (so editing
+        # them reuses the cached prepare layer).
+        base = self.dependency()
+        name, tag = base.image_name(), base.image_tag()
+        return f"""FROM {name}:{tag}
+
+COPY test.patch /home/test.patch
+COPY fix.patch /home/fix.patch
+COPY prepare.sh /home/prepare.sh
+RUN bash /home/prepare.sh
+
+{self._GIT_NET_LOCKDOWN}
+
+{self._harden()}
+
+COPY run.sh /home/run.sh
+COPY test-run.sh /home/test-run.sh
+COPY fix-run.sh /home/fix-run.sh
+
+CMD ["/bin/bash"]
+"""
 
     # --- era-specific shell ------------------------------------------------
     def _test_files(self) -> str:
@@ -472,14 +630,19 @@ class TailwindcssImageDefault(Image):
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-# Repo is already cloned + checked out at ${{BASE_COMMIT}} and hardened by
-# Image.dockerfile(); this script does NO git checkout. It installs deps (incl.
-# those the patches add) and warms the base build so eval runs need no network.
+# Two-tier: the SHARED base cloned the repo + warmed the dep cache but is NOT at
+# this PR's commit. Here we check out THIS PR's base commit (full history is
+# present from the base clone), then install ONLY the PR-specific deps (reusing
+# the base's warmed npm/pnpm cache). The per-PR git-history hardening runs after
+# this, in the Dockerfile.
 set -e
 cd /home/{repo}
 git reset --hard || true
+git checkout --force {base_sha} 2>/dev/null \\
+  || git checkout --force --detach {base_sha}
+git reset --hard || true
 {body}
-""".format(repo=repo, body=self._prepare_body()),
+""".format(repo=repo, base_sha=self.pr.base.sha, body=self._prepare_body()),
             ),
             File(
                 ".",

@@ -55,6 +55,85 @@ def _runner(pr: PullRequest) -> str:
     return "jest" if _start_version(pr.base.label) < _V_VITEST else "vitest"
 
 
+class VueuseImageBase(Image):
+    """Shared base image — ONE per node version (node:18 for eras 1-3,
+    node:20 for era 4). Clones the repo (full history) + installs OS tooling
+    and corepack. It does NOT check out BASE_COMMIT, does NOT install project
+    deps, and has NO hardening block — so it can be reused by every PR image of
+    the same node version. Emits the BuildKit syntax directive so
+    DockerfileEnhancer returns it unchanged (no proxy/cert/MITM injection).
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def _node(self) -> str:
+        return "node:20" if _start_version(self.pr.base.label) >= _V_PROJECT else "node:18"
+
+    def dependency(self) -> Union[str, "Image"]:
+        return self._node()
+
+    def image_tag(self) -> str:
+        # Tag depends only on node version -> shared across all PRs of that
+        # version (built once, reused), NOT per-PR.
+        return "base-node20" if self._node() == "node:20" else "base-node18"
+
+    def workdir(self) -> str:
+        return self.image_tag()
+
+    def files(self) -> list[File]:
+        return []
+
+    def extra_packages(self) -> list[str]:
+        return ["jq"]
+
+    def dockerfile(self) -> str:
+        base_img = self._node()
+        org, repo = self.pr.org, self.pr.repo
+        repo_url = f"https://github.com/{org}/{repo}.git"
+        default_packages = [
+            "ca-certificates", "curl", "build-essential", "git",
+            "gnupg", "make", "python3", "sudo", "wget",
+        ]
+        packages_str = " \\\n    ".join(default_packages + self.extra_packages())
+        apt_command = self._get_apt_update_command(packages_str, base_img)
+        sections = [
+            "# syntax=docker/dockerfile:1.6",
+            f"FROM {base_img}",
+            (
+                "ARG TARGETARCH\n"
+                f'ARG REPO_URL="{repo_url}"\n'
+                "ARG BASE_COMMIT"
+            ),
+            (
+                "ENV DEBIAN_FRONTEND=noninteractive \\\n"
+                "    LANG=C.UTF-8 \\\n"
+                "    TZ=UTC"
+            ),
+            (
+                f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+                f'      org.opencontainers.image.description="{org}/{repo} base image" \\\n'
+                f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+                '      org.opencontainers.image.authors="https://www.ethara.ai/"'
+            ),
+            "WORKDIR /home/",
+            apt_command,
+            "RUN corepack enable || true",
+            f'RUN git clone "${{REPO_URL}}" /home/{repo}',
+            'CMD ["/bin/bash"]',
+        ]
+        return "\n\n".join(s for s in sections if s) + "\n"
+
+
 class VueuseImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -101,11 +180,11 @@ class VueuseImageDefault(Image):
         )
 
     # --- image plumbing ------------------------------------------------
-    def dependency(self) -> Union[str, "Image"]:
-        # A string base image hands the build to Image.dockerfile(), which
-        # clones ${REPO_URL}, checks out ${BASE_COMMIT}, and hardens history.
-        v = _start_version(self.pr.base.label)
-        return "node:20" if v >= _V_PROJECT else "node:18"
+    def dependency(self) -> Optional[Image]:
+        # FROM the shared base image (one per node version). The base already
+        # cloned the repo + installed tooling; this PR image only checks out
+        # BASE_COMMIT, installs deps, applies patches, and hardens history.
+        return VueuseImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -133,47 +212,20 @@ class VueuseImageDefault(Image):
         )
 
     def dockerfile(self) -> str:
-        # Self-contained Dockerfile that emits the BuildKit syntax directive
-        # up front. DockerfileEnhancer.enhance() returns the content unchanged
-        # whenever that directive is present, so this registry NEVER receives
-        # proxy / CA-cert / MITM injection regardless of the image.py in use.
-        # We therefore declare the REPO_URL/BASE_COMMIT ARGs and the hardening
-        # block ourselves so the build stays correct without the enhancer.
-        base_img = self.dependency()
-        if isinstance(base_img, Image):
-            base_img = base_img.image_full_name()
-        org, repo = self.pr.org, self.pr.repo
-        repo_url = f"https://github.com/{org}/{repo}.git"
-
-        default_packages = [
-            "ca-certificates", "curl", "build-essential", "git",
-            "gnupg", "make", "python3", "sudo", "wget",
-        ]
-        packages_str = " \\\n    ".join(default_packages + self.extra_packages())
-        apt_command = self._get_apt_update_command(packages_str, base_img)
-
+        # FROM the shared base image (which already cloned the repo + tooling).
+        # dependency() returns an Image, so DockerfileEnhancer returns this
+        # content unchanged -> no proxy/cert/MITM injection. The harness passes
+        # no build-args for image-dependency builds, so BASE_COMMIT is baked as
+        # an ENV; both the checkout and the hardening block resolve it.
+        # Hardening lives HERE (per-PR), never in the base.
+        base = self.dependency()
+        name = base.image_name()
+        tag = base.image_tag()
+        repo = self.pr.repo
         sections = [
             "# syntax=docker/dockerfile:1.6",
-            f"FROM {base_img}",
-            (
-                "ARG TARGETARCH\n"
-                f'ARG REPO_URL="{repo_url}"\n'
-                "ARG BASE_COMMIT"
-            ),
-            (
-                "ENV DEBIAN_FRONTEND=noninteractive \\\n"
-                "    LANG=C.UTF-8 \\\n"
-                "    TZ=UTC"
-            ),
-            (
-                f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
-                f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
-                f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
-                '      org.opencontainers.image.authors="https://www.ethara.ai/"'
-            ),
-            "WORKDIR /home/",
-            apt_command,
-            f'RUN git clone "${{REPO_URL}}" /home/{repo}',
+            f"FROM {name}:{tag}",
+            f"ENV BASE_COMMIT={self.pr.base.sha}",
             f"WORKDIR /home/{repo}",
             "RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}",
             self.extra_setup(),

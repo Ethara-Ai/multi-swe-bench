@@ -21,10 +21,11 @@ base commit -- using the same boundaries as the era keys:
     number >= 1832   -> JDK 21  (JadxJdk21ImageDefault, no jcommander substitution)
 
 Everything else (run/test_patch_run/fix_patch_run/parse_log, the binary-fixture
-pre-extract, the proxy + init.gradle setup) is identical across the eras, so we
-subclass Jadx793To1831 and override only dependency() to pick the right Image.
-The era Image classes each carry their own module-level init.gradle, so swapping
-the class swaps the JDK *and* the matching Gradle tweaks in one step.
+pre-extract, the shared-base + init.gradle setup) is identical across the eras,
+so we subclass Jadx793To1831 and override only dependency() to pick the right
+per-PR Image. Each per-PR Image points at its era's shared base image (one base
+per JDK era, reused across all PRs), so swapping the class swaps the JDK era's
+base *and* the matching Gradle tweaks in one step.
 """
 
 from typing import Optional

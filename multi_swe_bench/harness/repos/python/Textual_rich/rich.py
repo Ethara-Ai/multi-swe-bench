@@ -8,31 +8,34 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 # Textualize/rich — a Python library for rich text & formatting in the terminal.
 #
-# Conformed to the hardened image.py contract:
-#   * dependency() returns a *string* base image, so the shared
-#     Image.dockerfile() owns the build — it clones "${REPO_URL}", checks out
-#     "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that detaches HEAD and
-#     strips every other ref/remote/commit. That closes the reward-hacking hole
-#     where the fix could be read straight out of git history (git log / show /
-#     diff origin).
-#   * SELF-CONTAINED, proxy/cert-free: dockerfile() below emits the *complete*
-#     Dockerfile (including the "# syntax=docker/dockerfile:1.6" directive and a
-#     hand-rolled infra block with NO proxy / CA-cert / MITM lines). Because
-#     DockerfileEnhancer.enhance() returns any Dockerfile that already carries
-#     that syntax directive unchanged, the enhancer's proxy/cert injection never
-#     runs for rich — regardless of which image.py builds it (even a tree whose
-#     image.py still injects the MITM proxy). The proxy removal is a property of
-#     this registry, not of the shared image.py.
-#   * extra_setup() runs after "git checkout ${BASE_COMMIT}" and before the
-#     hardening pass. We install rich (editable) at the base commit and COPY the
-#     eval scripts + patches into /home/ (outside /home/rich, so the hardening
-#     pass — which only touches the git tree — leaves them alone). Baking them
-#     in is required because docker_util.run mounts *only* fix.patch at runtime.
+# TWO-IMAGE, shared-base design (efficient + self-contained, proxy/cert-free):
+#
+#   ImageBase  ->  mswebench/textualize_m_rich:base   (ONE shared image)
+#       Clones the repo ONCE (full history) and installs the COMMON deps
+#       (rich's runtime deps via an editable install at the default branch +
+#       the pytest toolchain). No BASE_COMMIT is used and NO hardening runs
+#       here — the base must keep full history so every PR can check out its
+#       own commit. Built once and reused by all PRs.
+#
+#   ImageDefault  ->  mswebench/textualize_m_rich:pr-<N>   (per PR)
+#       FROM the shared base, so the common deps are already present. Checks
+#       out the PR's BASE_COMMIT (baked as an ARG default), runs install.sh to
+#       pick up only the deps that differ for that commit (common ones are
+#       reused from the base, not reinstalled), bakes the eval scripts +
+#       patches, and THEN runs the _HARDENING_BLOCK that detaches HEAD and
+#       strips every other ref/remote/commit. That scrub is what closes the
+#       reward-hacking hole (git log / show / diff origin) and it lives in the
+#       PR image because it can only run after the per-PR checkout.
+#
+# Both images are SELF-CONTAINED and proxy/cert-free: each dockerfile() emits
+# the complete Dockerfile starting with "# syntax=docker/dockerfile:1.6", which
+# makes DockerfileEnhancer.enhance() return it unchanged (early-return on the
+# directive). So the enhancer's proxy / CA-cert / MITM injection never runs for
+# rich, regardless of which image.py builds it.
 #
 # Single pure-Python package (rich/) with a root poetry pyproject and a root
-# tests/ tree. pytest is the runner throughout -> one parse_log. No services /
-# no API keys. Installed with system pip (no venv / no uv): the host build is
-# native arm64 and pip keeps the git tree clean so the hardening checkout holds.
+# tests/ tree. pytest is the runner throughout -> one parse_log. System pip
+# (no venv / no uv); native arm64 build keeps the git tree clean for hardening.
 
 
 # git apply excludes: rich's test/fix patches carry binary blobs (SVG/PNG/etc.
@@ -61,7 +64,9 @@ def _target_test_files(test_patch: str) -> list[str]:
     return files
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
+    """Shared base image: clone once + install common deps. No checkout, no hardening."""
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -75,48 +80,104 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        # String dependency -> Image.dockerfile() clones, checks out
-        # ${BASE_COMMIT}, and appends the hardening block. See module docstring.
         return "python:3.12-bookworm"
 
+    def image_tag(self) -> str:
+        # Single shared tag — identical for every PR, so it builds once and is
+        # reused (Image equality / dedup is on image_full_name).
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        repo = self.pr.repo
+        base_install = """#!/bin/bash
+# COMMON dependency install, shared by every PR. Editable install at the default
+# branch pulls rich's runtime deps (pygments, markdown-it-py, ...) plus the
+# pytest toolchain. Per-PR images reuse all of this; their install.sh only adds
+# whatever differs at their specific commit.
+set -uo pipefail
+cd /home/__REPO__
+pip install --no-cache-dir -e ".[jupyter]" >/dev/null 2>&1 \\
+  || pip install --no-cache-dir -e . >/dev/null 2>&1 || true
+pip install --no-cache-dir pytest pytest-asyncio pytest-mock pytest-timeout >/dev/null 2>&1 || true
+""".replace("__REPO__", repo)
+        return [File(".", "base_install.sh", base_install)]
+
     def dockerfile(self) -> str:
-        # Self-contained Dockerfile generation: emit the COMPLETE Dockerfile with
-        # our own infra block — NO proxy args, NO CA-cert symlinks, NO MITM mount.
-        #
-        # The shared Image.dockerfile() body (FROM + apt + clone + checkout +
-        # extra_setup + hardening + CMD) never carries proxy/cert — that is added
-        # only by DockerfileEnhancer. We prepend the "# syntax=..." directive,
-        # which makes DockerfileEnhancer.enhance() return this string unchanged
-        # (see its early-return on SYNTAX_DIRECTIVE). Result: rich images are
-        # proxy/cert-free no matter which image.py builds them.
-        body = super().dockerfile()
-        org, repo = self.pr.org, self.pr.repo
+        repo = self.pr.repo
+        org = self.pr.org
         repo_url = f"https://github.com/{org}/{repo}.git"
+        # Self-contained + proxy/cert-free (syntax directive -> enhancer skips).
+        # Clones FULL history (no checkout) so PRs can check out any commit.
+        template = """# syntax=docker/dockerfile:1.6
 
-        infra = (
-            "ARG TARGETARCH\n"
-            f'ARG REPO_URL="{repo_url}"\n'
-            "ARG BASE_COMMIT\n"
-            "\n"
-            "ENV DEBIAN_FRONTEND=noninteractive \\\n"
-            "    LANG=C.UTF-8 \\\n"
-            "    TZ=UTC\n"
-            "\n"
-            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
-            f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
-            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
-            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+FROM python:3.12-bookworm
+
+ARG TARGETARCH
+ARG REPO_URL="__REPO_URL__"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="__ORG__/__REPO__" \\
+      org.opencontainers.image.description="__ORG__/__REPO__ base image" \\
+      org.opencontainers.image.source="https://github.com/__ORG__/__REPO__" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+ENV PIP_ROOT_USER_ACTION=ignore
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    curl \\
+    build-essential \\
+    git \\
+    gnupg \\
+    make \\
+    python3 \\
+    sudo \\
+    wget \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone "${REPO_URL}" /home/__REPO__
+
+COPY base_install.sh /home/base_install.sh
+RUN bash /home/base_install.sh || true
+
+CMD ["/bin/bash"]
+"""
+        return (
+            template.replace("__REPO_URL__", repo_url)
+            .replace("__ORG__", org)
+            .replace("__REPO__", repo)
         )
 
-        lines = body.split("\n")
-        from_idx = next(
-            i for i, ln in enumerate(lines) if ln.strip().upper().startswith("FROM ")
-        )
-        out = ["# syntax=docker/dockerfile:1.6", ""]
-        out += lines[: from_idx + 1]
-        out += ["", infra]
-        out += lines[from_idx + 1 :]
-        return "\n".join(out)
+
+class ImageDefault(Image):
+    """Per-PR image: FROM shared base, checkout the PR commit, install PR-specific
+    deps (reusing the base's common deps), bake patches/scripts, then harden."""
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        # Depend on the shared base Image (not a string) -> this PR image is
+        # built FROM mswebench/textualize_m_rich:base, reusing its deps.
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -124,42 +185,61 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    def extra_packages(self) -> list[str]:
-        # rich is pure Python; the default package set (git, build-essential,
-        # curl, ca-certificates, python3, make, ...) already covers the build.
-        return []
+    def dockerfile(self) -> str:
+        base = self.dependency()
+        base_name = f"{base.image_name()}:{base.image_tag()}"
+        org, repo = self.pr.org, self.pr.repo
+        sha = self.pr.base.sha
+        # Self-contained Dockerfile. BASE_COMMIT is baked as the ARG default
+        # (build_dataset only passes it for string-dependency images, i.e. the
+        # base — so the PR image must carry its own commit). The hardening block
+        # uses ${BASE_COMMIT} and runs AFTER checkout, scrubbing all history.
+        template = """# syntax=docker/dockerfile:1.6
 
-    def extra_setup(self) -> str:
-        # Bake the eval scripts + both patches in, then warm the install at the
-        # base commit so deps live in an image layer. install.sh is reused at run
-        # time in case a patch adds a dep.
-        #
-        # fix.patch MUST be baked: build_dataset.run_instance calls
-        # docker_util.run() with NO volumes, so unlike run_evaluation it does not
-        # mount fix.patch at runtime — the fix stage reads the baked
-        # /home/fix.patch. (Omitting it makes the fix stage identical to the test
-        # stage -> F2P=0 for every instance.) This is the framework convention
-        # (langchain/astropy bake it too). The new-image.py anti-cheat win is the
-        # git-history scrub (_HARDENING_BLOCK), which is unaffected.
+FROM __BASE__
+
+ARG TARGETARCH
+ARG BASE_COMMIT=__SHA__
+
+LABEL org.opencontainers.image.title="__ORG__/__REPO__" \\
+      org.opencontainers.image.description="__ORG__/__REPO__ Docker image" \\
+      org.opencontainers.image.source="https://github.com/__ORG__/__REPO__" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/__REPO__
+
+RUN git reset --hard
+RUN git checkout ${BASE_COMMIT}
+
+ENV PIP_ROOT_USER_ACTION=ignore
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY fix.patch /home/fix.patch
+COPY test.patch /home/test.patch
+COPY install.sh /home/install.sh
+COPY run.sh /home/run.sh
+COPY test-run.sh /home/test-run.sh
+COPY fix-run.sh /home/fix-run.sh
+RUN bash /home/install.sh || true
+
+__HARDENING__
+
+CMD ["/bin/bash"]
+"""
         return (
-            "ENV PIP_ROOT_USER_ACTION=ignore\n"
-            "ENV PIP_DISABLE_PIP_VERSION_CHECK=1\n"
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY install.sh /home/install.sh\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh\n"
-            "RUN bash /home/install.sh || true\n"
+            template.replace("__BASE__", base_name)
+            .replace("__SHA__", sha)
+            .replace("__ORG__", org)
+            .replace("__REPO__", repo)
+            .replace("__HARDENING__", Image._HARDENING_BLOCK.rstrip("\n"))
         )
 
     def files(self) -> list[File]:
         repo = self.pr.repo
 
         install = """#!/bin/bash
-# Editable install of rich at the current checkout. The [jupyter] extra covers
-# the jupyter tests; fall back to a bare install if the extra is unavailable.
-# Always (re)install pytest + common plugins so the runner is present.
+# Per-PR install: editable install at THIS commit. Common deps are already in
+# the shared base, so pip reuses them and only installs what differs here.
+# Always (re)ensure the pytest runner + plugins.
 set -uo pipefail
 cd /home/__REPO__
 pip install --no-cache-dir -e ".[jupyter]" >/dev/null 2>&1 \\
@@ -176,16 +256,9 @@ pip install --no-cache-dir pytest pytest-asyncio pytest-mock pytest-timeout >/de
         # test files that actually exist on disk (the unpatched baseline run
         # won't have newly-added ones yet), then pytest only those. -v gives one
         # `path::test STATUS` line per test for parse_log; -o addopts="" discards
-        # the coverage/plugin flags rich pins in pyproject.
-        #
-        # --timeout=30 (signal method) caps each test at 30s and marks an
-        # over-runner FAILED, then continues. rich's tests run in well under a
-        # second, so 30s is generous headroom; the cap matters because some PRs
-        # FIX an infinite loop (e.g. chop_cells on zero-width input) -> at the
-        # base commit those new tests genuinely hang, and must register as a
-        # bounded FAILED (the F2P signal) instead of blocking the run. The outer
-        # `timeout` is a coarse backstop for a hang during collection, which the
-        # per-test timeout can't catch.
+        # the coverage/plugin flags rich pins in pyproject. --timeout=30 (signal)
+        # caps any single test that hangs (e.g. an infinite loop the PR fixes ->
+        # the new test must register as a bounded FAILED, the F2P signal).
         run_pytest = """bash /home/install.sh || true
 TARGET="__TARGET__"
 SEL=""
@@ -279,16 +352,8 @@ class Rich(Instance):
         skipped_tests: set[str] = set()
 
         # Parse ONLY pytest's `-v` progress lines, anchored on the unambiguous
-        # "[ NN%]" suffix:
-        #   tests/test_text.py::test_wrap PASSED                       [ 12%]
-        #   tests/test_cells.py::test_chop[\x1b-expected1] FAILED      [ 40%]
-        #   tests/test_x.py::test_skip SKIPPED (reason)                [ 50%]
-        # The nodeid is captured non-greedily so params that themselves contain
-        # spaces or " - " (e.g. test_split_text[... - x]) stay whole. The `-rA`
-        # summary lines ("FAILED <nodeid> - <reason>") are deliberately ignored:
-        # the trailing reason and in-param " - " make them ambiguous, and every
-        # test that ran already has a `-v` line. This is what previously double-
-        # counted parametrized tests under "name" and "name]".
+        # "[ NN%]" suffix. Non-greedy nodeid keeps params containing spaces or
+        # " - " whole; the `-rA` summary lines are deliberately ignored.
         line_re = re.compile(
             r"^(.+?::.+?)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)"
             r"(?:\s+\(.*?\))?\s+\[\s*\d+%\]\s*$"

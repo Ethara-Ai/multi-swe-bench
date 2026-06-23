@@ -22,15 +22,20 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #     [OK]/[XX]/[SK] per-test lines.  Older instances that lack r2r simply
 #     skip this and fall back to the build signal -- no era branching needed.
 #
-# Conformance to the updated image.py:
-#   dependency() returns a STRING (the base image) instead of a chained
-#   Image, which hands the build to the shared Image.dockerfile(): it clones
-#   "${REPO_URL}", checks out "${BASE_COMMIT}", runs extra_setup(), then
-#   appends the _HARDENING_BLOCK that detaches HEAD and strips every other
-#   ref/remote/commit so the fix can't be read out of git history.
-#   DockerfileEnhancer then injects the proxy/cert infra + final sanitize.
-#   The previous two-stage ImageBase/ImageDefault override bypassed all of
-#   this (full git history was left intact -> a reward-hacking vector).
+# Image architecture -- TWO-TIER (shared base + per-PR), no proxy/cert/MITM:
+#   * ImageBase           -> mswebench/radareorg_m_radare2:base.  Built ONCE and
+#     reused by every PR: FROM gcc:12 + the common build deps + a single full
+#     clone of radare2.  NO BASE_COMMIT checkout, NO hardening block.
+#   * Radare2ImageDefault -> :pr-<N>, one Dockerfile per PR.  FROM the shared
+#     :base, checks out THIS PR's base.sha and applies the _HARDENING_BLOCK
+#     (strip-to-SHA, anti-cheat) so the fix can't be read out of git history,
+#     then COPYs the run scripts.  Deps + clone are NOT repeated per PR.
+#   Neither Dockerfile injects proxy/cert/MITM: the base carries the BuildKit
+#   syntax directive (enhance() returns it unchanged) and the PR image has an
+#   Image (non-string) dependency (enhance() also returns it unchanged, and
+#   image.py is left untouched).
+#   NOTE: build_dataset only passes the REPO_URL/BASE_COMMIT build-args for
+#   STRING dependencies, so the per-PR image bakes base.sha as the ARG default.
 # ---------------------------------------------------------------------------
 
 # capstone is radare2's disassembler dependency.  shlr/Makefile pins the exact
@@ -161,7 +166,15 @@ build_radare2() {
 """
 
 
-class Radare2ImageDefault(Image):
+class ImageBase(Image):
+    """Shared base image -- built ONCE and reused by every per-PR image.
+
+    FROM gcc:12 + the common radare2 build deps + a single full clone of the
+    repo.  NO BASE_COMMIT checkout and NO hardening block (the per-PR image
+    checks out its SHA and hardens on top).  Tagged ':base' (constant) so all
+    PRs share exactly one base image -- deps + clone are not repeated per PR.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -175,11 +188,78 @@ class Radare2ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        # See module header: a string base image hands the build to the shared
-        # Image.dockerfile() so the clone/checkout/extra_setup/_HARDENING_BLOCK
-        # pipeline (and DockerfileEnhancer) all fire.  gcc:12 == debian
-        # bookworm + GCC 12, which compiles the whole 2.6 .. 6.1 range.
         return "gcc:12"
+
+    def image_tag(self) -> str:
+        return "base"  # constant -> one shared base image for every PR
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        # Carries the BuildKit syntax directive, so DockerfileEnhancer.enhance()
+        # returns it UNCHANGED (image.py: `if SYNTAX_DIRECTIVE in raw: return
+        # raw`) -- NO proxy / cert / MITM injection.  Full clone, NO checkout,
+        # NO hardening.  dependency() is a string so build_dataset passes
+        # REPO_URL; we also bake it as the ARG default for safety.
+        org, repo = self.pr.org, self.pr.repo
+        repo_url = f"https://github.com/{org}/{repo}.git"
+        packages = [
+            "ca-certificates", "curl", "build-essential", "git", "gnupg",
+            "make", "python3", "sudo", "wget", "pkg-config", "patch",
+        ]
+        pkgs = " \\\n    ".join(packages)
+        return (
+            "# syntax=docker/dockerfile:1.6\n"
+            "\n"
+            "FROM gcc:12\n"
+            "\n"
+            "ARG TARGETARCH\n"
+            f'ARG REPO_URL="{repo_url}"\n'
+            "\n"
+            "ENV DEBIAN_FRONTEND=noninteractive \\\n"
+            "    LANG=C.UTF-8 \\\n"
+            "    TZ=UTC\n"
+            "\n"
+            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.description="{org}/{repo} base image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"\n'
+            "\n"
+            "WORKDIR /home/\n"
+            "\n"
+            "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+            f"    {pkgs} \\\n"
+            "    && rm -rf /var/lib/apt/lists/*\n"
+            "\n"
+            'RUN git clone "${REPO_URL}" /home/radare2\n'
+            "\n"
+            'CMD ["/bin/bash"]\n'
+        )
+
+
+class Radare2ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        # TWO-TIER: depend on the shared ImageBase (an Image, NOT a string).
+        # build_dataset builds it ONCE (tag :base, identical for every PR) and
+        # this per-PR image is layered FROM it -- so the apt deps + radare2 clone
+        # are installed/cloned a SINGLE time, not once per PR.
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -187,24 +267,35 @@ class Radare2ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    def extra_packages(self) -> list[str]:
-        # build-essential / make / git / python3 / ca-certificates are already
-        # in image.py's default set; these are the radare2-specific build deps
-        # (pkg-config for the acr build, patch for the capstone patch series).
-        return ["pkg-config", "patch"]
-
-    def extra_setup(self) -> str:
-        # ONLY stage files into /home/ -- NO `RUN` step.  Capstone fetch + build
-        # all happen in the run scripts (run phase, native arch).  This keeps the
-        # image build to clone + checkout + COPY, so the amd64 variant doesn't
-        # run `./configure`+capstone under slow qemu emulation.  The copied files
-        # live outside /home/radare2, so the hardening pass leaves them intact.
+    def dockerfile(self) -> str:
+        # Per-PR Dockerfile (one per PR).  FROM the shared :base image, check out
+        # THIS PR's base.sha and apply the _HARDENING_BLOCK (strip-to-SHA) so the
+        # fix / future commits can't be read out of git history, then COPY the run
+        # scripts.  NO apt / clone here -- those came from the shared base.
+        #
+        # No proxy / cert / MITM: dependency() is an Image (not a string), so
+        # DockerfileEnhancer.enhance() returns this Dockerfile UNCHANGED
+        # (image.py: `if not isinstance(dep, str): return raw`).
+        #
+        # build_dataset only passes the BASE_COMMIT build-arg when dependency() is
+        # a STRING (build_dataset.py: `if isinstance(dep, str)`), which is NOT the
+        # case here -- so we bake base.sha as the ARG default to guarantee the
+        # hardening block's "${BASE_COMMIT}" always resolves to the right commit.
+        base_name = self.dependency().image_full_name()
+        copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
         return (
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh"
+            f"FROM {base_name}\n"
+            "\n"
+            f'ARG BASE_COMMIT="{self.pr.base.sha}"\n'
+            "\n"
+            "WORKDIR /home/radare2\n"
+            "RUN git reset --hard\n"
+            "\n"
+            f"{copy_commands}"
+            "\n"
+            f"{Image._HARDENING_BLOCK}\n"
+            "\n"
+            'CMD ["/bin/bash"]\n'
         )
 
     def files(self) -> list[File]:
