@@ -14,14 +14,17 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TheiaNode10_4603ImageDefault(Image):
-    """PR-specific Docker layer for the Node 10 Yarn era.
+class TheiaNode10_4603ImageBase(Image):
+    """Level 1: toolchain-only base image (shared per era).
 
-    Pipeline:
-        git checkout <base_sha>
-        PUPPETEER_SKIP_DOWNLOAD=true yarn install --ignore-engines
-        yarn compile
-        lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1
+    dependency() returns a *string* (the Node toolchain) and this Dockerfile
+    carries NO ``# syntax`` directive, so the DockerfileEnhancer engages and
+    prepends the ``# syntax``/ARG/ENV/LABEL infra block. IMPORTANT: this image
+    must NOT clone the repository -- a shared string-dependency image that
+    clones is force-pinned to a single ``${BASE_COMMIT}`` and history-stripped
+    by the enhancer, breaking ``git checkout`` for every other PR sharing the
+    base. So the clone lives per-PR in TheiaNode10_4603ImageDefault. This image only provides the
+    Node toolchain + apt deps for Theia's native-module headers.
     """
 
     def __init__(self, pr: PullRequest, config: Config):
@@ -43,39 +46,130 @@ class TheiaNode10_4603ImageDefault(Image):
     def _is_deprecated_debian(base_img: str) -> bool:
         # node:*-buster (and older) images sit on EOL Debian whose apt repos
         # have moved to archive.debian.org. The base class only recognises
-        # bare "debian:buster"-style tags, so flag the node images here too;
-        # this makes Image._get_apt_update_command() rewrite sources.list to
-        # archive.debian.org before "apt-get update" (otherwise install 404s).
+        # bare "debian:buster"-style tags, so flag the node images here too.
         if any(s in base_img for s in ("buster", "stretch", "jessie")):
             return True
         return Image._is_deprecated_debian(base_img)
 
+    def _era(self) -> str:
+        # Per-era slug derived from the Node toolchain, e.g. node:10-buster ->
+        # "node10". Distinct eras (node10 / node12) MUST get distinct base tags
+        # so the shared base image name is not pinned to two Node versions.
+        name, ver = self.dependency().split(":")
+        return name + ver.split("-")[0].replace(".", "")
+
+    def image_tag(self) -> str:
+        return f"base-{self._era()}"
+
+    def workdir(self) -> str:
+        return f"base-{self._era()}"
+
+    def files(self) -> list[File]:
+        return []
+
     def extra_packages(self) -> list[str]:
-        # build-essential (g++/make), git, and python3 are already in the
-        # default package set baked into Image.dockerfile(); only Theia's
-        # native-module headers (electron/keytar/node-pty backends) are extra.
+        # Theia's native-module headers (electron/keytar/node-pty backends);
+        # build-essential/git/python3 are in the default set below.
         return ["libx11-dev", "libxkbfile-dev", "libsecret-1-dev"]
 
-    def extra_setup(self) -> str:
-        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. Stages the eval scripts + patches into /home/ (outside the git
-        # tree, so hardening leaves them untouched) and bakes the heavy
-        # yarn/npm install + compile into the image via prepare.sh.
-        return (
-            "COPY prepare.sh /home/prepare.sh\n"
-            "RUN bash /home/prepare.sh\n"
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh"
-        )
+    def dockerfile(self) -> str:
+        base_img = self.dependency()
+
+        default_packages = [
+            "ca-certificates",
+            "curl",
+            "build-essential",
+            "git",
+            "gnupg",
+            "make",
+            "python3",
+            "sudo",
+            "wget",
+        ]
+        all_packages = default_packages + self.extra_packages()
+        packages_str = " \\\n    ".join(all_packages)
+        apt_command = self._get_apt_update_command(packages_str, base_img)
+
+        # No `git clone` here on purpose (see docstring); no `# syntax` directive
+        # either, so the DockerfileEnhancer injects the ARG/ENV/LABEL infra block
+        # (but no clone/hardening, since this Dockerfile has no clone).
+        return f"""FROM {base_img}
+
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+{apt_command}
+
+CMD ["/bin/bash"]
+"""
+
+
+class TheiaNode10_4603ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return TheiaNode10_4603ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
+        # Single COPY of all scripts/patches into /home/ (inline template style).
+        copy_files = " ".join(file.name for file in self.files())
+
+        # The shared toolchain base does NOT clone, so this per-PR image clones
+        # full history first, then checks out ${BASE_COMMIT} inline. Because this
+        # image's dependency() is an Image, the DockerfileEnhancer returns the
+        # Dockerfile verbatim -- the clone + hardening below are kept as written
+        # (and pinning here is correct: it is per-PR, not the shared base).
+        header = f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
+
+{self.global_env}
+
+WORKDIR /home/
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
+COPY {copy_files} /home/
+
+RUN bash /home/install.sh || true
+
+"""
+
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal.
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
 
     def files(self) -> list[File]:
         return [
@@ -91,9 +185,12 @@ class TheiaNode10_4603ImageDefault(Image):
             ),
             File(
                 ".",
-                "prepare.sh",
+                "install.sh",
                 """\
 #!/bin/bash
+# Repo is already cloned + checked out at the base commit inline in the
+# Dockerfile; install.sh warms the yarn install + compile cache (runs before
+# the hardening strip, while the full clone is present).
 set -e
 
 cd /home/{repo}
