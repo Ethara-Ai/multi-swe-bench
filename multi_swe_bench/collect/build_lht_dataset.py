@@ -35,7 +35,7 @@ import argparse
 import json
 import random
 import re
-import subprocess
+import subprocess  # nosec B404 - exec routed through safe_subprocess (safe_run); import used for PIPE/exception types only
 import sys
 import time
 import uuid
@@ -601,9 +601,30 @@ def main(
                 "f2p_tests": {},
                 "s2p_tests": {},
                 "n2p_tests": {},
-                "run_result": {"passed_count": 0, "failed_count": 0, "skipped_count": 0, "passed_tests": [], "failed_tests": [], "skipped_tests": []},
-                "test_patch_result": {"passed_count": 0, "failed_count": 0, "skipped_count": 0, "passed_tests": [], "failed_tests": [], "skipped_tests": []},
-                "fix_patch_result": {"passed_count": 0, "failed_count": 0, "skipped_count": 0, "passed_tests": [], "failed_tests": [], "skipped_tests": []},
+                "run_result": {
+                    "passed_count": 0,
+                    "failed_count": 0,
+                    "skipped_count": 0,
+                    "passed_tests": [],
+                    "failed_tests": [],
+                    "skipped_tests": [],
+                },
+                "test_patch_result": {
+                    "passed_count": 0,
+                    "failed_count": 0,
+                    "skipped_count": 0,
+                    "passed_tests": [],
+                    "failed_tests": [],
+                    "skipped_tests": [],
+                },
+                "fix_patch_result": {
+                    "passed_count": 0,
+                    "failed_count": 0,
+                    "skipped_count": 0,
+                    "passed_tests": [],
+                    "failed_tests": [],
+                    "skipped_tests": [],
+                },
                 "prs_in_bundle": sorted_pr_numbers,
                 "release_line": group.get("release_line", ""),
                 "attribution_methods": group.get("attribution_methods", {}),

@@ -412,6 +412,41 @@ def report_claim_artifact_check(
 _INTERP_RUN_RE = re.compile(r"""(RUN|ARG|ENV)\b[^\n]*(?<![${])\{[^}{]*\}""")
 
 
+# Sanitizer-awareness: a RUN/ARG/ENV interpolation is NOT flagged when every value
+# it interpolates is provably defended — wrapped in a known sanitizer inline, bound
+# to a variable assigned from a sanitizer, or guarded by is_valid_env_name. Anything
+# else (a raw {org}/{repo}/{ref}/{url}) is STILL flagged (see negative-control test).
+_SANITIZERS = ("_safe_path_component", "escape_env_value")
+_SANITIZER_ASSIGN_RE = re.compile(rf"\b(\w+)\s*=\s*(?:{'|'.join(_SANITIZERS)})\s*\(")
+_ENV_GUARD_RE = re.compile(r"is_valid_env_name\s*\(\s*(\w+)\s*\)")
+# re.escape is included here ONLY for the inline case: a re.escape'd value is being
+# placed into a REGEX pattern (re.compile), not a generated shell command — so it is
+# not a generation-injection site. It is deliberately NOT a var-binding sanitizer.
+_INLINE_SANITIZER_RE = re.compile(rf"(?:{'|'.join(_SANITIZERS)}|re\.escape)\s*\(")
+_PLACEHOLDER_RE = re.compile(r"\{([^}{]*)\}")
+_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+# `var = f"...{...}..."` single-line f-string assignment (for transitive sanitization).
+_ASSIGN_FSTRING_RE = re.compile(r"""^\s*(\w+)\s*=\s*[rfRF]+["']([^"']*)["']\s*$""", re.MULTILINE)
+# Identifiers that are not data sources (builtins/coercions) — ignored when judging.
+_BENIGN_IDENTS = frozenset({"str", "int", "repr", "f"})
+
+
+def _interp_line_is_sanitized(line_text: str, sanitized: set[str], guarded: set[str]) -> bool:
+    """True iff EVERY {placeholder} on the line is provably sanitized. Fail-closed:
+    an empty/opaque placeholder or any unrecognized data identifier → not sanitized."""
+    # Drop f-string escaped braces first: `{{VAR}}` renders a LITERAL `{VAR}` (e.g.
+    # a Dockerfile `${VAR}` build-arg), not a Python interpolation — never a data source.
+    line_text = line_text.replace("{{", "").replace("}}", "")
+    for ph in _PLACEHOLDER_RE.findall(line_text):
+        if _INLINE_SANITIZER_RE.search(ph):
+            continue  # inline _safe_path_component(...) / escape_env_value(...)
+        idents = set(_IDENT_RE.findall(ph)) - _BENIGN_IDENTS
+        if idents and idents <= (sanitized | guarded):
+            continue  # only references sanitizer-bound / env-guarded names
+        return False
+    return True
+
+
 def dockerfile_generation_check(
     project_root: Path,
 ) -> tuple[list[NormalizedIssue], list[CoverageGap]]:
@@ -458,7 +493,29 @@ def dockerfile_generation_check(
                         subject=f"{rel}:from:{line}",
                     )
                 )
+        sanitized = set(_SANITIZER_ASSIGN_RE.findall(text))
+        guarded = set(_ENV_GUARD_RE.findall(text))
+        # Transitive closure: a var assigned from an f-string whose every {placeholder}
+        # is already sanitized is itself sanitized (e.g. repo_url = f".../{org}/{repo}").
+        for _ in range(5):
+            grew = False
+            for am in _ASSIGN_FSTRING_RE.finditer(text):
+                var, body = am.group(1), am.group(2)
+                if var in sanitized:
+                    continue
+                if _interp_line_is_sanitized(body, sanitized, guarded):
+                    sanitized.add(var)
+                    grew = True
+            if not grew:
+                break
         for m in _INTERP_RUN_RE.finditer(text):
+            ls = text.rfind("\n", 0, m.start()) + 1
+            le = text.find("\n", m.end())
+            line_text = text[ls : (le if le != -1 else len(text))]
+            # Skip interpolations whose every value is provably sanitized; an
+            # unsanitized raw value is still flagged (fail closed).
+            if _interp_line_is_sanitized(line_text, sanitized, guarded):
+                continue
             line = text[: m.start()].count("\n") + 1
             issues.append(
                 _issue(
@@ -466,8 +523,8 @@ def dockerfile_generation_check(
                     rule_id="interpolated-run-line",
                     severity=Severity.MEDIUM,
                     message=(
-                        f"{rel}:{line}: RUN/ARG/ENV line interpolates a value — verify the source "
-                        f"is trusted (org/repo/ref from PR metadata can inject shell)"
+                        f"{rel}:{line}: RUN/ARG/ENV line interpolates an UNSANITIZED value — "
+                        f"route org/repo/ref through _safe_path_component / escape_env_value"
                     ),
                     path=rel,
                     line=line,

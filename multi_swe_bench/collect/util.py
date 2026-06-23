@@ -98,7 +98,9 @@ def get_tokens(tokens) -> list[str]:
                     if env_list:
                         print(f"Loaded {len(env_list)} token(s) from ${var}")
                         return env_list
-            print("Error: No tokens provided. Pass --tokens, set GITHUB_TOKENS in .env, or create a tokens file.")
+            print(
+                "Error: No tokens provided. Pass --tokens, set GITHUB_TOKENS in .env, or create a tokens file."
+            )
             sys.exit(1)
         tokens = default_token_file
     else:

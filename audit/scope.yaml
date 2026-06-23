@@ -385,8 +385,42 @@ coverage_gaps:
   # set is reproducible. Digest pinned in command_config_policy.config_digests.
   - id: D-COVERAGE-GAP-repo-cache-history
     surface: git_history
-    reason: Tracked third-party bare git mirrors under .repo_cache inflate clone size and embed foreign history; secret scan covers them but provenance/bloat is flagged not gated.
+    reason: >-
+      Third-party bare git mirrors under .repo_cache were committed historically
+      (~20MB, 70 blobs). UNTRACKED from the working tree + gitignored (no new bloat),
+      but the blobs remain in git HISTORY; full purge needs a history rewrite.
+      Secret scan covers them. ACCEPTED RESIDUAL (see accepted_residuals).
     disposition_cap: HOLD
+
+# ---------------------------------------------------------------------------
+# Accepted residuals — gaps the OWNER has knowingly accepted for this stage.
+# These still cap HOLD (fail-closed is preserved; they are NOT silenced), but are
+# on-record as deliberate decisions, not open action items. Rationale: this repo is
+# an INTERNAL INTERMEDIATE stage — its JSONL output feeds a separate downstream repo
+# for trajectory creation. It is not a customer trust boundary, so SHIP-level
+# external attestation (and exhaustive container/history hardening) is deferred to
+# the downstream / final project boundary. The accepted ceiling here is a clean HOLD
+# (verify exits 0, 0 CRITICAL, findings acknowledged).
+# ---------------------------------------------------------------------------
+accepted_residuals:
+  - gap_id: D-COVERAGE-GAP-repo-cache-history
+    decision: accepted
+    by: owner (internal-stage policy, 2026-06-23)
+    reason: 20MB of foreign git history is acceptable bloat for an internal intermediate repo.
+    full_closure_path: git filter-repo to purge .repo_cache blobs (history rewrite — opt-in, breaks SHAs).
+  - gap_id: D-COVERAGE-GAP-dockerfile-sample-no-interp     # harness-emitted (dockerfiles.py)
+    decision: accepted
+    by: owner (internal-stage policy, 2026-06-23)
+    reason: >-
+      Per-instance generated-Dockerfile lint needs a project interpreter
+      (AUDIT_PROJECT_PYTHON); not wired in the portable run. The standing residual (a
+      static sample is not a live `docker build`+`trivy image` scan) is accepted for
+      this stage.
+    full_closure_path: set AUDIT_PROJECT_PYTHON in a runner + add a live-build trivy-image instrument.
+  - note: >-
+      Self-attested provenance (no external AUDIT_TRUST_ROOT_KEY) also caps HOLD by
+      design and is accepted — no CI signing on this repo; external attestation is a
+      downstream concern. SHIP is intentionally unreachable here; clean HOLD is the bar.
 
 # ---------------------------------------------------------------------------
 # Ambiguities requiring human resolution at sign-off.

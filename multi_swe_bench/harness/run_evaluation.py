@@ -647,10 +647,14 @@ class CliArgs:
         base_image_context = None
         dep_img = image.dependency()
         if isinstance(dep_img, Image) and self.output_tar:
-            safe_dep_name = dep_img.image_full_name().replace("/", "_").replace(":", "_")
+            safe_dep_name = (
+                dep_img.image_full_name().replace("/", "_").replace(":", "_")
+            )
             oci_dir = self.output_tar / f"{safe_dep_name}.tar.d"
             if oci_dir.exists():
-                base_image_context = f"{dep_img.image_full_name()}=oci-layout://{oci_dir.resolve()}"
+                base_image_context = (
+                    f"{dep_img.image_full_name()}=oci-layout://{oci_dir.resolve()}"
+                )
         docker_util.build(
             image_dir,
             image.dockerfile_name(),

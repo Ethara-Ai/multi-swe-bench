@@ -15,7 +15,7 @@
 import logging
 import platform as _platform
 import shlex
-import subprocess
+import subprocess  # nosec B404 - exec routed through safe_subprocess (safe_run/safe_popen); import used for PIPE/exception types only
 from pathlib import Path
 from typing import Optional, Union
 
@@ -149,7 +149,9 @@ def _get_container_builder() -> str | None:
                 if name:
                     return name
     except Exception:
-        logging.getLogger(__name__).debug("buildx builder detection failed", exc_info=True)
+        logging.getLogger(__name__).debug(
+            "buildx builder detection failed", exc_info=True
+        )
     return None
 
 
@@ -214,16 +216,18 @@ def _build_with_buildx(
     ]
     if builder:
         cmd.extend(["--builder", builder])
-    cmd.extend([
-        "--platform",
-        platform,
-        "-f",
-        dockerfile_name,
-        "-t",
-        image_full_name,
-        "--provenance=false",
-        "--sbom=false",
-    ])
+    cmd.extend(
+        [
+            "--platform",
+            platform,
+            "-f",
+            dockerfile_name,
+            "-t",
+            image_full_name,
+            "--provenance=false",
+            "--sbom=false",
+        ]
+    )
 
     # Add build arguments
     for key, value in (buildargs or {}).items():
@@ -272,16 +276,18 @@ def _build_with_buildx(
         ]
         if builder:
             load_cmd.extend(["--builder", builder])
-        load_cmd.extend([
-            "--platform",
-            native,
-            "-f",
-            dockerfile_name,
-            "-t",
-            image_full_name,
-            "--provenance=false",
-            "--sbom=false",
-        ])
+        load_cmd.extend(
+            [
+                "--platform",
+                native,
+                "-f",
+                dockerfile_name,
+                "-t",
+                image_full_name,
+                "--provenance=false",
+                "--sbom=false",
+            ]
+        )
         for key, value in (buildargs or {}).items():
             load_cmd.extend(["--build-arg", f"{key}={value}"])
         if base_image_context:

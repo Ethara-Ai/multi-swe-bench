@@ -21,9 +21,9 @@ def _r(instance_id: str) -> SimpleNamespace:
 
 def test_clean_set_reconciles():
     fr = FinalReport.from_reports(
-        reports=[_r("a"), _r("b")],          # resolved
-        invalid_reports=[_r("c")],           # unresolved
-        failed_tasks=[_r("d")],              # error
+        reports=[_r("a"), _r("b")],  # resolved
+        invalid_reports=[_r("c")],  # unresolved
+        failed_tasks=[_r("d")],  # error
         expected_ids={"a", "b", "c", "d"},
     )
     assert fr.resolved_instances == 2
@@ -41,17 +41,17 @@ def test_dropped_instance_counts_as_error_not_resolved():
         failed_tasks=[],
         expected_ids={"a", "e"},
     )
-    assert fr.resolved_instances == 1          # the drop did NOT inflate resolved
-    assert "e" in fr.error_ids                 # it is folded into error
+    assert fr.resolved_instances == 1  # the drop did NOT inflate resolved
+    assert "e" in fr.error_ids  # it is folded into error
     assert fr.error_instances == 1
-    assert fr.submitted_instances == 2         # denominator still counts it
+    assert fr.submitted_instances == 2  # denominator still counts it
 
 
 def test_same_instance_in_two_buckets_raises():
     with pytest.raises(ValueError, match="more than one"):
         FinalReport.from_reports(
             reports=[_r("a")],
-            invalid_reports=[_r("a")],         # also unresolved -> collision
+            invalid_reports=[_r("a")],  # also unresolved -> collision
             failed_tasks=[],
         )
 
@@ -68,7 +68,7 @@ def test_duplicate_within_bucket_raises():
 def test_graded_instance_outside_expected_raises():
     with pytest.raises(ValueError, match="not in the expected set"):
         FinalReport.from_reports(
-            reports=[_r("a"), _r("ghost")],    # "ghost" not in expected
+            reports=[_r("a"), _r("ghost")],  # "ghost" not in expected
             invalid_reports=[],
             failed_tasks=[],
             expected_ids={"a"},

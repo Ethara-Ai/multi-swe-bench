@@ -20,14 +20,16 @@ correctly inside the eval container regardless of where git/docker are installed
 from __future__ import annotations
 
 import shutil
-import subprocess
+import subprocess  # nosec B404 - central hardened wrapper; raw calls below are list-form + shell-rejected (B603-checked)
 from collections.abc import Sequence
 
 
 def _harden(argv: Sequence[str], kwargs: dict) -> list[str]:
     """Validate argv is list-form, forbid shell=True, resolve argv[0] absolute."""
     if isinstance(argv, (str, bytes)):
-        raise TypeError("safe subprocess requires a list/tuple argv, not a string (no shell)")
+        raise TypeError(
+            "safe subprocess requires a list/tuple argv, not a string (no shell)"
+        )
     if kwargs.get("shell"):
         raise ValueError("shell=True is forbidden; pass a list-form argv")
     parts = [str(a) for a in argv]

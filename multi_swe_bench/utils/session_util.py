@@ -1,6 +1,6 @@
 import logging
 import shlex
-import subprocess
+import subprocess  # nosec B404 - exec routed through safe_subprocess (safe_run/safe_popen); import used for PIPE/exception types only
 import time
 import tempfile
 import asyncio
@@ -75,7 +75,9 @@ class MultiSweBenchDockerDeployment(DockerDeployment):
         if self._config.port is None:
             self._config.port = find_free_port()
         if self._container_name is not None:
-            raise RuntimeError("container already started (self._container_name is set)")
+            raise RuntimeError(
+                "container already started (self._container_name is set)"
+            )
         self._container_name = self._get_container_name()
         token = self._get_token()
         platform_arg = []

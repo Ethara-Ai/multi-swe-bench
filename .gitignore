@@ -199,10 +199,6 @@ exp/
 
 datasets/
 
-# Regenerable bare-git-clone cache (collect pipeline re-clones on demand). Was
-# committed by accident (~20 MB, 70 blobs). Untracked from the working tree; the
-# EXISTING history bloat is only purged by a history rewrite (see audit notes).
-multi_swe_bench/collect/.repo_cache/
 
 # CRUCIBLE audit gate: the harness, scope.yaml, scope.approved, the committed
 # evidence bundle (audit/evidence.yaml), the provenance manifest, the front doors

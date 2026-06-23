@@ -207,7 +207,8 @@ def main(
             for attempt in range(retry_attempts):
                 try:
                     fix_patch, test_patch = extract_patches_from_compare(
-                        pr, random.choice(tokens)  # nosec B311 - non-crypto token load-balancing, not a security context
+                        pr,
+                        random.choice(tokens),  # nosec B311 - non-crypto token load-balancing, not a security context
                     )
                     pr["fix_patch"] = fix_patch
                     pr["test_patch"] = test_patch

@@ -28,6 +28,7 @@ until `audit verify` exits 0**.
 | `provision` | `uv sync --extra scanners`; notes native scanners (`osv-scanner`, `gitleaks`, `hadolint`, `trivy`) installed out-of-band. Hard-fail. | no |
 | `run` | recon + scanner instruments + Bucket-D domain checks + normalization → `evidence.yaml` + `provenance.manifest.yaml` + `results/artifacts/CMD-NNN.stdout.txt.gz`. Enforces the approved `ignore_allowlist`; honours `-t` global budget. | no |
 | `verify` | the six rules + provenance pre-checks against `findings.yaml`. Exits `0` **only** when all hold. | **yes — this is the gate** |
+| `sign` | detached-signs `provenance.manifest.yaml` with the external `AUDIT_TRUST_ROOT_KEY` → `provenance.manifest.sig`. Run **only** in a trusted env (CI/KMS/approver). Lifts the self-attested provenance cap. See [`SIGNING.md`](SIGNING.md). | no (enables SHIP) |
 | `all` | `provision` (unless `--no-install`) → `run` → optional `--verify` → prints Phase-2 hand-off. Never writes findings. | no |
 
 ## Module map (flat layout — modules import by bare name)

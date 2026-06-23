@@ -91,3 +91,35 @@ def test_artifact_substitution_blocks(tmp_path):
     res = run_verify(audit_root, project_root, fp)
     assert res.computed_cap.value == "BLOCK"
     assert any("artifact substituted" in n for n in res.notes)
+
+
+def test_sign_roundtrip_verifies_only_with_external_key(tmp_path, monkeypatch):
+    """`audit sign` round-trip: a manifest HMAC-signed with AUDIT_TRUST_ROOT_KEY
+    verifies; absent key, missing sig, or a wrong key all fail (fail closed)."""
+    import provenance as prov
+
+    audit_root = tmp_path / "audit"
+    audit_root.mkdir()
+    manifest = audit_root / "provenance.manifest.yaml"
+    manifest.write_bytes(b"manifest: bytes\n")
+    key = "external-key-xyz"
+
+    # no key in env -> self-attested
+    monkeypatch.delenv("AUDIT_TRUST_ROOT_KEY", raising=False)
+    ok, reason = prov._verify_signature(manifest.read_bytes(), audit_root)
+    assert not ok and "no AUDIT_TRUST_ROOT_KEY" in reason
+
+    # key set but no signature file yet -> fail closed
+    monkeypatch.setenv("AUDIT_TRUST_ROOT_KEY", key)
+    ok, reason = prov._verify_signature(manifest.read_bytes(), audit_root)
+    assert not ok and "no detached signature" in reason
+
+    # sign (exactly what `audit sign` does) then verify with the key -> trusted
+    (audit_root / "provenance.manifest.sig").write_text(prov.hmac_sign(manifest.read_bytes(), key))
+    ok, reason = prov._verify_signature(manifest.read_bytes(), audit_root)
+    assert ok and "signature verified" in reason
+
+    # wrong key -> rejected
+    monkeypatch.setenv("AUDIT_TRUST_ROOT_KEY", "wrong-key")
+    ok, reason = prov._verify_signature(manifest.read_bytes(), audit_root)
+    assert not ok and "does not verify" in reason

@@ -158,3 +158,88 @@ def test_reward_provenance_detects_unenforced_guard(tmp_path):
     assert any(
         i.rule_id == "tamper-guard-not-enforced" and i.severity == Severity.CRITICAL for i in issues
     )
+
+
+def test_dockerfile_check_skips_sanitized_but_flags_raw(tmp_path):
+    """Sanitizer-aware: sanitized interpolation is NOT flagged; a raw value IS."""
+    from domain import dockerfile_generation_check
+
+    src = tmp_path / "multi_swe_bench" / "utils" / "env_to_dockerfile.py"
+    src.parent.mkdir(parents=True)
+    src.write_text(
+        "def gen(env, repo, evil):\n"
+        "    repo = _safe_path_component(repo)\n"
+        "    a = f'RUN clone /home/{repo}'\n"  # sanitized var -> skip
+        "    if is_valid_env_name(key):\n"
+        "        b = f'ENV {key}=\"{escape_env_value(v)}\"'\n"  # guarded + inline -> skip
+        "    c = f'RUN echo {evil}'\n"  # RAW -> must flag
+        "    return a, b, c\n",
+        encoding="utf-8",
+    )
+    issues, _ = dockerfile_generation_check(tmp_path)
+    flagged = [i for i in issues if i.rule_id == "interpolated-run-line"]
+    # exactly the raw {evil} line is flagged; the two sanitized lines are not
+    assert len(flagged) == 1
+    assert "evil" not in (flagged[0].message or "") or "UNSANITIZED" in flagged[0].message
+
+
+def test_dockerfile_check_transitive_and_regex_context(tmp_path):
+    """A URL built from sanitized parts is skipped; a re.escape() regex context is skipped;
+    a URL built from a RAW part is still flagged (fail closed)."""
+    from domain import dockerfile_generation_check
+
+    src = tmp_path / "multi_swe_bench" / "utils" / "env_to_dockerfile.py"
+    src.parent.mkdir(parents=True)
+    src.write_text(
+        "def gen(o, r, raw):\n"
+        "    org = _safe_path_component(o)\n"
+        "    repo = _safe_path_component(r)\n"
+        "    url = f'https://github.com/{org}/{repo}.git'\n"  # transitive -> sanitized
+        "    a = f'ARG REPO_URL=\"{url}\"'\n"  # uses transitive var -> skip
+        "    pat = f'RUN clone {re.escape(repo)}'\n"  # regex context -> skip
+        "    bad = f'https://x/{raw}'\n"  # RAW transitive
+        "    b = f'ARG U=\"{bad}\"'\n"  # uses raw-built var -> FLAG
+        "    return a, pat, b\n",
+        encoding="utf-8",
+    )
+    issues, _ = dockerfile_generation_check(tmp_path)
+    flagged_lines = sorted(i.line for i in issues if i.rule_id == "interpolated-run-line")
+    assert len(flagged_lines) == 1  # only the raw-built ARG is flagged
+
+
+def test_live_image_scan_fails_closed_and_parses(tmp_path, monkeypatch):
+    """No docker -> coverage gap (fail closed). Trivy json -> dependency-class CVE issues."""
+    import imagescan
+
+    monkeypatch.setattr(imagescan.shutil, "which", lambda b: None)  # no docker
+    issues, gaps = imagescan.live_image_scan(tmp_path)
+    assert issues == [] and gaps and gaps[0].gap_id == "D-COVERAGE-GAP-live-image-no-docker"
+
+    import json as _json
+
+    from models import LocationType
+
+    blob = _json.dumps(
+        {
+            "Results": [
+                {
+                    "Target": "img",
+                    "Vulnerabilities": [
+                        {
+                            "VulnerabilityID": "CVE-2024-1",
+                            "PkgName": "libx",
+                            "InstalledVersion": "1.0",
+                            "FixedVersion": "1.1",
+                            "Severity": "HIGH",
+                            "Title": "bad",
+                        }
+                    ],
+                }
+            ]
+        }
+    ).encode()
+    parsed, ok = imagescan._parse_trivy_image(blob)
+    assert ok and len(parsed) == 1
+    assert parsed[0].rule_id == "CVE-2024-1"
+    assert parsed[0].severity.value == "HIGH"
+    assert parsed[0].location_type == LocationType.DEPENDENCY  # never dropped by allowlist

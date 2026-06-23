@@ -13,7 +13,7 @@
 #  limitations under the License.
 
 import logging
-import subprocess
+import subprocess  # nosec B404 - exec routed through safe_subprocess (safe_run); import used for PIPE/exception types only
 from pathlib import Path
 
 from git import GitError, Repo

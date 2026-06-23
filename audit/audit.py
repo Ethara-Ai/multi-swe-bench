@@ -12,6 +12,7 @@ Commands:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -22,6 +23,7 @@ import typer
 import dockerfiles as dockerfiles_mod
 import domain
 import evidence as evidence_mod
+import imagescan as imagescan_mod
 import normalize
 import provenance as prov_mod
 import recon as recon_mod
@@ -237,6 +239,13 @@ def run(
     all_issues.extend(df_issues)
     gaps.extend(df_gaps)
 
+    # Live container image scan: docker-build the representative Dockerfile + trivy
+    # image-scan the built image (real OS/package CVEs). Narrows the static residual;
+    # fail-closed to a coverage gap if docker/trivy/build/scan is unavailable.
+    img_issues, img_gaps = imagescan_mod.live_image_scan(PROJECT_ROOT)
+    all_issues.extend(img_issues)
+    gaps.extend(img_gaps)
+
     # Fail-closed against required-set STARVATION: any instrument named in the
     # approved scope that the runner neither executes (registry) nor evaluates as
     # a domain check is silently uncovered. Emit a coverage gap so the absence
@@ -332,6 +341,44 @@ def verify(
             f"GATE FAIL — {len(result.violations)} violation(s).", fg=typer.colors.RED, err=True
         )
     raise typer.Exit(code=result.exit_code())
+
+
+@app.command()
+def sign():
+    """Detached-sign the provenance manifest with the EXTERNAL trust-root key.
+
+    Run this ONLY in a trusted environment (CI / KMS / approver) that holds
+    AUDIT_TRUST_ROOT_KEY — a secret the producer cannot mint. It HMACs the exact
+    bytes `verify` reads (audit/provenance.manifest.yaml) and writes the detached
+    signature to audit/provenance.manifest.sig. Possession of the external key is
+    the gate: signing on a producer-controlled host where the key is readable is
+    meaningless (and the run would still be self-attested elsewhere).
+    """
+    key = os.environ.get("AUDIT_TRUST_ROOT_KEY")
+    if not key:
+        typer.secho(
+            "AUDIT_TRUST_ROOT_KEY not set — cannot sign (the trust root must come "
+            "from outside the repo, e.g. a CI/KMS secret).",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    manifest_path = AUDIT_ROOT / "provenance.manifest.yaml"
+    if not manifest_path.is_file():
+        typer.secho(
+            f"no manifest to sign at {manifest_path} — run `audit run` first.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    sig = prov_mod.hmac_sign(manifest_path.read_bytes(), key)
+    sig_path = AUDIT_ROOT / "provenance.manifest.sig"
+    sig_path.write_text(sig, encoding="utf-8")
+    typer.secho(
+        f"signed: wrote {sig_path} (verify with the same key in env). "
+        "SHIP also needs a clean tree, no source drift, and no capping coverage gaps.",
+        fg=typer.colors.GREEN,
+    )
 
 
 @app.command()

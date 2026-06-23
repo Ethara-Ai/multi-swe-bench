@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import re
 from dataclasses import dataclass
@@ -390,7 +389,9 @@ class DockerfileEnhancer:
     def _inject_final_sanitize(cls, content: str, repo: str) -> str:
         marker = 'test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
         expected_workdir = f"/home/{repo}"
-        if not any(tok in content for tok in ("git clone", "git fetch", "git remote add")):
+        if not any(
+            tok in content for tok in ("git clone", "git fetch", "git remote add")
+        ):
             return content
 
         lines = content.split("\n")
@@ -417,8 +418,11 @@ class DockerfileEnhancer:
 
         preceding = "\n".join(lines[:last_cmd_idx])
         if marker in preceding:
-            intervening = preceding[preceding.rfind(marker):]
-            if not any(tok in intervening for tok in ("git fetch", "git clone", "git remote add")):
+            intervening = preceding[preceding.rfind(marker) :]
+            if not any(
+                tok in intervening
+                for tok in ("git fetch", "git clone", "git remote add")
+            ):
                 return content
 
         hardening_lines = Image._HARDENING_BLOCK.rstrip("\n").split("\n")
@@ -434,8 +438,12 @@ class DockerfileEnhancer:
     def _infrastructure_block(
         cls, image: "Image", base_img: str, dataset_generation: bool = False
     ) -> str:
-        org, repo = image.pr.org, image.pr.repo
+        # Validate org/repo before they are interpolated into the clone URL / ARG,
+        # so a name with shell or URL metacharacters cannot inject build commands.
+        org = _safe_path_component(image.pr.org, "org")
+        repo = _safe_path_component(image.pr.repo)
         github_repo = repo[: -len("_root")] if repo.endswith("_root") else repo
+        github_repo = _safe_path_component(github_repo)
         repo_url = f"https://github.com/{org}/{github_repo}.git"
 
         # Build ARGs: TARGETARCH, then REPO_URL and BASE_COMMIT, then proxy args

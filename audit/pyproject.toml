@@ -43,6 +43,7 @@ include = [
     "normalize.py",
     "domain.py",
     "dockerfiles.py",
+    "imagescan.py",
     "cvss.py",
     "recall.py",
     "verifier.py",

@@ -101,7 +101,13 @@ def get_github(token) -> Github:
     return Github(auth=auth, per_page=100)
 
 
-def main(tokens: list[str], out_dir: Path, prs_file: Path, skip_commit_message: bool, mode: str = "swe"):
+def main(
+    tokens: list[str],
+    out_dir: Path,
+    prs_file: Path,
+    skip_commit_message: bool,
+    mode: str = "swe",
+):
     print("starting filter to obtain required pull requests")
     print(f"Output directory: {out_dir}")
     print((f"All Pull Requests: {prs_file}"))
@@ -176,4 +182,10 @@ if __name__ == "__main__":
 
     tokens = get_tokens(args.tokens)
 
-    main(tokens, Path.cwd() / args.out_dir, args.prs_file, args.skip_commit_message, args.mode)
+    main(
+        tokens,
+        Path.cwd() / args.out_dir,
+        args.prs_file,
+        args.skip_commit_message,
+        args.mode,
+    )

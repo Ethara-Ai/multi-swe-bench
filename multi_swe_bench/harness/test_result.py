@@ -20,7 +20,7 @@ from unidiff import PatchSet
 
 
 class TestStatus(Enum):
-    PASS = "PASS"
+    PASS = "PASS"  # nosec B105 - test-result status enum, not a credential
     FAIL = "FAIL"
     SKIP = "SKIP"
     NONE = "NONE"

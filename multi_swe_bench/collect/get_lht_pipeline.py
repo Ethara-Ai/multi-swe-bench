@@ -72,7 +72,7 @@ def get_parser() -> argparse.ArgumentParser:
         "--max-tags",
         type=int,
         default=200,
-        help="Maximum number of tags to fetch (default: 200)."
+        help="Maximum number of tags to fetch (default: 200).",
     )
     parser.add_argument(
         "--window-days",

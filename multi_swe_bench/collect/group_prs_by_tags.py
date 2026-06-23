@@ -56,7 +56,7 @@ import argparse
 import json
 import random
 import re
-import subprocess
+import subprocess  # nosec B404 - exec routed through safe_subprocess (safe_run); import used for PIPE/exception types only
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -520,21 +520,31 @@ def _maybe_emit_group(
 ) -> None:
     """Collect PRs for a tag pair and append to groups if threshold met."""
     pr_numbers, methods = _collect_prs_for_pair(
-        base_tag, head_tag, pr_by_sha, pr_by_number,
-        all_prs, assigned_pr_numbers, repo_path, tokens, org, repo,
+        base_tag,
+        head_tag,
+        pr_by_sha,
+        pr_by_number,
+        all_prs,
+        assigned_pr_numbers,
+        repo_path,
+        tokens,
+        org,
+        repo,
     )
     if len(pr_numbers) >= _MIN_PRS_PER_BUNDLE:
         assigned_pr_numbers.update(pr_numbers)
         existing_pairs.add((base_tag["sha"], head_tag["sha"]))
-        groups.append({
-            "base_tag": base_tag["name"],
-            "head_tag": head_tag["name"],
-            "base_sha": base_tag["sha"],
-            "head_sha": head_tag["sha"],
-            "pr_numbers": sorted(pr_numbers),
-            "release_line": release_line,
-            "attribution_methods": methods,
-        })
+        groups.append(
+            {
+                "base_tag": base_tag["name"],
+                "head_tag": head_tag["name"],
+                "base_sha": base_tag["sha"],
+                "head_sha": head_tag["sha"],
+                "pr_numbers": sorted(pr_numbers),
+                "release_line": release_line,
+                "attribution_methods": methods,
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -714,10 +724,19 @@ def main(
 
                     # Layer 4: Tiered PR attribution
                     _maybe_emit_group(
-                        base_tag, head_tag, line,
-                        pr_by_sha, pr_by_number, prs,
-                        assigned_pr_numbers, repo_path, tokens,
-                        org, repo, groups, existing_pairs,
+                        base_tag,
+                        head_tag,
+                        line,
+                        pr_by_sha,
+                        pr_by_number,
+                        prs,
+                        assigned_pr_numbers,
+                        repo_path,
+                        tokens,
+                        org,
+                        repo,
+                        groups,
+                        existing_pairs,
                     )
 
             # Cross-release-line pairs (e.g., v1.9.5 → v2.0.0)
@@ -725,10 +744,19 @@ def main(
             cross_pairs = _find_cross_line_pairs(all_sorted, existing_pairs, repo_path)
             for base_tag, head_tag, cross_line in cross_pairs:
                 _maybe_emit_group(
-                    base_tag, head_tag, cross_line,
-                    pr_by_sha, pr_by_number, prs,
-                    assigned_pr_numbers, repo_path, tokens,
-                    org, repo, groups, existing_pairs,
+                    base_tag,
+                    head_tag,
+                    cross_line,
+                    pr_by_sha,
+                    pr_by_number,
+                    prs,
+                    assigned_pr_numbers,
+                    repo_path,
+                    tokens,
+                    org,
+                    repo,
+                    groups,
+                    existing_pairs,
                 )
 
             print(f"Version-range grouping produced {len(groups)} groups")

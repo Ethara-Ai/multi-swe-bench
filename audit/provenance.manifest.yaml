@@ -1,7 +1,7 @@
-approved_scope_digest: c470afa372329674d079aac56d915cf60c95ce1273e1de1c9cd83c3d19a971f0
-evidence_sha256: 16d8b00a7f5b5363145f2fc89048879204a35eaefdf606292d2abb50e070f88b
+approved_scope_digest: 2774da65a0b60a8b263e0d1d68dd5a5c27b9aa03b1fff18b7bf5b913efc5ad1b
+evidence_sha256: 9e2f8589e3e19ad33113459a784036d71f2a47bb85dbe6eb6bba681f54871a74
 git_dirty: true
-git_sha: 78d1ac6fee1feb26fd9e6b4b8ba89f3b5be909f2
+git_sha: 1d39f9f4208d3dce7f65a841078d8d3ed228458f
 policy_version: 1
 runs:
 - argv:
@@ -18,7 +18,7 @@ runs:
   run_id: CMD-001
   status: ok
   stdout_artifact: artifacts/CMD-001.stdout.txt.gz
-  stdout_artifact_sha256: d6b97ad97efefd23abc8ea9299147143b1ba1643485bcc15fb1c1bb6dcac0e72
+  stdout_artifact_sha256: 72fa5ec0a8e0f8858072279fed8630d213be469ca75a53ba5bdc90cc5f7123f9
   tool: semgrep
 - argv:
   - bandit
@@ -31,7 +31,7 @@ runs:
   run_id: CMD-002
   status: nonzero_exit
   stdout_artifact: artifacts/CMD-002.stdout.txt.gz
-  stdout_artifact_sha256: 960ba9967c8e107506fec4657edf9db9619e40fcb12ce4311d532f2760bfb226
+  stdout_artifact_sha256: 7c6d9740b121af26916c2fd77d12f90d1d3cf5cdf89ba9d92f3c995d6ab650e0
   tool: bandit
 - argv:
   - pip-audit
@@ -44,7 +44,7 @@ runs:
   run_id: CMD-003
   status: ok
   stdout_artifact: artifacts/CMD-003.stdout.txt.gz
-  stdout_artifact_sha256: 2ac8af97e2f4cc08fa16015bfec397e15de97eefe619ef4e758f1d75cda64f53
+  stdout_artifact_sha256: 99216c5dfa7f390a45670d139ecb5fee808352d29ddcbc986ffa966783f05d8b
   tool: pip-audit
 - argv:
   - osv-scanner
@@ -57,7 +57,7 @@ runs:
   run_id: CMD-004
   status: ok
   stdout_artifact: artifacts/CMD-004.stdout.txt.gz
-  stdout_artifact_sha256: af9e7a567d7ec0e266a8db5b904627fc8271411ae667e3dd15945e8e77085af0
+  stdout_artifact_sha256: 820241632daa5d6a13f0e40a2366f763bed64d41e88e70b1018d9c3aea88ace5
   tool: osv-scanner
 - argv:
   - gitleaks
@@ -74,7 +74,7 @@ runs:
   run_id: CMD-005
   status: ok
   stdout_artifact: artifacts/CMD-005.stdout.txt.gz
-  stdout_artifact_sha256: 410ddf4283a79231a230142ea6690ee5e6e66914af9c304414b125a09710fbc7
+  stdout_artifact_sha256: 015eb3dd50830c86b9ef1ee5bd9a46324a53c8cca290f1265483febf65366eb0
   tool: gitleaks
 - argv:
   - ruff
@@ -87,7 +87,7 @@ runs:
   run_id: CMD-006
   status: nonzero_exit
   stdout_artifact: artifacts/CMD-006.stdout.txt.gz
-  stdout_artifact_sha256: c3c98f7c08862117408b1c32d6c3b12a5a5ed877a6f7a49caab13fee94ade601
+  stdout_artifact_sha256: a6a1b6724e8fb7ea0b8d446deea17b230b21bbebf391603469fbfb4844b37b9b
   tool: ruff
 - argv:
   - ruff
@@ -99,7 +99,7 @@ runs:
   run_id: CMD-007
   status: nonzero_exit
   stdout_artifact: artifacts/CMD-007.stdout.txt.gz
-  stdout_artifact_sha256: 3a476acbb1fe6df7c099fb3ae1f3afcac0176197544b68a16d2485852501f1bc
+  stdout_artifact_sha256: 864c353c398ba437f37d5d85e2e853b1f7e5bdd2957f149273b9d37abcb3fc9c
   tool: ruff-format
 - argv:
   - __audit_unresolvable__
@@ -123,7 +123,7 @@ runs:
   run_id: CMD-009
   status: ok
   stdout_artifact: artifacts/CMD-009.stdout.txt.gz
-  stdout_artifact_sha256: 6a9f9ee6d1d18b658aa14aac625d395246899089ece119dad30aae6978fc30dc
+  stdout_artifact_sha256: d19cef8bd5b681ac405d5febe7d99859f27536856f9c06b9c4b69d0438f59bee
   tool: hadolint
 - argv:
   - trivy
@@ -136,55 +136,55 @@ runs:
   run_id: CMD-010
   status: ok
   stdout_artifact: artifacts/CMD-010.stdout.txt.gz
-  stdout_artifact_sha256: 7e0f7353bcc809e96203a627448b34129ff60d532b83a9c3b0b41d3b3533d5d6
+  stdout_artifact_sha256: b9e2f2cac4aff05beaffee90be23e56123e92bf886dfbb5fda3d3bcc218a8f70
   tool: trivy
 schema_version: 1
-scope_digest: c470afa372329674d079aac56d915cf60c95ce1273e1de1c9cd83c3d19a971f0
+scope_digest: 2774da65a0b60a8b263e0d1d68dd5a5c27b9aa03b1fff18b7bf5b913efc5ad1b
 sources:
-- line_count: 261
+- line_count: 262
   path: multi_swe_bench/collect/build_dataset.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/build_dataset.py
-  sha256: 79a1e36487b42011586b9ad3a3a009cc96f793d31ee70ed4a7245e1ab7ae4e68
+  sha256: fbaddac32dc998959163ea8e5dbd1ffad01f26b5441c71179e316cba0f46e347
   type: source
 - line_count: 255
   path: multi_swe_bench/collect/crawl_repos.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/crawl_repos.py
   sha256: ce948648d258ec16d63b91c049571f470934fa3ea21ed73bdce42ceb9156ec73
   type: source
-- line_count: 988
+- line_count: 990
   path: multi_swe_bench/harness/build_dataset.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/build_dataset.py
-  sha256: b52b132730a3d68bddf3190d8a6b4a0eed7ed8dafbce73214eb28b42beacc178
+  sha256: 13d8a47feca5519f5e350c84f3470c8e483a2549612fc5b12bb8be1584260a9a
   type: source
-- line_count: 617
+- line_count: 630
   path: multi_swe_bench/harness/gen_report.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/gen_report.py
-  sha256: 7724eb9e08afc2d0b881b4051869e10a21af891f4c1ce6bb2e980c4eba9dfee7
+  sha256: 0948b335e4f87c7ac6d6318f36f1bf1e5fdd1fba5c0a9693d1ddd7dbda66104c
   type: source
-- line_count: 551
+- line_count: 559
   path: multi_swe_bench/harness/image.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/image.py
-  sha256: 91a68683538716214ad20bbc59e226e45c79d0776bbb2a31d39305ba6aed1b55
+  sha256: 0284643cd13ff12872cc82c650e78ace6c7467c2792137070712d80ea3d09f1c
   type: source
 - line_count: 432
   path: multi_swe_bench/harness/report.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/report.py
   sha256: b098479ebca12ed7b69e1fcaac8cc66e5ed8066a1f066b477a931fafed08df0b
   type: source
-- line_count: 917
+- line_count: 921
   path: multi_swe_bench/harness/run_evaluation.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/run_evaluation.py
-  sha256: 9a30fd6e9e654cb5462f62444201f4cffb008603673c63533025263a12fc0f79
+  sha256: 35cc8beb3702bfaa491085e553b1b86a46cd7e103374d6290e69cf30457ea2f6
   type: source
 - line_count: 176
   path: multi_swe_bench/harness/test_result.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/test_result.py
-  sha256: be0554b247245fdf2f1e763ed04c8728b522367a6742a144abdf8336430d3f9b
+  sha256: 827af13812eeed4ea4374c4d8d152675874bcb88f7b9703e5bec9c685870a222
   type: source
-- line_count: 332
+- line_count: 338
   path: multi_swe_bench/utils/docker_util.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/utils/docker_util.py
-  sha256: 9c9fd08b94090efe2eb5704d1e8ab1cadf078615d0fdcabcae6cbc2af494446d
+  sha256: 6821c1f5d81427f759ff936548f076c20515ecf2a92388fd61a015391d31c85a
   type: source
 - line_count: 237
   path: multi_swe_bench/utils/env_to_dockerfile.py

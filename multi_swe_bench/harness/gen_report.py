@@ -362,21 +362,34 @@ class CliArgs:
                             number_interval = ""
                             tag = ""
                             try:
-                                if hasattr(self, '_dataset') and task_id in self._dataset:
+                                if (
+                                    hasattr(self, "_dataset")
+                                    and task_id in self._dataset
+                                ):
                                     ds = self._dataset[task_id]
-                                    number_interval = getattr(ds, 'number_interval', '')
-                                    tag = getattr(ds, 'tag', '')
-                                elif hasattr(self, '_raw_dataset') and task_id in self._raw_dataset:
+                                    number_interval = getattr(ds, "number_interval", "")
+                                    tag = getattr(ds, "tag", "")
+                                elif (
+                                    hasattr(self, "_raw_dataset")
+                                    and task_id in self._raw_dataset
+                                ):
                                     pr = self._raw_dataset[task_id]
-                                    number_interval = getattr(pr, 'number_interval', '')
-                                    tag = getattr(pr, 'tag', '')
+                                    number_interval = getattr(pr, "number_interval", "")
+                                    tag = getattr(pr, "tag", "")
                             except Exception:
                                 logging.getLogger(__name__).debug(
                                     "dataset metadata lookup for %s failed; using defaults",
                                     task_id,
                                     exc_info=True,
                                 )
-                            task = ReportTask(org, repo, number, instance_dir, number_interval=number_interval, tag=tag)
+                            task = ReportTask(
+                                org,
+                                repo,
+                                number,
+                                instance_dir,
+                                number_interval=number_interval,
+                                tag=tag,
+                            )
                             if not self.check_specific(task.id):
                                 continue
                             if self.check_skip(task.id):
