@@ -106,7 +106,7 @@ def parse_env_output(env_output: str) -> List[Tuple[str, str]]:
 
 
 def generate_dockerfile(
-    env_vars: List[Tuple[str, str]], base_image: str = "ubuntu:latest"
+    env_vars: List[Tuple[str, str]], base_image: str = "ubuntu:24.04"
 ) -> str:
     """
     Generate Dockerfile content
@@ -127,7 +127,7 @@ def generate_dockerfile(
 def generate_dockerfile_from_env_vars(
     delete_env_vars: List[Tuple[str, str]],
     add_and_change_env_vars: List[Tuple[str, str]],
-    base_image: str = "ubuntu:latest",
+    base_image: str = "ubuntu:24.04",
 ) -> str:
     dockerfile_lines = [
         f"FROM {base_image}",

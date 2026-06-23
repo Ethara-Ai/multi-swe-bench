@@ -1,7 +1,7 @@
 approved_scope_digest: c470afa372329674d079aac56d915cf60c95ce1273e1de1c9cd83c3d19a971f0
-evidence_sha256: 035a47fded740d5767931e54fdf6be4ca94183fd6f98782d8761b0f0582a0646
+evidence_sha256: 16d8b00a7f5b5363145f2fc89048879204a35eaefdf606292d2abb50e070f88b
 git_dirty: true
-git_sha: 23bd558266ce7add66308507812bb64f6fb0980b
+git_sha: 78d1ac6fee1feb26fd9e6b4b8ba89f3b5be909f2
 policy_version: 1
 runs:
 - argv:
@@ -18,7 +18,7 @@ runs:
   run_id: CMD-001
   status: ok
   stdout_artifact: artifacts/CMD-001.stdout.txt.gz
-  stdout_artifact_sha256: a0c10f5dbefae73123dafdcafe2c212135012affaba7b3811919c9c0c2b5e4d7
+  stdout_artifact_sha256: d6b97ad97efefd23abc8ea9299147143b1ba1643485bcc15fb1c1bb6dcac0e72
   tool: semgrep
 - argv:
   - bandit
@@ -31,7 +31,7 @@ runs:
   run_id: CMD-002
   status: nonzero_exit
   stdout_artifact: artifacts/CMD-002.stdout.txt.gz
-  stdout_artifact_sha256: 73a1fa054ffa265eca7d494edcdb385c4e5f1d38946ef9dbe372c4925849f889
+  stdout_artifact_sha256: 960ba9967c8e107506fec4657edf9db9619e40fcb12ce4311d532f2760bfb226
   tool: bandit
 - argv:
   - pip-audit
@@ -44,7 +44,7 @@ runs:
   run_id: CMD-003
   status: ok
   stdout_artifact: artifacts/CMD-003.stdout.txt.gz
-  stdout_artifact_sha256: ea6f9b903f1d2b0529fc85bbc90ed348fa68576b4430307a3fce4468553b356c
+  stdout_artifact_sha256: 2ac8af97e2f4cc08fa16015bfec397e15de97eefe619ef4e758f1d75cda64f53
   tool: pip-audit
 - argv:
   - osv-scanner
@@ -57,7 +57,7 @@ runs:
   run_id: CMD-004
   status: ok
   stdout_artifact: artifacts/CMD-004.stdout.txt.gz
-  stdout_artifact_sha256: b4a0a08ac1051bd9285185a931924295e772059bd267290a8e88ae9776b00327
+  stdout_artifact_sha256: af9e7a567d7ec0e266a8db5b904627fc8271411ae667e3dd15945e8e77085af0
   tool: osv-scanner
 - argv:
   - gitleaks
@@ -74,7 +74,7 @@ runs:
   run_id: CMD-005
   status: ok
   stdout_artifact: artifacts/CMD-005.stdout.txt.gz
-  stdout_artifact_sha256: 398750a1e9631b2eb374080644b511b10eca275f714a0aef17c0bf44829663b7
+  stdout_artifact_sha256: 410ddf4283a79231a230142ea6690ee5e6e66914af9c304414b125a09710fbc7
   tool: gitleaks
 - argv:
   - ruff
@@ -87,7 +87,7 @@ runs:
   run_id: CMD-006
   status: nonzero_exit
   stdout_artifact: artifacts/CMD-006.stdout.txt.gz
-  stdout_artifact_sha256: 5b1d71294c1113f8213e2cb3fcb9ff0b4db0987169eeac16a290f2b9bb841c6a
+  stdout_artifact_sha256: c3c98f7c08862117408b1c32d6c3b12a5a5ed877a6f7a49caab13fee94ade601
   tool: ruff
 - argv:
   - ruff
@@ -99,7 +99,7 @@ runs:
   run_id: CMD-007
   status: nonzero_exit
   stdout_artifact: artifacts/CMD-007.stdout.txt.gz
-  stdout_artifact_sha256: a7829d0001ee35173369e7f43c6393b2ff40b3ccbf03e166013b05d49f4c2ead
+  stdout_artifact_sha256: 3a476acbb1fe6df7c099fb3ae1f3afcac0176197544b68a16d2485852501f1bc
   tool: ruff-format
 - argv:
   - __audit_unresolvable__
@@ -119,11 +119,11 @@ runs:
   - json
   - '-'
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
-  exit_code: 1
+  exit_code: 0
   run_id: CMD-009
-  status: nonzero_exit
+  status: ok
   stdout_artifact: artifacts/CMD-009.stdout.txt.gz
-  stdout_artifact_sha256: 83182a96fb0974ad95b16e255e0b8c021996ee7eadff1ee4380069d8b8d9242c
+  stdout_artifact_sha256: 6a9f9ee6d1d18b658aa14aac625d395246899089ece119dad30aae6978fc30dc
   tool: hadolint
 - argv:
   - trivy
@@ -136,7 +136,7 @@ runs:
   run_id: CMD-010
   status: ok
   stdout_artifact: artifacts/CMD-010.stdout.txt.gz
-  stdout_artifact_sha256: 738945ba0979a17d16482e99c0348eb98c905f8225094d99f3369da5fd9aef4e
+  stdout_artifact_sha256: 7e0f7353bcc809e96203a627448b34129ff60d532b83a9c3b0b41d3b3533d5d6
   tool: trivy
 schema_version: 1
 scope_digest: c470afa372329674d079aac56d915cf60c95ce1273e1de1c9cd83c3d19a971f0
@@ -189,5 +189,5 @@ sources:
 - line_count: 237
   path: multi_swe_bench/utils/env_to_dockerfile.py
   realpath: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/utils/env_to_dockerfile.py
-  sha256: bdc23f508a778cf0396e113e595ffd5aeb422626c5beb8fcb939559388f60f8c
+  sha256: 28a0681c1e34380170676e4e5a4cb8bda92fb6e365db8de0f8e5d8e1da10a2e8
   type: source

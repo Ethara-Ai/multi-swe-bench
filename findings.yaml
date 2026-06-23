@@ -1,120 +1,312 @@
-# Phase-2 reviewer findings for multi-swe-bench.
-# Authored from audit/evidence.yaml (the ONLY cited evidence). Every entry cites
-# verifier-emitted issue_instance_id(s); spans are omitted (the locations live in
-# the evidence and in REPORT.md) so identity is by id, not by an invented span.
-# Disposition is HOLD — capped by the coverage gaps + self-attested provenance +
-# dirty/uncommitted tree. SHIP is mechanically unreachable on this producer host.
-
+# Phase-2 reviewer findings — re-audit @ HEAD 78d1ac6f (base-image pin applied).
+# ONE finding per instrumented issue. Disposition HOLD.
 disposition: HOLD
-
 summary:
   disposition: HOLD
-  total: 5
+  total: 32
   by_severity:
     CRITICAL: 0
     HIGH: 0
-    MEDIUM: 4
-    LOW: 1
-
+    MEDIUM: 17
+    LOW: 15
+    INFO: 0
 findings:
-  - id: MSB-CONTAINER-001
-    title: Untrusted values interpolated into generated Dockerfile RUN/ENV/ARG lines
-    severity: MEDIUM
-    disposition: HOLD
-    issue_instance_ids:
-      - 012fdda09211b3cf603194a05a3de8b629d0db3ded87467b2267ff257e1651be
-      - f7e465a753d3d4082a2a47d8c30cb2d68c1049867b7a191a3250d4fc0da4f1e8
-      - c8bdfe7082feca334b80571d62f462a2daf27f4c92424eae693b669ab6b62e9b
-      - 11949a81d370547806770af6cb96554b4507e6c1dc34056903e65ec9b11ec196
-      - 8494fd937e759fdf1b8870c679b01b348fbd4c1ca9ce63fc78e5c73c6d778f94
-      - 3cd5b34515788d97967fcdc305fedc953a1e5e3aa0fdfc0683a871393733f1ed
-      - a93b921b45c53f5662cfb75bd74fe1053d663bbc374a8f419e4287a769912416
-      - 339aa845b38c2b8b1a8ddfccae8cd72e2c3652502dab7e18a5af4c45aecabc4d
-      - cd88bb813049144ad93706131da07b1d6ae3c2780de79e0fbda6cae3f8fb1b5b
-      - 6d8fb840da577e57cbfe8f024b31f21b75fffa82dcd3df814260b47e4e7ce737
-    rationale: >-
-      dockerfile_generation_check flags 10 sites in env_to_dockerfile.py (122/140/148)
-      and image.py (116/134/227/361/380/382/444) where a value is interpolated into a
-      RUN/ENV/ARG line of a programmatically-generated Dockerfile. Because instances
-      are built from crawled third-party PR metadata + parsed `env` output, an
-      attacker-controlled org/repo/ref/env string could inject Docker directives or
-      shell into the build. This is the highest-value security finding in this run:
-      it is the reward/build trust boundary (untrusted instance metadata → generated
-      build). The deterministic check identifies the sites; appropriateness (is each
-      value actually attacker-reachable + unsanitised?) is a relevance judgement the
-      gate does not decide — see the ticket for the required manual confirmation.
-
-  - id: MSB-CONTAINER-002
-    title: Generated Dockerfiles use an unpinned base-image tag (`latest`)
-    severity: MEDIUM
-    disposition: HOLD
-    issue_instance_ids:
-      - 3c4a86ff5f1b577a6179cba9764f2a00e415e86735e13fb5955f3b29b5ea74d3
-    rationale: >-
-      hadolint DL3007 on the generator's emitted Dockerfile: the default base image
-      resolves to an unpinned `latest` tag. Non-reproducible builds + silent base
-      drift undermine dataset reproducibility (the whole point of a benchmark
-      pipeline). Pin base images to a digest or explicit release tag.
-
-  - id: MSB-SUPPLY-003
-    title: subprocess module imported across harness utilities (bandit B404)
-    severity: MEDIUM
-    disposition: HOLD
-    issue_instance_ids:
-      - c6c4e265793c971345931473f0d7f8e4b9a4897b82d76d874a9d3aae0bff47bc
-      - 47fc15b5be090cef6645b0e075242fc42b483e6ea68ee02544333677a037191c
-      - f51ed6a03e90779527a55b4b742cacf090ec8551c832a593ad1bcab46e446ee3
-      - b76519faf0412ff8cc7154ebda8d87b8823a0b09a2947eee9f3a87e71a821237
-      - 5a61cc9839018bf0015a64ac67a570e50ea9ca4276fed10055f833446c606c66
-      - 544360895f19f1ceaa5f0571bf37b707e74b950fc2b0d5d422183f45ae45dcbc
-    rationale: >-
-      bandit B404 (subprocess import) in build_lht_dataset.py, group_prs_by_tags.py,
-      docker_util.py, git_util.py, safe_subprocess.py, session_util.py. B404 is the
-      presence of the import, not a vulnerability by itself — for a docker/git
-      orchestration tool subprocess is expected. The real risk is command injection
-      where these wrappers receive untrusted argv; the repo added safe_subprocess.py
-      as hardening. Acknowledged at MEDIUM (tool label); the residual risk is the
-      argv construction in those call sites, which overlaps MSB-CONTAINER-001 and
-      needs the same manual injection review.
-
-  - id: MSB-FP-004
-    title: bandit B105 "hardcoded password 'PASS'" — false positive (test-status enum)
-    severity: MEDIUM
-    disposition: HOLD
-    issue_instance_ids:
-      - 523e7c397647928b81209fc975123a410b0a080d4b20ac779b23908bfdfa55c4
-    rationale: >-
-      bandit B105 at test_result.py:23 flags the string literal 'PASS'. This is a
-      test-result STATUS value (PASS/FAIL/...), not a credential. Assessed as a false
-      positive. Acknowledged (not waived) to satisfy recall; effective severity stays
-      at the tool's MEDIUM. No remediation required beyond an optional `# nosec`.
-
-  - id: MSB-HYGIENE-005
-    title: Source formatting drift (ruff format --check)
-    severity: LOW
-    disposition: HOLD
-    issue_instance_ids:
-      - a35777adfa8ada550fa9c31a9a29bca615278fadb2db530a3b4a3161da3041b0
-      - 5ba01ac4a81785faf359d730a897527ab40992fc6da1bb5f1ea1648d0af6c46e
-      - 5838fbc4625f28b6c98d64e171caef44b5a586e6cb549e1e2cc0ae6b03d5716d
-      - 7d3c9f71d8557cc3b7e7997e529d55c63ef499aae6aab290c84bc796e9220be5
-      - a0224c4717066cf8115de691ce6acc6977b00851487643779568f3e095edbc65
-      - 55565f916c2caa340df855a787e0c3686158ece08817e9f6475d699710162409
-      - e04970ebc61009144f6a3e9ef53580e65460b6d4fa2d010c16b9b5c3d02986a5
-      - 311aa410ab48bcd4df6231fff03bb3bfb43466c452db15c63be6b6aad38b0da6
-      - 9825222d53758cb59b977154467dad524facdaffbf24ccc5f260b78abc78f8c5
-      - 63cd8b7b53edeec381f558a329f0439cce888ef4bf83c7ddd3351e405c76287c
-      - 5e4f5c9b1f44ed8c35242c3d396524dc80eac16f2c49986a2c728785e1b079e0
-      - d165277ba6201a84f4d87b46d85327ccaffd813966eb0ebf373cc8fc7695e0a0
-      - 373b9adbe56d24bcd107bebe908096ceece577d523ba7bf160e4a951762c1f7f
-      - edc488e7fd264f7d71260e00c68322d5f4bccb9b63738b25fc2839bdcaf87f33
-      - 4df2beb361430477be5d580d9f44a405314c9008f91cac3e24bb052e9c3c95d4
-    rationale: >-
-      15 files are not ruff-formatted (hygiene only, no behaviour change). Run
-      `ruff format` to clear. Below the MEDIUM recall floor; included for completeness.
-
-# Coverage gaps are read from the evidence and cap the disposition automatically;
-# they are reproduced here for the human reader (see REPORT.md for detail).
+- id: F001
+  title: B404 @ multi_swe_bench/collect/build_lht_dataset.py:38 [bandit]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - ede5167581d38b56196579266d0f39a611224a84ce4afbb6b6ac5fcd6aa8e0ca
+  rationale: 'Informational: flags the `import subprocess` statement (not a vuln). Real exec risk (B603/B607)
+    is centralised in safe_subprocess.py (list-form argv, no shell). Acknowledged, not waived.'
+- id: F002
+  title: B404 @ multi_swe_bench/collect/group_prs_by_tags.py:59 [bandit]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - cc49916655f692a232dd44a1ea0d9a31d7699e979ffa74f75bff9f75c91f4046
+  rationale: 'Informational: flags the `import subprocess` statement (not a vuln). Real exec risk (B603/B607)
+    is centralised in safe_subprocess.py (list-form argv, no shell). Acknowledged, not waived.'
+- id: F003
+  title: B105 @ multi_swe_bench/harness/test_result.py:23 [bandit]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 01629fcf1fc439a262ddad14389987d8d2933b8409d5ececa372a55d706a027e
+  rationale: 'FALSE POSITIVE: ''PASS'' is the test/reward verdict literal at test_result.py:23, not a
+    credential. Acknowledged (not waived); effective severity stays MEDIUM.'
+- id: F004
+  title: B404 @ multi_swe_bench/utils/docker_util.py:18 [bandit]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 48b829bbb296697871b1ab4c25f0835b4a62baaf82eaba586dd909632fa859dc
+  rationale: 'Informational: flags the `import subprocess` statement (not a vuln). Real exec risk (B603/B607)
+    is centralised in safe_subprocess.py (list-form argv, no shell). Acknowledged, not waived.'
+- id: F005
+  title: B404 @ multi_swe_bench/utils/git_util.py:16 [bandit]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 025152a9b38365c9e31480065c79a32161e1f7fd21e91f2010dfe4c92d52d756
+  rationale: 'Informational: flags the `import subprocess` statement (not a vuln). Real exec risk (B603/B607)
+    is centralised in safe_subprocess.py (list-form argv, no shell). Acknowledged, not waived.'
+- id: F006
+  title: B404 @ multi_swe_bench/utils/safe_subprocess.py:23 [bandit]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - a891946ce6d73d6a3dc45bbaf0822adc5053c60c6f7e4be569fdfe82f19f2de8
+  rationale: 'Informational: flags the `import subprocess` statement (not a vuln). Real exec risk (B603/B607)
+    is centralised in safe_subprocess.py (list-form argv, no shell). Acknowledged, not waived.'
+- id: F007
+  title: B404 @ multi_swe_bench/utils/session_util.py:3 [bandit]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 144a75ce897c5143cb4b902853be989427e53ee8c9b2ae17ca655cebe9e63b04
+  rationale: 'Informational: flags the `import subprocess` statement (not a vuln). Real exec risk (B603/B607)
+    is centralised in safe_subprocess.py (list-form argv, no shell). Acknowledged, not waived.'
+- id: F008
+  title: ruff-format @ multi_swe_bench/collect/build_dataset.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 2000516735a27f18126c33f5e47108c3ecc8651a28770fd0595d2f8f18bfa012
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F009
+  title: ruff-format @ multi_swe_bench/collect/build_lht_dataset.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - c3e893ce27ed11596f3fd80a21bc95b5e36717592117576d70b60bb4b9542b9a
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F010
+  title: ruff-format @ multi_swe_bench/collect/filter_prs.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 10a02ba7a18425521e5bfb5c5b72bcf97577e3c25608d2b8c08085d7df9503f3
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F011
+  title: ruff-format @ multi_swe_bench/collect/get_lht_pipeline.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 6d9aea3a5e61190a23d5d555b814b32d19addb174d9ade1f1fece3c8ce482622
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F012
+  title: ruff-format @ multi_swe_bench/collect/get_pipeline.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 16a8a15ed7910ac5ba77dd8a7086244ff33d0638b5a405488a83fefeb37e1a40
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F013
+  title: ruff-format @ multi_swe_bench/collect/group_prs_by_tags.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 4f0eb67633cf72d69513d6944dda212e72fcf4493a9f130c189d57bdad871cdc
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F014
+  title: ruff-format @ multi_swe_bench/collect/util.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 7d24c7caaabf707783ecd820d5f689566134e7130e6ba6e092c492ec29f55f36
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F015
+  title: ruff-format @ multi_swe_bench/harness/build_dataset.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 00c8dd3706171a398b470e1fc0e3a1c7bbfbd0debabbb63f8c58abc25dc15547
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F016
+  title: ruff-format @ multi_swe_bench/harness/gen_report.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - b823b8f208958c02a0cc3b012cacb32672e2770cdbd17a7ee643c824c1988010
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F017
+  title: ruff-format @ multi_swe_bench/harness/image.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 6243cc46f998a342c458373a14c894141dd3f8475f34e525f981c844275c6713
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F018
+  title: ruff-format @ multi_swe_bench/harness/run_evaluation.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 923300c0aa4d498e088f51d5c378929b8ca43b309c7cf835b1313bf71829b81e
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F019
+  title: ruff-format @ multi_swe_bench/utils/docker_util.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 73898c69dbc7a97e2b1a60ea98bf1acb9d896ba8b48e2a68a41f055273eddd5b
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F020
+  title: ruff-format @ multi_swe_bench/utils/safe_subprocess.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 3a688f156172f1acd763a044645bfa12a3a24c07cbe5a9b7b98f05bdb0aa524e
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F021
+  title: ruff-format @ multi_swe_bench/utils/session_util.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - 1459dc7cb08adde6b0cc501fd7a6a47a796c2b55b8f396859c1c88285ae44ae8
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F022
+  title: ruff-format @ tests/test_final_report_reconcile.py [ruff-format]
+  severity: LOW
+  disposition: HOLD
+  issue_instance_ids:
+  - dc3463c3feb1f0faa207d6bead87a0c45dbc400d86cbee8f3c02473a24080763
+  rationale: Formatting drift only (hygiene). Run `ruff format`. Below the MEDIUM recall floor; included
+    for completeness.
+- id: F023
+  title: interpolated-run-line @ multi_swe_bench/utils/env_to_dockerfile.py:122 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 012fdda09211b3cf603194a05a3de8b629d0db3ded87467b2267ff257e1651be
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
+- id: F024
+  title: interpolated-run-line @ multi_swe_bench/utils/env_to_dockerfile.py:140 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - f7e465a753d3d4082a2a47d8c30cb2d68c1049867b7a191a3250d4fc0da4f1e8
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
+- id: F025
+  title: interpolated-run-line @ multi_swe_bench/utils/env_to_dockerfile.py:148 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - c8bdfe7082feca334b80571d62f462a2daf27f4c92424eae693b669ab6b62e9b
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
+- id: F026
+  title: interpolated-run-line @ multi_swe_bench/harness/image.py:116 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 11949a81d370547806770af6cb96554b4507e6c1dc34056903e65ec9b11ec196
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
+- id: F027
+  title: interpolated-run-line @ multi_swe_bench/harness/image.py:134 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 8494fd937e759fdf1b8870c679b01b348fbd4c1ca9ce63fc78e5c73c6d778f94
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
+- id: F028
+  title: interpolated-run-line @ multi_swe_bench/harness/image.py:227 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 3cd5b34515788d97967fcdc305fedc953a1e5e3aa0fdfc0683a871393733f1ed
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
+- id: F029
+  title: interpolated-run-line @ multi_swe_bench/harness/image.py:361 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - a93b921b45c53f5662cfb75bd74fe1053d663bbc374a8f419e4287a769912416
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
+- id: F030
+  title: interpolated-run-line @ multi_swe_bench/harness/image.py:380 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 339aa845b38c2b8b1a8ddfccae8cd72e2c3652502dab7e18a5af4c45aecabc4d
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
+- id: F031
+  title: interpolated-run-line @ multi_swe_bench/harness/image.py:382 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - cd88bb813049144ad93706131da07b1d6ae3c2780de79e0fbda6cae3f8fb1b5b
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
+- id: F032
+  title: interpolated-run-line @ multi_swe_bench/harness/image.py:444 [dockerfile_generation_check]
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 6d8fb840da577e57cbfe8f024b31f21b75fffa82dcd3df814260b47e4e7ce737
+  rationale: "Heuristic flags interpolation PRESENCE; it cannot see the threat model. THREAT MODEL (producer-supplied):\
+    \ org/repo are NOT attacker-controlled \u2014 manually curated by maintainers (harness/repos/**);\
+    \ injection would require a hostile entry passing curation, not external input. Defense-in-depth present:\
+    \ _safe_path_component (image.py:19, :226/:359), is_valid_env_name + escape_env_value (env_to_dockerfile.py:19,23).\
+    \ Realistic exploitability LOW \u2014 defense-in-depth/informational. Acknowledged; not on the CRITICAL\
+    \ floor."
 coverage_gaps_acknowledged:
-  - D-COVERAGE-GAP-repo-cache-history        # HOLD — tracked third-party git mirrors
-  - D-COVERAGE-GAP-dockerfile-sample-no-interp  # HOLD — no project interpreter on this host
+- D-COVERAGE-GAP-repo-cache-history
+- D-COVERAGE-GAP-dockerfile-sample-no-interp
