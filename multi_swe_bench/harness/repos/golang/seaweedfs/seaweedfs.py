@@ -36,17 +36,36 @@ class SeaweedfsImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org, repo = self.pr.org, self.pr.repo
 
-        return f"""FROM {image_name}
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
 {code}
 
+WORKDIR /home/{repo}
+
+CMD ["/bin/bash"]
 """
 
 
