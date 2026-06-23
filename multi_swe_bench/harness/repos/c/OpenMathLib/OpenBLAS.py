@@ -52,13 +52,6 @@ ENV TZ=Etc/UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl build-essential git gnupg make cmake python3 sudo wget \
     && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 {code}
 
