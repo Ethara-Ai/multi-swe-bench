@@ -35,6 +35,59 @@ class ActImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    # DockerfileEnhancer in image.py injects proxy / MITM / CA-cert
+    # infrastructure into every generated Dockerfile. The ECR images for this
+    # repo must NOT carry that MITM proxy / cert wiring, so we emit a
+    # fully-formed Dockerfile here that carries the BuildKit syntax directive.
+    # DockerfileEnhancer.enhance() returns the Dockerfile untouched when that
+    # directive is already present, so its proxy ARGs, proxy ENV vars, CA-cert
+    # symlinks and MITM secret mount are all skipped. We re-emit only the
+    # non-proxy infra (REPO_URL / BASE_COMMIT ARGs + image labels + plain env).
+    _SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1.6"
+
+    _ENV_BLOCK = (
+        "ENV DEBIAN_FRONTEND=noninteractive \\\n"
+        "    LANG=C.UTF-8 \\\n"
+        "    TZ=UTC"
+    )
+
+    def dockerfile(self) -> str:
+        raw = super().dockerfile()
+
+        org = self.pr.org
+        repo = self.pr.repo
+        github_repo = repo[: -len("_root")] if repo.endswith("_root") else repo
+        repo_url = f"https://github.com/{org}/{github_repo}.git"
+
+        build_args = (
+            "ARG TARGETARCH\n"
+            f'ARG REPO_URL="{repo_url}"\n'
+            "ARG BASE_COMMIT"
+        )
+        label_block = (
+            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
+        infra = "\n\n".join([build_args, self._ENV_BLOCK, label_block]) + "\n"
+
+        lines = raw.split("\n")
+        from_idx = next(
+            (i for i, l in enumerate(lines) if l.strip().upper().startswith("FROM ")),
+            None,
+        )
+        if from_idx is None:
+            return raw
+
+        result = [self._SYNTAX_DIRECTIVE, ""]
+        result.extend(lines[:from_idx])
+        result.append(lines[from_idx].strip())
+        result.append("")
+        result.append(infra)
+        result.extend(lines[from_idx + 1 :])
+        return "\n".join(result)
+
     def extra_packages(self) -> list[str]:
         # act drives GitHub Actions through the Docker engine, so the daemon CLI
         # is installed alongside the default toolchain (git is already in the
