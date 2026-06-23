@@ -44,39 +44,15 @@ FROM python:3.9-slim
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
-ARG http_proxy=""
-ARG https_proxy=""
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG no_proxy="localhost,127.0.0.1,::1"
-ARG NO_PROXY="localhost,127.0.0.1,::1"
-ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
-    TZ=UTC \\
-    http_proxy=${{http_proxy}} \\
-    https_proxy=${{https_proxy}} \\
-    HTTP_PROXY=${{HTTP_PROXY}} \\
-    HTTPS_PROXY=${{HTTPS_PROXY}} \\
-    no_proxy=${{no_proxy}} \\
-    NO_PROXY=${{NO_PROXY}} \\
-    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
-    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+    TZ=UTC
 
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} base Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
-
-RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 WORKDIR /home/
 
@@ -229,7 +205,7 @@ poetry run pytest -v --no-header -rA --tb=no -p no:cacheprovider tests/
 
     def dockerfile(self) -> str:
         base = self.dependency()
-        repo_name = self.pr.repo
+        repo = self.pr.repo
 
         copy_commands = ""
         for file in self.files():
@@ -237,12 +213,18 @@ poetry run pytest -v --no-header -rA --tb=no -p no:cacheprovider tests/
 
         return f"""FROM {base.image_name()}:{base.image_tag()}
 
-{self.global_env}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
 {copy_commands}
 
 RUN bash /home/prepare.sh
 
+{Image._HARDENING_BLOCK}
 CMD ["/bin/bash"]
 """
 

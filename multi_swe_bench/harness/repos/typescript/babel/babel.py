@@ -1,6 +1,5 @@
 import re
 from typing import Optional, Union
-import textwrap
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
@@ -36,27 +35,42 @@ class BabelImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        org, repo = self.pr.org, self.pr.repo
+
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} base Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates curl build-essential git gnupg make python3 sudo wget \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl build-essential git gnupg make python3 sudo wget \
-    && rm -rf /var/lib/apt/lists/*
-RUN corepack enable
+
 {code}
 
-{self.clear_env}
+WORKDIR /home/{repo}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -202,58 +216,27 @@ BABEL_ENV=test yarn jest --verbose --ci || true
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        repo = self.pr.repo
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
-
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p $HOME && \\
-                        touch $HOME/.npmrc && \\
-                        echo "proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "https-proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "strict-ssl=false" >> $HOME/.npmrc
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f $HOME/.npmrc
-                """
-                )
         return f"""FROM {name}:{tag}
 
-{self.global_env}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-{proxy_setup}
+WORKDIR /home/{repo}
+
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
 
-{proxy_cleanup}
-
-{self.clear_env}
-
+{Image._HARDENING_BLOCK}
+CMD ["/bin/bash"]
 """
 
 

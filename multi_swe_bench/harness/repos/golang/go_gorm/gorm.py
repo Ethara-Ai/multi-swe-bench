@@ -92,12 +92,17 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
 
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates git \\
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /home/
 
 {code}
 
-{self.clear_env}
+WORKDIR /home/{repo}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -276,23 +281,27 @@ fi
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        repo = self.pr.repo
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
         return f"""FROM {name}:{tag}
 
-{self.global_env}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
 
-{self.clear_env}
-
+{Image._HARDENING_BLOCK}
+CMD ["/bin/bash"]
 """
 
 
