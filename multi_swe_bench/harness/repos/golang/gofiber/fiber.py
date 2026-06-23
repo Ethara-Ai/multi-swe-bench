@@ -8,6 +8,21 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 class FiberImageBase(Image):
+    """Level 1: toolchain-only base image (shared per era).
+
+    dependency() returns a *string* (the Go toolchain) and this Dockerfile
+    carries NO ``# syntax`` directive, so the DockerfileEnhancer engages and
+    prepends the ``# syntax``/ARG/ENV/LABEL infra block. IMPORTANT: this image
+    must NOT clone the repository -- a shared string-dependency image that
+    clones is force-pinned to a single ``${BASE_COMMIT}`` and history-stripped
+    by the enhancer, breaking ``git checkout`` for every other PR sharing the
+    base. So the clone lives in FiberImageDefault (an Image dependency, left
+    verbatim by the enhancer), done per-PR. This image only provides the Go
+    toolchain + apt deps + Go build env.
+
+    go 1.16 / bullseye matches the v2.1.x era (go.mod `go 1.14`, Nov 2020).
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -21,16 +36,10 @@ class FiberImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # Returning a string lets the base Image.dockerfile() build the clone,
-        # the ${BASE_COMMIT} checkout and the hardening block, and lets
-        # DockerfileEnhancer inject the REPO_URL/BASE_COMMIT ARGs + infra
-        # (per image.py). go 1.16 / bullseye matches the v2.1.x era (go.mod
-        # `go 1.14`, Nov 2020) and still has live apt repositories.
         return "golang:1.16-bullseye"
 
     def image_tag(self) -> str:
-        base_sha = self.pr.base.sha[:8] if getattr(self.pr.base, "sha", None) else "base"
-        return f"base-{base_sha}"
+        return "base"
 
     def workdir(self) -> str:
         return "base"
@@ -38,10 +47,30 @@ class FiberImageBase(Image):
     def files(self) -> list[File]:
         return []
 
-    def extra_setup(self) -> str:
-        # Runs in WORKDIR /home/fiber after the ${BASE_COMMIT} checkout.
-        # Warm the module cache so the offline test runs are stable.
-        return "RUN go mod download || true"
+    def dockerfile(self) -> str:
+        base_img = self.dependency()
+
+        packages_str = " \\\n    ".join(
+            ["ca-certificates", "git", "build-essential"]
+        )
+        apt_command = self._get_apt_update_command(packages_str, base_img)
+
+        # No `git clone` here on purpose (see docstring); no `# syntax` directive
+        # either, so the DockerfileEnhancer injects the ARG/ENV/LABEL infra block
+        # (but no clone/hardening, since this Dockerfile has no clone).
+        return f"""FROM {base_img}
+
+WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+{apt_command}
+
+ENV GOFLAGS=-mod=mod
+ENV GOTOOLCHAIN=local
+
+CMD ["/bin/bash"]
+"""
 
 
 class FiberImageDefault(Image):
@@ -58,7 +87,7 @@ class FiberImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return FiberImageBase(self.pr, self.config)
+        return FiberImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -77,6 +106,21 @@ class FiberImageDefault(Image):
                 ".",
                 "test.patch",
                 f"{self.pr.test_patch}",
+            ),
+            File(
+                ".",
+                "install.sh",
+                # Checkout is done inline in the Dockerfile; install.sh warms the
+                # Go module cache (runs before the hardening strip, full clone
+                # present). The cache lives in GOPATH, outside the git tree, so
+                # hardening leaves it intact for offline test runs.
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+go mod download || true
+
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -120,20 +164,44 @@ go test -v -count=1 ./...
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        # Single COPY of all scripts/patches into /home/ (inline template style).
+        copy_files = " ".join(file.name for file in self.files())
 
-        return f"""FROM {name}:{tag}
+        # The shared toolchain base does NOT clone, so this per-PR image clones
+        # full history first, then checks out ${BASE_COMMIT} inline. Because this
+        # image's dependency() is an Image, the DockerfileEnhancer returns the
+        # Dockerfile verbatim -- the clone + hardening below are kept as written
+        # (and pinning here is correct: it is per-PR, not the shared base).
+        header = f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
+COPY {copy_files} /home/
+
+RUN bash /home/install.sh || true
+
+"""
+
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal.
+        tail = f"""
 {self.clear_env}
 
 CMD ["/bin/bash"]
 """
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("gofiber", "fiber")
