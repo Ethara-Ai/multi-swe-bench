@@ -24,7 +24,8 @@ class GsdBuildImageDefault(Image):
         # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
         # checks out "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that
         # strips every other ref/commit so the fix can't be read out of git
-        # history. DockerfileEnhancer then injects the proxy/cert infra and the
+        # history. DockerfileEnhancer then injects the build args
+        # (REPO_URL/BASE_COMMIT), the base ENV block, the OCI labels, and the
         # final sanitize pass. None of that fires when dockerfile() is
         # overridden, which is why the previous two-stage build bypassed it.
         return "node:22"
