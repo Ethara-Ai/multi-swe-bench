@@ -37,26 +37,40 @@ class S2nTlsImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
+        org = self.pr.org
 
-        return f"""FROM {image_name}
+        # SHARED base (tag "base", ONE image reused by EVERY PR — keeps full git
+        # history + origin so each PR can `git checkout <base.sha>` in prepare.sh;
+        # we do NOT make a base per PR). mam reference format: no proxy/cert,
+        # ARGs/ENV/LABEL. The `# syntax` directive makes DockerfileEnhancer.enhance()
+        # skip it. Per-PR checkout + hardening live in S2nTlsImageDefault (a shared
+        # base cannot pin/strip to one commit).
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    TZ=UTC \\
+    LANG=C.UTF-8
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \\
         cmake libssl-dev ninja-build pkg-config git ca-certificates && \\
     rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -251,6 +265,35 @@ ctest -V
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Per-PR anti-cheat hardening. dependency() returns an Image, so
+        # DockerfileEnhancer emits this Dockerfile verbatim (it only auto-injects
+        # hardening into str-dependency images) — so we embed it here, after
+        # prepare.sh. NOTE: prepare.sh commits a "relax Werror" harness commit ON
+        # TOP of base.sha, so we must NOT re-`checkout base.sha` (that would drop
+        # the build-flag fix and break the run scripts' `git reset --hard HEAD`).
+        # Instead, harden the current detached HEAD in place: drop origin + every
+        # ref + reflog, gc-prune unreachable objects (the fix/future commits), then
+        # audit (no refs/remotes, base.sha IS an ancestor, rev-list --all == HEAD
+        # so nothing beyond base.sha's history + the harness commit is reachable).
+        repo = self.pr.repo
+        base_sha = self.pr.base.sha
+        hardening = (
+            "RUN set -eux; \\\n"
+            f"    cd /home/{repo}; \\\n"
+            "    git remote remove origin 2>/dev/null || true; \\\n"
+            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d; \\\n"
+            "    git reflog expire --expire=now --all || true; \\\n"
+            "    git reflog expire --expire-unreachable=now --all || true; \\\n"
+            "    git gc --prune=now --aggressive; \\\n"
+            "    git repack -a -d -l --quiet; \\\n"
+            "    rm -f .git/objects/info/alternates; \\\n"
+            "    git config --local gc.auto 0; \\\n"
+            '    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\\n'
+            '    test -z "$(git remote)"; \\\n'
+            f"    git merge-base --is-ancestor {base_sha} HEAD; \\\n"
+            '    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
+        )
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -258,6 +301,8 @@ ctest -V
 {copy_commands}
 
 {prepare_commands}
+
+{hardening}
 
 {self.clear_env}
 

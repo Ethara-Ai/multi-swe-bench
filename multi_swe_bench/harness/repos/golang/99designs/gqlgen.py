@@ -99,10 +99,10 @@ class GqlgenImageBase(Image):
         return "golang:1.25-bookworm"
 
     def image_tag(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -130,14 +130,12 @@ class GqlgenImageBase(Image):
 
         repo = self.pr.repo
         org = self.pr.org
-        hardening = Image._HARDENING_BLOCK.rstrip("\n")
 
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
-ARG BASE_COMMIT
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     TZ=UTC \\
@@ -152,12 +150,14 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
 WORKDIR /home/
 RUN git clone "${{REPO_URL}}" /home/{repo}
 
+# SHARED-base light hardening: keep FULL history (per-PR layer checks out base.sha
+# in prepare.sh) but remove the remote so the model cannot fetch/pull the fix.
+# NO checkout/gc-prune here (that would pin+prune the shared base to one commit).
 WORKDIR /home/{repo}
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
-{hardening}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 CMD ["/bin/bash"]
 """

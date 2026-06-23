@@ -80,7 +80,7 @@ class Halo2227To7423ImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base-jdk17"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -96,20 +96,17 @@ class Halo2227To7423ImageBase(Image):
         repo = self.pr.repo
         org = self.pr.org
 
-        # Base image: reference infra format + anti-cheat hardening, built per PR
-        # (checks out and hardens at this PR's base.sha; BASE_COMMIT is passed as a
-        # build-arg by the harness since dependency() is a str). The syntax
-        # directive keeps DockerfileEnhancer.enhance() from rewriting it. No
-        # proxy/cert/MITM injection. JDK17 + Node 22 toolchain is shared across
-        # PRs via Docker layer cache (identical layers before the clone).
-        hardening = Image._HARDENING_BLOCK.rstrip("\n")
-
+        # SHARED base (tag base-jdk17, reused by every era2 PR) — NOT per-PR.
+        # Clone full history ONCE; per-PR ImageDefault.prepare.sh does
+        # `git checkout {base.sha}` then full anti-cheat hardening. Here only LIGHT
+        # hardening (remove remote) so no fetch/pull; no checkout/gc-prune (that
+        # would pin+prune the shared base to one commit, breaking other PRs).
+        # No proxy/cert/MITM. `# syntax` keeps DockerfileEnhancer from rewriting it.
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
-ARG BASE_COMMIT
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     TZ=UTC \\
@@ -147,12 +144,13 @@ RUN NODE_VERSION=22.22.3 \\
 
 RUN git clone "${{REPO_URL}}" /home/{repo}
 
+# SHARED-base light hardening: full history kept (per-PR layer checks out base.sha);
+# remote removed so the model cannot fetch/pull the fix. NO checkout/gc-prune here.
 WORKDIR /home/{repo}
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
-{hardening}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 CMD ["/bin/bash"]
 """
