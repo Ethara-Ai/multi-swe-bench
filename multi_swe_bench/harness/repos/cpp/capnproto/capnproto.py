@@ -37,6 +37,13 @@ def _filter_binary_patches(patch_content: str) -> str:
     return '\n'.join(result)
 
 
+# number_interval used by this 1069 .. 1086 bundle. PRs carry
+# number_interval="capnproto_1086_to_1069", and Instance.create() routes on
+# f"{org}/{number_interval}" -- so the same config must be registered under both
+# "capnproto/capnproto" and "capnproto/capnproto_1086_to_1069" (see bottom).
+_NUMBER_INTERVAL = "capnproto_1086_to_1069"
+
+
 def _select_toolchain(pr: PullRequest) -> tuple[str, str, str]:
     """Map a PR to its (base_image, tag_suffix, compiler) toolchain triple.
 
@@ -401,3 +408,15 @@ class Capnproto(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route PRs that carry number_interval="capnproto_1086_to_1069" to the same
+# Capnproto config (Instance.create looks up f"{org}/{number_interval}").
+Instance.register("capnproto", _NUMBER_INTERVAL)(Capnproto)
+
+
+# Route the dash-joined number_interval (the bundled PR/issue numbers from
+# each record's resolved_issues) to the same Capnproto config.
+# Instance.create() looks up f"{org}/{number_interval}".
+Instance.register("capnproto", "1069-1071-1072-1073-1082-1083-1088-1091")(Capnproto)  # base PR 1069
+Instance.register("capnproto", "1086-1087-1094-1096-1098-1099-1100-1102-1103-1105-1108-1110-1111-1114-1115-1117")(Capnproto)  # base PR 1086

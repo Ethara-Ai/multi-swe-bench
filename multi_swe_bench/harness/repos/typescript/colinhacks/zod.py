@@ -273,3 +273,9 @@ class Zod(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route the bundled PR set (base PR 1564, v3.20.2..v3.20.3 release bundle)
+# that carries the dash-joined PR-only number_interval to the same Zod config.
+# Instance.create() looks up f"{org}/{number_interval}".
+Instance.register("colinhacks", "1564-1652-1680-1695-1699-1700-1702-1713-1714-1719-1720-1729-1733-1749-1756-1791-1794-1796-1797-1813-1822-1830-1842-1843-1846-1871-1877-1936-1945-1969-1973-1999")(Zod)

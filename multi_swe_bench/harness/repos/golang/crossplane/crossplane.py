@@ -239,11 +239,11 @@ CMD ["/bin/bash"]
         return header + Image._HARDENING_BLOCK + tail
 
 
-# number_interval used by this v1.6 .. v1.9 (go1.17 era) bundle. PRs carry
-# number_interval="crossplane_3328_to_2835", and Instance.create() routes on
+# number_interval used by this 2835 .. 3105 bundle. PRs carry
+# number_interval="crossplane_3105_to_2835", and Instance.create() routes on
 # f"{org}/{number_interval}" -- so the same config must be registered under both
 # the default repo key and the interval key.
-_NUMBER_INTERVAL = "crossplane_3328_to_2835"
+_NUMBER_INTERVAL = "crossplane_3105_to_2835"
 
 
 @Instance.register("crossplane", "crossplane")
@@ -335,6 +335,13 @@ class Crossplane(Instance):
         )
 
 
-# Route PRs that carry number_interval="crossplane_3328_to_2835" to the same
+# Route PRs that carry number_interval="crossplane_3105_to_2835" to the same
 # Crossplane config (Instance.create looks up f"{org}/{number_interval}").
 Instance.register("crossplane", _NUMBER_INTERVAL)(Crossplane)
+
+
+# Route the dash-joined number_interval (the bundled PR/issue numbers from
+# each record's resolved_issues) to the same Crossplane config.
+# Instance.create() looks up f"{org}/{number_interval}".
+Instance.register("crossplane", "2835-2838-2847-2852")(Crossplane)  # base PR 2835
+Instance.register("crossplane", "3105")(Crossplane)  # base PR 3105

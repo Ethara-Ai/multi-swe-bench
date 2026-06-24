@@ -4,6 +4,15 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# JSONL entries for this bundle must set
+#   number_interval: "locust_1791_to_99999"
+# Instance.create() routes on f"{org}/{number_interval}" (instance.py), so a PR
+# with number_interval="locust_1791_to_99999" lands on the config registered
+# below as @Instance.register("locustio", "locust_1791_to_99999"). Without it the
+# PR would fall back to f"{org}/{repo}" (locust.py). Covers locust PRs 1791..99999
+# (e.g. locust-2313, locust-2386); the < 2500 / >= 2500 split inside selects the
+# Python 3.8 vs 3.11 era.
+
 REPO_DIR = "locust"
 
 
@@ -268,3 +277,10 @@ class LOCUST_1791_TO_99999(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route the dash-joined number_interval (the bundled PR/issue numbers from
+# each record's resolved_issues) to the same LOCUST_1791_TO_99999 config.
+# Instance.create() looks up f"{org}/{number_interval}".
+Instance.register("locustio", "2313-2317")(LOCUST_1791_TO_99999)  # base PR 2313
+Instance.register("locustio", "2386-2388-2393-2395-2403-2410-2411")(LOCUST_1791_TO_99999)  # base PR 2386

@@ -334,3 +334,8 @@ class Lazygit(Instance):
 # Route PRs that carry number_interval="lazygit_5487_to_12" to the same Lazygit
 # config (Instance.create looks up f"{org}/{number_interval}").
 Instance.register("jesseduffield", _NUMBER_INTERVAL)(Lazygit)
+
+# Also route PRs that carry the dash-joined number_interval (the list of
+# prs_in_bundle for the v0.61 5487..5508 bundle) to the same Lazygit config.
+_NUMBER_INTERVAL_PRS = "5487-5490-5495-5498-5501-5507-5508"
+Instance.register("jesseduffield", _NUMBER_INTERVAL_PRS)(Lazygit)
