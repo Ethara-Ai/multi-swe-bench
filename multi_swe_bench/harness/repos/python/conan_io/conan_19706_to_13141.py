@@ -90,7 +90,8 @@ class ConanV2ImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
@@ -148,8 +149,6 @@ class ConanV2ImageDefault(Image):
                 """#!/bin/bash
 set -e
 cd /home/{pr.repo}
-git reset --hard
-git checkout {pr.base.sha}
 pip install --no-cache-dir -e .[test] || pip install --no-cache-dir -e . || true
 """.format(pr=self.pr),
             ),
@@ -227,25 +226,29 @@ python -m pytest $EXIST -v --no-header --tb=no \
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM {name}:{tag}
+        return f"""FROM {image.image_full_name()}
 
-{self.global_env}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
 {copy_commands}
 RUN bash /home/prepare.sh
 
-{self.clear_env}
+{Image._HARDENING_BLOCK}
+CMD ["/bin/bash"]
 """
 
 
-@Instance.register("conan-io", "conan_19706_to_13141")
+@Instance.register("conan-io", "13141-13173-13186-13390-13421-13529-13919-13930-13985-14054-14133-14289-14323-14674-14752-14780-15047-15262-15382-15413-15588-15682-16322-16415-16417-16443-16594-17250-17374-17398-17405-17647-17656-17714-17793-17800-17848-17898-18266-18316-18396-18496-19286-19345-19706")
 class CONAN_19706_TO_13141(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
