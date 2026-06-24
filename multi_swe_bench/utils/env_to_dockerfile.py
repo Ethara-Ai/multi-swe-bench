@@ -114,6 +114,11 @@ def generate_dockerfile(
     dockerfile_lines = [
         f"FROM {base_image}",
         "",
+        # Apply available security patches at build time so known base-image CVEs
+        # (e.g. an OpenSSL/libssl fix) are picked up. DL3005 is intentional here.
+        "# hadolint ignore=DL3005",
+        "RUN apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/*",
+        "",
     ]
 
     for var_name, var_value in env_vars:
@@ -131,6 +136,11 @@ def generate_dockerfile_from_env_vars(
 ) -> str:
     dockerfile_lines = [
         f"FROM {base_image}",
+        "",
+        # Apply available security patches at build time so known base-image CVEs
+        # (e.g. an OpenSSL/libssl fix) are picked up. DL3005 is intentional here.
+        "# hadolint ignore=DL3005",
+        "RUN apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/*",
         "",
     ]
 

@@ -1,15 +1,15 @@
 schema_version: 1
 recon:
   project_root: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
-  git_sha: 1d39f9f4208d3dce7f65a841078d8d3ed228458f
+  git_sha: bab761efd247b1e8784ad7136e68fcf1ed6bbc07
   git_dirty: true
   git_shallow: false
-  timestamp_epoch: 1782213176.729425
+  timestamp_epoch: 1782218862.904364
   os_platform: macOS-26.5.1-arm64-arm-64bit-Mach-O
   python_version: 3.13.1
   network_online: true
   loc_by_language:
-    python: 1008971
+    python: 1008981
   product_types:
   - agent-evaluation-harness
   - dataset-collection-pipeline
@@ -153,7 +153,7 @@ required_instruments:
 - semgrep
 - trivy
 allowlist_excluded:
-  multi_swe_bench/harness/repos: 15226
+  multi_swe_bench/harness/repos: 15224
 runs:
 - run_id: CMD-001
   tool: semgrep
@@ -169,11 +169,29 @@ runs:
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
   status: ok
   exit_code: 0
-  duration_sec: 38.26429796218872
+  duration_sec: 40.47107005119324
   stdout_artifact: artifacts/CMD-001.stdout.txt.gz
-  stdout_sha256: 906a65a4732d24712e0a0c22ae4ae2c86efbeaa55bb3dc751b450659570bdc90
+  stdout_sha256: 64c4afac47a6aff48bfe21a0d126b3f6da314ce73ea9646cfe3ac2ddad76fcac
   stdout_excerpt: "{\"version\":\"2.1.0\",\"runs\":[{\"invocations\":[{\"executionSuccessful\"\
-    :true,\"toolExecutionNotifications\":[]}],\"results\":[{\"fingerprints\":{\"matchBasedId/v1\"\
+    :true,\"toolExecutionNotifications\":[{\"descriptor\":{\"id\":\"Syntax error\"\
+    },\"level\":\"warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/beego__beego.git/hooks/pre-push.sample:47:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/beego__beego.git/hooks/pre-rebase.sample:41:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/beego__beego.git/hooks/push-to-checkout.sample:26:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/eslint__eslint.git/hooks/pre-push.sample:47:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/eslint__eslint.git/hooks/pre-rebase.sample:41:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/eslint__eslint.git/hooks/push-to-checkout.sample:26:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/uptrace__bun.git/hooks/pre-push.sample:47:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/uptrace__bun.git/hooks/pre-rebase.sample:41:\\\
+    n `2` was unexpected\"}},{\"descriptor\":{\"id\":\"Syntax error\"},\"level\":\"\
+    warning\",\"message\":{\"text\":\"Syntax error at line /Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/collect/.repo_cache/uptrace__bun.git/hooks/push-to-checkout.sample:26:\\\
+    n `2` was unexpected\"}}]}],\"results\":[{\"fingerprints\":{\"matchBasedId/v1\"\
     :\"requires login\"},\"locations\":[{\"physicalLocation\":{\"artifactLocation\"\
     :{\"uri\":\"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/cpp/crankyoldgit/base.Dockerfile\"\
     ,\"uriBaseId\":\"%SRCROOT%\"},\"region\":{\"endColumn\":18,\"endLine\":62,\"snippet\"\
@@ -242,35 +260,7 @@ runs:
     ,\"LOW CONFIDENCE\",\"OWASP-A01:2017 - Injection\",\"OWASP-A03:2021 - Injection\"\
     ,\"OWASP-A05:2025 - Injection\",\"security\"]},\"shortDescription\":{\"text\"\
     :\"Semgrep Finding: c.lang.security.double-free.double-free\"}},{\"defaultConfiguration\"\
-    :{\"level\":\"error\"},\"fullDescription\":{\"text\":\"Avoid 'gets()'. This function\
-    \ does not consider buffer boundaries and can lead to buffer overflows. Use 'fgets()'\
-    \ or 'gets_s()' instead.\"},\"help\":{\"markdown\":\"Avoid 'gets()'. This function\
-    \ does not consider buffer boundaries and can lead to buffer overflows. Use 'fgets()'\
-    \ or 'gets_s()' instead.\\n\\n#### \U0001F48E Enable cross-file analysis and Pro\
-    \ rules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\\n\\n<b>References:</b>\\\
-    n - [Semgrep Rule](https://semgrep.dev/r/c.lang.security.insecure-use-gets-fn.insecure-use-gets-fn)\\\
-    n - [https://us-cert.cisa.gov/bsi/articles/knowledge/coding-practices/fgets-and-gets_s](https://us-cert.cisa.gov/bsi/articles/knowledge/coding-practices/fgets-and-gets_s)\\\
-    n\",\"text\":\"Avoid 'gets()'. This function does not consider buffer boundaries\
-    \ and can lead to buffer overflows. Use 'fgets()' or 'gets_s()' instead.\\n\U0001F48E\
-    \ Enable cross-file analysis and Pro rules for free at sg.run/pro\"},\"helpUri\"\
-    :\"https://semgrep.dev/r/c.lang.security.insecure-use-gets-fn.insecure-use-gets-fn\"\
-    ,\"id\":\"c.lang.security.insecure-use-gets-fn.insecure-use-gets-fn\",\"name\"\
-    :\"c.lang.security.insecure-use-gets-fn.insecure-use-gets-fn\",\"properties\"\
-    :{\"precision\":\"very-high\",\"tags\":[\"CWE-676: Use of Potentially Dangerous\
-    \ Function\",\"MEDIUM CONFIDENCE\",\"security\"]},\"shortDescription\":{\"text\"\
-    :\"Semgrep Finding: c.lang.security.insecure-use-gets-fn.insecure-use-gets-fn\"\
-    }},{\"defaultConfiguration\":{\"level\":\"warning\"},\"fullDescription\":{\"text\"\
-    :\"Avoid using user-controlled format strings passed into 'sprintf', 'printf'\
-    \ and 'vsprintf'. These functions put you at risk of buffer overflow vulnerabilities\
-    \ through the use of format string exploits. Instead, use 'snprintf' and 'vsnprintf'.\"\
-    },\"help\":{\"markdown\":\"Avoid using user-controlled format strings passed into\
-    \ 'sprintf', 'printf' and 'vsprintf'. These functions put you at risk of buffer\
-    \ overflow vulnerabilities through the use of format string exploits. Instead,\
-    \ use 'snprintf' and 'vsnprintf'.\\n\\n#### \U0001F48E Enable cross-file analysis\
-    \ and Pro rules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\\n\\n<b>References:</b>\\\
-    n - [Semgrep Rule](https://semgrep.dev/r/c.lang.security.insecure-use-printf-fn.insecure-use-printf-fn)\\\
-    n - [https://doc.castsoftware.com/display/SBX/Never+use+sprintf%28%29+or+vsprintf%28%29+functio\n\
-    ...[1433172 bytes elided]...\nrules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\\\
+    :{\"level\":\n...[1435484 bytes elided]...\nrules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\\\
     n\\n<b>References:</b>\\n - [Semgrep Rule](https://semgrep.dev/r/yaml.openapi.security.openai-consequential-action-false.openai-consequential-action-false)\\\
     n - [https://platform.openai.com/docs/actions/consequential-flag](https://platform.openai.com/docs/actions/consequential-flag)\\\
     n - [https://owasp.org/Top10/A04_2021-Insecure_Design/](https://owasp.org/Top10/A04_2021-Insecure_Design/)\\\
@@ -324,18 +314,18 @@ runs:
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
   status: nonzero_exit
   exit_code: 1
-  duration_sec: 22.521013021469116
+  duration_sec: 22.689332246780396
   stdout_artifact: artifacts/CMD-002.stdout.txt.gz
-  stdout_sha256: 0e6b18b5716bc70c85e25f91a85b55cd0072bd9624cd646036a9bf366556b6a5
+  stdout_sha256: f77bbd982bec38b37d529af54a15df232b3d052dd7980ee08f52805a8e908dd3
   stdout_excerpt: "Working... \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\
     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\
     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\
     \u2501\u2501\u2501\u2501\u2501 100% 0:00:22\n{\n  \"errors\": [],\n  \"generated_at\"\
-    : \"2026-06-23T11:14:00Z\",\n  \"metrics\": {\n    \"_totals\": {\n      \"CONFIDENCE.HIGH\"\
+    : \"2026-06-23T12:48:50Z\",\n  \"metrics\": {\n    \"_totals\": {\n      \"CONFIDENCE.HIGH\"\
     : 35,\n      \"CONFIDENCE.LOW\": 180,\n      \"CONFIDENCE.MEDIUM\": 9,\n     \
     \ \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\"\
     : 39,\n      \"SEVERITY.MEDIUM\": 185,\n      \"SEVERITY.UNDEFINED\": 0,\n   \
-    \   \"loc\": 755036,\n      \"nosec\": 0,\n      \"skipped_tests\": 18\n    },\n\
+    \   \"loc\": 755222,\n      \"nosec\": 0,\n      \"skipped_tests\": 18\n    },\n\
     \    \"multi_swe_bench/__init__.py\": {\n      \"CONFIDENCE.HIGH\": 0,\n     \
     \ \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\": 0,\n      \"CONFIDENCE.UNDEFINED\"\
     : 0,\n      \"SEVERITY.HIGH\": 0,\n      \"SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\"\
@@ -434,7 +424,7 @@ runs:
     : {\n      \"CONFIDENCE.HIGH\": 0,\n      \"CONFIDENCE.LOW\": 0,\n      \"CONFIDENCE.MEDIUM\"\
     : 0,\n      \"CONFIDENCE.UNDEFINED\": 0,\n      \"SEVERITY.HIGH\": 0,\n      \"\
     SEVERITY.LOW\": 0,\n      \"SEVERITY.MEDIUM\": 0,\n      \"SEVERITY.UNDEFINED\"\
-    : 0,\n      \"loc\": 44,\n      \"nosec\": 0,\n\n...[2276390 bytes elided]...\n\
+    : 0,\n      \"loc\": 44,\n      \"nosec\": 0,\n\n...[2276386 bytes elided]...\n\
     n/1.9.4/plugins/b608_hardcoded_sql_expressions.html\",\n      \"test_id\": \"\
     B608\",\n      \"test_name\": \"hardcoded_sql_expressions\"\n    },\n    {\n \
     \     \"code\": \"45 \\n46         return f\\\"\\\"\\\"FROM {image_name}\\n47\
@@ -501,7 +491,7 @@ runs:
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
   status: ok
   exit_code: 0
-  duration_sec: 6.247621297836304
+  duration_sec: 9.627510786056519
   stdout_artifact: artifacts/CMD-003.stdout.txt.gz
   stdout_sha256: a004302d978c901ab761298eb4907964956742766c4eddd12295c20edc7e80e0
   stdout_excerpt: '{"dependencies": [{"name": "annotated-doc", "version": "0.0.4",
@@ -549,9 +539,9 @@ runs:
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
   status: ok
   exit_code: 0
-  duration_sec: 1.7145411968231201
+  duration_sec: 1.7953770160675049
   stdout_artifact: artifacts/CMD-004.stdout.txt.gz
-  stdout_sha256: e6025836eab6295a11fdba206fabe38bbd6564cdcd9d555b976a2f11fa06e9a7
+  stdout_sha256: f9e96ba491a9f656f113b26f8723c72508f7a29560c3ff7421e487a026be2a8d
   stdout_excerpt: "{\n  \"results\": [],\n  \"experimental_config\": {\n    \"licenses\"\
     : {\n      \"summary\": false,\n      \"allowlist\": null\n    }\n  }\n}\n"
   parsed_ok: true
@@ -570,9 +560,9 @@ runs:
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
   status: ok
   exit_code: 0
-  duration_sec: 21.977854013442993
+  duration_sec: 22.105345249176025
   stdout_artifact: artifacts/CMD-005.stdout.txt.gz
-  stdout_sha256: ba0f86eda05bb7db77603041fa66be48b445dc8ce4189c80d1b7f860e3f65310
+  stdout_sha256: 620d4aebdd8efa39a8162958d18b921a63b85f642efce0cdc05bcce3a8aa6c88
   stdout_excerpt: '[]
 
     '
@@ -588,9 +578,9 @@ runs:
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
   status: nonzero_exit
   exit_code: 1
-  duration_sec: 0.2431318759918213
+  duration_sec: 0.23829412460327148
   stdout_artifact: artifacts/CMD-006.stdout.txt.gz
-  stdout_sha256: 4120a2a1b01f55e86f3533eea2dcb4a9446d5291ec3cf531b47646c4770ecf4a
+  stdout_sha256: aa7d69cafa10383f4aa2ec79b1eb8991b3410325fedd2ce9ba8b60e9b60a7f63
   stdout_excerpt: "[\n  {\n    \"cell\": null,\n    \"code\": \"F403\",\n    \"end_location\"\
     : {\n      \"column\": 46,\n      \"row\": 1\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
     ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
@@ -673,7 +663,7 @@ runs:
     : {\n      \"column\": 51,\n      \"row\": 14\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/__init__.py\"\
     ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
     : 14\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.csharp import\
-    \ *` used; una\n...[11342379 bytes elided]...\n403\",\n    \"end_location\": {\n\
+    \ *` used; una\n...[11342951 bytes elided]...\n403\",\n    \"end_location\": {\n\
     \      \"column\": 71,\n      \"row\": 1\n    },\n    \"filename\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench/multi_swe_bench/harness/repos/typescript/withastro/__init__.py\"\
     ,\n    \"fix\": null,\n    \"location\": {\n      \"column\": 1,\n      \"row\"\
     : 1\n    },\n    \"message\": \"`from multi_swe_bench.harness.repos.typescript.withastro.astro\
@@ -726,9 +716,9 @@ runs:
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
   status: nonzero_exit
   exit_code: 1
-  duration_sec: 0.08510828018188477
+  duration_sec: 0.08781814575195312
   stdout_artifact: artifacts/CMD-007.stdout.txt.gz
-  stdout_sha256: 22e99b97aec5e727e96aaa5f2c6e86a76b7b0c07f8267a3a915fefd31ea2ed27
+  stdout_sha256: b8581ee5457ac5c803800d41258399283e2e4e6cbd16c2a6f78557d0b668c6f1
   stdout_excerpt: 'Would reformat: multi_swe_bench/harness/repos/__init__.py
 
     Would reformat: multi_swe_bench/harness/repos/c/DarkFlippers/unleashed_firmware.py
@@ -943,7 +933,7 @@ runs:
 
     Would reformat:
 
-    ...[43632 bytes elided]...
+    ...[43322 bytes elided]...
 
     _blockchain/website_1403_to_1375.py
 
@@ -1027,26 +1017,27 @@ runs:
 
     Would reformat: multi_swe_bench/harness/repos/typescript/xtermjs/xterm_js.py
 
-    661 files would be reformatted, 4243 files already formatted
+    657 files would be reformatted, 4247 files already formatted
 
     '
   parsed_ok: true
 - run_id: CMD-008
   tool: pytest
   argv:
-  - __audit_unresolvable__
+  - /Users/apple/Documents/handoff/milo-bench-clean/.venv/bin/python
   - -m
   - pytest
   - -q
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
-  status: tool_blocked
-  exit_code: null
-  duration_sec: null
-  stdout_artifact: null
-  stdout_sha256: null
-  stdout_excerpt: "no interpreter with the project deps found \u2014 set AUDIT_PROJECT_PYTHON\
-    \ to run pytest"
-  parsed_ok: false
+  status: ok
+  exit_code: 0
+  duration_sec: 2.0342981815338135
+  stdout_artifact: artifacts/CMD-008.stdout.txt.gz
+  stdout_sha256: 8ad9501bc08473a13c72b2fe6e913310a6bd1fd094f5af1bce6fe791c6d845a0
+  stdout_excerpt: '.........................................                                [100%]
+
+    '
+  parsed_ok: true
 - run_id: CMD-009
   tool: hadolint
   argv:
@@ -1057,7 +1048,7 @@ runs:
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
   status: ok
   exit_code: 0
-  duration_sec: 0.06329894065856934
+  duration_sec: 0.08824801445007324
   stdout_artifact: artifacts/CMD-009.stdout.txt.gz
   stdout_sha256: 7d246f88fa57ed4dba8d07c016caeb1114b11ef183c6e79243c7b46055b90c0c
   stdout_excerpt: '[]'
@@ -1073,20 +1064,19 @@ runs:
   cwd: /Users/apple/Documents/handoff/audit2.0/multi-swe-bench
   status: ok
   exit_code: 0
-  duration_sec: 2.430384874343872
+  duration_sec: 2.337156057357788
   stdout_artifact: artifacts/CMD-010.stdout.txt.gz
-  stdout_sha256: db4566ec0746a8140b4283de900fe972de1fb117b1401bd913d62369d7e92511
+  stdout_sha256: 244da4830eba09aacd8b814e8bdbc05788b9ce5defd14c8e8e310689bbe33dfb
   stdout_excerpt: "{\n  \"SchemaVersion\": 2,\n  \"Trivy\": {\n    \"Version\": \"\
-    0.71.1\"\n  },\n  \"ReportID\": \"019ef430-69b3-702e-be45-7d7a0ba7f279\",\n  \"\
-    CreatedAt\": \"2026-06-23T16:44:34.035013+05:30\",\n  \"ArtifactID\": \"sha256:bb7a5fd853b907d4a211fb1a1ba2e66380de288f6f293a8aa1035875ef0b43a5\"\
+    0.71.1\"\n  },\n  \"ReportID\": \"019ef487-519a-7cf8-870c-630c7825aa96\",\n  \"\
+    CreatedAt\": \"2026-06-23T18:19:29.498851+05:30\",\n  \"ArtifactID\": \"sha256:181a861659411291159e29fd2cec48d33ada237a8409ac0c3752924aba4b7f2b\"\
     ,\n  \"ArtifactName\": \"/Users/apple/Documents/handoff/audit2.0/multi-swe-bench\"\
     ,\n  \"ArtifactType\": \"repository\",\n  \"Metadata\": {\n    \"RepoURL\": \"\
     https://github.com/Ethara-Ai/multi-swe-bench\",\n    \"Branch\": \"main\",\n \
-    \   \"Commit\": \"1d39f9f4208d3dce7f65a841078d8d3ed228458f\",\n    \"CommitMsg\"\
-    : \"remove proxy from babel,fastify,gorm,openblas registries\",\n    \"Author\"\
-    : \"samyakjain399 \\u003csamyak.jain@ethara.ai\\u003e\",\n    \"Committer\": \"\
-    samyakjain399 \\u003csamyak.jain@ethara.ai\\u003e\"\n  },\n  \"Results\": [\n\
-    \    {\n      \"Target\": \"multi_swe_bench/harness/repos/cpp/crankyoldgit/base.Dockerfile\"\
+    \   \"Commit\": \"12ff6040d820b4da1af8d8b3d002ef40e6bef9ab\",\n    \"CommitMsg\"\
+    : \"Updated 3 registries.\",\n    \"Author\": \"Prem Ayer \\u003cprem.ayer.int30@ethara.ai\\\
+    u003e\",\n    \"Committer\": \"Prem Ayer \\u003cprem.ayer.int30@ethara.ai\\u003e\"\
+    \n  },\n  \"Results\": [\n    {\n      \"Target\": \"multi_swe_bench/harness/repos/cpp/crankyoldgit/base.Dockerfile\"\
     ,\n      \"Class\": \"config\",\n      \"Type\": \"dockerfile\",\n      \"MisconfSummary\"\
     : {\n        \"Successes\": 24,\n        \"Failures\": 3\n      },\n      \"Misconfigurations\"\
     : [\n        {\n          \"Type\": \"Dockerfile Security Check\",\n         \
@@ -1138,6 +1128,728 @@ runs:
     \        }\n      ]\n    }\n  ]\n}\n"
   parsed_ok: true
 normalized_issues:
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__c__DarkFlippers__unleashed_firmware.Dockerfile
+    (line 10): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: 54ee74b0ce527845c0e33b358fcc41c73551af8cd046644e62255e575d25bd5b
+  issue_instance_id: 1b004a6eb8cb0900c98c2ee0497245b779d340ed55501ac200d0f2cdc7e3bd02
+  occurrence_ordinal: 0
+- tool: dockerfile_sample_check
+  rule_id: DL3013
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3013 on generated Dockerfile multi_swe_bench__harness__repos__c__DarkFlippers__unleashed_firmware.Dockerfile
+    (line 21): Pin versions in pip. Instead of `pip install <package>` use `pip install
+    <package>==<version>` or `pip install --requirement <requirements file>`'
+  cluster_fingerprint: 8e47ae1e6a824bf1253a3be342d173823244599001dcebabbe890842751105b8
+  issue_instance_id: 52fbed3041488204253dbd32acf7376b1ea7dd907043dc617580efe6b96cc174
+  occurrence_ordinal: 1
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__cpp__AMReXCodes__amrex.Dockerfile
+    (line 7): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: b23c401d20696763787816cfea7b4b542ec4499077447591d2cde9b7b8903c4c
+  issue_instance_id: 468504b4ad37c0416fb1a3b4d2e8b281392a56252d31c58c364f399e282c5f25
+  occurrence_ordinal: 100
+- tool: dockerfile_sample_check
+  rule_id: DL3015
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__cpp__AMReXCodes__amrex.Dockerfile
+    (line 7): Avoid additional packages by specifying `--no-install-recommends`'
+  cluster_fingerprint: b7da56722536cc403aa1af5a5f504a93bdbe84bac0b288efa24d4b690d26acca
+  issue_instance_id: f66b7ae7134185435ba5975d595b4e5726b16c17f339a14c934b8fe870e27b7c
+  occurrence_ordinal: 101
+- tool: dockerfile_sample_check
+  rule_id: DL3059
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3059 on generated Dockerfile multi_swe_bench__harness__repos__golang__99designs__gqlgen.Dockerfile
+    (line 24): Multiple consecutive `RUN` instructions. Consider consolidation.'
+  cluster_fingerprint: 60d88651926242e1e5584f39cad32db9f2057afc3a4139e098d3cbd1e48762d5
+  issue_instance_id: d0a7a4d4e9503cb4255651b9a4899e52bfd5879c26c721ced4408504a7851c14
+  occurrence_ordinal: 300
+- tool: dockerfile_sample_check
+  rule_id: DL4006
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL4006 on generated Dockerfile multi_swe_bench__harness__repos__golang__99designs__gqlgen.Dockerfile
+    (line 26): Set the SHELL option -o pipefail before RUN with a pipe in it. If you
+    are using /bin/sh in an alpine image or if your shell is symlinked to busybox
+    then consider explicitly setting your SHELL to /bin/ash, or disable this check'
+  cluster_fingerprint: 723c6bd3e808b317acd5a318a609aa8876e7e1b09e5cac4a9d631e7ac305ba01
+  issue_instance_id: fd496e5da2e3d64f1ccea716fa05c9cb74e7197a0fe9273c5abb6ff0d679f7db
+  occurrence_ordinal: 301
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__java__Blankj__AndroidUtilCode.Dockerfile
+    (line 11): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: 3e70cb3cd0ba9ed884630dbc420b44addb9e47a1771a6758f40b5a24e226d4ac
+  issue_instance_id: a96d6ef38259745dc71c59a7864f8d7e26f15fce124306a1dbc09aa02836a1cd
+  occurrence_ordinal: 400
+- tool: dockerfile_sample_check
+  rule_id: DL3015
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__java__Blankj__AndroidUtilCode.Dockerfile
+    (line 11): Avoid additional packages by specifying `--no-install-recommends`'
+  cluster_fingerprint: 5b37e3fbf7adafc649794f875e802011afb503ec5b4b611cbd721bd65ea3d599
+  issue_instance_id: 9cc68037233828273c93a2dd6048e77c5ea35985a586449c4a56cf1e775ea56b
+  occurrence_ordinal: 401
+- tool: dockerfile_sample_check
+  rule_id: SC2046
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint SC2046 on generated Dockerfile multi_swe_bench__harness__repos__java__Blankj__AndroidUtilCode.Dockerfile
+    (line 19): Quote this to prevent word splitting.'
+  cluster_fingerprint: b21a55650f952454145817afcf7275880b04dd9f48f2a28f940186e0973f6d3e
+  issue_instance_id: eacc32ce53b75b77d88bf3cbdac70d51fbeb5fa62ede649e682518044c39056d
+  occurrence_ordinal: 402
+- tool: dockerfile_sample_check
+  rule_id: SC2046
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint SC2046 on generated Dockerfile multi_swe_bench__harness__repos__java__Blankj__AndroidUtilCode.Dockerfile
+    (line 20): Quote this to prevent word splitting.'
+  cluster_fingerprint: b21a55650f952454145817afcf7275880b04dd9f48f2a28f940186e0973f6d3e
+  issue_instance_id: 7772092d50e3f495c64cf2b71e077d3370474485c371acdb38bea9de83553bef
+  occurrence_ordinal: 403
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 16): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: fba1e45e458877d3e9709bef69a4092f2f1de726b4023f333de25b7a42246fb5
+  issue_instance_id: 50a52e81b0b8effcee503ef08e501d15f0bbfc5ae131ae944c5015843759fd23
+  occurrence_ordinal: 500
+- tool: dockerfile_sample_check
+  rule_id: DL3009
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 16): Delete the apt lists (/var/lib/apt/lists) after installing something'
+  cluster_fingerprint: 241ef0f3516cb336c46e41d91bd5ad2d0dce8d54621d9293a434faf038ca7bbc
+  issue_instance_id: 1387539d4a183d1aa24c37d5399d4b5b23b8a2d20b6ea73c18bfe6fa4b8d2c9c
+  occurrence_ordinal: 501
+- tool: dockerfile_sample_check
+  rule_id: DL3015
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 16): Avoid additional packages by specifying `--no-install-recommends`'
+  cluster_fingerprint: ed48e3a9e81f8cb417418239d912e343749f356ab9f5cc3c8ada74fc65cade89
+  issue_instance_id: f0381422f8931de8b818c2ac2116a2e499e6e2066fecb12c1fa357d963ebb345
+  occurrence_ordinal: 502
+- tool: dockerfile_sample_check
+  rule_id: DL3009
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 19): Delete the apt lists (/var/lib/apt/lists) after installing something'
+  cluster_fingerprint: 241ef0f3516cb336c46e41d91bd5ad2d0dce8d54621d9293a434faf038ca7bbc
+  issue_instance_id: 78e411ec2d450a020901101f9d6fe15526ce60e6d2fbc8e59fbcc8aa4579dc67
+  occurrence_ordinal: 503
+- tool: dockerfile_sample_check
+  rule_id: DL3018
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3018 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 19): Pin versions in apk add. Instead of `apk add <package>` use `apk add
+    <package>=<version>`'
+  cluster_fingerprint: a87e05ff694060ad6a21c32fec660cab911c67eb87da0b7629552abe4ca554c0
+  issue_instance_id: f12b44e4d84e3e9ccbc5ba7a05b82f570e9cd5ea6be44c252473cff62aab6416
+  occurrence_ordinal: 504
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 19): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: fba1e45e458877d3e9709bef69a4092f2f1de726b4023f333de25b7a42246fb5
+  issue_instance_id: b58d5be0049241c7ccce05d7c1800d2d47c3f51d6e74f5ed7f75ffdc189b466c
+  occurrence_ordinal: 505
+- tool: dockerfile_sample_check
+  rule_id: DL3015
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 19): Avoid additional packages by specifying `--no-install-recommends`'
+  cluster_fingerprint: ed48e3a9e81f8cb417418239d912e343749f356ab9f5cc3c8ada74fc65cade89
+  issue_instance_id: 1199db6cdc487145235d7d539aac854f5c9580df30571516e728d926262cc91f
+  occurrence_ordinal: 506
+- tool: dockerfile_sample_check
+  rule_id: DL3032
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3032 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 19): `yum clean all` missing after yum command.'
+  cluster_fingerprint: 7f21c8a7d436a763fff7f58b78472ffa0f7eadfaf6451adef64f91368be538cb
+  issue_instance_id: 30fcb3a965ae6aec533062dcc560956ea75e6eb9669229cc3c9825a6c3eb0d3a
+  occurrence_ordinal: 507
+- tool: dockerfile_sample_check
+  rule_id: DL3033
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3033 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 19): Specify version with `yum install -y <package>-<version>`.'
+  cluster_fingerprint: 06fbcc15a0fd2dda530b1b845c1533e628d86d9b5b591deb56e3e9b3907717f4
+  issue_instance_id: 276c1b9f22e361f77ca85eff61de21dd82bb88dd00f5182a0abd595c6be41816
+  occurrence_ordinal: 508
+- tool: dockerfile_sample_check
+  rule_id: DL3059
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3059 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accenture__sfmc_devtools_1191_to_558.Dockerfile
+    (line 28): Multiple consecutive `RUN` instructions. Consider consolidation.'
+  cluster_fingerprint: 6fba300b51fc4d24a57344212103d257f922892a25608a603083521742cd00ce
+  issue_instance_id: fa533e7be2b3a9dc9ec6789440427aa0e50bc5cb2372de791cf17901c35da424
+  occurrence_ordinal: 509
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__kotlin__Kotlin__kotlinxcoroutines.Dockerfile
+    (line 10): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: 737e8f522217e4a8541b4f7f0e3e162c1cc6215952549ac0a5f615719e6303e1
+  issue_instance_id: 0b56cdf8fbe11b76457af535141598b3f45e979494be8de06cf804901601d1f7
+  occurrence_ordinal: 600
+- tool: dockerfile_sample_check
+  rule_id: DL3009
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__kotlin__Kotlin__kotlinxcoroutines.Dockerfile
+    (line 10): Delete the apt lists (/var/lib/apt/lists) after installing something'
+  cluster_fingerprint: acd89356d9047d113d0ac47266b21170404e43c3c293d319a1ea3e023d7c41c7
+  issue_instance_id: a3ae481a4ba3f7847e1883cf5f2207ec219c23d0d21cb31f5ff4532a379f0c52
+  occurrence_ordinal: 601
+- tool: dockerfile_sample_check
+  rule_id: DL3015
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__kotlin__Kotlin__kotlinxcoroutines.Dockerfile
+    (line 10): Avoid additional packages by specifying `--no-install-recommends`'
+  cluster_fingerprint: 3445bb7e8e92d83122f35ed82377c67b344461b4fac2db60298f353b8489ae4f
+  issue_instance_id: 322fe14e298f5230b63494048dc9df7e0a3657b79476ecd290c22f6d5c648892
+  occurrence_ordinal: 602
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__php__briannesbitt__Carbon.Dockerfile
+    (line 9): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: 8cc389072f732c637ce203974b40252cb93e4d995c69d326c3fd1c859e00b2c7
+  issue_instance_id: c9e3c7f3397b7d1e923fd65854acc9232304e196da08a0f8efae6d26cb550c82
+  occurrence_ordinal: 700
+- tool: dockerfile_sample_check
+  rule_id: DL3015
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__php__briannesbitt__Carbon.Dockerfile
+    (line 9): Avoid additional packages by specifying `--no-install-recommends`'
+  cluster_fingerprint: fc09e94b584e5dfa0b1ea87ece4e37eb048575fde3d42ce1d7848bb47750bd69
+  issue_instance_id: be73832d7a5e48e95ee61143a8d660753f897c250a3a6afe2a8e8213c00f1c1a
+  occurrence_ordinal: 701
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 16): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: b87e665130aa15808a287aa2e3f17034baec7d2a9703952e4d355484c9d8868a
+  issue_instance_id: 1cb269b7facc32b164e0086bd60206b50fb4274860c8ac05a328b18ab6801afd
+  occurrence_ordinal: 800
+- tool: dockerfile_sample_check
+  rule_id: DL3009
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 16): Delete the apt lists (/var/lib/apt/lists) after installing something'
+  cluster_fingerprint: cc2a426f23c4fbf80cdeb69c26195680ecc0092017db7b3c296f48fe685025be
+  issue_instance_id: 2d0bf4cb1edbfa86399d2230f4fd790005c967ee4101a1e270cce52e7932eec5
+  occurrence_ordinal: 801
+- tool: dockerfile_sample_check
+  rule_id: DL3015
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 16): Avoid additional packages by specifying `--no-install-recommends`'
+  cluster_fingerprint: 299587df473cdc1fcad66ec36738325455f35be007e808af5afc211796e4442f
+  issue_instance_id: 0d7330a60d996b1c8f462dbdf621133483dd8ab5b18ef1f27663c343adc37622
+  occurrence_ordinal: 802
+- tool: dockerfile_sample_check
+  rule_id: DL3009
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 19): Delete the apt lists (/var/lib/apt/lists) after installing something'
+  cluster_fingerprint: cc2a426f23c4fbf80cdeb69c26195680ecc0092017db7b3c296f48fe685025be
+  issue_instance_id: 4e5029aebea52530cfb0e9e623593eef89fc8015b9d82106a70aa73312dcfd90
+  occurrence_ordinal: 803
+- tool: dockerfile_sample_check
+  rule_id: DL3018
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3018 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 19): Pin versions in apk add. Instead of `apk add <package>` use `apk add
+    <package>=<version>`'
+  cluster_fingerprint: 4d465414e9e32ee8b7b2f478433535df9a819f917bcb4920d37c3618803c1618
+  issue_instance_id: affebddbdc0ba927ccc220a2b3a65aad6857c351762fdeb0a477bfb2f6cdf0dd
+  occurrence_ordinal: 804
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 19): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: b87e665130aa15808a287aa2e3f17034baec7d2a9703952e4d355484c9d8868a
+  issue_instance_id: 43389af8b8e6ca0c5bcd4466339fdba4c0d9f85f53f30aefe48e4419a59a6c14
+  occurrence_ordinal: 805
+- tool: dockerfile_sample_check
+  rule_id: DL3015
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 19): Avoid additional packages by specifying `--no-install-recommends`'
+  cluster_fingerprint: 299587df473cdc1fcad66ec36738325455f35be007e808af5afc211796e4442f
+  issue_instance_id: 6ec9fc450267fc0fc83422b0052e5a6d7b7e9a8a8421818ac39cd9464353b3dd
+  occurrence_ordinal: 806
+- tool: dockerfile_sample_check
+  rule_id: DL3032
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3032 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 19): `yum clean all` missing after yum command.'
+  cluster_fingerprint: 78a5673aecaf37a634c81161378a04314f2c17a569b32861657adf20310ac86f
+  issue_instance_id: bd7cd024e1145e655256e9fb25631e9328ed898b912a83e98d7bb1b97b16ccb5
+  occurrence_ordinal: 807
+- tool: dockerfile_sample_check
+  rule_id: DL3033
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3033 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 19): Specify version with `yum install -y <package>-<version>`.'
+  cluster_fingerprint: 0ce9a3019d2dbc17b64418f10d6c660546e2a9786104b77bcbce785a6cd7b818
+  issue_instance_id: e2b463bc31666183164de9335f7814e17a4dff42cff7d035e83e63c212207401
+  occurrence_ordinal: 808
+- tool: dockerfile_sample_check
+  rule_id: DL3059
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3059 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqHQ__covalent_1395_to_1206.Dockerfile
+    (line 28): Multiple consecutive `RUN` instructions. Consider consolidation.'
+  cluster_fingerprint: c78af67d1f6b45b432bf1e50e9b82e5057aab5e97321ce04aa7f206950fbec12
+  issue_instance_id: 12d8d2081e3d3a0b2e00fdfac71b3843bcd999fb7f4e48121bbf4b7e8114e5bf
+  occurrence_ordinal: 809
+- tool: dockerfile_sample_check
+  rule_id: DL3007
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3007 on generated Dockerfile multi_swe_bench__harness__repos__rust__BurntSushi__ripgrep.Dockerfile
+    (line 1): Using latest is prone to errors if the image will ever update. Pin the
+    version explicitly to a release tag'
+  cluster_fingerprint: b58c465d53724997e7288fb3c40ffb783dc437ccddea2a260f35932a79af70ac
+  issue_instance_id: a231719eab52fd7ae18e278c0f6ca9cd91125f44fd7e398255d37a594446f183
+  occurrence_ordinal: 1000
+- tool: dockerfile_sample_check
+  rule_id: DL3018
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3018 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altinn__app_frontend_react_1534_to_724.Dockerfile
+    (line 16): Pin versions in apk add. Instead of `apk add <package>` use `apk add
+    <package>=<version>`'
+  cluster_fingerprint: f9b260523a2493018293e15a6052cb42b449524340f8a449728be1b64109e765
+  issue_instance_id: f8a64a0c2eaf9ae822679a46515a50d2493a68b601c7a80d69381192f1890529
+  occurrence_ordinal: 1300
+- tool: dockerfile_sample_check
+  rule_id: DL3008
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altinn__app_frontend_react_1534_to_724.Dockerfile
+    (line 19): Pin versions in apt get install. Instead of `apt-get install <package>`
+    use `apt-get install <package>=<version>`'
+  cluster_fingerprint: 841d0fb4cb62a797bc7667d7d1652f9d5f01dcdd2c161a60335c28bdcdba753b
+  issue_instance_id: 309ff66a2e19f31c366cb8ccd6b919e156e8392db42068f1262686cfcd927a62
+  occurrence_ordinal: 1301
+- tool: dockerfile_sample_check
+  rule_id: DL3009
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altinn__app_frontend_react_1534_to_724.Dockerfile
+    (line 19): Delete the apt lists (/var/lib/apt/lists) after installing something'
+  cluster_fingerprint: 7d625794a592feb56b51d5538280b5e77343d41b7a1d1bba901cf91883a3dbb2
+  issue_instance_id: c94b76226a5675198ae01ab67350bd18ca4de29fffa8e8b8f87ee00118fe8958
+  occurrence_ordinal: 1302
+- tool: dockerfile_sample_check
+  rule_id: DL3018
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3018 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altinn__app_frontend_react_1534_to_724.Dockerfile
+    (line 19): Pin versions in apk add. Instead of `apk add <package>` use `apk add
+    <package>=<version>`'
+  cluster_fingerprint: f9b260523a2493018293e15a6052cb42b449524340f8a449728be1b64109e765
+  issue_instance_id: e4a66d3ca763dad73ed874fe3240975ae1a116179a4ad6e72f903629c265d313
+  occurrence_ordinal: 1303
+- tool: dockerfile_sample_check
+  rule_id: DL3015
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altinn__app_frontend_react_1534_to_724.Dockerfile
+    (line 19): Avoid additional packages by specifying `--no-install-recommends`'
+  cluster_fingerprint: 2943c3a8e0993f823a17edfb7920a632e1c4a529b8098638fe86f9f94833ad1a
+  issue_instance_id: 337d67b75f9dba46fd20263cffed951f3e87e982ea760d8a25066e397b4e0464
+  occurrence_ordinal: 1304
+- tool: dockerfile_sample_check
+  rule_id: DL3033
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3033 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altinn__app_frontend_react_1534_to_724.Dockerfile
+    (line 19): Specify version with `yum install -y <package>-<version>`.'
+  cluster_fingerprint: 8859035cd38f8ae6a76e503b5b375fdd7f4690063c478419b818feea24c969ad
+  issue_instance_id: af61f680fdd3fe2f38e3b6da67e45043fbdc99417d37fe8bd88bc363f38fa85f
+  occurrence_ordinal: 1305
+- tool: dockerfile_sample_check
+  rule_id: DL3032
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3032 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altinn__app_frontend_react_1534_to_724.Dockerfile
+    (line 19): `yum clean all` missing after yum command.'
+  cluster_fingerprint: 8e92bf7a9a39f5ebcb525a70511ef2dcd1841c90f365436a544f0269c04e6854
+  issue_instance_id: d74535ab95020142f8bf3dc4f183f10dd838d68e5ad7e53415d71c6f1d618d94
+  occurrence_ordinal: 1306
+- tool: dockerfile_sample_check
+  rule_id: DL3059
+  severity: MEDIUM
+  location_type: artifact
+  path: null
+  line: null
+  package: null
+  version: null
+  vuln_id: null
+  advisory_id: null
+  tool_native_fingerprint: null
+  message: 'hadolint DL3059 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altinn__app_frontend_react_1534_to_724.Dockerfile
+    (line 28): Multiple consecutive `RUN` instructions. Consider consolidation.'
+  cluster_fingerprint: a5c1086259e6a61ad40f535dfb7432272e555379c66093bffd3affc9c7f98124
+  issue_instance_id: 66e4cfb7e1ba2eab1ecb6abf01472e4e14966ac33e8796e84407482c8468ec8d
+  occurrence_ordinal: 1307
 - tool: live_image_scan
   rule_id: CVE-2026-27456
   severity: MEDIUM
@@ -1341,23 +2053,6 @@ normalized_issues:
   issue_instance_id: 3226f102261dd5154413364446d160dee2efd3ae98ab418e3206bcd8c3c9415a
   occurrence_ordinal: 11
 - tool: live_image_scan
-  rule_id: CVE-2026-41989
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-41989 in libgcrypt20 1.10.3-2build1 (fix: 1.10.3-2ubuntu0.1)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: Libgcrypt: Libgcrypt: Denial of Service
-    and buffer overflow via crafted ECDH cip'
-  cluster_fingerprint: f1f2a7702a64fd51f9844358195a9e6f02b1356c260c27278b8ac0113f95c60e
-  issue_instance_id: 1aa2cd5d87dfbfef03af5ac4515426f253646fd0a8496b754b9b9bcc0b7bf208
-  occurrence_ordinal: 12
-- tool: live_image_scan
   rule_id: CVE-2024-2236
   severity: MEDIUM
   location_type: dependency
@@ -1368,249 +2063,11 @@ normalized_issues:
   vuln_id: null
   advisory_id: null
   tool_native_fingerprint: null
-  message: 'trivy image CVE-2024-2236 in libgcrypt20 1.10.3-2build1 (no fix) [audit-livescan:ephemeral
+  message: 'trivy image CVE-2024-2236 in libgcrypt20 1.10.3-2ubuntu0.1 (no fix) [audit-livescan:ephemeral
     (ubuntu 24.04)]: libgcrypt: vulnerable to Marvin Attack'
-  cluster_fingerprint: 6544cb47ff41eba8466f2e8dd2d0cc0556a8f37420b56fa552a2618133e17d3d
-  issue_instance_id: 8c56d2231fc86a1c3bfb0964b00f02fe45f7e8752e22a9561dc6c1270457f053
-  occurrence_ordinal: 13
-- tool: live_image_scan
-  rule_id: CVE-2026-33845
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-33845 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix:
-    3.8.3-1.1ubuntu3.6) [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: GnuTLS:
-    Denial of Service via DTLS zero-length fragment'
-  cluster_fingerprint: 519adff2f15d7662984ec21aaac52f776c983060d052e543c73f8ffdee95370a
-  issue_instance_id: b1294523af67ee9feb3dfbda9fca630a0927b1349415f8bd36d35ef09eebb50b
-  occurrence_ordinal: 14
-- tool: live_image_scan
-  rule_id: CVE-2026-33846
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-33846 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix:
-    3.8.3-1.1ubuntu3.6) [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: GnuTLS:
-    Denial of Service via heap buffer overflow in DTLS handshake fra'
-  cluster_fingerprint: 181070b2aa35c09496149d971f095f037a3c0085a60db993f6979aff52d67b93
-  issue_instance_id: 75e6fca330b0d6b5634654bbf42e22f89a0356caccc8e49474f5702c20888c2d
-  occurrence_ordinal: 15
-- tool: live_image_scan
-  rule_id: CVE-2026-3832
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-3832 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: gnutls: Security bypass allows
-    acceptance of revoked server certificates'
-  cluster_fingerprint: 515afe6dc33bdc3b423bad5731f0daaa440a1da851033a948033df0116c9d9fd
-  issue_instance_id: a323ad5c98e760031aa2a0b3d923e520c7ad6b2b29250271ac5a57d926873e3a
-  occurrence_ordinal: 16
-- tool: live_image_scan
-  rule_id: CVE-2026-3833
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-3833 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: GnuTLS: Policy bypass due to
-    case-sensitive nameConstraints comparison'
-  cluster_fingerprint: caee089f625ad3a5fb544ae382db0441df8a30ab0afab5f99309024f30e983e3
-  issue_instance_id: 5687b52d67e8bf8475af4e2081f836a59bcc01c76dfbfd4970d49cd5b5097e7e
-  occurrence_ordinal: 17
-- tool: live_image_scan
-  rule_id: CVE-2026-42009
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42009 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix:
-    3.8.3-1.1ubuntu3.6) [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: gnutls:
-    Denial of Service via DTLS packet reordering vulnerability'
-  cluster_fingerprint: 44b226a69ad4bc42caa615b269376712a669b22622d640ee2d0daeb9c2f8cce2
-  issue_instance_id: a5d7739012fe7b95be50024c846fdd282e3b49018d4ce2507f5064755e08ffa9
-  occurrence_ordinal: 18
-- tool: live_image_scan
-  rule_id: CVE-2026-42010
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42010 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix:
-    3.8.3-1.1ubuntu3.6) [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: gnutls:
-    Authentication Bypass via NUL Character in Username'
-  cluster_fingerprint: 08a7026e7c94068bc0289044614018dc2902a80f44a16b9d75b51050f5e0c0d8
-  issue_instance_id: 00f5d14430bc66684f4a392d51ae6569cc8dd42eb1a3d42f63e636a303a6ab43
-  occurrence_ordinal: 19
-- tool: live_image_scan
-  rule_id: CVE-2026-42011
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42011 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix:
-    3.8.3-1.1ubuntu3.6) [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: gnutls:
-    Security bypass due to incorrect name constraint handling'
-  cluster_fingerprint: 69505743a67937bdbc712934b6e5b65f933a8dc0b5f54f27e4644816d23654cb
-  issue_instance_id: ca697f273777609bd41400767b980bfb9126d85c1aedd2bcde190a468c8b4bba
-  occurrence_ordinal: 20
-- tool: live_image_scan
-  rule_id: CVE-2026-42012
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42012 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix:
-    3.8.3-1.1ubuntu3.6) [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: gnutls:
-    Certificate validation bypass due to improper handling of URI an'
-  cluster_fingerprint: c38ad0deea6d6bc03c3eb4b3b3974c9114757de0e0e2185c4aab886a35bf26f1
-  issue_instance_id: ad1120a777abc931af14fc12a2c5df34592d1faed9fd998a01340cb957d1b4f9
-  occurrence_ordinal: 21
-- tool: live_image_scan
-  rule_id: CVE-2026-42013
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42013 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix:
-    3.8.3-1.1ubuntu3.6) [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: gnutls:
-    Certificate validation bypass due to oversized Subject Alternati'
-  cluster_fingerprint: f8ec17d1f8362ac09bc999b836ac356b5409984c79f8b7e48e9f3aa879169a2f
-  issue_instance_id: 4c0ec321ee8a2f6acb38885415d3bfa96eae3d9aad03c330d0af2b73a063b9c2
-  occurrence_ordinal: 22
-- tool: live_image_scan
-  rule_id: CVE-2026-42014
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42014 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix:
-    3.8.3-1.1ubuntu3.6) [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: Fix use-after-free
-    in gnutls_pkcs11_token_set_pin'
-  cluster_fingerprint: b3f3330216e7a7dcff050ccbc28fa31a790058969c937cd6dbb7b6299c66d157
-  issue_instance_id: 828ca45c52d0c50de8be2a790e22dfe17717dd4fdfae646f3db2ec062f37831f
-  occurrence_ordinal: 23
-- tool: live_image_scan
-  rule_id: CVE-2026-42015
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42015 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix:
-    3.8.3-1.1ubuntu3.6) [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: gnutls:
-    Memory corruption due to off-by-one error in PKCS#12 bag handlin'
-  cluster_fingerprint: af5698afacb3bc8a20a321d6024867e67a45eeb9ad1c8c354c2db1e3f1883177
-  issue_instance_id: 4571f39d93e4e84d499b264fc2db0ab0c1c0ec6cb734011d9a3f579f48ffd60c
-  occurrence_ordinal: 24
-- tool: live_image_scan
-  rule_id: CVE-2026-5260
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-5260 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: gnutls: gnutls: Information disclosure
-    via heap overread in RSA key exchange'
-  cluster_fingerprint: e3743c05cc5dfe366385ef4cdcb39b792fa1b4e39ab7c047e0c9d661f45769cf
-  issue_instance_id: 5e18160854910d8c1cdc5ef56f238d4ec8452105570e2b7c667dc21c084409db
-  occurrence_ordinal: 25
-- tool: live_image_scan
-  rule_id: CVE-2026-5419
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-5419 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: guntls: gnutls: Information disclosure
-    via timing side-channel in PKCS#7 padding'
-  cluster_fingerprint: 014057e2afc30a4e0e342edcbadd401bef05bfc9259dd7dd9aff93d82ac957e4
-  issue_instance_id: c3277c1199a8ec8386ec1d5ba1ac32519e2e1ffa353a054095c075f10bff6fe6
-  occurrence_ordinal: 26
-- tool: live_image_scan
-  rule_id: CVE-2026-34743
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-34743 in liblzma5 5.6.1+really5.4.5-1ubuntu0.2 (fix:
-    5.6.1+really5.4.5-1ubuntu0.3) [audit-livescan:ephemeral (ubuntu 24.04)]: xz: XZ
-    Utils: Denial of Service via buffer overflow in index decoding'
-  cluster_fingerprint: 85dd376044fe461e951e92d1bcb3bd2ad2a98322c42f5d705eefa0425a26475d
-  issue_instance_id: a363a580734be3dde6c9b83869e0e44de0a63b25e8d08603e879a24c1cf69b0f
-  occurrence_ordinal: 27
+  cluster_fingerprint: 9b63e32b284d541c7725309f8e53ace1d857cae8ca017aa654aeb7792576041d
+  issue_instance_id: ec338c03d10307aa4be39aa972b2dbd56cc6414bb3596ab512699aad85d36578
+  occurrence_ordinal: 12
 - tool: live_image_scan
   rule_id: CVE-2026-27456
   severity: MEDIUM
@@ -1626,8 +2083,8 @@ normalized_issues:
     (ubuntu 24.04)]: util-linux: TOCTOU in the mount program when setting up loop
     devices'
   cluster_fingerprint: 0052845a2cc29b2f47405dc26ac7b5fef3a7a16cc12b570a3311bf2a03a631f3
-  issue_instance_id: b411a82a7cc47588de8b756c650121128768124443f404e60890187fa7d49863
-  occurrence_ordinal: 28
+  issue_instance_id: 856942819056a35ad3ab834c46c9bd6ace907c01e3bfed0a616c1db8c1e3c29d
+  occurrence_ordinal: 13
 - tool: live_image_scan
   rule_id: CVE-2026-27456
   severity: MEDIUM
@@ -1643,195 +2100,8 @@ normalized_issues:
     [audit-livescan:ephemeral (ubuntu 24.04)]: util-linux: TOCTOU in the mount program
     when setting up loop devices'
   cluster_fingerprint: 66eaffba782f3038b5984bb33bd03bf8f98640b021cdc760fc842aa064af65f6
-  issue_instance_id: 816deaac130199cf8b81c44dda6ffc93669afc88b8b746190cd7562d7242a1a5
-  occurrence_ordinal: 29
-- tool: live_image_scan
-  rule_id: CVE-2026-45447
-  severity: HIGH
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-45447 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: Heap Use-After-Free in OpenSSL
-    PKCS7_verify()'
-  cluster_fingerprint: ee5b77ae0c452259fe844c2b36887d8204246b75149cc7150116a249f0c1e517
-  issue_instance_id: 130c643b94b45833f00fc1810df282043e3dfe279d29cf669d34f67e70406720
-  occurrence_ordinal: 30
-- tool: live_image_scan
-  rule_id: CVE-2026-34182
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-34182 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: CMS AuthEnvelopedData Processing
-    May Accept Forged Messages'
-  cluster_fingerprint: f32aa25ae01b65f1ec2d08dcdcdc5bf5049b8345cdae45ed48a2c75a0bf90778
-  issue_instance_id: ccab286aab57e4c201001a368dde8e64c9903d3eb87e07252c0cad081490fb18
-  occurrence_ordinal: 31
-- tool: live_image_scan
-  rule_id: CVE-2026-45445
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-45445 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: AES-OCB IV Ignored on EVP_Cipher()
-    Path'
-  cluster_fingerprint: ef2231df404570d406098a4f5401f10655c1598fc6bb4cc2b6a8e33f82abca27
-  issue_instance_id: f2106145b57b6a56b3a50b038d3ba3969dd7a8bbe0731a50ebb93a1dfcbcc242
-  occurrence_ordinal: 32
-- tool: live_image_scan
-  rule_id: CVE-2026-34180
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-34180 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: OpenSSL: Heap buffer over-read
-    in ASN.1 decoding can lead to denial of '
-  cluster_fingerprint: 536d557eccb65b7700bcc893e91a8e87e0ef0d66dbea32b7d8b4b3aee9d28546
-  issue_instance_id: 01bbbac95d7615a9cc7b09fedd23295055b31fa527f25e3fc1d2421775090b0e
-  occurrence_ordinal: 33
-- tool: live_image_scan
-  rule_id: CVE-2026-42766
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42766 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: Possible NULL Dereference
-    in Password-Based CMS Decryption'
-  cluster_fingerprint: ca426afaad215cecc928c5986344af4f29944c4d8d88e52c1e408bfd1c06357c
-  issue_instance_id: 4c714083e74bd96d93cb9c656fefa57460351c394de2793192e06f69642bb70d
-  occurrence_ordinal: 34
-- tool: live_image_scan
-  rule_id: CVE-2026-42767
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42767 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: NULL Pointer Dereference in
-    CRMF EncryptedValue Decryption'
-  cluster_fingerprint: 935c1fcade72d24c11e5242c92600e7181ffb56627ae11c4affbf4424757f5f2
-  issue_instance_id: 14f856879fe985e7e347b8425a5a0b4f484f5814052c067bf6a4676467885e42
-  occurrence_ordinal: 35
-- tool: live_image_scan
-  rule_id: CVE-2026-42770
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-42770 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: FFC-DH Peer Validation Uses
-    Attacker-Supplied q'
-  cluster_fingerprint: c4de1c94866ad70db4fb962c9ced6691c31feaa52e33f45cfff83311c036fe13
-  issue_instance_id: 87e5a2a5dd52f2881cca77b0de9d702b9487c6947f6e4104579b4eb9fccedbcb
-  occurrence_ordinal: 36
-- tool: live_image_scan
-  rule_id: CVE-2026-45446
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-45446 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: Incorrect Tag Processing for
-    Empty Messages in AES-GCM-SIV and AES-SIV '
-  cluster_fingerprint: b95b48a69f5f5d3827de54d1609f3e7718415df9ab3ed0b583acf4cdfdc23893
-  issue_instance_id: 5dfef6e41e1e597736bd7e1154712da8caff3022d8ffaf990b07556fb31f34ac
-  occurrence_ordinal: 37
-- tool: live_image_scan
-  rule_id: CVE-2026-7383
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-7383 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: OpenSSL: Heap buffer overflow
-    due to signed integer overflow in Unicode'
-  cluster_fingerprint: 2ea3b481dc840a97933f7f21e026968751712787a3e8a5d171bd0c61c76ad286
-  issue_instance_id: 8111fc37011bef03d9519a232ee60e4d2dd59f39270d81554699653d66bcaa0b
-  occurrence_ordinal: 38
-- tool: live_image_scan
-  rule_id: CVE-2026-9076
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-9076 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: openssl: OpenSSL: Denial of Service
-    due to heap out-of-bounds read in CMS passwo'
-  cluster_fingerprint: c301e0b8b8c76adaea18eb33da10584c1e40e0218e18ed4f5d56b1f43149b74b
-  issue_instance_id: b48cf05fc37290e3f23580e74a0d2e38a7e0cae80dd4ec4caf8808e6a70c9365
-  occurrence_ordinal: 39
-- tool: live_image_scan
-  rule_id: CVE-2026-40226
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-40226 in libsystemd0 255.4-1ubuntu8.15 (fix: 255.4-1ubuntu8.16)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: systemd: systemd nspawn: Escape-to-host
-    action via crafted config file'
-  cluster_fingerprint: ab0f9a1e4b2a6e8a5009286dce17c955a8fcd63f501ad147170ee358b54e1b56
-  issue_instance_id: e1343faedab4896476ceb86868bceb757dc2d10170c2c687f28d1c4e2cd3dbab
-  occurrence_ordinal: 40
+  issue_instance_id: 1077c568b96af4094e7b920e2122fad390fff099715fcf8bedf21aa9bf310d25
+  occurrence_ordinal: 14
 - tool: live_image_scan
   rule_id: CVE-2026-40228
   severity: MEDIUM
@@ -1843,29 +2113,12 @@ normalized_issues:
   vuln_id: null
   advisory_id: null
   tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-40228 in libsystemd0 255.4-1ubuntu8.15 (no fix) [audit-livescan:ephemeral
+  message: 'trivy image CVE-2026-40228 in libsystemd0 255.4-1ubuntu8.16 (no fix) [audit-livescan:ephemeral
     (ubuntu 24.04)]: systemd: systemd-journald: Unintended output to user terminals
     via logger comman'
-  cluster_fingerprint: 1076c68a0b24dcefd6f1466f0b164c717c8bd20faf8844f241c3f128027ee9cf
-  issue_instance_id: e835531e72ef63ad83bbe26fee6c28b624a742f952736a58615771eb009bc0fa
-  occurrence_ordinal: 41
-- tool: live_image_scan
-  rule_id: CVE-2026-40226
-  severity: MEDIUM
-  location_type: dependency
-  path: null
-  line: null
-  package: null
-  version: null
-  vuln_id: null
-  advisory_id: null
-  tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-40226 in libudev1 255.4-1ubuntu8.15 (fix: 255.4-1ubuntu8.16)
-    [audit-livescan:ephemeral (ubuntu 24.04)]: systemd: systemd nspawn: Escape-to-host
-    action via crafted config file'
-  cluster_fingerprint: 758c247f6ac4bdd2b3784f3d344f9f94413a7bc9adfd7bfd1b1c05f9933dde05
-  issue_instance_id: f3c45dd4809b91d3e4a7cad0b2757bd482ae8d8c5d7006b19374b29ea1dcdd7e
-  occurrence_ordinal: 42
+  cluster_fingerprint: 1f8a3953b7d4d1305c4160144035474416c5e7f6f8e58a35397ecaddaff63479
+  issue_instance_id: b84f5b717552d20ddcfaf811a2f643a62dc5285050fdc5cf0fc5a9686c20a52c
+  occurrence_ordinal: 15
 - tool: live_image_scan
   rule_id: CVE-2026-40228
   severity: MEDIUM
@@ -1877,12 +2130,12 @@ normalized_issues:
   vuln_id: null
   advisory_id: null
   tool_native_fingerprint: null
-  message: 'trivy image CVE-2026-40228 in libudev1 255.4-1ubuntu8.15 (no fix) [audit-livescan:ephemeral
+  message: 'trivy image CVE-2026-40228 in libudev1 255.4-1ubuntu8.16 (no fix) [audit-livescan:ephemeral
     (ubuntu 24.04)]: systemd: systemd-journald: Unintended output to user terminals
     via logger comman'
-  cluster_fingerprint: cdab2b368aec5893b7d7883fe9c27315af2223e9abb504dd8310b5c033045385
-  issue_instance_id: 28f159b148b2a628415e6a8e010afa2f67a0adfb67e92dbce18170b97505fc98
-  occurrence_ordinal: 43
+  cluster_fingerprint: 7eb033b22ed4ac144ce1a9dc6c7e57ff1d3acfb0bfd63ca4638a33e491d464cc
+  issue_instance_id: ba20c8d23bdf829eea05c6b62f75eb5a201dc99ca70a5ad29c6b39eded3691ba
+  occurrence_ordinal: 16
 - tool: live_image_scan
   rule_id: CVE-2026-27456
   severity: MEDIUM
@@ -1898,8 +2151,8 @@ normalized_issues:
     (ubuntu 24.04)]: util-linux: TOCTOU in the mount program when setting up loop
     devices'
   cluster_fingerprint: 9eb984cd91a7c80a6a1ecccece7cfd5c3a6ac0156687b7defd03ea07d78c25c5
-  issue_instance_id: d8e37efbec2d502997ff5cb6d1807f534ba3633453891830651423e49bb5fed9
-  occurrence_ordinal: 44
+  issue_instance_id: 163e3d366f4576210e86861101ec72ef6d046ef6766684e1f32a2d3f8aea9792
+  occurrence_ordinal: 17
 - tool: live_image_scan
   rule_id: CVE-2024-56433
   severity: MEDIUM
@@ -1915,8 +2168,8 @@ normalized_issues:
     (ubuntu 24.04)]: shadow-utils: Default subordinate ID configuration in /etc/login.defs
     could lead'
   cluster_fingerprint: d98415ee76e2747ffdec852313bd6bef7946f6fd52a66fc6d662686da607ed7f
-  issue_instance_id: eda4c3ab51274597f914dd01574f4767cb65eb680e230d412bc1c647296e76cc
-  occurrence_ordinal: 45
+  issue_instance_id: e23f3aa888464694464eaa5ee0f3b91b1c53e8a6cd6798d879adc27819a729f1
+  occurrence_ordinal: 18
 - tool: live_image_scan
   rule_id: CVE-2026-27456
   severity: MEDIUM
@@ -1932,8 +2185,8 @@ normalized_issues:
     (ubuntu 24.04)]: util-linux: TOCTOU in the mount program when setting up loop
     devices'
   cluster_fingerprint: 837b71626e71dbebf5434e57ab56a6992cd32c85ca56296472361efd85be15d5
-  issue_instance_id: 3a41cbcb7e8361431a870e56334b663db6d68d0b107f3d437fb9983d6a29d8a9
-  occurrence_ordinal: 46
+  issue_instance_id: b4f152ca0fb2b5d7bb2cf5618e8dc6ecbe1e611d582a4fe7af11be602a8e6ff6
+  occurrence_ordinal: 19
 - tool: live_image_scan
   rule_id: CVE-2024-56433
   severity: MEDIUM
@@ -1949,8 +2202,8 @@ normalized_issues:
     [audit-livescan:ephemeral (ubuntu 24.04)]: shadow-utils: Default subordinate ID
     configuration in /etc/login.defs could lead'
   cluster_fingerprint: 2f357bde920e297f96b14caabc251fb7b3c14d2f189de882addabd0a17a63b9e
-  issue_instance_id: 59431520b6809d897c90265d79f6f2fbb76afcfec8ce8791f602d8cffb561663
-  occurrence_ordinal: 47
+  issue_instance_id: 34348962a3b961dac96093437b8f1bd48058ab5555a8237de3ed1275783ec619
+  occurrence_ordinal: 20
 - tool: live_image_scan
   rule_id: CVE-2025-45582
   severity: MEDIUM
@@ -1965,8 +2218,8 @@ normalized_issues:
   message: 'trivy image CVE-2025-45582 in tar 1.35+dfsg-3build1 (no fix) [audit-livescan:ephemeral
     (ubuntu 24.04)]: tar: Tar path traversal'
   cluster_fingerprint: cd447da764a5d1fbd3482a7506a3f13925670356771dc6a51b884c790aac34ab
-  issue_instance_id: 9331fc34cf41b8e24353a17d5519f8abd93bacbea4a66fcae0a04699cdb4c75d
-  occurrence_ordinal: 48
+  issue_instance_id: 6c8aa296e9aef71d902d1c45430c224e0fd90772cbf57076ab605820913e6c1b
+  occurrence_ordinal: 21
 - tool: live_image_scan
   rule_id: CVE-2026-27456
   severity: MEDIUM
@@ -1982,8 +2235,8 @@ normalized_issues:
     (ubuntu 24.04)]: util-linux: TOCTOU in the mount program when setting up loop
     devices'
   cluster_fingerprint: 1893b4d97d826df8ffaf78713864ecdab29c05dc5e15ad5dcfd7924e431c89b7
-  issue_instance_id: 517c6767cfaf862646403cf8380e0b28e31fe7eca11aebbb7d42640651de18d6
-  occurrence_ordinal: 49
+  issue_instance_id: fa0c74018f9aa4089fe60c67eae9f8f43c8b2287db141dc00a9282c123b4930f
+  occurrence_ordinal: 22
 coverage_gaps:
 - gap_id: D-COVERAGE-GAP-repo-cache-history
   surface: git_history
@@ -1992,17 +2245,16 @@ coverage_gaps:
     but the blobs remain in git HISTORY; full purge needs a history rewrite. Secret
     scan covers them. ACCEPTED RESIDUAL (see accepted_residuals).
   disposition_cap: HOLD
-- gap_id: D-COVERAGE-GAP-dockerfile-sample-no-interp
+- gap_id: D-COVERAGE-GAP-dockerfile-static-residual
   surface: docker_containers
-  reason: "cannot render generated Dockerfiles for hadolint: no interpreter with the\
-    \ project deps (set AUDIT_PROJECT_PYTHON). Surface uncovered \u2014 fail closed"
+  reason: "hadolint linted a 14/14-language sample of generated Dockerfiles (0 render\
+    \ errors); RESIDUAL: sample not exhaustive and no live `docker build`/`trivy image`\
+    \ scan of the built image \u2014 caps HOLD"
   disposition_cap: HOLD
 - gap_id: D-COVERAGE-GAP-live-image-residual
   surface: docker_containers
-  reason: "live trivy-image scan covered the representative base image (50 CVEs);\
+  reason: "live trivy-image scan covered the representative base image (23 CVEs);\
     \ per-instance images (full repo installs) are not exhaustively built \u2014 caps\
     \ HOLD"
   disposition_cap: HOLD
-not_run:
-- tool: pytest
-  status: tool_blocked
+not_run: []

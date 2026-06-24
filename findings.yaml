@@ -1,415 +1,551 @@
 disposition: HOLD
 summary:
   disposition: HOLD
-  total: 50
+  total: 67
   by_severity:
     CRITICAL: 0
-    HIGH: 1
-    MEDIUM: 49
+    HIGH: 0
+    MEDIUM: 67
     LOW: 0
     INFO: 0
 findings:
 - id: F001
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__c__DarkFlippers__
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 1b004a6eb8cb0900c98c2ee0497245b779d340ed55501ac200d0f2cdc7e3bd02
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F002
+  title: hadolint DL3013 on generated Dockerfile multi_swe_bench__harness__repos__c__DarkFlippers__
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 52fbed3041488204253dbd32acf7376b1ea7dd907043dc617580efe6b96cc174
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F003
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__cpp__AMReXCodes__
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 468504b4ad37c0416fb1a3b4d2e8b281392a56252d31c58c364f399e282c5f25
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F004
+  title: hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__cpp__AMReXCodes__
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - f66b7ae7134185435ba5975d595b4e5726b16c17f339a14c934b8fe870e27b7c
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F005
+  title: hadolint DL3059 on generated Dockerfile multi_swe_bench__harness__repos__golang__99designs
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - d0a7a4d4e9503cb4255651b9a4899e52bfd5879c26c721ced4408504a7851c14
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F006
+  title: hadolint DL4006 on generated Dockerfile multi_swe_bench__harness__repos__golang__99designs
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - fd496e5da2e3d64f1ccea716fa05c9cb74e7197a0fe9273c5abb6ff0d679f7db
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F007
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__java__Blankj__And
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - a96d6ef38259745dc71c59a7864f8d7e26f15fce124306a1dbc09aa02836a1cd
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F008
+  title: hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__java__Blankj__And
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 9cc68037233828273c93a2dd6048e77c5ea35985a586449c4a56cf1e775ea56b
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F009
+  title: hadolint SC2046 on generated Dockerfile multi_swe_bench__harness__repos__java__Blankj__And
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - eacc32ce53b75b77d88bf3cbdac70d51fbeb5fa62ede649e682518044c39056d
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F010
+  title: hadolint SC2046 on generated Dockerfile multi_swe_bench__harness__repos__java__Blankj__And
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 7772092d50e3f495c64cf2b71e077d3370474485c371acdb38bea9de83553bef
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F011
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 50a52e81b0b8effcee503ef08e501d15f0bbfc5ae131ae944c5015843759fd23
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F012
+  title: hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 1387539d4a183d1aa24c37d5399d4b5b23b8a2d20b6ea73c18bfe6fa4b8d2c9c
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F013
+  title: hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - f0381422f8931de8b818c2ac2116a2e499e6e2066fecb12c1fa357d963ebb345
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F014
+  title: hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 78e411ec2d450a020901101f9d6fe15526ce60e6d2fbc8e59fbcc8aa4579dc67
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F015
+  title: hadolint DL3018 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - f12b44e4d84e3e9ccbc5ba7a05b82f570e9cd5ea6be44c252473cff62aab6416
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F016
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - b58d5be0049241c7ccce05d7c1800d2d47c3f51d6e74f5ed7f75ffdc189b466c
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F017
+  title: hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 1199db6cdc487145235d7d539aac854f5c9580df30571516e728d926262cc91f
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F018
+  title: hadolint DL3032 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 30fcb3a965ae6aec533062dcc560956ea75e6eb9669229cc3c9825a6c3eb0d3a
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F019
+  title: hadolint DL3033 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 276c1b9f22e361f77ca85eff61de21dd82bb88dd00f5182a0abd595c6be41816
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F020
+  title: hadolint DL3059 on generated Dockerfile multi_swe_bench__harness__repos__javascript__Accen
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - fa533e7be2b3a9dc9ec6789440427aa0e50bc5cb2372de791cf17901c35da424
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F021
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__kotlin__Kotlin__k
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 0b56cdf8fbe11b76457af535141598b3f45e979494be8de06cf804901601d1f7
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F022
+  title: hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__kotlin__Kotlin__k
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - a3ae481a4ba3f7847e1883cf5f2207ec219c23d0d21cb31f5ff4532a379f0c52
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F023
+  title: hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__kotlin__Kotlin__k
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 322fe14e298f5230b63494048dc9df7e0a3657b79476ecd290c22f6d5c648892
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F024
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__php__briannesbitt
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - c9e3c7f3397b7d1e923fd65854acc9232304e196da08a0f8efae6d26cb550c82
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F025
+  title: hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__php__briannesbitt
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - be73832d7a5e48e95ee61143a8d660753f897c250a3a6afe2a8e8213c00f1c1a
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F026
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 1cb269b7facc32b164e0086bd60206b50fb4274860c8ac05a328b18ab6801afd
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F027
+  title: hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 2d0bf4cb1edbfa86399d2230f4fd790005c967ee4101a1e270cce52e7932eec5
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F028
+  title: hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 0d7330a60d996b1c8f462dbdf621133483dd8ab5b18ef1f27663c343adc37622
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F029
+  title: hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 4e5029aebea52530cfb0e9e623593eef89fc8015b9d82106a70aa73312dcfd90
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F030
+  title: hadolint DL3018 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - affebddbdc0ba927ccc220a2b3a65aad6857c351762fdeb0a477bfb2f6cdf0dd
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F031
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 43389af8b8e6ca0c5bcd4466339fdba4c0d9f85f53f30aefe48e4419a59a6c14
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F032
+  title: hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 6ec9fc450267fc0fc83422b0052e5a6d7b7e9a8a8421818ac39cd9464353b3dd
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F033
+  title: hadolint DL3032 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - bd7cd024e1145e655256e9fb25631e9328ed898b912a83e98d7bb1b97b16ccb5
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F034
+  title: hadolint DL3033 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - e2b463bc31666183164de9335f7814e17a4dff42cff7d035e83e63c212207401
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F035
+  title: hadolint DL3059 on generated Dockerfile multi_swe_bench__harness__repos__python__AgnostiqH
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 12d8d2081e3d3a0b2e00fdfac71b3843bcd999fb7f4e48121bbf4b7e8114e5bf
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F036
+  title: hadolint DL3007 on generated Dockerfile multi_swe_bench__harness__repos__rust__BurntSushi_
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - a231719eab52fd7ae18e278c0f6ca9cd91125f44fd7e398255d37a594446f183
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F037
+  title: hadolint DL3018 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altin
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - f8a64a0c2eaf9ae822679a46515a50d2493a68b601c7a80d69381192f1890529
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F038
+  title: hadolint DL3008 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altin
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 309ff66a2e19f31c366cb8ccd6b919e156e8392db42068f1262686cfcd927a62
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F039
+  title: hadolint DL3009 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altin
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - c94b76226a5675198ae01ab67350bd18ca4de29fffa8e8b8f87ee00118fe8958
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F040
+  title: hadolint DL3018 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altin
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - e4a66d3ca763dad73ed874fe3240975ae1a116179a4ad6e72f903629c265d313
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F041
+  title: hadolint DL3015 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altin
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 337d67b75f9dba46fd20263cffed951f3e87e982ea760d8a25066e397b4e0464
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F042
+  title: hadolint DL3033 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altin
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - af61f680fdd3fe2f38e3b6da67e45043fbdc99417d37fe8bd88bc363f38fa85f
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F043
+  title: hadolint DL3032 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altin
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - d74535ab95020142f8bf3dc4f183f10dd838d68e5ad7e53415d71c6f1d618d94
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F044
+  title: hadolint DL3059 on generated Dockerfile multi_swe_bench__harness__repos__typescript__Altin
+  severity: MEDIUM
+  disposition: HOLD
+  issue_instance_ids:
+  - 66e4cfb7e1ba2eab1ecb6abf01472e4e14966ac33e8796e84407482c8468ec8d
+  rationale: "IN-SCOPE per-instance Dockerfile hygiene (harness/repos/** generated). Reproducibility/size/cosmetic\
+    \ \u2014 not security; curated+sanitized inputs. Low priority; fix once in generation templates."
+- id: F045
   title: trivy image CVE-2026-27456 in bsdutils 1:2.39.3-9ubuntu6.5 (no fix) [audit-livescan:epheme
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - 7255217afdfa9c51fff259b862951bf69a4ffc804c9f91531aa1234b7c90f6b1
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F002
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F046
   title: trivy image CVE-2026-27456 in libblkid1 2.39.3-9ubuntu6.5 (no fix) [audit-livescan:ephemer
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - ca99feb4b362fe664a832f1328ff21500fa20de9e5c460f40cced747c390f241
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F003
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F047
   title: trivy image CVE-2026-4046 in libc-bin 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - c3b6216f831542b0954f083c9e63091ee9d9827651425a3cfe75c04d3cc22cea
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F004
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F048
   title: trivy image CVE-2026-4437 in libc-bin 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - 6c4155216ad8144aff6d275341f6bf3f47117ca04c80497d993ba90b31ef1663
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F005
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F049
   title: trivy image CVE-2026-4438 in libc-bin 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - 67625ba2a2819ef86cc1baeb73de9f505c6f6a45af1b601ba24253e1d57111c2
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F006
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F050
   title: trivy image CVE-2026-5435 in libc-bin 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - 56aea3fa1af5b61f878ce07891a10557a43244e524248d443930b1d230f93d9f
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F007
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F051
   title: trivy image CVE-2026-6238 in libc-bin 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - 7466c474afd4d4cad3ddb203451bc73e41f97aab9e230df803a9e7651685d939
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F008
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F052
   title: trivy image CVE-2026-4046 in libc6 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (ubu
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - 72f88d2cde3d0ddc702b3239c8aeaec353795819499dcd8d582fe44b49f60ea0
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F009
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F053
   title: trivy image CVE-2026-4437 in libc6 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (ubu
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - a2bd73956201a324ee5a3e47d21f054b6eea78429c32a80b03c86c8e65246e66
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F010
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F054
   title: trivy image CVE-2026-4438 in libc6 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (ubu
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - 8473618a87b743319cde04aff55fb54d57582c94c6cf235ac662217b28341f81
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F011
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F055
   title: trivy image CVE-2026-5435 in libc6 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (ubu
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - 002284239cb4e92dc268c1554ec6a17e5828d10a8b37a702321d7bf0a8d3e841
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F012
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F056
   title: trivy image CVE-2026-6238 in libc6 2.39-0ubuntu8.7 (no fix) [audit-livescan:ephemeral (ubu
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
   - 3226f102261dd5154413364446d160dee2efd3ae98ab418e3206bcd8c3c9415a
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F013
-  title: 'trivy image CVE-2026-41989 in libgcrypt20 1.10.3-2build1 (fix: 1.10.3-2ubuntu0.1) [audit-l'
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F057
+  title: trivy image CVE-2024-2236 in libgcrypt20 1.10.3-2ubuntu0.1 (no fix) [audit-livescan:epheme
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - 1aa2cd5d87dfbfef03af5ac4515426f253646fd0a8496b754b9b9bcc0b7bf208
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F014
-  title: trivy image CVE-2024-2236 in libgcrypt20 1.10.3-2build1 (no fix) [audit-livescan:ephemeral
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 8c56d2231fc86a1c3bfb0964b00f02fe45f7e8752e22a9561dc6c1270457f053
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F015
-  title: 'trivy image CVE-2026-33845 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) '
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - b1294523af67ee9feb3dfbda9fca630a0927b1349415f8bd36d35ef09eebb50b
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F016
-  title: 'trivy image CVE-2026-33846 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) '
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 75e6fca330b0d6b5634654bbf42e22f89a0356caccc8e49474f5702c20888c2d
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F017
-  title: 'trivy image CVE-2026-3832 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) ['
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - a323ad5c98e760031aa2a0b3d923e520c7ad6b2b29250271ac5a57d926873e3a
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F018
-  title: 'trivy image CVE-2026-3833 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) ['
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 5687b52d67e8bf8475af4e2081f836a59bcc01c76dfbfd4970d49cd5b5097e7e
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F019
-  title: 'trivy image CVE-2026-42009 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) '
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - a5d7739012fe7b95be50024c846fdd282e3b49018d4ce2507f5064755e08ffa9
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F020
-  title: 'trivy image CVE-2026-42010 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) '
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 00f5d14430bc66684f4a392d51ae6569cc8dd42eb1a3d42f63e636a303a6ab43
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F021
-  title: 'trivy image CVE-2026-42011 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) '
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - ca697f273777609bd41400767b980bfb9126d85c1aedd2bcde190a468c8b4bba
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F022
-  title: 'trivy image CVE-2026-42012 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) '
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - ad1120a777abc931af14fc12a2c5df34592d1faed9fd998a01340cb957d1b4f9
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F023
-  title: 'trivy image CVE-2026-42013 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) '
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 4c0ec321ee8a2f6acb38885415d3bfa96eae3d9aad03c330d0af2b73a063b9c2
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F024
-  title: 'trivy image CVE-2026-42014 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) '
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 828ca45c52d0c50de8be2a790e22dfe17717dd4fdfae646f3db2ec062f37831f
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F025
-  title: 'trivy image CVE-2026-42015 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) '
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 4571f39d93e4e84d499b264fc2db0ab0c1c0ec6cb734011d9a3f579f48ffd60c
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F026
-  title: 'trivy image CVE-2026-5260 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) ['
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 5e18160854910d8c1cdc5ef56f238d4ec8452105570e2b7c667dc21c084409db
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F027
-  title: 'trivy image CVE-2026-5419 in libgnutls30t64 3.8.3-1.1ubuntu3.5 (fix: 3.8.3-1.1ubuntu3.6) ['
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - c3277c1199a8ec8386ec1d5ba1ac32519e2e1ffa353a054095c075f10bff6fe6
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F028
-  title: 'trivy image CVE-2026-34743 in liblzma5 5.6.1+really5.4.5-1ubuntu0.2 (fix: 5.6.1+really5.4.'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - a363a580734be3dde6c9b83869e0e44de0a63b25e8d08603e879a24c1cf69b0f
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F029
+  - ec338c03d10307aa4be39aa972b2dbd56cc6414bb3596ab512699aad85d36578
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F058
   title: trivy image CVE-2026-27456 in libmount1 2.39.3-9ubuntu6.5 (no fix) [audit-livescan:ephemer
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - b411a82a7cc47588de8b756c650121128768124443f404e60890187fa7d49863
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F030
+  - 856942819056a35ad3ab834c46c9bd6ace907c01e3bfed0a616c1db8c1e3c29d
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F059
   title: trivy image CVE-2026-27456 in libsmartcols1 2.39.3-9ubuntu6.5 (no fix) [audit-livescan:eph
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - 816deaac130199cf8b81c44dda6ffc93669afc88b8b746190cd7562d7242a1a5
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F031
-  title: 'trivy image CVE-2026-45447 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audi'
-  severity: HIGH
-  disposition: HOLD
-  issue_instance_ids:
-  - 130c643b94b45833f00fc1810df282043e3dfe279d29cf669d34f67e70406720
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F032
-  title: 'trivy image CVE-2026-34182 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audi'
+  - 1077c568b96af4094e7b920e2122fad390fff099715fcf8bedf21aa9bf310d25
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F060
+  title: trivy image CVE-2026-40228 in libsystemd0 255.4-1ubuntu8.16 (no fix) [audit-livescan:ephem
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - ccab286aab57e4c201001a368dde8e64c9903d3eb87e07252c0cad081490fb18
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F033
-  title: 'trivy image CVE-2026-45445 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audi'
+  - b84f5b717552d20ddcfaf811a2f643a62dc5285050fdc5cf0fc5a9686c20a52c
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F061
+  title: trivy image CVE-2026-40228 in libudev1 255.4-1ubuntu8.16 (no fix) [audit-livescan:ephemera
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - f2106145b57b6a56b3a50b038d3ba3969dd7a8bbe0731a50ebb93a1dfcbcc242
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F034
-  title: 'trivy image CVE-2026-34180 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audi'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 01bbbac95d7615a9cc7b09fedd23295055b31fa527f25e3fc1d2421775090b0e
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F035
-  title: 'trivy image CVE-2026-42766 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audi'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 4c714083e74bd96d93cb9c656fefa57460351c394de2793192e06f69642bb70d
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F036
-  title: 'trivy image CVE-2026-42767 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audi'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 14f856879fe985e7e347b8425a5a0b4f484f5814052c067bf6a4676467885e42
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F037
-  title: 'trivy image CVE-2026-42770 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audi'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 87e5a2a5dd52f2881cca77b0de9d702b9487c6947f6e4104579b4eb9fccedbcb
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F038
-  title: 'trivy image CVE-2026-45446 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audi'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 5dfef6e41e1e597736bd7e1154712da8caff3022d8ffaf990b07556fb31f34ac
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F039
-  title: 'trivy image CVE-2026-7383 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audit'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 8111fc37011bef03d9519a232ee60e4d2dd59f39270d81554699653d66bcaa0b
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F040
-  title: 'trivy image CVE-2026-9076 in libssl3t64 3.0.13-0ubuntu3.9 (fix: 3.0.13-0ubuntu3.11) [audit'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - b48cf05fc37290e3f23580e74a0d2e38a7e0cae80dd4ec4caf8808e6a70c9365
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F041
-  title: 'trivy image CVE-2026-40226 in libsystemd0 255.4-1ubuntu8.15 (fix: 255.4-1ubuntu8.16) [audi'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - e1343faedab4896476ceb86868bceb757dc2d10170c2c687f28d1c4e2cd3dbab
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F042
-  title: trivy image CVE-2026-40228 in libsystemd0 255.4-1ubuntu8.15 (no fix) [audit-livescan:ephem
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - e835531e72ef63ad83bbe26fee6c28b624a742f952736a58615771eb009bc0fa
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F043
-  title: 'trivy image CVE-2026-40226 in libudev1 255.4-1ubuntu8.15 (fix: 255.4-1ubuntu8.16) [audit-l'
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - f3c45dd4809b91d3e4a7cad0b2757bd482ae8d8c5d7006b19374b29ea1dcdd7e
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F044
-  title: trivy image CVE-2026-40228 in libudev1 255.4-1ubuntu8.15 (no fix) [audit-livescan:ephemera
-  severity: MEDIUM
-  disposition: HOLD
-  issue_instance_ids:
-  - 28f159b148b2a628415e6a8e010afa2f67a0adfb67e92dbce18170b97505fc98
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F045
+  - ba20c8d23bdf829eea05c6b62f75eb5a201dc99ca70a5ad29c6b39eded3691ba
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F062
   title: trivy image CVE-2026-27456 in libuuid1 2.39.3-9ubuntu6.5 (no fix) [audit-livescan:ephemera
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - d8e37efbec2d502997ff5cb6d1807f534ba3633453891830651423e49bb5fed9
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F046
+  - 163e3d366f4576210e86861101ec72ef6d046ef6766684e1f32a2d3f8aea9792
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F063
   title: trivy image CVE-2024-56433 in login 1:4.13+dfsg1-4ubuntu3.2 (no fix) [audit-livescan:ephem
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - eda4c3ab51274597f914dd01574f4767cb65eb680e230d412bc1c647296e76cc
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F047
+  - e23f3aa888464694464eaa5ee0f3b91b1c53e8a6cd6798d879adc27819a729f1
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F064
   title: trivy image CVE-2026-27456 in mount 2.39.3-9ubuntu6.5 (no fix) [audit-livescan:ephemeral (
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - 3a41cbcb7e8361431a870e56334b663db6d68d0b107f3d437fb9983d6a29d8a9
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F048
+  - b4f152ca0fb2b5d7bb2cf5618e8dc6ecbe1e611d582a4fe7af11be602a8e6ff6
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F065
   title: trivy image CVE-2024-56433 in passwd 1:4.13+dfsg1-4ubuntu3.2 (no fix) [audit-livescan:ephe
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - 59431520b6809d897c90265d79f6f2fbb76afcfec8ce8791f602d8cffb561663
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F049
+  - 34348962a3b961dac96093437b8f1bd48058ab5555a8237de3ed1275783ec619
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F066
   title: trivy image CVE-2025-45582 in tar 1.35+dfsg-3build1 (no fix) [audit-livescan:ephemeral (ub
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - 9331fc34cf41b8e24353a17d5519f8abd93bacbea4a66fcae0a04699cdb4c75d
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
-- id: F050
+  - 6c8aa296e9aef71d902d1c45430c224e0fd90772cbf57076ab605820913e6c1b
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
+- id: F067
   title: trivy image CVE-2026-27456 in util-linux 2.39.3-9ubuntu6.5 (no fix) [audit-livescan:epheme
   severity: MEDIUM
   disposition: HOLD
   issue_instance_ids:
-  - 517c6767cfaf862646403cf8380e0b28e31fe7eca11aebbb7d42640651de18d6
-  rationale: Base-image OS/package CVE from live docker build + trivy image scan (ubuntu:24.04). Often
-    no upstream fix / not reachable in build context. Remediate via patched/minimal base.
+  - fa0c74018f9aa4089fe60c67eae9f8f43c8b2287db141dc00a9282c123b4930f
+  rationale: Base-image CVE with NO upstream fix (live docker build + trivy image, ubuntu:24.04 security-patched
+    at build). Unpatchable + not reachable in build context.
 coverage_gaps_acknowledged:
 - D-COVERAGE-GAP-repo-cache-history
-- D-COVERAGE-GAP-dockerfile-sample-no-interp
+- D-COVERAGE-GAP-dockerfile-static-residual
 - D-COVERAGE-GAP-live-image-residual
