@@ -204,7 +204,7 @@ BABEL_ENV=test yarn jest --verbose --ci || true
         return "\n\n".join(sections) + "\n"
 
 
-@Instance.register("babel", "babel_yarn3_jest")
+@Instance.register("babel", "13905")
 class babel_yarn3_jest(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

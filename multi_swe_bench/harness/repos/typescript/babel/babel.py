@@ -240,7 +240,7 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("babel", "babel")
+@Instance.register("babel", "12695")
 class Babel(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

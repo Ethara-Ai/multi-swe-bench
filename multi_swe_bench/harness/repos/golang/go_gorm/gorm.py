@@ -305,7 +305,7 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("go-gorm", "gorm")
+@Instance.register("go-gorm", "4888-5227")
 class Gorm(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

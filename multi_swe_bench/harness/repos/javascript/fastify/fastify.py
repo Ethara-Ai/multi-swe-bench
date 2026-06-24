@@ -265,7 +265,7 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("fastify", "fastify")
+@Instance.register("fastify", "1882-1915")
 class Fastify(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

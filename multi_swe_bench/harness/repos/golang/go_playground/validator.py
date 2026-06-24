@@ -121,7 +121,7 @@ go test -v -count=1 ./...
         ]
 
 
-@Instance.register("go-playground", "validator")
+@Instance.register("go-playground", "1110")
 class Validator(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

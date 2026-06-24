@@ -228,7 +228,7 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("OpenMathLib", "OpenBLAS")
+@Instance.register("OpenMathLib", "2101")
 class OpenBLAS(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

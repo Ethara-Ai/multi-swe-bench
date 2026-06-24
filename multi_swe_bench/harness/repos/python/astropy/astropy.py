@@ -91,7 +91,7 @@ pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}
         ]
 
 
-@Instance.register("astropy", "astropy")
+@Instance.register("astropy", "15288-16386")
 class Astropy(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

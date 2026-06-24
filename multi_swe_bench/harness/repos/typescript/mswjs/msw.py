@@ -267,7 +267,7 @@ class ImageDefault(Image):
 # Instance
 # ---------------------------------------------------------------------------
 
-@Instance.register("mswjs", "msw")
+@Instance.register("mswjs", "1096")
 class Msw(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

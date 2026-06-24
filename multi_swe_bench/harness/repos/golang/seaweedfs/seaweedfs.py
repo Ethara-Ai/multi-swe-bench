@@ -235,7 +235,7 @@ WORKDIR /home/{self.pr.repo}
 """
 
 
-@Instance.register("seaweedfs", "seaweedfs")
+@Instance.register("seaweedfs", "6715-7277")
 class Seaweedfs(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

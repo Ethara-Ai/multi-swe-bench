@@ -188,7 +188,7 @@ if [ "$RAN" = 0 ]; then echo "NO_TEST_DIRS"; exit 0; fi
         ]
 
 
-@Instance.register("Wei-Shaw", "sub2api")
+@Instance.register("Wei-Shaw", "213-550-579-621-1382-2116")
 class SUB2API(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

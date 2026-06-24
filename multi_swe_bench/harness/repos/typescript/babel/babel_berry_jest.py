@@ -212,7 +212,7 @@ BABEL_ENV=test node $YARN_BIN node $(node $YARN_BIN bin jest) --verbose --ci || 
         return "\n\n".join(sections) + "\n"
 
 
-@Instance.register("babel", "babel_berry_jest")
+@Instance.register("babel", "13214-13229-13294")
 class babel_berry_jest(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

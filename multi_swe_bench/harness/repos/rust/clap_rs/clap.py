@@ -200,7 +200,7 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("clap-rs", "clap")
+@Instance.register("clap-rs", "3955-4390-4684")
 class Clap(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

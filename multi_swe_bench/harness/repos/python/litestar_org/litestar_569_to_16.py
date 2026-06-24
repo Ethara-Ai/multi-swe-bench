@@ -229,7 +229,7 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("litestar-org", "litestar_569_to_16")
+@Instance.register("litestar-org", "129")
 class LITESTAR_569_TO_16(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
