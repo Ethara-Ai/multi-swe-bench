@@ -222,3 +222,15 @@ class GsdBuildGetShitDone(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route bundled PRs that carry a dash-joined number_interval (the list of
+# prs_in_bundle) to this config. Instance.create() looks up
+# f"{org}/{number_interval}", so each bundle's interval string must be
+# registered against this class.
+_NUMBER_INTERVALS = [
+    "1150-1152-1259-1261-1262-1264-1265-1266-1267-1268-1270-1271-1272-1274-1276-1277-1279-1282-1287-1288-1290-1291-1296-1297-1299-1302-1305-1306-1307-1311-1317-1318-1319-1320-1321-1322-1323",
+    "1380-1386-1394-1397-1408-1417-1419-1425-1427-1429-1432-1434-1436-1437-1439-1442-1444-1445-1447-1454-1455-1456-1474-1477-1492-1500-1501-1502-1505-1508-1518-1519-1525-1529-1532-1540-1543-1544-1545",
+]
+for _interval in _NUMBER_INTERVALS:
+    Instance.register("gsd-build", _interval)(GsdBuildGetShitDone)
