@@ -87,31 +87,72 @@ class TrivyEra3ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        label = (
+            f'LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\\n'
+            f'      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
 
-{self.global_env}
+        # Base image hardening: removes remote and all refs so the image cannot
+        # be used to recover branch/tag history, but does NOT run gc/repack so
+        # all commit objects remain available for per-PR `git checkout <sha>`.
+        base_hardening = (
+            "RUN set -eux; \\\n"
+            "    git checkout --detach HEAD; \\\n"
+            "    git remote remove origin 2>/dev/null || true; \\\n"
+            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\\n"
+            "        | xargs -r -n1 git update-ref -d; \\\n"
+            "    git reflog expire --expire=now --all; \\\n"
+            "    git reflog expire --expire-unreachable=now --all; \\\n"
+            "    rm -f .git/objects/info/alternates; \\\n"
+            "    git config --local gc.auto 0; \\\n"
+            "    git config --local fetch.recurseSubmodules false; \\\n"
+            "    git config --local remote.pushDefault \"\"; \\\n"
+            "    test -z \"$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)\"; \\\n"
+            "    test -z \"$(git remote)\""
+        )
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV CGO_ENABLED=0
-ENV GOTOOLCHAIN=local
-ENV GOFLAGS=-buildvcs=false -mod=mod
+        base_hardening_submodules = (
+            "RUN if [ -f .gitmodules ]; then \\\n"
+            "        git submodule foreach --recursive ' \\\n"
+            "            git checkout --detach HEAD; \\\n"
+            "            git remote remove origin 2>/dev/null || true; \\\n"
+            "            git for-each-ref --format=\"%(refname)\" refs/heads refs/remotes refs/tags refs/replace \\\n"
+            "                | xargs -r -n1 git update-ref -d; \\\n"
+            "            git reflog expire --expire=now --all; \\\n"
+            "            git reflog expire --expire-unreachable=now --all; \\\n"
+            "            git gc --prune=now; \\\n"
+            "            rm -f .git/objects/info/alternates; \\\n"
+            "        '; \\\n"
+            "    fi"
+        )
 
-WORKDIR /home/
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-"""
+        sections = [
+            "# syntax=docker/dockerfile:1.6",
+            f"FROM {image_name}",
+            (
+                "ARG TARGETARCH\n"
+                f'ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"\n'
+                "ARG BASE_COMMIT"
+            ),
+            "ENV DEBIAN_FRONTEND=noninteractive \\\n    LANG=C.UTF-8 \\\n    TZ=UTC",
+            label,
+            "ENV CGO_ENABLED=0 \\\n    GOTOOLCHAIN=local",
+            "ENV GOFLAGS=-buildvcs=false -mod=mod",
+            "WORKDIR /home/",
+            "RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*",
+            code,
+            f"WORKDIR /home/{self.pr.repo}",
+            base_hardening,
+            base_hardening_submodules,
+            'CMD ["/bin/bash"]',
+        ]
+        return "\n\n".join(sections) + "\n"
 
 
 class TrivyEra3ImageDefault(Image):
@@ -258,18 +299,25 @@ if [ "$RAN" = 0 ]; then echo "NO_TEST_DIRS"; exit 0; fi
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        file_names = " ".join(file.name for file in self.files())
+        copy_command = f"COPY {file_names} /home/"
 
         return f"""FROM {name}:{tag}
 
-{self.global_env}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-{copy_commands}
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
+{copy_command}
+
 RUN bash /home/prepare.sh
 
-{self.clear_env}
+{Image._HARDENING_BLOCK}
+
+CMD ["/bin/bash"]
 """
 
 
