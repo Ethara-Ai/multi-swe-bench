@@ -402,3 +402,19 @@ class Vueuse(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Records whose `number_interval` field is set route via the key
+# f"{org}/{number_interval}" (see harness/instance.py Instance.create), NOT via
+# the plain "vueuse/vueuse" key. number_interval is the explicit dash-joined list
+# of prs_in_bundle (e.g. "497-499-502-503") -- NOT a range -- so each bundle that
+# carries one needs its exact key registered. The Vueuse dispatcher already picks
+# the tooling era by base.label, so the SAME class serves every interval; we just
+# bind it under each rebuilt bundle's number_interval here. Append more intervals
+# to this list as other bundles get a number_interval.
+_NUMBER_INTERVALS = [
+    "497-499-502-503",
+    "3015-3021-3024-3027-3029-3030-3035-3037-3042-3047",
+]
+for _ni in _NUMBER_INTERVALS:
+    Instance.register("vueuse", _ni)(Vueuse)

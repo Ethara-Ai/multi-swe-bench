@@ -58,3 +58,21 @@ class Jadx(Jadx793To1831):
         if number <= _JDK11_MAX:
             return JadxJdk11ImageDefault(self.pr, self._config)
         return JadxJdk21ImageDefault(self.pr, self._config)
+
+
+# Records whose `number_interval` field is set route via the key
+# f"{org}/{number_interval}" (see harness/instance.py Instance.create), NOT via
+# the plain "skylot/jadx" key. number_interval is the explicit dash-joined list
+# of prs_in_bundle (e.g. "1505-1511-1530") -- NOT a range -- so each bundle that
+# carries one needs its exact key registered. The Jadx dispatcher above already
+# picks the JDK era by pr.number, so the SAME class serves every interval; we
+# just bind it under each rebuilt bundle's number_interval here. Append more
+# intervals to this list as other bundles get a number_interval.
+_NUMBER_INTERVALS = [
+    "1464-1467-1469-1478-1480-1483",
+    "1505-1511-1530",
+    "1787-1798-1804-1807-1811-1812-1813-1815",
+    "2521-2525-2526-2527-2528-2533-2537-2538-2542-2543-2549-2557-2581-2592-2595-2602-2603-2614-2628",
+]
+for _ni in _NUMBER_INTERVALS:
+    Instance.register("skylot", _ni)(Jadx)

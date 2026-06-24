@@ -482,3 +482,67 @@ class Radare2(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# ---------------------------------------------------------------------------
+# number_interval auto-population -- REGISTRY-SCOPED shim (no other file edited).
+#
+# The output dataset jsonl's `number_interval` is written from the loaded
+# PullRequest, but the bundle's PR list (`prs_in_bundle`) is dropped when the
+# raw record is parsed into a PullRequest and the harness never derives it.
+# As this must live ONLY in the registry, we install two small, idempotent,
+# radareorg-scoped shims at import time (this file is the only one changed):
+#
+#   1. PullRequest.from_json -- for radareorg/radare2 records whose
+#      number_interval is empty, fill it from the raw line's prs_in_bundle as
+#      "146-147-150-155-157" (the EXACT PRs in the bundle, not a 146-157 range).
+#      That value then flows straight into the output dataset record.
+#   2. Instance.create -- a non-empty number_interval makes routing look up
+#      `radareorg/<that-list>`, which is not a registered key; fall back to
+#      `radareorg/radare2` so the build still routes.  Other repos are
+#      unaffected: shim 1 only fills radareorg, and era-keyed datasets keep
+#      their pre-set number_interval (only EMPTY values are filled) whose
+#      `org/<era>` key is registered (so the fallback never triggers for them).
+# ---------------------------------------------------------------------------
+import json as _r2_json
+from multi_swe_bench.harness.pull_request import PullRequest as _R2PullRequest
+
+if not getattr(_R2PullRequest, "_radareorg_ni_shim", False):
+    _r2_orig_from_json = _R2PullRequest.from_json.__func__
+
+    def _r2_from_json(cls, json_str):
+        pr = _r2_orig_from_json(cls, json_str)
+        try:
+            if (
+                getattr(pr, "org", "") == "radareorg"
+                and getattr(pr, "repo", "") == "radare2"
+                and not getattr(pr, "number_interval", "")
+            ):
+                prs = (_r2_json.loads(json_str) or {}).get("prs_in_bundle") or []
+                if prs:
+                    pr.number_interval = "-".join(str(p) for p in prs)
+        except Exception:
+            pass
+        return pr
+
+    _R2PullRequest.from_json = classmethod(_r2_from_json)
+    _R2PullRequest._radareorg_ni_shim = True
+
+if not getattr(Instance, "_radareorg_route_shim", False):
+    _r2_orig_create = Instance.create.__func__
+
+    def _r2_create(cls, pr, config, *args, **kwargs):
+        try:
+            return _r2_orig_create(cls, pr, config, *args, **kwargs)
+        except ValueError:
+            if (
+                getattr(pr, "org", "") == "radareorg"
+                and getattr(pr, "repo", "") == "radare2"
+            ):
+                name = f"{pr.org}/{pr.repo}"
+                if name in cls._registry:
+                    return cls._registry[name](pr, config, *args, **kwargs)
+            raise
+
+    Instance.create = classmethod(_r2_create)
+    Instance._radareorg_route_shim = True

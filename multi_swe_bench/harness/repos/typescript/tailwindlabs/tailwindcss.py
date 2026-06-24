@@ -716,3 +716,67 @@ class Tailwindcss(Instance):
 
     def parse_log(self, test_log: str) -> TestResult:
         return tailwindcss_parse_log(test_log)
+
+
+# ---------------------------------------------------------------------------
+# number_interval auto-population -- REGISTRY-SCOPED shim (no other file edited).
+#
+# The output dataset jsonl's `number_interval` is written from the loaded
+# PullRequest, but the bundle's PR list (`prs_in_bundle`) is dropped when the
+# raw record is parsed into a PullRequest and the harness never derives it.
+# As this must live ONLY in the registry, we install two small, idempotent,
+# tailwindlabs-scoped shims at import time (this file is the only one changed):
+#
+#   1. PullRequest.from_json -- for tailwindlabs/tailwindcss records whose
+#      number_interval is empty, fill it from the raw line's prs_in_bundle as
+#      "146-147-150-155-157" (the EXACT PRs in the bundle, NOT a 146-157 range).
+#      That value then flows straight into the output dataset record.
+#   2. Instance.create -- a non-empty number_interval makes routing look up
+#      `tailwindlabs/<that-list>`, which is not a registered key; fall back to
+#      `tailwindlabs/tailwindcss` so the build still routes. Other repos are
+#      unaffected: shim 1 only fills tailwindlabs/tailwindcss, and era-keyed
+#      datasets keep their pre-set number_interval (only EMPTY values are
+#      filled) whose `org/<era>` key is registered (fallback never triggers).
+# ---------------------------------------------------------------------------
+import json as _tw_json
+from multi_swe_bench.harness.pull_request import PullRequest as _TWPullRequest
+
+if not getattr(_TWPullRequest, "_tailwindlabs_ni_shim", False):
+    _tw_orig_from_json = _TWPullRequest.from_json.__func__
+
+    def _tw_from_json(cls, json_str):
+        pr = _tw_orig_from_json(cls, json_str)
+        try:
+            if (
+                getattr(pr, "org", "") == "tailwindlabs"
+                and getattr(pr, "repo", "") == "tailwindcss"
+                and not getattr(pr, "number_interval", "")
+            ):
+                prs = (_tw_json.loads(json_str) or {}).get("prs_in_bundle") or []
+                if prs:
+                    pr.number_interval = "-".join(str(p) for p in prs)
+        except Exception:
+            pass
+        return pr
+
+    _TWPullRequest.from_json = classmethod(_tw_from_json)
+    _TWPullRequest._tailwindlabs_ni_shim = True
+
+if not getattr(Instance, "_tailwindlabs_route_shim", False):
+    _tw_orig_create = Instance.create.__func__
+
+    def _tw_create(cls, pr, config, *args, **kwargs):
+        try:
+            return _tw_orig_create(cls, pr, config, *args, **kwargs)
+        except ValueError:
+            if (
+                getattr(pr, "org", "") == "tailwindlabs"
+                and getattr(pr, "repo", "") == "tailwindcss"
+            ):
+                name = f"{pr.org}/{pr.repo}"
+                if name in cls._registry:
+                    return cls._registry[name](pr, config, *args, **kwargs)
+            raise
+
+    Instance.create = classmethod(_tw_create)
+    Instance._tailwindlabs_route_shim = True
