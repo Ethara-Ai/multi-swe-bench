@@ -376,3 +376,10 @@ class THEIA_5140_TO_8185(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route the bundled PR set (base PR 5451) that carries a dash-joined
+# number_interval (the list of prs_in_bundle) to this era's config.
+# Instance.create() looks up f"{org}/{number_interval}", so the interval
+# string must be registered against this class.
+Instance.register("eclipse-theia", "5451-5976-6247-6252-6266-6268-6270-6271-6277-6279-6280-6281-6283-6285-6290-6291-6293-6301-6302-6304-6307-6310-6312-6313-6318-6321-6323-6326-6328-6331-6334-6335-6341-6342-6345-6351-6352-6354-6356-6364-6365-6369-6378-6382-6388-6397-6398-6403-6405-6411-6413-6419-6422-6426-6436-6437-6443-6450-6469-6471-6476-6477")(THEIA_5140_TO_8185)

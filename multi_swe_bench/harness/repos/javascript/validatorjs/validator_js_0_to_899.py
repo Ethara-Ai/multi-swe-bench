@@ -264,3 +264,20 @@ class ValidatorJs0To899(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route bundled PRs that carry a dash-joined number_interval (the list of
+# prs_in_bundle, e.g. "616-617-622-627-630") to this 0..899-era config.
+# Instance.create() looks up f"{org}/{number_interval}", so each bundle's
+# interval string must be registered against this class.
+_NUMBER_INTERVALS = [
+    "616-617-622-627-630",
+    "637-640-646-647-649-660-667-668-670-671",
+    "684-690-692-695",
+    "738-739",
+    "801-845-848-849-856-858-861-862-863-864-870-872-873",
+    "874-878-879-880-881",
+    "884-885",
+]
+for _interval in _NUMBER_INTERVALS:
+    Instance.register("validatorjs", _interval)(ValidatorJs0To899)

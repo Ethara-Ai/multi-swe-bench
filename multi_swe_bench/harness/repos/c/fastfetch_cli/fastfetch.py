@@ -325,3 +325,15 @@ class Fastfetch(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# number_interval values are the hyphen-joined prs_in_bundle for each selected
+# PR (from fastfetch-cli__fastfetch_lht_final.jsonl). Instance.create() routes on
+# f"{org}/{number_interval}", so every interval that a PR can carry must be
+# registered to the same Fastfetch config (in addition to "fastfetch-cli/fastfetch").
+_NUMBER_INTERVALS = [
+    "361-362-363",
+    "1785-1789-1796-1802-1804-1806-1811-1813",
+]
+for _interval in _NUMBER_INTERVALS:
+    Instance.register("fastfetch-cli", _interval)(Fastfetch)
