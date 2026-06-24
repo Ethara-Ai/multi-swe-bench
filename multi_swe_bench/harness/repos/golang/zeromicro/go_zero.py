@@ -323,3 +323,14 @@ class GoZero(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route bundled PRs that carry a dash-joined number_interval (the list of
+# prs_in_bundle, e.g. "103-106-107") to this config. Instance.create() looks up
+# f"{org}/{number_interval}", so each bundle's interval string must be
+# registered against this class (in addition to the "go-zero" decorator above).
+_NUMBER_INTERVALS = [
+    "103-106-107",
+]
+for _interval in _NUMBER_INTERVALS:
+    Instance.register("zeromicro", _interval)(GoZero)
