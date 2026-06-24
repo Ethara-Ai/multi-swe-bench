@@ -111,7 +111,7 @@ TARGET="{test_files}"
 RUN=""
 for f in $TARGET; do [ -f "$f" ] && RUN="$RUN $f"; done
 [ -z "$RUN" ] && RUN="tests/"
-pytest $RUN --ignore=tests/test_cuda.py --tb=short -rA 2>&1
+pytest $RUN --slow --ignore=tests/test_cuda.py --tb=short -rA 2>&1
 """.format(repo=self.pr.repo, test_files=test_files),
             ),
             File(
@@ -139,7 +139,7 @@ TARGET="{test_files}"
 RUN=""
 for f in $TARGET; do [ -f "$f" ] && RUN="$RUN $f"; done
 [ -z "$RUN" ] && RUN="tests/"
-pytest $RUN --ignore=tests/test_cuda.py --tb=short -rA 2>&1
+pytest $RUN --slow --ignore=tests/test_cuda.py --tb=short -rA 2>&1
 """.format(repo=self.pr.repo, test_files=test_files),
             ),
             File(
@@ -170,7 +170,7 @@ TARGET="{test_files}"
 RUN=""
 for f in $TARGET; do [ -f "$f" ] && RUN="$RUN $f"; done
 [ -z "$RUN" ] && RUN="tests/"
-pytest $RUN --ignore=tests/test_cuda.py --tb=short -rA 2>&1
+pytest $RUN --slow --ignore=tests/test_cuda.py --tb=short -rA 2>&1
 """.format(repo=self.pr.repo, test_files=test_files),
             ),
         ]
@@ -315,6 +315,28 @@ class Ultralytics(Instance):
                         failed_tests.add(test_name)
                     elif symbol in ("s", "x", "X"):
                         skipped_tests.add(test_name)
+
+        # Canonicalize UNSTABLE pytest positional parametrize IDs before building
+        # the result sets. pytest auto-numbers parametrized cases by LIST POSITION
+        # (e.g. test_val[detect-weight2-coco8.yaml] -> weight0/weight1/...). The
+        # over-inclusive bundle patches change the parametrize list between the
+        # test and fix stages, so the SAME logical test gets a different positional
+        # index (weight2 -> weight1) -> the report's set-diff counts it as a fake
+        # NONE->PASS (n2p) while the old index "vanishes", inflating n2p with churn
+        # that is not a genuine fix. Stripping the trailing digit off these
+        # positional tokens makes the identity stable across stages, so only
+        # genuinely new-to-pass tests remain n2p.
+        canon_re = re.compile(r"(model|weight|case|fixture|param)\d+")
+
+        def _canon(name: str) -> str:
+            return canon_re.sub(r"\1", name)
+
+        passed_tests = {_canon(t) for t in passed_tests}
+        failed_tests = {_canon(t) for t in failed_tests}
+        skipped_tests = {_canon(t) for t in skipped_tests}
+        # a canonical name that fails anywhere is not a pass/skip
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests | passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

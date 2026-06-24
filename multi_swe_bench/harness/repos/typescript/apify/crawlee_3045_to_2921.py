@@ -283,3 +283,11 @@ class Crawlee(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+_BUNDLE_NIS_Crawlee = [
+    '1844-1874-1876-1877-1881-1884-1885-1886-1888-1889-1899-1901-1906-1908-1909',
+]
+for _ni in _BUNDLE_NIS_Crawlee:
+    Instance.register('apify', _ni)(Crawlee)

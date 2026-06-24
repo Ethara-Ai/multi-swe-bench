@@ -25,10 +25,10 @@ class NotcursesImageBaseMid(Image):
         return "ubuntu:20.04"
 
     def image_tag(self) -> str:
-        return "base-mid"
+        return "base-229_to_348"
 
     def workdir(self) -> str:
-        return "base-mid"
+        return "base-229_to_348"
 
     def files(self) -> list[File]:
         return []
@@ -39,25 +39,31 @@ class NotcursesImageBaseMid(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = (
-                f"RUN git clone "
-                f"https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TERM=xterm \\
+    COLORTERM=truecolor \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-ENV TERM=xterm
-ENV COLORTERM=truecolor
-
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     build-essential \\
     cmake \\
@@ -81,8 +87,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 {code}
 
+WORKDIR /home/{self.pr.repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -229,6 +242,9 @@ fi
             copy_commands += f"COPY {file.name} /home/\n"
 
         prepare_commands = "RUN bash /home/prepare.sh"
+        # Per-PR FULL hardening (prepare.sh has checked out base.sha): strip refs +
+        # gc-prune so future/fix commits are unreachable & deleted, then audit.
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
 
         return f"""FROM {name}:{tag}
 
@@ -238,8 +254,12 @@ fi
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -352,3 +372,17 @@ class NOTCURSES_229_TO_348(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+_BUNDLE_NIS_NOTCURSES_229_TO_348 = [
+    '344-345-348-350',
+    '247-248-250-251',
+    '261-264-266',
+    '271-273-274-278-282-287',
+    '300-301',
+    '312-315-319',
+    '327-331',
+]
+for _ni in _BUNDLE_NIS_NOTCURSES_229_TO_348:
+    Instance.register('dankamongmen', _ni)(NOTCURSES_229_TO_348)

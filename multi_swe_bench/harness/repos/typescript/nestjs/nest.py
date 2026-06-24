@@ -404,3 +404,11 @@ class Nest(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+_BUNDLE_NIS_Nest = [
+    '10527',
+]
+for _ni in _BUNDLE_NIS_Nest:
+    Instance.register('nestjs', _ni)(Nest)

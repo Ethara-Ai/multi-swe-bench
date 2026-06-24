@@ -4,6 +4,9 @@ from typing import Optional, Union
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.java.bazelbuild.bazel_targets import (
+    extract_test_targets,
+)
 
 
 # Map each Era 1 PR to its correct Bazel version.
@@ -62,34 +65,42 @@ class BazelEra1ImageBase(Image):
         return "eclipse-temurin:11-jdk-jammy"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-era1"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-era1"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
+        # mam: SINGLE shared base per era (NOT per-PR). Clone full history ONCE so
+        # every PR in this era can checkout its own base.sha. Base carries LIGHT
+        # hardening (network lockdown); the per-PR layer carries the FULL gc-prune
+        # hardening. "# syntax" opts out of DockerfileEnhancer auto-injection.
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
-{self.global_env}
+ENV DEBIAN_FRONTEND=noninteractive \\
+    TZ=UTC \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
 WORKDIR /home/
-RUN apt-get update && apt-get install -y \\
-    git curl zip unzip python3 gcc g++ \\
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git curl zip unzip python3 gcc g++ ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
 # Install bazelisk (auto-detects architecture)
@@ -98,10 +109,17 @@ RUN ARCH=$(uname -m) && \\
     curl -fsSL "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-$BAZEL_ARCH" \\
     -o /usr/local/bin/bazel && chmod +x /usr/local/bin/bazel
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
-{self.clear_env}
+# BASE light hardening: keep FULL history (per-PR layer checks out base.sha) but
+# remove the remote so the model can never fetch/pull the fix from upstream.
+WORKDIR /home/{self.pr.repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
+CMD ["/bin/bash"]
 """
 
 
@@ -224,22 +242,33 @@ bazel test //src/test/... --test_output=summary --keep_going --noshow_progress
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        copy_files = " ".join(file.name for file in self.files())
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # mam reference (industry-standard per-PR Dockerfile) — 1:1:
+        hardening = Image._HARDENING_BLOCK.rstrip()
 
         return f"""FROM {name}:{tag}
 
-{self.global_env}
+# 1. Build-time args first (overridable via --build-arg)
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-{copy_commands}
+# 2. WORKDIR before any RUN/COPY that depends on it
+WORKDIR /home/{self.pr.repo}
 
-{prepare_commands}
+# 3. Git checkout BEFORE copying patches (clean known state)
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
-{self.clear_env}
+# 4. COPY scripts/patches
+COPY {copy_files} /home/
 
+# 5. Install / prep
+RUN bash /home/prepare.sh
+
+# 6. Repo cleanup / hardening (kept as-is, uses ${{BASE_COMMIT}})
+{hardening}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -267,10 +296,14 @@ class BazelEra1(Instance):
 
     @property
     def _BAZEL_TEST_CMD(self) -> str:
+        # Scope to only the test targets the PR touches (fast); fall back to the
+        # full tree only when nothing can be derived.
+        targets = extract_test_targets(self.pr.test_patch, self.pr.fix_patch)
         return (
             f"export USE_BAZEL_VERSION={self._bazel_version} ; "
-            "bazel --output_user_root=/tmp/bazel-output test //src/test/... "
-            "--test_output=summary --keep_going --noshow_progress 2>&1 || true"
+            f"bazel --output_user_root=/tmp/bazel-output test {targets} "
+            "--build_tests_only --test_output=summary --test_tag_filters=-manual "
+            "--test_timeout=600 --keep_going --jobs=6 --noshow_progress 2>&1 || true"
         )
 
     @property
@@ -372,3 +405,25 @@ class BazelEra1(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+_BUNDLE_NIS_BazelEra1 = [
+    '16450-16462-16478',
+    '16668-16669-16672-16702-16745-16819-16880-16884-16891-16892-16964',
+    '19050-19052-19071-19086-19089-19091-19106',
+    '13670-13671-13675-13677-13683-13686-13688-13697-13705-13714-13729-13733-13735-13738-13763-13768-13775-13777-13838',
+    '13893-13906',
+    '14318-14319-14324-14325',
+    '14737-14748-14749-14750-14751-14752-14753-14754-14755-14757-14769-14773-14779-14780-14794-14795-14813-14832-14833-14834-14835-14836-14842-14860-14885-14899-14923-14925-14929-14930-14943-14945-14952-14954-14956-14958-14984-14986-14989-14990-14991-14995-14997-14998-14999-15020-15046-15047-15048-15065-15066-15068-15071-15085-15087-15090-15091-15102',
+    '15181-15183-15190-15200',
+    '15216-15217-15218-15223-15231-15266-15298-15299-15341-15342-15372-15383-15395-15404-15405-15429-15431-15433-15434-15453-15471-15472-15473-15474-15534-15559-15585-15600',
+    '15703-15708-15709-15718-15719-15737-15754-15766-15768-15769-15772-15782-15784-15787-15788-15793-15815-15816-15818-15819-15824-15842-15844-15852-15854-15870-15883-15900-15907-15910-15911-15922-15923-15929-15931-15940-15942-15943-15965-15970-15971-15973-15976-15979-15984-15986-15998-16025-16030-16032-16036-16045-16079-16110-16113',
+    '17216-17217-17229-17234-17247-17253-17263-17269-17272-17273-17274-17275-17278-17284-17285-17287-17288-17290-17299-17306-17307-17309-17311-17312-17313-17324-17325-17326-17327-17329-17331-17343-17344-17352-17360-17365-17371-17396-17397-17398-17422-17435-17438-17439-17440-17445-17459-17465-17488-17491-17494-17496-17504-17505-17506-17512-17513-17521-17528-17538-17539-17544-17557-17563-17570-17578-17583-17589-17592-17594-17601-17605-17613-17616-17617-17619-17632-17641',
+    '17696-17757',
+    '17977-17986-17996-18115-18123',
+    '18039-18045-18082-18101',
+    '18503-18504-18512-18533-18535',
+]
+for _ni in _BUNDLE_NIS_BazelEra1:
+    Instance.register('bazelbuild', _ni)(BazelEra1)

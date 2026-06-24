@@ -4,6 +4,9 @@ from typing import Optional, Union
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.java.bazelbuild.bazel_targets import (
+    extract_test_targets,
+)
 
 
 class BazelEra2ImageBase(Image):
@@ -31,34 +34,42 @@ class BazelEra2ImageBase(Image):
         return "eclipse-temurin:11-jdk-jammy"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-era2"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-era2"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
+        # mam: SINGLE shared base per era (NOT per-PR). Clone full history ONCE so
+        # every PR in this era can checkout its own base.sha. Base carries LIGHT
+        # hardening (network lockdown); the per-PR layer carries the FULL gc-prune
+        # hardening. "# syntax" opts out of DockerfileEnhancer auto-injection.
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
-{self.global_env}
+ENV DEBIAN_FRONTEND=noninteractive \\
+    TZ=UTC \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
 WORKDIR /home/
-RUN apt-get update && apt-get install -y \\
-    git curl zip unzip python3 gcc g++ \\
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git curl zip unzip python3 gcc g++ ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
 # Install bazelisk (auto-detects architecture)
@@ -67,10 +78,17 @@ RUN ARCH=$(uname -m) && \\
     curl -fsSL "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-$BAZEL_ARCH" \\
     -o /usr/local/bin/bazel && chmod +x /usr/local/bin/bazel
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
-{self.clear_env}
+# BASE light hardening: keep FULL history (per-PR layer checks out base.sha) but
+# remove the remote so the model can never fetch/pull the fix from upstream.
+WORKDIR /home/{self.pr.repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
+CMD ["/bin/bash"]
 """
 
 
@@ -187,22 +205,33 @@ bazel test //src/test/... --test_output=summary --keep_going --noshow_progress
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        copy_files = " ".join(file.name for file in self.files())
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # mam reference (industry-standard per-PR Dockerfile) — 1:1:
+        hardening = Image._HARDENING_BLOCK.rstrip()
 
         return f"""FROM {name}:{tag}
 
-{self.global_env}
+# 1. Build-time args first (overridable via --build-arg)
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-{copy_commands}
+# 2. WORKDIR before any RUN/COPY that depends on it
+WORKDIR /home/{self.pr.repo}
 
-{prepare_commands}
+# 3. Git checkout BEFORE copying patches (clean known state)
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
-{self.clear_env}
+# 4. COPY scripts/patches
+COPY {copy_files} /home/
 
+# 5. Install / prep
+RUN bash /home/prepare.sh
+
+# 6. Repo cleanup / hardening (kept as-is, uses ${{BASE_COMMIT}})
+{hardening}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -221,10 +250,14 @@ class BazelEra2(Instance):
 
     _APPLY_OPTS = "--whitespace=nowarn"
 
-    _BAZEL_TEST_CMD = (
-        "bazel --output_user_root=/tmp/bazel-output test //src/test/... "
-        "--test_output=summary --keep_going --noshow_progress 2>&1 || true"
-    )
+    @property
+    def _BAZEL_TEST_CMD(self) -> str:
+        targets = extract_test_targets(self.pr.test_patch, self.pr.fix_patch)
+        return (
+            f"bazel --output_user_root=/tmp/bazel-output test {targets} "
+            "--build_tests_only --test_output=summary --test_tag_filters=-manual "
+            "--test_timeout=600 --keep_going --jobs=6 --noshow_progress 2>&1 || true"
+        )
 
     @property
     def pr(self) -> PullRequest:
@@ -317,3 +350,16 @@ class BazelEra2(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+_BUNDLE_NIS_BazelEra2 = [
+    '19167-19175-19177',
+    '20409-20472-20520-20531-20549-20550-20568-20590-20667-20729-20758-20785-20804-20847-20861-20925',
+    '20594-20602-20609-20611-20612-20625-20718-20733-20734-20749-20750-20821-20828-20840-20848-20881-20901-20903-20904',
+    '21472-21477-21487-21494-21502-21503-21505-21510-21512-21524-21532-21546-21547-21549-21550-21551-21552-21555-21567-21575-21577-21588-21595-21598-21599-21605-21607',
+    '21644-21662-21664-21670-21671-21683-21692-21694-21700-21703-21707-21733-21735',
+    '21889-21941-22176-22186',
+]
+for _ni in _BUNDLE_NIS_BazelEra2:
+    Instance.register('bazelbuild', _ni)(BazelEra2)
