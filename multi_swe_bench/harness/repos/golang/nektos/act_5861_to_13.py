@@ -226,6 +226,14 @@ go test -buildvcs=false -mod=mod -count=1 -short -timeout 300s -vet=off ./... 2>
         ]
 
 
+# Routing key. `Instance.create` looks up `nektos/<number_interval>`, so each
+# bundle's `number_interval` must match a registered key. The original era key
+# `act_5861_to_13` is kept so the existing 61-bundle dataset (every row still
+# carries that value) keeps routing here. Stacked below it are the per-bundle
+# dash-joined `prs_in_bundle` keys (the canonical number_interval format,
+# e.g. 514-537-566-...); decorators stack because `Instance.register` returns
+# the class unchanged, so the same image class answers to every listed key.
+@Instance.register("nektos", "514-537-566-593-594-595-596-600-601-604-605-606-608-619-620-624-628-630-633-635-637-643-648-650-654-658-659-660-661-662-663-665-667-670-672-674-675")
 @Instance.register("nektos", "act_5861_to_13")
 class Act(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
