@@ -60,6 +60,7 @@ class Dataset(PullRequest):
             org=pr.org,
             repo=pr.repo,
             number=pr.number,
+            number_interval=pr.number_interval,
             tag=pr.tag,
             lang=pr.lang,
             uuid=pr.uuid or str(_uuid_module.uuid4()),

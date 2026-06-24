@@ -498,7 +498,7 @@ def main(
             # Build instance_id — sort PR numbers for deterministic ordering
             sorted_pr_numbers = sorted(pr_numbers)
             pr_numbers_str = "-".join(str(n) for n in sorted_pr_numbers)
-            instance_id = f"{org.lower()}__{repo.lower()}-{pr_numbers_str}"
+            instance_id = f"{org.lower()}__{repo.lower()}-{sorted_pr_numbers[0]}"
 
             if instance_id in existing_ids:
                 continue
@@ -584,7 +584,8 @@ def main(
                 "uuid": str(uuid.uuid4()),
                 "org": org,
                 "repo": repo,
-                "number": pr_numbers_str,
+                "number": sorted_pr_numbers[0],
+                "number_interval": pr_numbers_str,
                 "state": primary_pr.get("state", "closed"),
                 "title": primary_pr.get("title", ""),
                 "body": primary_pr.get("body", "") or "",
@@ -625,6 +626,7 @@ def main(
                     "failed_tests": [],
                     "skipped_tests": [],
                 },
+                "tag": tag_label,
                 "prs_in_bundle": sorted_pr_numbers,
                 "release_line": group.get("release_line", ""),
                 "attribution_methods": group.get("attribution_methods", {}),
