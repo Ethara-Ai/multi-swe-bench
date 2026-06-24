@@ -16,6 +16,24 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #    exercise; `go test` runs each. Runs are fenced with a `### BUFPKG ###`
 #    marker so test ids stay unique across packages. buf's unit tests are
 #    self-contained Go tests — no cloud credentials needed.
+#
+# Build structure (shared base + single-FROM hardened PR layer):
+#  - BufImageBase -> tag ":base". Built once and reused by every PR. Installs
+#    the common apt packages and does the single `git clone` of the whole repo
+#    (full history, so any PR's BASE_COMMIT is reachable). Deliberately NOT
+#    hardened — it must retain every commit to serve all PRs. Its Dockerfile
+#    carries the BuildKit `# syntax=` directive so DockerfileEnhancer leaves it
+#    verbatim (else the enhancer would inject a BASE_COMMIT-dependent hardening
+#    pass into the base, which has no BASE_COMMIT and would fail to build).
+#  - BufImageDefault -> tag ":pr-<n>". Single-FROM layered build off the shared
+#    ":base": pin/checkout BASE_COMMIT -> COPY per-PR patches/scripts -> prep ->
+#    Image._HARDENING_BLOCK (prunes every other ref/remote/commit) -> CMD.
+#
+#  Reward-hacking note: hardening sanitizes the *runtime* filesystem, but with a
+#  single FROM the :base layer's full-history packfile sits below the hardening
+#  layer, so a layered `docker save` can be raw `tar -x`'d to recover the fix.
+#  Distribute FLATTENED images (`docker export`, or build with `--squash`) and
+#  never ship the standalone ":base" image to an evaluated model.
 
 
 def _test_pkgs(patch: str) -> list[str]:
@@ -34,6 +52,15 @@ def _test_pkgs(patch: str) -> list[str]:
 
 
 class BufImageBase(Image):
+    """Shared base image (tag ':base'): apt deps + a single full-history clone.
+
+    Built once and reused by every PR. Deliberately un-hardened (it must keep
+    all commits so any PR's BASE_COMMIT is reachable). The leading `# syntax=`
+    directive makes DockerfileEnhancer return this Dockerfile verbatim, so it
+    does not get a BASE_COMMIT-dependent hardening pass injected (which would
+    fail to build here — BASE_COMMIT only exists in the PR layer).
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -59,37 +86,37 @@ class BufImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
+        org, repo = self.pr.org, self.pr.repo
+        return f"""# syntax=docker/dockerfile:1.6
+FROM golang:1-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
-# Let Go auto-fetch whatever toolchain a given PR's go.mod requests.
+ENV LANG=C.UTF-8
 ENV GOTOOLCHAIN=auto
 ENV GOFLAGS=-mod=mod
+
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git curl ca-certificates build-essential \\
+    ca-certificates curl build-essential git gnupg make python3 sudo wget \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git clone https://github.com/{org}/{repo}.git /home/{repo}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
 class BufImageDefault(Image):
+    """Per-PR image (tag ':pr-<n>'): single-FROM layered build off the shared
+    :base. Pins/checks out BASE_COMMIT, copies patches+scripts, preps, then runs
+    Image._HARDENING_BLOCK in this layer.
+
+    NOTE: single-FROM means the :base layer's full-history clone sits below the
+    hardening layer, so a layered `docker save` can still be `tar -x`'d to
+    recover the fix. Distribute FLATTENED images (`docker export` / `--squash`).
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -102,7 +129,10 @@ class BufImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Union[str, "Image"]:
+        # Chained Image -> the per-PR layer builds FROM the shared ":base".
+        # (DockerfileEnhancer returns dockerfile() verbatim for a chained
+        # dependency, so the layout below is exactly what ships.)
         return BufImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -111,9 +141,40 @@ class BufImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    def files(self) -> list[File]:
+    def dockerfile(self) -> str:
+        base = self.dependency()
+        base_name = base.image_full_name()
         repo = self.pr.repo
         sha = self.pr.base.sha
+        copy_files = " ".join(f.name for f in self.files())
+
+        # Industry-standard single-FROM layered pattern. Image._HARDENING_BLOCK
+        # is concatenated (not f-stringed) so its ${BASE_COMMIT}/%(refname)
+        # braces stay literal and byte-identical to image.py.
+        head = f"""FROM {base_name}
+
+# 1. Build-time args first (overridable via --build-arg)
+ARG BASE_COMMIT="{sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
+
+# 2. WORKDIR before any RUN/COPY that depends on it
+WORKDIR /home/{repo}
+
+# 3. Git checkout BEFORE copying patches (clean, known state)
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
+# 4. COPY scripts/patches late so earlier expensive layers stay cached
+COPY {copy_files} /home/
+
+# 5. Install / prep
+RUN bash /home/prepare.sh
+
+# 6. Repo cleanup (hardening) — kept as-is, synced with image.py
+"""
+        return head + self._HARDENING_BLOCK + '\nCMD ["/bin/bash"]\n'
+
+    def files(self) -> list[File]:
+        repo = self.pr.repo
         pkgs = _test_pkgs(self.pr.test_patch)
         pkg_list = " ".join(pkgs) if pkgs else "."
 
@@ -131,18 +192,20 @@ echo "check_git_changes: No uncommitted changes"
 exit 0
 """
 
+        # The repo is already checked out at ${BASE_COMMIT} and hardened by the
+        # shared Image.dockerfile(), so prepare.sh no longer performs any git
+        # checkout itself — it only warms the module cache. The download is
+        # allowed to fail (|| true) because its only purpose here is caching;
+        # the real pass/fail signal comes from the run/test-run/fix-run scripts.
         prepare = """#!/bin/bash
 set -e
 cd /home/__REPO__
 git config --global --add safe.directory /home/__REPO__
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout __SHA__
-bash /home/check_git_changes.sh
-
-# Warm the Go module cache at the base commit (cached into the image layer).
 go mod download 2>/dev/null || true
-""".replace("__REPO__", repo).replace("__SHA__", sha)
+# Drop any go.sum churn from the cache warm-up so the tree is clean before the
+# hardening pass detaches onto ${BASE_COMMIT}.
+git reset --hard 2>/dev/null || true
+""".replace("__REPO__", repo)
 
         # Per-package `go test`. -vet=off avoids vet-only failures masking the
         # real test outcome.
@@ -201,29 +264,6 @@ bash /home/run_tests.sh
             File(".", "test-run.sh", test_run),
             File(".", "fix-run.sh", fix_run),
         ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
 
 
 @Instance.register("bufbuild", "buf")
