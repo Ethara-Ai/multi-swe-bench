@@ -23,11 +23,14 @@ _AWK_BINARY_FILTER = (
 )
 
 
-class DeltaImage(Image):
-    """Single per-PR image for dandavison/delta (Rust).
+class DeltaImageBase(Image):
+    """Shared toolchain base (tag ':base') for dandavison/delta.
 
-    Uses ${REPO_URL} and ${BASE_COMMIT} ARGs injected by DockerfileEnhancer.
-    Hardening block is explicit to prevent reward hacking via git history.
+    Contains ONLY the Rust toolchain + apt deps — NO repo clone, so it holds no
+    git history and cannot leak future commits. Built once, reused by every PR.
+    DockerfileEnhancer processes this image (string dependency, no syntax
+    directive) and injects the standard infra (TARGETARCH/REPO_URL ARGs, ENV,
+    LABEL). No hardening pass is injected because there is no `git clone` here.
     """
 
     def __init__(self, pr: PullRequest, config: Config):
@@ -43,9 +46,59 @@ class DeltaImage(Image):
         return self._config
 
     def dependency(self) -> str:
-        # String dependency triggers DockerfileEnhancer (ARG/ENV/LABEL injection;
-        # proxy/cert/MITM infra was removed from the enhancer).
         return "rust:latest"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        return """FROM rust:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \\
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["/bin/bash"]
+"""
+
+
+class DeltaImage(Image):
+    """Single per-PR image for dandavison/delta (Rust).
+
+    Two-stage build: layers on the shared ':base' toolchain image (see
+    DeltaImageBase). Because dependency() returns an Image (not a str),
+    DockerfileEnhancer skips this Dockerfile, so REPO_URL / BASE_COMMIT ARGs are
+    declared explicitly below. Hardening block is explicit and runs per-PR after
+    the BASE_COMMIT checkout to prevent reward hacking via git history.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        # Two-stage build: per-PR image layers on the shared ':base' toolchain.
+        # Returning an Image (not a str) makes DockerfileEnhancer skip this
+        # Dockerfile, so it must be self-contained (ARGs declared below).
+        return DeltaImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -99,16 +152,18 @@ cargo test 2>&1
         ]
 
     def dockerfile(self) -> str:
+        base = self.dependency().image_full_name()
         copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
-        # Use "${REPO_URL}" (not hardcoded URL) so DockerfileEnhancer._standardize_repo_fetch
-        # skips replacement (negative lookahead on that pattern).
-        # Use "${BASE_COMMIT}" — value passed as --build-arg by build_dataset.py.
-        # Explicit _HARDENING_BLOCK prevents _inject_final_sanitize from adding a duplicate.
-        return f"""FROM rust:latest
+        # Enhancer is skipped (dependency is an Image), so REPO_URL / BASE_COMMIT
+        # ARGs are declared here (BASE_COMMIT value passed as --build-arg by
+        # build_dataset.py). git is inherited from the ':base' image.
+        # Explicit _HARDENING_BLOCK runs per-PR after the BASE_COMMIT checkout.
+        return f"""FROM {base}
+
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
 
 WORKDIR /home/
-
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
 RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
