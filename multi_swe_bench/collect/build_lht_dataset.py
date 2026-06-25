@@ -590,7 +590,7 @@ def main(
                 "title": primary_pr.get("title", ""),
                 "body": primary_pr.get("body", "") or "",
                 "base": {
-                    "label": tag_label,
+                    "label": f"{org}:{base_ref}",
                     "ref": base_ref,
                     "sha": base_sha,
                 },
