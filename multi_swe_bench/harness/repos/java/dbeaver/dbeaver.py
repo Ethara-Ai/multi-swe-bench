@@ -580,7 +580,17 @@ class DbeaverImageBase(Image):
         elif era == "jdk11":
             p2_setup = _legacy_p2_setup_jdk11()
 
-        return f"""FROM {image_name}
+        # The leading `# syntax=` directive makes DockerfileEnhancer return this
+        # Dockerfile verbatim (image.py: `if SYNTAX_DIRECTIVE in raw: return raw`).
+        # That is REQUIRED for the shared per-era base: without it the enhancer's
+        # _standardize_repo_fetch rewrites the `git clone` below into a
+        # ${BASE_COMMIT}-dependent hardening pass. The base has no BASE_COMMIT
+        # (it is reused by every PR of the era and must keep full history so any
+        # PR's base.sha stays reachable), so that injected pass would both fail
+        # to build and wrongly prune history. Hardening happens per-PR in
+        # DbeaverImageDefault instead.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
@@ -677,6 +687,11 @@ bash /home/check_git_changes.sh
 {fixup_cmd}
 
 {test_cmd} || true
+
+# Cache is warmed in ~/.m2 and target/; revert the fixup's tracked pom edits so
+# the tree is clean before the image-level hardening pass detaches onto
+# ${{BASE_COMMIT}}. The runtime scripts (run/test-run/fix-run) re-apply fixup.
+git reset --hard || true
 """.format(pr=self.pr, test_cmd=test_cmd, fixup_cmd=fixup_cmd),
             ),
             File(
@@ -790,11 +805,33 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch || git apply --wh
                     RUN sed -i '/<proxies>/,/<\\/proxies>/d' ~/.m2/settings.xml
                 """
                 )
+        # Per-PR hardening. This layer chains to the shared base *Image*, so
+        # DockerfileEnhancer returns dockerfile() verbatim and supplies neither
+        # ARG BASE_COMMIT nor the hardening pass — we bake both in here.
+        #
+        # BASE_COMMIT is the value the hardening block detaches onto. It is set
+        # to this PR's base.sha so Image._HARDENING_BLOCK prunes every other
+        # ref/remote/commit, leaving only base.sha reachable. This is what stops
+        # a solver from `git log`/`git show`/`git diff`-ing the fix commit or any
+        # future commit out of the checked-out repo (reward hacking).
+        #
+        # `hardening` is substituted as a plain variable value (NOT spliced into
+        # f-string brace syntax), so the ${BASE_COMMIT}/%(refname) tokens inside
+        # it stay byte-identical to image.py. Literal Dockerfile braces below are
+        # doubled ({{ }}) so they survive f-string interpolation.
+        hardening = Image._HARDENING_BLOCK
+        base_sha = self.pr.base.sha
+        repo = self.pr.repo
         return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{base_sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
 {proxy_setup}
+
+WORKDIR /home/{repo}
 
 {clone_common}
 
@@ -806,6 +843,11 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch || git apply --wh
 
 {self.clear_env}
 
+WORKDIR /home/{repo}
+
+{hardening}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -912,3 +954,69 @@ class Dbeaver(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# ---------------------------------------------------------------------------
+# number_interval routing (per-bundle, hyphen-joined exact PR numbers).
+#
+# Each bundle's number_interval is the hyphen-joined list of its real PR
+# numbers (e.g. "146-147-150-155-157"), NOT a contiguous range. Every bundle
+# uses the single Dbeaver config above, so Instance.create's exact-key lookup
+#   name = f"{org}/{number_interval}"
+# needs each bundle string registered. Rows with number_interval="" keep
+# routing to dbeaver/dbeaver and are unaffected.
+#
+# Derived from prs_in_bundle in dbeaver__dbeaver_lht_final.jsonl; keys MUST
+# match the dataset exactly. Regenerate if the bundling changes.
+# ---------------------------------------------------------------------------
+_DBEAVER_BUNDLES = [
+    [1154, 1159],
+    [1626, 1637],
+    [1890, 1892, 1893],
+    [1914, 1973],
+    [2360, 2367, 2368, 2369, 2370, 2404, 2418],
+    [2432, 2476, 2489, 2506],
+    [2559, 2580, 2581, 2582],
+    [2684, 2685, 2699, 2708, 2713, 2727, 2729, 2731, 2734, 2735, 2745, 2746],
+    [3002, 3007, 3032, 3033, 3041, 3067, 3068, 3069, 3071, 3072, 3073, 3074, 3077, 3083],
+    [3430, 3433],
+    [3834, 3850, 3855],
+    [4023, 4865, 4875, 4891, 4895, 4908, 4909, 4910, 4922],
+    [4499, 4513],
+    [4546, 4563, 4596, 4602],
+    [4788, 4797, 4841, 4852],
+    [4917, 4939, 4946, 4958, 4959, 4960, 4970, 4974, 5000, 5012, 5034],
+    [5075, 5080, 5082, 5083, 5084, 5094, 5098, 5102, 5103, 5104, 5119, 5123, 5125, 5160, 5181, 5183, 5187, 5189],
+    [5194, 5199, 5200, 5201, 5231, 5234, 5242, 5245, 5270],
+    [5303, 5308, 5309, 5320, 5347, 5348, 5355, 5360, 5361, 5362, 5372, 5390, 5394, 5395],
+    [5432, 5434, 5437, 5438, 5439, 5449, 5473, 5475, 5476, 5478, 5481, 5487, 5496, 5497, 5510, 5537],
+    [5559, 5676, 5692, 5695, 5696, 5697, 5698, 5710, 5724, 5731, 5733, 5748, 5752, 5762],
+    [5876, 5882, 5898, 5907, 5913, 5933, 5935, 5941],
+    [5945, 5947, 5979, 5995, 5997, 6004, 6006, 6009, 6039, 6058, 6071],
+    [6079, 6119, 6143],
+    [6133, 6174, 6175, 6184, 6187, 6202, 6217, 6223],
+    [6590, 6636, 6660, 6665],
+    [6714, 6765, 6780],
+    [6857, 6863],
+    [7719, 7728],
+    [9100, 10201, 10202, 10217, 10218, 10220, 10223, 10225, 10226, 10233, 10248, 10251, 10253, 10258, 10262, 10264, 10288, 10301, 10305, 10321, 10323, 10324, 10337],
+    [9676, 9683, 9684, 9694, 9695, 9700, 9722, 9730, 9739, 9750, 9752, 9768, 9772, 9774, 9781, 9782, 9785, 9786, 9788, 9790, 9791, 9792, 9798],
+    [13021, 13363, 13364, 13366, 13376, 13378, 13381, 13383, 13400, 13405, 13411, 13412, 13417, 13421, 13437, 13439, 13442, 13448, 13451, 13455, 13460, 13462, 13463, 13473, 13478, 13480, 13485, 13488, 13494, 13499, 13502, 13508, 13509],
+    [13288, 13308, 13449, 13511, 13535, 13539, 13540, 13541, 13554, 13560, 13567, 13572, 13573, 13574, 13579, 13588, 13590, 13597, 13600, 13602, 13607, 13610, 13615, 13621, 13624, 13625, 13628, 13630, 13631, 13632, 13633, 13634, 13645, 13650, 13653, 13664, 13665, 13670, 13672, 13685, 13713],
+    [14159, 14213, 14320, 14421, 14422, 14435, 14446, 14453, 14458, 14463, 14468, 14472, 14484, 14487, 14501, 14502, 14503, 14506, 14509, 14514],
+    [14515, 14516, 14524, 14532, 14536, 14541, 14547, 14548, 14562, 14570, 14571, 14577, 14581, 14584, 14587, 14592, 14597, 14598, 14600, 14602, 14604, 14605, 14607, 14609, 14610, 14621, 14622, 14630, 14631, 14632, 14633, 14636, 14640, 14641, 14649, 14652, 14653, 14655, 14656, 14657, 14661, 14665, 14666, 14668],
+    [16648, 16874, 17007, 17090, 17137, 17142, 17145, 17150, 17155, 17157, 17168, 17170, 17174, 17180, 17181, 17183, 17184, 17185, 17189, 17191, 17193, 17207, 17212, 17214, 17216, 17218, 17221, 17223, 17225, 17226, 17227, 17230, 17233, 17236, 17237, 17239, 17247, 17258, 17261, 17264],
+    [18135, 18369, 18636, 18717, 18757, 18766, 18801, 18803, 18807, 18822, 18832, 18834, 18842, 18845, 18846, 18848, 18859, 18862, 18864, 18866, 18868, 18877, 18880, 18883, 18884, 18887, 18891, 18902, 18904, 18905, 18910, 18915, 18920, 18923, 18927],
+    [20093, 20240, 20253, 20302, 20319, 20334, 20356, 20357, 20358, 20360, 20368, 20385, 20387, 20389, 20395, 20396, 20400, 20401, 20402, 20403, 20407, 20411, 20412, 20417, 20418, 20420, 20422, 20427, 20433, 20441, 20443, 20453, 20454, 20455, 20456, 20468, 20475, 20476, 20482],
+    [21405, 21700, 21725, 21729, 21731, 21737, 21751, 21752, 21758, 21763, 21767, 21771, 21775, 21778, 21781, 21782, 21787, 21788, 21790, 21791, 21792, 21795, 21799, 21800, 21801, 21802, 21803, 21807, 21811, 21814, 21815, 21819, 21835, 21836, 21837, 21838, 21839, 21840, 21844, 21845, 21851, 21852, 21853, 21856, 21857, 21858, 21859, 21861, 21862, 21866, 21867, 21868, 21890],
+    [34181, 34182, 34278, 34336, 34453, 34670, 34860, 34977, 34983, 35007, 35016, 35021, 35036, 35061, 35079, 35081, 35083, 35084, 35086, 35091, 35093, 35096, 35099, 35101, 35110, 35113, 35116, 35119, 35130, 35131, 35136, 35140, 35141, 35162, 35163, 35164, 35168, 35170, 35185, 35186, 35189, 35190, 35192, 35199, 35200],
+    [35055, 35126, 35316, 35318, 35365, 35413, 35450, 35592, 35615, 35643, 35653, 35658, 35659, 35660, 35665, 35672, 35691, 35692, 35696, 35699, 35707, 35710, 35711, 35715, 35721, 35723, 35731, 35735, 35736, 35739, 35740, 35741, 35742, 35743, 35746, 35751, 35753, 35765],
+    [35648, 35766, 35927, 35947, 35948, 35969, 35971, 35974, 35985, 35987, 36010, 36016, 36024, 36027, 36031, 36039, 36040, 36046, 36047, 36049, 36050, 36051, 36055, 36056, 36057, 36065, 36067, 36074, 36081, 36093, 36100],
+    [36618, 37698, 37792, 37851, 37889, 37899, 37901, 37910, 37913, 37914, 37915, 37916, 37924, 37931, 37932, 37933, 37946, 37962, 37963, 37965, 37966, 37967, 37978, 37980, 37985, 37987, 37993, 37994, 38001, 38003, 38005, 38022, 38025, 38052],
+    [38847, 39585, 39705, 39904, 39934, 39974, 39985, 39991, 39999, 40008, 40011, 40015, 40020, 40024, 40033, 40037, 40041, 40042, 40043, 40045, 40053, 40054, 40055, 40056, 40061, 40063, 40066, 40071, 40074, 40086, 40090, 40091, 40094, 40098],
+    [39212, 39236, 39273, 39285, 39297, 39311, 39312, 39313, 39314, 39317, 39318, 39319, 39320, 39323, 39331, 39334, 39336, 39348, 39349, 39351, 39352, 39353, 39354, 39356, 39357, 39359, 39360, 39363, 39365, 39366, 39374, 39376, 39380, 39384, 39389, 39392, 39395],
+    [39261, 39347, 39393, 39396, 39398, 39399, 39400, 39401, 39403, 39411, 39413, 39414, 39415, 39418, 39421, 39429, 39431, 39434, 39437, 39441, 39449, 39451, 39456, 39459, 39463, 39466, 39476, 39477, 39478, 39479, 39480, 39483, 39485, 39486, 39491, 39493, 39498, 39500, 39510],
+]
+
+for _bundle in _DBEAVER_BUNDLES:
+    Instance.register("dbeaver", "-".join(str(_n) for _n in _bundle))(Dbeaver)
