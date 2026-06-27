@@ -5,8 +5,123 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# XTLS/Xray-core era "xray_core_2227_to_1035": build/test on the golang:1.20 toolchain.
+_GO_IMAGE = "golang:1.20"
+
+
+# ---------------------------------------------------------------------------
+# Build-context scripts (COPY'd into the per-PR image, run at build/eval time).
+# ---------------------------------------------------------------------------
+
+# Warms the go module + build cache at base.sha and fetches the geo data the
+# app/router, app/dns, infra/conf and common/geodata tests need. Runs BEFORE
+# the hardening strip; everything is `|| true` so a flaky baseline (or a
+# transient geo-data download failure) never breaks the image build.
+#
+# Geo data goes into <repo>/resources -- this exactly mirrors upstream CI
+# (.github/workflows/test.yml restores a `resources` cache then runs
+# `go test ./...` with NO XRAY_LOCATION_ASSET). The infra/conf test init() is
+# written for this layout: it copies geoip.dat from <repo>/resources and then
+# sets xray.location.asset itself, per test binary. Crucially we do NOT export
+# XRAY_LOCATION_ASSET globally -- doing so leaks into the common/platform test
+# binary and breaks TestGetAssetLocation, which asserts the default asset dir
+# equals the executable dir when no override is set. *.dat is gitignored, so the
+# files stay untracked: they do not dirty the worktree and survive both
+# `git reset --hard` and the hardening gc (untracked objects are not pruned).
+_INSTALL_SH = """#!/bin/bash
+set -e
+
+git config --global --add safe.directory /home/{pr.repo} || true
+cd /home/{pr.repo}
+
+mkdir -p resources
+curl -fsSL -o resources/geoip.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat || true
+curl -fsSL -o resources/geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat || true
+
+go mod download || true
+go build ./... >/dev/null 2>&1 || true
+"""
+
+# Baseline: clean base.sha, no patches. base.sha is still checkout-able after
+# the hardening strip because it is HEAD (reachable, not pruned).
+_RUN_SH = """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/{pr.repo}
+git reset --hard
+git checkout {pr.base.sha}
+
+go test -timeout 30m -count=1 -v ./...
+"""
+
+# Test patch only: the new tests exercise behaviour the fix has not introduced
+# yet, so they fail (or their package fails to compile) -- genuine f2p / n2p.
+_TEST_RUN_SH = """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/{pr.repo}
+git reset --hard
+git checkout {pr.base.sha}
+git apply --whitespace=nowarn /home/test.patch
+
+go test -timeout 30m -count=1 -v ./...
+"""
+
+# Test + fix patches: production fix present, the suite passes.
+_FIX_RUN_SH = """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/{pr.repo}
+git reset --hard
+git checkout {pr.base.sha}
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+
+go test -timeout 30m -count=1 -v ./...
+"""
+
+# Archive-resilient apt: the older golang images are Debian bullseye, near
+# end-of-life. Try a normal `apt-get update` first and fall back to
+# archive.debian.org (dropping -updates) when the mirror has been retired --
+# mirrors the stretch/buster handling image.py applies for deprecated bases,
+# but keyed off runtime reachability rather than a fixed list.
+_APT_INSTALL = (
+    "RUN { apt-get update 2>/dev/null || "
+    "{ sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && "
+    "sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && "
+    "sed -i '/-updates/d' /etc/apt/sources.list && "
+    "apt-get update; }; } && \\\n"
+    "    apt-get install -y --no-install-recommends \\\n"
+    "    ca-certificates \\\n"
+    "    curl \\\n"
+    "    build-essential \\\n"
+    "    git \\\n"
+    "    gnupg \\\n"
+    "    make \\\n"
+    "    python3 \\\n"
+    "    sudo \\\n"
+    "    wget \\\n"
+    "    patch \\\n"
+    "    && rm -rf /var/lib/apt/lists/*"
+)
+
 
 class XrayCoreGo120ImageBase(Image):
+    """Level 1: toolchain-only base image (shared by all PRs of the era).
+
+    ``dependency()`` returns a *string* (the Go toolchain image), so the
+    pipeline's ``DockerfileEnhancer`` engages and prepends the
+    ``# syntax``/ARG/ENV/LABEL infra block. IMPORTANT: this image must NOT clone
+    the repository -- a shared string-dependency image that performs a
+    ``git clone`` is force-pinned to a single ``${BASE_COMMIT}`` and
+    history-stripped by the enhancer, which would break ``git checkout`` for
+    every other PR sharing the base. So the clone lives in the Default image
+    (whose dependency() is an Image, left verbatim by the enhancer), done
+    per-PR. This image only provides the Go toolchain, apt deps, and Go env.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +135,7 @@ class XrayCoreGo120ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:1.20"
+        return _GO_IMAGE
 
     def image_tag(self) -> str:
         return "base-xray_core_2227_to_1035"
@@ -32,31 +147,34 @@ class XrayCoreGo120ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
+        # No `git clone` here on purpose -- see the class docstring. The string
+        # dependency means DockerfileEnhancer injects the ARG/ENV/LABEL infra
+        # block (but no clone/hardening, since this Dockerfile has no clone).
+        return f"""FROM {_GO_IMAGE}
 
 WORKDIR /home/
+
+{_APT_INSTALL}
+
 ENV GOFLAGS=-buildvcs=false
 ENV GOTOOLCHAIN=local
 
-{code}
-
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
 class XrayCoreGo120ImageDefault(Image):
+    """Level 2: per-PR image (built on the shared toolchain base).
+
+    ``dependency()`` returns the Base image (an Image, not a string), so the
+    DockerfileEnhancer returns this Dockerfile verbatim -- no pin, no history
+    strip injected by the pipeline. The clone therefore lives here, per-PR: the
+    image clones full history, checks out ``${BASE_COMMIT}`` inline, COPYs the
+    scripts, warms the build cache + geo data (install.sh), then the verbatim
+    ``Image._HARDENING_BLOCK`` strips origin/refs/future history (with the four
+    post-condition asserts + submodule pass) while keeping base.sha reachable.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -69,7 +187,7 @@ class XrayCoreGo120ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image:
+    def dependency(self) -> Union[str, "Image"]:
         return XrayCoreGo120ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -80,100 +198,12 @@ class XrayCoreGo120ImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git config --global --add safe.directory /home/{pr.repo}
-git reset --hard
-git clean -fd
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-# Geo data needed by app/router and infra/conf tests. *.dat is gitignored,
-# so this does not dirty the worktree.
-mkdir -p resources
-curl -fsSL -o resources/geoip.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat || true
-curl -fsSL -o resources/geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat || true
-
-go mod download || true
-go build ./... || true
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -eo pipefail
-export CI=true
-export XRAY_LOCATION_ASSET=/home/{pr.repo}/resources
-
-cd /home/{pr.repo}
-go test -timeout 30m -count=1 -v ./...
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-export CI=true
-export XRAY_LOCATION_ASSET=/home/{pr.repo}/resources
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-go test -timeout 30m -count=1 -v ./...
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -eo pipefail
-export CI=true
-export XRAY_LOCATION_ASSET=/home/{pr.repo}/resources
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-go test -timeout 30m -count=1 -v ./...
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "install.sh", _INSTALL_SH.format(pr=self.pr)),
+            File(".", "run.sh", _RUN_SH.format(pr=self.pr)),
+            File(".", "test-run.sh", _TEST_RUN_SH.format(pr=self.pr)),
+            File(".", "fix-run.sh", _FIX_RUN_SH.format(pr=self.pr)),
         ]
 
     def dockerfile(self) -> str:
@@ -181,23 +211,43 @@ go test -timeout 30m -count=1 -v ./...
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        copy_files = " ".join(file.name for file in self.files())
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # The shared toolchain base does NOT clone, so this per-PR image clones
+        # full history first, then checks out ${BASE_COMMIT} inline. Because this
+        # image's dependency() is an Image, the DockerfileEnhancer returns the
+        # Dockerfile verbatim -- the clone + hardening below are kept as written
+        # (and pinning here is correct: it is per-PR, not the shared base).
+        header = f"""FROM {name}:{tag}
 
-        return f"""FROM {name}:{tag}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
-{prepare_commands}
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
-{self.clear_env}
+COPY {copy_files} /home/
+
+RUN bash /home/install.sh || true
 
 """
+
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal.
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("XTLS", "xray_core_2227_to_1035")
@@ -281,3 +331,14 @@ class XRAY_CORE_GO120(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route the dash-joined number_interval (canonical prs_in_bundle format) to the
+# same XRAY_CORE_GO120 config. Each cleaned-dataset record in the
+# "xray_core_2227_to_1035" era now carries its own bundle key (sorted PR numbers
+# joined by "-"). Instance.create() looks up f"{org}/{number_interval}", and
+# Instance.register returns the class unchanged so it answers to every key.
+Instance.register("XTLS", "2227-2258-2264-2265-2286-2305-2356-2398-2405-2489")(XRAY_CORE_GO120)
+Instance.register("XTLS", "1636-1646-1672-1677-1725-1747-1757")(XRAY_CORE_GO120)
+Instance.register("XTLS", "1494-1504-1509-1536-1540-1554-1556-1567")(XRAY_CORE_GO120)
+Instance.register("XTLS", "1035-1061-1074")(XRAY_CORE_GO120)
