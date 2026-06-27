@@ -9,7 +9,7 @@ run via Mocha through Lerna
 
 import re
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, File, Image, _safe_path_component
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -70,6 +70,45 @@ class TheiaNode12ImageDefault(Image):
             "COPY test-run.sh /home/test-run.sh\n"
             "COPY fix-run.sh /home/fix-run.sh"
         )
+
+    def dockerfile(self) -> str:
+        # Explicit canonical Dockerfile (mirrors Image.dockerfile()) so the
+        # anti-reward-hacking Image._HARDENING_BLOCK is referenced directly in
+        # this file rather than only inherited. The base image is a string dep,
+        # so DockerfileEnhancer still injects the REPO_URL/BASE_COMMIT ARGs +
+        # infra block; because the clone uses "${REPO_URL}" and the hardening
+        # marker is already present, the enhancer makes no further changes.
+        base_img = self.dependency()
+
+        default_packages = [
+            "ca-certificates", "curl", "build-essential", "git", "gnupg",
+            "make", "python3", "sudo", "wget",
+        ]
+        all_packages = default_packages + self.extra_packages()
+        packages_str = " \\\n    ".join(all_packages)
+        apt_command = self._get_apt_update_command(packages_str, base_img)
+
+        repo = _safe_path_component(self.pr.repo)
+        extra_setup = self.extra_setup()
+
+        sections = [f"FROM {base_img}"]
+        if self.global_env:
+            sections.append(self.global_env)
+        sections.append(
+            "WORKDIR /home/\nENV DEBIAN_FRONTEND=noninteractive\nENV LANG=C.UTF-8"
+        )
+        sections.append(apt_command)
+        sections.append(f'RUN git clone "${{REPO_URL}}" /home/{repo}')
+        sections.append(f"WORKDIR /home/{repo}")
+        sections.append("RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}")
+        if extra_setup:
+            sections.append(extra_setup)
+        sections.append(Image._HARDENING_BLOCK)
+        if self.clear_env:
+            sections.append(self.clear_env)
+        sections.append('CMD ["/bin/bash"]')
+
+        return "\n\n".join(sections) + "\n"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -279,3 +318,21 @@ class THEIA_8185_TO_9936(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route the dash-joined number_interval (canonical prs_in_bundle from each
+# record's resolved_issues + own PR number, sorted, "-"-joined) of the
+# SHIPPABLE chunk1+chunk2 dataset to the THEIA_8185_TO_9936 config. Instance.create()
+# looks up f"{org}/{number_interval}"; Instance.register returns the class
+# unchanged, so it answers to every key (the era key + any prior keys above
+# are kept for back-compat).
+_BUNDLE_NUMBER_INTERVALS = [
+    "2815-5397-5812-6572-6636-7103-7538-7586-7738-7746-7931-7953-8655-8712-8750-8751-8752-8888-8933-8955-8963-8991-8992-8994-9052-9054-9065-9068-9131-9133-9145-9147-9150-9152-9158-9163-9164-9169-9175-9177-9180-9192-9200-9209-9212-9221-9227-9232-9245-9254-9258",
+    "2961-4965-6796-8222-8314-8469-8752-8911-8965-8993-9020-9110-9142-9191-9220-9310-9371-9392-9408-9413-9424-9427-9435-9452-9459-9476-9486-9516-9520-9522-9523",
+    "5876-6016-6784-7037-7078-7737-8070-8946-8947-8982-9069-9138-9224-9242-9348-9375-9438-9461-9468-9475-9485-9499-9525-9526-9529-9530-9532-9536-9553-9563-9565-9568-9571-9572-9573-9579-9580-9584-9585-9590-9591-9598-9602-9615-9617-9620-9623-9630-9631-9634-9635-9655-9666-9672-9680-9682",
+    "202-2819-7797-8769-9269-10023-10077-10200-10201-10267-10598-10684-10689-10710-10819-10830-10891-10931-11015-11034-11036-11051-11059-11072-11089-11096-11099-11102-11104-11110-11111-11115-11116-11130-11142-11150-11154-11158-11160-11175-11176-11178-11182-11184-11189-11190-11191-11195-11196-11201-11203-11207-11208",
+    "1327-1902-3053-6439-6904-7431-8795-8903-8970-9391-9405-9432-9436-9543-9663-9674-9727-9778-9779-9800-9806-9807-9815-9817-9819-9820-9826-9831-9832-9833-9841-9851-9852-9856-9860-9870-9871-9876-9882-9883-9900-9901-9905-9910-9914-9919-9927-9931-9935-9937-9938-9939-9951-9954-9956-9958-9960-9962-9968-9970-9973",
+]
+
+for _ni in _BUNDLE_NUMBER_INTERVALS:
+    Instance.register("eclipse-theia", _ni)(THEIA_8185_TO_9936)

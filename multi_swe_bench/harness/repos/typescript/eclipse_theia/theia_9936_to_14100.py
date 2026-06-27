@@ -9,7 +9,7 @@ Lerna (``lerna run --scope "@theia/!(example-)*" test``).
 
 import re
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, File, Image, _safe_path_component
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -59,6 +59,45 @@ class TheiaNode16ImageDefault(Image):
             "COPY test-run.sh /home/test-run.sh\n"
             "COPY fix-run.sh /home/fix-run.sh"
         )
+
+    def dockerfile(self) -> str:
+        # Explicit canonical Dockerfile (mirrors Image.dockerfile()) so the
+        # anti-reward-hacking Image._HARDENING_BLOCK is referenced directly in
+        # this file rather than only inherited. The base image is a string dep,
+        # so DockerfileEnhancer still injects the REPO_URL/BASE_COMMIT ARGs +
+        # infra block; because the clone uses "${REPO_URL}" and the hardening
+        # marker is already present, the enhancer makes no further changes.
+        base_img = self.dependency()
+
+        default_packages = [
+            "ca-certificates", "curl", "build-essential", "git", "gnupg",
+            "make", "python3", "sudo", "wget",
+        ]
+        all_packages = default_packages + self.extra_packages()
+        packages_str = " \\\n    ".join(all_packages)
+        apt_command = self._get_apt_update_command(packages_str, base_img)
+
+        repo = _safe_path_component(self.pr.repo)
+        extra_setup = self.extra_setup()
+
+        sections = [f"FROM {base_img}"]
+        if self.global_env:
+            sections.append(self.global_env)
+        sections.append(
+            "WORKDIR /home/\nENV DEBIAN_FRONTEND=noninteractive\nENV LANG=C.UTF-8"
+        )
+        sections.append(apt_command)
+        sections.append(f'RUN git clone "${{REPO_URL}}" /home/{repo}')
+        sections.append(f"WORKDIR /home/{repo}")
+        sections.append("RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}")
+        if extra_setup:
+            sections.append(extra_setup)
+        sections.append(Image._HARDENING_BLOCK)
+        if self.clear_env:
+            sections.append(self.clear_env)
+        sections.append('CMD ["/bin/bash"]')
+
+        return "\n\n".join(sections) + "\n"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -264,3 +303,19 @@ class THEIA_9936_TO_14100(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route the dash-joined number_interval (canonical prs_in_bundle from each
+# record's resolved_issues + own PR number, sorted, "-"-joined) of the
+# SHIPPABLE chunk1+chunk2 dataset to the THEIA_9936_TO_14100 config. Instance.create()
+# looks up f"{org}/{number_interval}"; Instance.register returns the class
+# unchanged, so it answers to every key (the era key + any prior keys above
+# are kept for back-compat).
+_BUNDLE_NUMBER_INTERVALS = [
+    "1733-6580-7632-9260-10338-11020-11878-11911-11979-12015-12063-12101-12111-12146-12173-12174-12178-12188-12217-12218-12222-12224-12238-12242-12244-12248-12250-12253-12254-12255-12256-12260-12261-12265-12276-12283-12285-12291-12293-12296-12304-12305-12311-12314-12316-12322-12330-12336-12345-12357-12359-12361-12362-12363",
+    "199-9514-10194-10443-10463-11314-11509-11512-11517-11519-11606-11616-11730-11732-11786-11851-11868-11921-11926-11931-11932-11945-11950-11956-11989-12003-12011-12013",
+    "2018-4199-5667-10404-11837-11873-11893-12017-12019-12063-12171-12172-12185-12231-12240-12328-12334-12337-12364-12372-12374-12381-12384-12385-12389-12401-12404-12406-12410-12424-12427-12434-12436-12461-12467-12469-12471",
+]
+
+for _ni in _BUNDLE_NUMBER_INTERVALS:
+    Instance.register("eclipse-theia", _ni)(THEIA_9936_TO_14100)
