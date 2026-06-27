@@ -413,3 +413,25 @@ class PM2_3720_TO_99999(Instance):
 
     def parse_log(self, test_log: str) -> TestResult:
         return _parse_mocha_log(test_log)
+
+
+# Route the dash-joined number_interval (canonical prs_in_bundle format) of the
+# release-bundled resolved_genuine dataset to the PM2_3720_TO_99999 config. Each record
+# in this era carries a unique number_interval == sorted PR/issue numbers from its
+# resolved_issues joined by "-". Instance.create() looks up
+# f"{org}/{number_interval}"; Instance.register returns the class unchanged, so it
+# answers to every key (the "pm2_3720_to_99999" era key above is kept for back-compat).
+_BUNDLE_NUMBER_INTERVALS = [
+    "1234-3412-3415-3483-3720-3786-3807-3823-3831-3844-3865-3869-3878-3883",
+    "1349-3081-3732-3940-4021-4150-4203-4210",
+    "4018-4032",
+    "2097-4224-4239-4297-4306-4367-4378-4391-4436",
+    "3347-3884-4058-4254-4271-4280-4288-4300-4364-4372",
+    "3471-3555-3651-3691-4013-4431-4474-4480-4485",
+    "1234-4404-4517-4560-4589-4595-4614-4629-4639-4652",
+    "4892-4897",
+    "5208-5330-5443-5451-5574-5658-5672",
+]
+
+for _ni in _BUNDLE_NUMBER_INTERVALS:
+    Instance.register("Unitech", _ni)(PM2_3720_TO_99999)
