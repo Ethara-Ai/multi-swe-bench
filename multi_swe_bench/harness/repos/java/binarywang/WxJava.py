@@ -32,6 +32,20 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #  - parse_log reads surefire's per-class JUnit XML (junitreports/TEST-*.xml),
 #    dumped to stdout by run_tests.sh — the TestNG console output collapses
 #    everything into one unparseable "TestSuite".
+#
+# Structure — SINGLE-LEVEL, canonical image.py template (mirrors crossplane):
+#   `dependency()` returns the *string* toolchain image (maven:...), so the
+#   pipeline's DockerfileEnhancer engages — it injects the # syntax directive,
+#   the ARG REPO_URL / ARG BASE_COMMIT block, and the cert/label infra. The
+#   dockerfile() below carries everything image.py expects of a string-dep
+#   image: apt install, `git clone "${REPO_URL}"` + `git checkout ${BASE_COMMIT}`,
+#   the warm-only prepare.sh, then the *verbatim* Image._HARDENING_BLOCK strip
+#   (origin/refs/reflog/gc + the four fail-closed post-condition asserts + the
+#   submodule pass), and the final CMD. The build passes BASE_COMMIT=pr.base.sha
+#   for every string-dep image (build_dataset.py), so no --dataset_generation
+#   flag is required. Each PR is a self-contained image — there is no shared base
+#   for the enhancer to pin+strip, so the pin-and-strip hazard that forced the
+#   earlier 3-level layout does not apply here.
 
 
 def _test_classes(patch: str) -> list[str]:
@@ -52,6 +66,14 @@ def _test_classes(patch: str) -> list[str]:
 
 
 class WxJavaImageBase(Image):
+    # Level 1 — shared toolchain base, built once as
+    # mswebench/binarywang_m_wxjava:base and reused by every PR. dependency() is a
+    # *string* (Maven/JDK8), so DockerfileEnhancer.enhance() engages — but this
+    # image does NOT clone, so the enhancer only injects its harmless infra/cert/
+    # ARG/label block (there is no `RUN git clone` for it to rewrite+pin+strip).
+    # The apt layer (git/curl/redis) lives here so it is built once, not per-PR.
+    # JDK 8 is required — the oldest PRs compile with `-source 1.6`, which JDK 11+
+    # reject.
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -65,8 +87,6 @@ class WxJavaImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # Maven 3.9.6 + JDK 8 (multi-arch). JDK 8 is required — the oldest PRs
-        # compile with `-source 1.6`, which JDK 11+ reject.
         return "maven:3.9.6-eclipse-temurin-8"
 
     def image_tag(self) -> str:
@@ -80,13 +100,6 @@ class WxJavaImageBase(Image):
 
     def dockerfile(self) -> str:
         image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         return f"""FROM {image_name}
 
@@ -105,14 +118,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     git curl ca-certificates redis-server \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
-
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
 class WxJavaImageDefault(Image):
+    # Level 2 — per-PR image. dependency() is the WxJavaImageBase *Image*, so the
+    # harness builds the shared base first and DockerfileEnhancer.enhance()
+    # returns this dockerfile VERBATIM (Image deps are not enhanced). That means:
+    #  - no enhancer-injected ARG REPO_URL / ARG BASE_COMMIT — we declare
+    #    ARG BASE_COMMIT="<pr.base.sha>" ourselves (Image deps get no BASE_COMMIT
+    #    build-arg), and hardcode the clone URL;
+    #  - the clone lives HERE (per-PR), so it is pinned to this PR's own sha —
+    #    there is no shared cloned layer for the enhancer to pin+strip.
+    # We embed Image._HARDENING_BLOCK verbatim (same strip + fail-closed asserts),
+    # keyed on ${BASE_COMMIT}.
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -125,7 +147,7 @@ class WxJavaImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Union[str, "Image"]:
         return WxJavaImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -136,38 +158,50 @@ class WxJavaImageDefault(Image):
 
     def files(self) -> list[File]:
         repo = self.pr.repo
-        sha = self.pr.base.sha
         classes = _test_classes(self.pr.test_patch)
         dtest = ("-Dtest=" + ",".join(classes)) if classes else ""
 
-        check_git = """#!/bin/bash
-set -e
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-echo "check_git_changes: No uncommitted changes"
-exit 0
-"""
-
+        # Warm-only prep. Runs AFTER the dockerfile's clone+checkout of
+        # ${BASE_COMMIT} and BEFORE Image._HARDENING_BLOCK, so the full clone is
+        # still present while the ~/.m2 cache is populated. Does NOT check out
+        # (the dockerfile already did) and does NOT harden (the verbatim
+        # _HARDENING_BLOCK that follows does that, keyed on ${BASE_COMMIT}).
         prepare = """#!/bin/bash
 set -e
 cd /home/__REPO__
 git config --global --add safe.directory /home/__REPO__
 git config core.autocrlf input
 git config core.filemode false
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout __SHA__
-bash /home/check_git_changes.sh
 
 # Warm the ~/.m2 dependency cache (compile main + test sources at base sha).
 mvn -B --no-transfer-progress -fae clean test-compile || true
-""".replace("__REPO__", repo).replace("__SHA__", sha)
+
+# Pre-warm maven-surefire-plugin 3.2.5 (+ its TestNG/JUnit runtime providers)
+# into ~/.m2 so the run/test/fix stages NEVER fetch it from Maven Central.
+# run_tests.sh sed-bumps surefire to 3.2.5 at run time; under concurrent instance
+# execution many containers request 3.2.5 from Central simultaneously and get
+# HTTP 429 (Too Many Requests). Maven caches that failed resolution -> BUILD
+# FAILURE -> zero tests captured. Apply the same pom transforms run_tests.sh
+# uses, run one no-op surefire pass to force plugin-core resolution, explicitly
+# fetch the providers, then `git reset --hard` so test.patch/fix.patch still
+# apply cleanly. ~/.m2 is outside the work tree, so the reset keeps the downloads.
+find . -name pom.xml -print0 | xargs -0 sed -i 's#<skip>true</skip>#<skip>false</skip>#g'
+find . -name pom.xml -print0 | xargs -0 sed -i '/maven-surefire-plugin/{n;s#<version>[^<]*</version>#<version>3.2.5</version>#}'
+mvn -B --no-transfer-progress -fae test \
+    -Dtest=__surefire_warmup_no_such_test__ -DfailIfNoTests=false \
+    -Dmaven.test.failure.ignore=true -Dsurefire.failIfNoSpecifiedTests=false \
+    -Dsurefire.timeout=120 || true
+for prov in surefire-testng surefire-junit4 surefire-junit-platform; do
+  mvn -B --no-transfer-progress \
+    org.apache.maven.plugins:maven-dependency-plugin:3.6.1:get \
+    -Dartifact=org.apache.maven.surefire:${prov}:3.2.5 || true
+done
+
+# Revert the pom edits (keep the warmed ~/.m2) so the working tree is clean at
+# base sha for Image._HARDENING_BLOCK's `git checkout --detach ${BASE_COMMIT}`
+# and for the run-time `git apply` of test.patch / fix.patch.
+git reset --hard
+""".replace("__REPO__", repo)
 
         # Shared test runner: transform the checked-out poms, enable
         # credential-module init, run only this PR's test classes, then dump
@@ -193,6 +227,22 @@ find . -name pom.xml -print0 | xargs -0 sed -i '/<suiteXmlFiles>/,/<\\/suiteXmlF
 for s in $(find . -path '*/src/test/resources/*' \\( -name 'test-config.sample.xml' -o -name 'test-config-sample.xml' \\) 2>/dev/null); do
   d="$(dirname "$s")/test-config.xml"
   cp "$s" "$d" 2>/dev/null || true
+  # Some sample configs at certain commits declare the same leaf element twice
+  # (e.g. <msgAuditLibPath> appears inline AND again as an empty multi-line
+  # element). XStream maps both to the one Java field and throws "Duplicate
+  # field", which kills the whole module's Guice injector -> 0 tests captured at
+  # every stage. Drop duplicate sibling elements (keep first), handling both the
+  # inline <t>..</t> and the multi-line <t>\\n..\\n</t> forms. POSIX-awk only.
+  awk '
+    inblock { if ($0 ~ ("</" curtag ">")) { inblock=0; if (!skip) print; next } if (!skip) print; next }
+    match($0, /<[a-zA-Z0-9]+>/) {
+      t=substr($0, RSTART+1, RLENGTH-2)
+      if (t=="xml") { print; next }
+      if ($0 ~ ("</" t ">")) { if (seen[t]++) next; print; next }
+      curtag=t; skip=(seen[t]++ ? 1 : 0); inblock=1; if (!skip) print; next
+    }
+    { print }
+  ' "$d" > "$d.dedup" 2>/dev/null && mv "$d.dedup" "$d" 2>/dev/null || true
   sed -i -E 's#<([a-zA-Z0-9]+)>[^<]*</\\1>#<\\1>0</\\1>#g' "$d" 2>/dev/null || true
 done
 
@@ -253,7 +303,6 @@ bash /home/run_tests.sh
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(".", "check_git_changes.sh", check_git),
             File(".", "prepare.sh", prepare),
             File(".", "run_tests.sh", run_tests),
             File(".", "run.sh", run_sh),
@@ -265,23 +314,41 @@ bash /home/run_tests.sh
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        repo = self.pr.repo
+        sha = self.pr.base.sha
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
+        # Image dependency -> enhancer returns this verbatim. We hand-write what
+        # the enhancer would otherwise inject: ARG BASE_COMMIT defaulted to this
+        # PR's base sha (Image deps get no BASE_COMMIT build-arg), a hardcoded
+        # clone URL, the checkout, then Image._HARDENING_BLOCK verbatim (keyed on
+        # ${BASE_COMMIT}). prepare.sh runs BEFORE the strip so the warm sees the
+        # full clone.
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
-{copy_commands}
+ARG BASE_COMMIT="{sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-{prepare_commands}
+RUN git clone https://github.com/{self.pr.org}/{repo}.git /home/{repo}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{copy_commands}
+RUN bash /home/prepare.sh
+
+{Image._HARDENING_BLOCK}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -363,3 +430,42 @@ class WxJava(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route the per-PR number_interval to the WxJava config. This is a per-PR
+# (non-release-bundled) dataset, so each instances bundle is a single PR and its
+# canonical number_interval is just that PR number (the degenerate prs_in_bundle
+# case, e.g. "145"). Instance.create() looks up f"{org}/{number_interval}" when
+# number_interval is set; Instance.register returns the class unchanged, so WxJava
+# answers to every key (the repo-level "WxJava" key above is kept as the
+# back-compat fallback used when number_interval is empty).
+_BUNDLE_NUMBER_INTERVALS = [
+    "145",
+    "171",
+    "216",
+    "266",
+    "394",
+    "519",
+    "776",
+    "900",
+    "1052",
+    "1172",
+    "1899",
+    "2142",
+    "2372",
+    "2587",
+    "2787",
+    "3200",
+    "3467",
+    "3533",
+    "3609",
+    "3642",
+    "3649",
+    "3654",
+    "3824",
+    "3854",
+    "3935",
+]
+
+for _ni in _BUNDLE_NUMBER_INTERVALS:
+    Instance.register("binarywang", _ni)(WxJava)
