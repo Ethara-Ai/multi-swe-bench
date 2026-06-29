@@ -235,6 +235,7 @@ class NUMPY_16439_TO_14156(Instance):
 # above is kept for back-compat).
 _NUMBER_INTERVALS = [
     "14758-14781-14851-14852-14855-14857-14858-14866-14872",
+    "15158-15159-15161-15176-15184-15220-15221-15222-15223-15245-15246-15247-15250",
 ]
 for _interval in _NUMBER_INTERVALS:
     Instance.register("numpy", _interval)(NUMPY_16439_TO_14156)
