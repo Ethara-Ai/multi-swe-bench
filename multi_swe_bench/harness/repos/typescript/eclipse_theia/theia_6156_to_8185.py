@@ -199,8 +199,12 @@ git reset --hard
 export PUPPETEER_SKIP_DOWNLOAD=true
 export TS_NODE_TRANSPILE_ONLY=true
 export ELECTRON_SKIP_BINARY_DOWNLOAD=true
-yarn install --ignore-engines || true
+yarn install --frozen-lockfile --ignore-engines || true
 yarn compile || yarn build || true
+
+# Don't bake a transient node-`temp` log-config into the image: a partial
+# /tmp/f-* JSON would be read by @theia/core's logger on later test runs.
+rm -rf /tmp/f-* /tmp/d-* 2>/dev/null || true
 """.format(
                     repo=self.pr.repo,
                 ),
@@ -216,6 +220,12 @@ cd /home/{repo}
 
 export PUPPETEER_SKIP_DOWNLOAD=true
 export TS_NODE_TRANSPILE_ONLY=true
+# Delete-on-boot: clear stale node-`temp` artifacts in /tmp before tests run.
+# @theia/core's logger-cli test writes a deliberately malformed JSON log-config
+# via the `temp` pkg (/tmp/f-*); a leftover/partial one from a prior run makes
+# the logger fail with "Error reading log config file ...: Unexpected token {{ in
+# JSON" and the suite exits 1. Removing them lets each run recreate fresh.
+rm -rf /tmp/f-* /tmp/d-* 2>/dev/null || true
 ./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 --no-bail 2>&1
 """.format(repo=self.pr.repo),
             ),
@@ -234,6 +244,12 @@ export PUPPETEER_SKIP_DOWNLOAD=true
 export TS_NODE_TRANSPILE_ONLY=true
 export ELECTRON_SKIP_BINARY_DOWNLOAD=true
 yarn compile || yarn build || true
+# Delete-on-boot: clear stale node-`temp` artifacts in /tmp before tests run.
+# @theia/core's logger-cli test writes a deliberately malformed JSON log-config
+# via the `temp` pkg (/tmp/f-*); a leftover/partial one from a prior run makes
+# the logger fail with "Error reading log config file ...: Unexpected token {{ in
+# JSON" and the suite exits 1. Removing them lets each run recreate fresh.
+rm -rf /tmp/f-* /tmp/d-* 2>/dev/null || true
 ./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 --no-bail 2>&1
 """.format(repo=self.pr.repo),
             ),
@@ -251,8 +267,14 @@ git apply --whitespace=nowarn --3way /home/test.patch /home/fix.patch
 export PUPPETEER_SKIP_DOWNLOAD=true
 export TS_NODE_TRANSPILE_ONLY=true
 export ELECTRON_SKIP_BINARY_DOWNLOAD=true
-yarn install --ignore-engines || true
+yarn install --frozen-lockfile --ignore-engines || true
 yarn compile || yarn build || true
+# Delete-on-boot: clear stale node-`temp` artifacts in /tmp before tests run.
+# @theia/core's logger-cli test writes a deliberately malformed JSON log-config
+# via the `temp` pkg (/tmp/f-*); a leftover/partial one from a prior run makes
+# the logger fail with "Error reading log config file ...: Unexpected token {{ in
+# JSON" and the suite exits 1. Removing them lets each run recreate fresh.
+rm -rf /tmp/f-* /tmp/d-* 2>/dev/null || true
 ./node_modules/.bin/lerna run --scope "@theia/!(example-)*" test --stream --concurrency=1 --no-bail 2>&1
 """.format(repo=self.pr.repo),
             ),
@@ -396,6 +418,9 @@ _BUNDLE_NUMBER_INTERVALS = [
     "5199-6100-6217-7464-7629-7989-8383-8536-8541-8689-8724-8739-8890-8921-8980-8989-9006-9012-9014-9015-9018-9021-9023-9033-9042-9047-9048-9057-9059-9060-9062-9073-9087-9089-9090-9113-9114-9119-9123-9127-9128-9130-16502",
     "2547-6846-7742-7775-10090-10164-10353-10394-10412-10416-10428-10439-10440-10459-10462-10464-10470-10478-10480-10484-10489-10490-10492-10493-10498-10500-10509-10515-10521-10530-10537-10543-10545-10547-10553-10554-10555-10557",
     "5609-5692-6867-7444-7608-7752-7899-8185-8186-8380-8620-8635-8639-8676-8681-8685-8687-8694-8696-8699-8702-8703-8714-8719-8720-8721-8725-8728-8733-8734-8741-8744-8755-8770-8784-8785",
+    "938-4367-5673-7273-7577-7745-8122-8209-8211-8354-8363-8378-8398-8413-8424-8426-8439-8451-8454-8465-8471-8475-8487-8496-8497-8500-8502-8505-8518-8558-8559",
+    "2547-6846-7742-10090-10164-10353-10394-10412-10416-10428-10439-10440-10459-10462-10464-10470-10478-10480-10484-10489-10490-10492-10493-10498-10500-10509-10515-10521-10530-10537-10543-10545-10547-10553-10554-10555-10557",
+    "5609-5692-6867-7444-7608-7752-7899-8186-8380-8620-8635-8639-8676-8681-8685-8687-8694-8696-8699-8702-8703-8714-8719-8720-8721-8725-8728-8733-8734-8741-8744-8755-8770-8784-8785",
 ]
 
 for _ni in _BUNDLE_NUMBER_INTERVALS:

@@ -62,7 +62,13 @@ def _select_toolchain(pr: PullRequest) -> tuple[str, str, str]:
     if pr.number in _gcc_latest_overrides:
         return ("gcc:latest", "latest", "gcc")
     if pr.number <= 1730:
-        return ("gcc:10", "cpp-10", "gcc")
+        # Pin the cpp-10 era to a specific, reproducible toolchain instead of
+        # the floating `gcc:10` tag. `gcc:10` is a moving tag whose Debian base
+        # (and thus glibc/binutils/cmake) drifts over time, which can break the
+        # 2020-era capnproto sources for PRs like #1069 once the upstream tag
+        # is rebuilt on a newer base. `gcc:10.5.0-bullseye` is the exact image
+        # that compiles this era cleanly (GCC 10.5.0 / Debian 11 / CMake 3.18).
+        return ("gcc:10.5.0-bullseye", "cpp-10", "gcc")
     elif pr.number <= 2409:
         return ("ubuntu:22.04", "clang-14", "clang")
     return ("gcc:latest", "latest", "gcc")
@@ -234,6 +240,13 @@ mkdir -p build
 set -e
 
 cd /home/{pr.repo}/c++/build
+# Rebuild the CMake cache against the current build-directory path. A
+# CMakeCache.txt left over from a configure at a different absolute path
+# (e.g. the tree was built at /home/ and is now used from /workspace/) pins
+# the old source/binary dirs and makes `cmake ..` abort. Removing the cache
+# forces CMake to regenerate it for wherever the build dir currently lives.
+rm -f CMakeCache.txt
+rm -rf CMakeFiles
 cmake .. {cmake_flags}
 make -j$(nproc)
 cd src && ctest --output-on-failure
@@ -249,6 +262,9 @@ if [ -s /home/test.patch ]; then
   git apply --whitespace=nowarn --reject /home/test.patch 2>/dev/null || true
 fi
 cd c++/build
+# Rebuild the CMake cache against the current path (see run.sh).
+rm -f CMakeCache.txt
+rm -rf CMakeFiles
 cmake .. {cmake_flags} || true
 make -j$(nproc) -k 2>&1 || true
 cd src && ctest --output-on-failure 2>&1 || true
@@ -268,6 +284,11 @@ if [ -s /home/fix.patch ]; then
   git apply --whitespace=nowarn --reject /home/fix.patch 2>/dev/null || true
 fi
 cd c++/build
+# Rebuild the CMake cache against the current path (see run.sh). The fix
+# patch (e.g. #1086) edits CMakeLists.txt, so a stale cache must not be
+# reused -- regenerate it so the new build rules take effect.
+rm -f CMakeCache.txt
+rm -rf CMakeFiles
 cmake .. {cmake_flags} || true
 make -j$(nproc) -k 2>&1 || true
 cd src && ctest --output-on-failure 2>&1 || true
@@ -420,3 +441,5 @@ Instance.register("capnproto", _NUMBER_INTERVAL)(Capnproto)
 # Instance.create() looks up f"{org}/{number_interval}".
 Instance.register("capnproto", "1069-1071-1072-1073-1082-1083-1088-1091")(Capnproto)  # base PR 1069
 Instance.register("capnproto", "1086-1087-1094-1096-1098-1099-1100-1102-1103-1105-1108-1110-1111-1114-1115-1117")(Capnproto)  # base PR 1086
+Instance.register("capnproto", "1069-1071-1072-1073-1079-1082-1083-1085-1088-1091")(Capnproto)  # genuine dataset, base PR 1069
+Instance.register("capnproto", "1075-1087-1089-1094-1096-1098-1099-1100-1102-1103-1105-1108-1110-1111-1114-1115-1117")(Capnproto)  # genuine dataset, base PR 1086
