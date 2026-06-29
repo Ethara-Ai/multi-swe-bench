@@ -161,6 +161,14 @@ build_radare2() {
     fi
     # Modern releases only: install r2r, then run the touched regression tests.
     make install >/tmp/install.log 2>&1 || true
+    # --- Audit dynamic library paths (RERUN_28 TIER 3B #10 fix) ---------------
+    # Make the freshly-installed radare2 shared libs (libr_*.so) + capstone
+    # (libcapstone.so) resolvable at runtime before r2r runs: register them in
+    # the linker cache and expose radare2's lib + plugin dirs on the loader path.
+    ldconfig 2>/dev/null || true
+    R2_LIBDIR="$(radare2 -H R2_LIBDIR 2>/dev/null || echo /usr/lib)"
+    export LD_LIBRARY_PATH="/usr/lib:/usr/local/lib:${R2_LIBDIR}:${LD_LIBRARY_PATH:-}"
+    # -------------------------------------------------------------------------
     run_targeted_r2r
 }
 """

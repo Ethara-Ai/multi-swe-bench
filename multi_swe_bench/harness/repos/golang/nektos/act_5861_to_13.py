@@ -45,9 +45,15 @@ class ActImageDefault(Image):
     # non-proxy infra (REPO_URL / BASE_COMMIT ARGs + image labels + plain env).
     _SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1.6"
 
+    # NOTE: GOPROXY is intentionally NOT pinned here. This ENV applies to BOTH
+    # the build (prepare.sh warms the cache and needs the real proxy) and the
+    # offline eval. GOPROXY=off is therefore set per-script: real proxy in
+    # prepare.sh, "off" in the run/test/fix eval scripts.
     _ENV_BLOCK = (
         "ENV DEBIAN_FRONTEND=noninteractive \\\n"
         "    LANG=C.UTF-8 \\\n"
+        "    GOFLAGS=-mod=mod \\\n"
+        "    GOTOOLCHAIN=local \\\n"
         "    TZ=UTC"
     )
 
@@ -128,18 +134,30 @@ class ActImageDefault(Image):
                 """#!/bin/bash
 # Repo is already cloned + checked out at ${{BASE_COMMIT}} and hardened by
 # Image.dockerfile(), so this script no longer performs any git checkout. It
-# only warms the Go module/build caches so the eval runs don't need network.
+# warms the Go module/build caches for BOTH the base AND the post-patch graph
+# so the offline eval never needs the network or `go mod tidy`.
 set -e
+
+# Build time: network IS available, so use a real proxy to warm the cache.
+export GOPROXY=https://proxy.golang.org,direct
+export GOFLAGS=-mod=mod
 
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 git reset --hard || true
 
-# Download dependencies
+# 1) Base graph
 go mod download -x 2>&1 || true
-
-# Warm build cache
 go build -buildvcs=false -mod=mod ./... 2>&1 || true
+
+# 2) Post-patch graph (network available at build time): refresh go.mod/go.sum
+#    and pull every module the test+fix build needs, then restore the base tree.
+git apply --whitespace=nowarn /home/test.patch 2>&1 || true
+git apply --whitespace=nowarn /home/fix.patch 2>&1 || true
+go mod download all 2>&1 || true
+go mod tidy 2>&1 || true
+git checkout -- . 2>&1 || true
+git clean -fd 2>&1 || true
 
 """.format(pr=self.pr),
             ),
@@ -148,6 +166,9 @@ go build -buildvcs=false -mod=mod ./... 2>&1 || true
                 "run.sh",
                 """#!/bin/bash
 set -eo pipefail
+
+# Eval is offline: force module resolution to the build-warmed cache only.
+export GOPROXY=off
 
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
@@ -167,19 +188,23 @@ go test -buildvcs=false -mod=mod -count=1 -short -timeout 300s -vet=off ./... 2>
                 """#!/bin/bash
 set -eo pipefail
 
+# Eval is offline: force module resolution to the build-warmed cache only.
+export GOPROXY=off
+
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 
-# Reset go.mod/go.sum before applying patches
-git checkout -- go.mod go.sum 2>/dev/null || rm -f go.mod go.sum
+# Reset go.mod/go.sum to the clean base before applying patches
+git checkout -- go.mod go.sum 2>/dev/null || true
 
 # Apply test patch with fallbacks
 git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.gif' --exclude='*.ico' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' /home/test.patch 2>&1 || \\
   git apply --whitespace=nowarn --reject --exclude='*.png' --exclude='*.jpg' --exclude='*.gif' --exclude='*.ico' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' /home/test.patch 2>&1 || true
 
-# Tidy modules after patch
-rm -f go.sum
-go mod tidy 2>&1 || true
+# Patches carry a complete, consistent go.mod/go.sum (verified: the new direct
+# deps are already hashed in the base go.sum). Do NOT rm go.sum + `go mod tidy`
+# here -- the eval is offline, tidy fails silently and leaves an incomplete
+# go.sum, which makes `go test` report "[build failed]".
 
 # Start Docker daemon if socket available
 if [ -e /var/run/docker.sock ]; then
@@ -196,11 +221,14 @@ go test -buildvcs=false -mod=mod -count=1 -short -timeout 300s -vet=off ./... 2>
                 """#!/bin/bash
 set -eo pipefail
 
+# Eval is offline: force module resolution to the build-warmed cache only.
+export GOPROXY=off
+
 mkdir -p /home/{pr.repo}
 cd /home/{pr.repo}
 
-# Reset go.mod/go.sum before applying patches
-git checkout -- go.mod go.sum 2>/dev/null || rm -f go.mod go.sum
+# Reset go.mod/go.sum to the clean base before applying patches
+git checkout -- go.mod go.sum 2>/dev/null || true
 
 # Apply test patch with fallbacks
 git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.gif' --exclude='*.ico' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' /home/test.patch 2>&1 || \\
@@ -210,9 +238,10 @@ git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.g
 git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.gif' --exclude='*.ico' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' /home/fix.patch 2>&1 || \\
   git apply --whitespace=nowarn --reject --exclude='*.png' --exclude='*.jpg' --exclude='*.gif' --exclude='*.ico' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' /home/fix.patch 2>&1 || true
 
-# Tidy modules after patches
-rm -f go.sum
-go mod tidy 2>&1 || true
+# Patches carry a complete, consistent go.mod/go.sum (verified: the new direct
+# deps are already hashed in the base go.sum). Do NOT rm go.sum + `go mod tidy`
+# here -- the eval is offline, tidy fails silently and leaves an incomplete
+# go.sum, which makes `go test` report "[build failed]".
 
 # Start Docker daemon if socket available
 if [ -e /var/run/docker.sock ]; then

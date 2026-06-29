@@ -236,6 +236,19 @@ def parse_gradle_log(test_log: str) -> "TestResult":
     )
 
 
+# gradle.properties baked into the image (per RERUN_28_DETAILED_REPORT.md fix for
+# halo-7239 / jadx-1464: "configure gradle in image -- daemon disabled, JVM limits
+# set"). Lives at /root/.gradle so it applies to every gradle invocation; raises
+# the heap/metaspace limits over the GRADLE_OPTS default and keeps the daemon off.
+_GRADLE_PROPERTIES = """\
+org.gradle.daemon=false
+org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8
+org.gradle.workers.max=2
+org.gradle.parallel=false
+org.gradle.configureondemand=false
+"""
+
+
 class JadxBaseImage(Image):
     """SINGLE SHARED base per JDK era (tag ``base-<jdk>``), built ONCE and reused
     as the FROM parent of every per-PR image in that era.
@@ -284,8 +297,12 @@ class JadxBaseImage(Image):
         return self.image_tag()
 
     def files(self) -> list:
-        # init.gradle lives in the shared base; per-PR images inherit it.
-        return [File(".", "init.gradle", self.INIT_GRADLE)]
+        # init.gradle + gradle.properties live in the shared base; per-PR images
+        # inherit them (gradle.properties: daemon off, raised JVM limits).
+        return [
+            File(".", "init.gradle", self.INIT_GRADLE),
+            File(".", "gradle.properties", _GRADLE_PROPERTIES),
+        ]
 
     def dockerfile(self) -> str:
         jdk = self.JDK_IMAGE
@@ -314,6 +331,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     {_BASE_APT} && rm -rf /var/lib/apt/lists/*
 
 COPY init.gradle /root/.gradle/init.gradle
+COPY gradle.properties /root/.gradle/gradle.properties
 
 RUN git clone "${{REPO_URL}}" /home/{repo}
 
