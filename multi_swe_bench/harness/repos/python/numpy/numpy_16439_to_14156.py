@@ -226,3 +226,15 @@ class NUMPY_16439_TO_14156(Instance):
                     test_status_map[test_name] = TestStatus.XFAIL.value
 
         return mapping_to_testresult(test_status_map)
+
+
+# Route the dash-joined number_interval (canonical prs_in_bundle of the record,
+# sorted, "-"-joined) to the NUMPY_16439_TO_14156 era config. Instance.create()
+# looks up f"{org}/{number_interval}"; Instance.register returns the class
+# unchanged, so it answers to every key (the "numpy_16439_to_14156" era key
+# above is kept for back-compat).
+_NUMBER_INTERVALS = [
+    "14758-14781-14851-14852-14855-14857-14858-14866-14872",
+]
+for _interval in _NUMBER_INTERVALS:
+    Instance.register("numpy", _interval)(NUMPY_16439_TO_14156)
