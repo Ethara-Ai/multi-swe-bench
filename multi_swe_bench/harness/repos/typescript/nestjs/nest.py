@@ -408,7 +408,7 @@ class Nest(Instance):
 
 # === bundle number_interval routing (prs_in_bundle dash-joined) ===
 _BUNDLE_NIS_Nest = [
-    '10527',
+    '10527-10532-10534-10535-10536-10538-10539-10543-10544-10556-10558-10573-10583-10591-10599-10605-10606',
 ]
 for _ni in _BUNDLE_NIS_Nest:
     Instance.register('nestjs', _ni)(Nest)

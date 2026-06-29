@@ -262,7 +262,10 @@ bash /home/check_git_changes.sh
 # multi-module builds exhaust the 512m default ('Java heap space'). Persists
 # into the PR image layer so run/test/fix all inherit it.
 mkdir -p /root/.gradle
-echo 'org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g' >> /root/.gradle/gradle.properties
+echo 'org.gradle.daemon=false' >> /root/.gradle/gradle.properties
+echo 'org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m' >> /root/.gradle/gradle.properties
+echo 'org.gradle.parallel=false' >> /root/.gradle/gradle.properties
+echo 'org.gradle.workers.max=2' >> /root/.gradle/gradle.properties
 
 chmod +x gradlew
 ./gradlew build -x test -x check --console=plain --no-daemon --init-script /home/init.gradle || true

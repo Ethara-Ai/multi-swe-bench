@@ -157,3 +157,18 @@ class TldrawEra1(Instance):
 
     def parse_log(self, test_log: str) -> TestResult:
         return tldraw_parse_log(test_log)
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Delivery JSONL uses dash-joined bundle number_intervals; register each as a
+# routing key -> this era's Instance class so Instance.create() resolves
+# tldraw/<number_interval>. Bundle-level (one key per delivered bundle).
+_BUNDLE_NIS = [
+    "4-223-224-225-226",
+    "152-153-155-156-157-158-159",
+    "282-287-290-292-293-298-301-302-305-306",
+    "308-310-312-313-315-316-320-323",
+    "336-343-351-353-354",
+]
+for _ni in _BUNDLE_NIS:
+    Instance.register("tldraw", _ni)(TldrawEra1)
