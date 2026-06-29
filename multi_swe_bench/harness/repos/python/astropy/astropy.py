@@ -10,7 +10,7 @@ from multi_swe_bench.harness.test_result import (
 )
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -27,20 +27,64 @@ class ImageDefault(Image):
         return "python:3.11-slim-bookworm"
 
     def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        org, repo = self.pr.org, self.pr.repo
+        if self._config.need_clone:
+            code = f'RUN git clone "https://github.com/{org}/{repo}.git" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM python:3.11-slim-bookworm
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+{self.global_env}
+
+WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates curl build-essential git gnupg make python3 sudo wget \\
+    gcc gfortran pkg-config libffi-dev \\
+    && rm -rf /var/lib/apt/lists/*
+
+{code}
+
+{self.clear_env}
+
+"""
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return ImageBase(self.pr, self._config)
+
+    def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
-
-    def extra_packages(self) -> list[str]:
-        return ["gcc", "gfortran", "pkg-config", "libffi-dev"]
-
-    def extra_setup(self) -> str:
-        return (
-            'RUN pip install --no-cache-dir "setuptools<69" "Cython>=0.29.33" "extension_helpers" "setuptools_scm" "numpy<2" jinja2\n'
-            'RUN pip install --no-cache-dir --no-build-isolation -e ".[test]" '
-            "|| (pip install --no-cache-dir --no-build-isolation -e . && pip install --no-cache-dir pytest)"
-        )
 
     def files(self) -> list[File]:
         test_files = [
@@ -60,9 +104,7 @@ class ImageDefault(Image):
 set -e
 cd /home/{repo}
 pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}
-""".format(
-                    repo=self.pr.repo, test_files=test_files_str
-                ),
+""".format(repo=self.pr.repo, test_files=test_files_str),
             ),
             File(
                 ".",
@@ -72,9 +114,7 @@ set -e
 cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch
 pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}
-""".format(
-                    repo=self.pr.repo, test_files=test_files_str
-                ),
+""".format(repo=self.pr.repo, test_files=test_files_str),
             ),
             File(
                 ".",
@@ -84,11 +124,35 @@ set -e
 cd /home/{repo}
 git apply --whitespace=nowarn /home/fix.patch
 pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}
-""".format(
-                    repo=self.pr.repo, test_files=test_files_str
-                ),
+""".format(repo=self.pr.repo, test_files=test_files_str),
             ),
         ]
+
+    def dockerfile(self) -> str:
+        base = self.dependency()
+        repo = self.pr.repo
+        copy_commands = "\n".join(f"COPY {f.name} /home/" for f in self.files())
+
+        return f"""FROM {base.image_name()}:{base.image_tag()}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
+
+{self.global_env}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
+RUN pip install --no-cache-dir "setuptools<69" "Cython>=0.29.33" "extension_helpers" "setuptools_scm" "numpy<2" jinja2
+RUN pip install --no-cache-dir --no-build-isolation -e ".[test]" || (pip install --no-cache-dir --no-build-isolation -e . && pip install --no-cache-dir pytest)
+
+{copy_commands}
+RUN chmod +x /home/*.sh
+
+{Image._HARDENING_BLOCK}
+CMD ["/bin/bash"]
+"""
 
 
 @Instance.register("astropy", "15288-16386")
@@ -105,33 +169,20 @@ class Astropy(Instance):
     def dependency(self) -> Image:
         return ImageDefault(self.pr, self._config)
 
-    def _test_files_str(self) -> str:
-        """Get space-separated .py test files from test_patch (dynamic, not baked-in)."""
-        return " ".join(
-            f for f in get_modified_files(self.pr.test_patch) if f.endswith(".py")
-        )
-
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-        test_files = self._test_files_str()
-        return f'bash -c "cd /home/{self.pr.repo} && pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}"'
+        return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-        import base64
-        test_b64 = base64.b64encode(self.pr.test_patch.encode()).decode()
-        test_files = self._test_files_str()
-        return f'bash -c "cd /home/{self.pr.repo} && echo {test_b64} | base64 -d | git apply --whitespace=nowarn && pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}"'
+        return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-        import base64
-        fix_b64 = base64.b64encode(self.pr.fix_patch.encode()).decode()
-        test_files = self._test_files_str()
-        return f'bash -c "cd /home/{self.pr.repo} && echo {fix_b64} | base64 -d | git apply --whitespace=nowarn && pytest --no-header -rA --tb=no -p no:cacheprovider {test_files}"'
+        return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
         test_status_map = {}
@@ -146,7 +197,6 @@ class Astropy(Instance):
                 test_case = line.split()
                 if len(test_case) >= 2:
                     test_status_map[test_case[1]] = test_case[0]
-            # Support older pytest versions by checking if the line ends with the test status
             elif any([line.endswith(x.value) for x in TestStatus]):
                 test_case = line.split()
                 if len(test_case) >= 2:
