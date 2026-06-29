@@ -295,3 +295,15 @@ class Fiber(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route the dash-joined number_interval (canonical prs_in_bundle from the
+# record's resolved_issues + own PR number, sorted, "-"-joined) of the v2-era
+# bundle to the Fiber config. Instance.create() looks up
+# f"{org}/{number_interval}"; Instance.register returns the class unchanged, so
+# it answers to every key (the "fiber" repo/era key above is kept for back-compat).
+_NUMBER_INTERVALS = [
+    "933-935-936-945-947-948-949-950",
+]
+for _interval in _NUMBER_INTERVALS:
+    Instance.register("gofiber", _interval)(Fiber)
