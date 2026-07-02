@@ -393,7 +393,7 @@ class Crush(Instance):
 # changed), mirroring the radareorg/radare2 precedent:
 #
 #   1. PullRequest.from_json -- for charmbracelet/crush records whose
-#      number_interval is empty, fill it as "-<p1>-<p2>-...-<pn>" (leading dash,
+#      number_interval is empty, fill it as "<p1>-<p2>-...-<pn>" (dash-joined,
 #      the EXACT PRs in the bundle, ascending). Source order:
 #        a. the raw line's `prs_in_bundle` list, if present (idiom-faithful), else
 #        b. derived from base.label ("vLo..vHi") via `git log vLo..vHi` in a local
@@ -419,9 +419,9 @@ _crush_interval_cache: dict = {}
 
 
 def _crush_join_prs(prs) -> str:
-    """`[146, 150, 147]` -> `-146-147-150` (leading dash, ascending, unique)."""
+    """`[146, 150, 147]` -> `146-147-150` (dash-joined, ascending, unique)."""
     nums = sorted({int(p) for p in prs})
-    return "-" + "-".join(str(n) for n in nums) if nums else ""
+    return "-".join(str(n) for n in nums) if nums else ""
 
 
 def _crush_find_repo_dir() -> str:
@@ -447,7 +447,7 @@ def _crush_find_repo_dir() -> str:
 
 
 def _crush_prs_from_tag_range(label: str) -> str:
-    """Derive `-p1-p2-...` from a `vLo..vHi` release-tag range via git log."""
+    """Derive `p1-p2-...` from a `vLo..vHi` release-tag range via git log."""
     if not label or ".." not in label:
         return ""
     if label in _crush_interval_cache:
