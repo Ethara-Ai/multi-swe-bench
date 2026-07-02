@@ -154,14 +154,11 @@ cargo test 2>&1
     def dockerfile(self) -> str:
         base = self.dependency().image_full_name()
         copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
-        # Enhancer is skipped (dependency is an Image), so REPO_URL / BASE_COMMIT
-        # ARGs are declared here (BASE_COMMIT value passed as --build-arg by
-        # build_dataset.py). git is inherited from the ':base' image.
-        # Explicit _HARDENING_BLOCK runs per-PR after the BASE_COMMIT checkout.
         return f"""FROM {base}
 
 ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
-ARG BASE_COMMIT
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 WORKDIR /home/
 
@@ -174,6 +171,7 @@ RUN git checkout ${{BASE_COMMIT}}
 RUN cargo build || true
 
 {copy_commands}
+RUN git for-each-ref --format='%(refname)' refs/pull | xargs -r -n1 git update-ref -d 2>/dev/null || true
 {self._HARDENING_BLOCK}
 CMD ["/bin/bash"]
 """
