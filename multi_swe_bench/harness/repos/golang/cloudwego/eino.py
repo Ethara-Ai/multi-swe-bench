@@ -300,3 +300,74 @@ class Eino(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route the dash-joined ``number_interval`` (canonical prs_in_bundle: each
+# record's resolved_issues + own PR number, sorted, "-"-joined) of the eino
+# LHT dataset to the Eino config. Instance.create() looks up
+# f"{org}/{number_interval}" when number_interval is non-empty, so every
+# interval string must be registered against this class; Instance.register
+# returns the class unchanged, so it answers to the base "eino" key above and
+# to every interval below. Sourced from cloudwego__eino_dataset.cleaned.jsonl.
+_NUMBER_INTERVALS = [
+    "956-990-1000",
+    "912-936-941",
+    "905-919-924",
+    "902-946-958",
+    "898-904-906",
+    "854-855",
+    "847-856-879-886",
+    "748-760",
+    "694-695",
+    "688-719-724-726",
+    "682-686",
+    "672-691",
+    "655-659",
+    "646-649",
+    "643-650",
+    "602-634-657-667-668-673-687",
+    "585-587",
+    "584-599",
+    "560-608-609-611",
+    "548-552-553-555-557-558-559-563",
+    "533-540",
+    "525-620-642",
+    "519-828-901-908-917-918",
+    "512-539",
+    "508-516",
+    "496-498-503",
+    "449-450",
+    "435-436-438",
+    "425-457-463-464-466-468-469-470-472-473-475",
+    "401-402-411",
+    "285-287-288-292",
+    "270-276-277",
+    "269-403-406-407-408-409",
+    "262-417-441-446",
+    "242-251-252-253-257",
+    "234-235-236",
+    "214-218",
+    "207-209-213",
+    "187-332-341",
+    "181-183-190-195-199",
+    "167-169",
+    "157-164",
+    "156-160-162-163",
+    "144-145-146-147",
+    "138-151-153",
+    "137-165-175-176",
+    "111-114-116-125-126-131-139-140-141",
+    "97-115-117-122-123",
+    "96-101-106",
+    "86-90-95-102-103",
+    "71-72",
+    "62-66-67",
+    "56-57",
+    "29-37-40-42-44-45-46-47-48-49-50-51",
+    "28-30-32-33-34-35-36-38-39",
+    "25-26",
+    "14-15-16-17-18-19-20-21-24",
+]
+
+for _ni in _NUMBER_INTERVALS:
+    Instance.register("cloudwego", _ni)(Eino)
