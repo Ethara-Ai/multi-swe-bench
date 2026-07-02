@@ -70,6 +70,7 @@ CMD ["/bin/bash"]
 
 
 _HARDENING_BLOCK = r"""RUN set -eux; \
+    git for-each-ref --format='%(refname)' refs/pull | xargs -r -n1 git update-ref -d 2>/dev/null || true; \
     git checkout --detach "${BASE_COMMIT}"; \
     git remote remove origin 2>/dev/null || true; \
     git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \
@@ -114,7 +115,7 @@ class SeaweedfsImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Image:
         return SeaweedfsImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
@@ -223,6 +224,7 @@ go test -v -count=1 ./...
         return f"""FROM {name}:{tag}
 
 ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {copy_commands}
 
@@ -235,8 +237,9 @@ WORKDIR /home/{self.pr.repo}
 """
 
 
-@Instance.register("seaweedfs", "6715-7277")
-class Seaweedfs(Instance):
+class SeaweedfsInstance(Instance):
+    """Shared base for all seaweedfs era registrations."""
+
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -252,19 +255,16 @@ class Seaweedfs(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
@@ -308,3 +308,23 @@ class Seaweedfs(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+@Instance.register("seaweedfs", "6715-7277")
+class Seaweedfs67157277(SeaweedfsInstance):
+    pass
+
+
+@Instance.register("seaweedfs", "1255")
+class Seaweedfs1255(SeaweedfsInstance):
+    pass
+
+
+@Instance.register("seaweedfs", "3748")
+class Seaweedfs3748(SeaweedfsInstance):
+    pass
+
+
+@Instance.register("seaweedfs", "4447")
+class Seaweedfs4447(SeaweedfsInstance):
+    pass
