@@ -432,40 +432,39 @@ class WxJava(Instance):
         )
 
 
-# Route the per-PR number_interval to the WxJava config. This is a per-PR
-# (non-release-bundled) dataset, so each instances bundle is a single PR and its
-# canonical number_interval is just that PR number (the degenerate prs_in_bundle
-# case, e.g. "145"). Instance.create() looks up f"{org}/{number_interval}" when
-# number_interval is set; Instance.register returns the class unchanged, so WxJava
-# answers to every key (the repo-level "WxJava" key above is kept as the
-# back-compat fallback used when number_interval is empty).
-_BUNDLE_NUMBER_INTERVALS = [
-    "145",
-    "171",
-    "216",
-    "266",
-    "394",
-    "519",
-    "776",
-    "900",
-    "1052",
-    "1172",
-    "1899",
-    "2142",
-    "2372",
-    "2587",
-    "2787",
-    "3200",
-    "3467",
-    "3533",
-    "3609",
-    "3642",
-    "3649",
-    "3654",
-    "3824",
-    "3854",
-    "3935",
-]
+# ---------------------------------------------------------------------------
+# Value-agnostic routing shim -- REGISTRY-SCOPED (this file only).
+#
+# This WxJava dataset is release-tag-range bundled: each instance's
+# number_interval is the FULL set of PRs merged in the "vLo..vHi" window
+# (e.g. "3935-3938-...-3996"), not a single PR number. Instance.create() looks
+# up f"{org}/{number_interval}" when number_interval is set, and those exact
+# multi-PR bundle keys are not registered (only the single-PR keys and the
+# repo-level "binarywang/WxJava" key above are). Enumerating every bundle
+# string would be brittle, so -- mirroring charmbracelet/crush -- we install a
+# small, idempotent, binarywang/WxJava-scoped fallback on Instance.create:
+# if the interval-based lookup misses, route to "binarywang/WxJava" regardless
+# of the number_interval value. Other repos are unaffected (the fallback only
+# fires for binarywang/WxJava, and only after the normal lookup raised).
+# ---------------------------------------------------------------------------
+_WXJAVA_ORG = "binarywang"
+_WXJAVA_REPO = "WxJava"
 
-for _ni in _BUNDLE_NUMBER_INTERVALS:
-    Instance.register("binarywang", _ni)(WxJava)
+if not getattr(Instance, "_wxjava_route_shim", False):
+    _wxjava_orig_create = Instance.create.__func__
+
+    def _wxjava_create(cls, pr, config, *args, **kwargs):
+        try:
+            return _wxjava_orig_create(cls, pr, config, *args, **kwargs)
+        except ValueError:
+            if (
+                getattr(pr, "org", "") == _WXJAVA_ORG
+                and getattr(pr, "repo", "") == _WXJAVA_REPO
+            ):
+                name = f"{pr.org}/{pr.repo}"
+                if name in cls._registry:
+                    return cls._registry[name](pr, config, *args, **kwargs)
+            raise
+
+    Instance.create = classmethod(_wxjava_create)
+    Instance._wxjava_route_shim = True
