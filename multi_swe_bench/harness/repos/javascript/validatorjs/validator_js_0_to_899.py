@@ -4,6 +4,9 @@ from typing import Optional
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.javascript.validatorjs.validator_js import (
+    ValidatorJsImageBase,
+)
 
 
 class ImageDefault(Image):
@@ -19,14 +22,13 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        # Single-level per-PR base. Returning a *string* (not a chained Image)
-        # keeps the pipeline's DockerfileEnhancer engaged so it still prepends
-        # the # syntax + ARG REPO_URL/BASE_COMMIT + ENV/label infra. The
-        # self-contained dockerfile() below embeds the clone/checkout and the
-        # verbatim Image._HARDENING_BLOCK, so the fix can't be read out of git
-        # history. Each PR builds its own image -- no shared base to pin+strip.
-        return "node:20-bookworm"
+    def dependency(self) -> Image:
+        # Level 2: per-PR image FROM the shared ValidatorJsImageBase toolchain.
+        # dependency() is an *Image* (not a string), so the DockerfileEnhancer
+        # returns dockerfile() verbatim -- the clone/checkout + verbatim
+        # Image._HARDENING_BLOCK below are kept exactly as written (and pinning
+        # BASE_COMMIT here is correct: it is per-PR, not the shared base).
+        return ValidatorJsImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -35,56 +37,48 @@ class ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def dockerfile(self) -> str:
-        # Self-contained single-level Dockerfile mirroring the canonical
-        # image.py template (see CrossplaneImageDefault). dependency() stays a
-        # string, so DockerfileEnhancer still engages and prepends the infra
-        # block; its repo-fetch standardiser skips "${REPO_URL}" clones, so the
-        # clone/checkout + verbatim Image._HARDENING_BLOCK below survive intact.
-        # prepare.sh installs node_modules + builds (network is available at
-        # build time, before the hardening strip); node_modules is untracked so
-        # the history rewrite leaves it in place for the offline eval runs.
-        image_name = self.dependency()
+        # Two-level per-PR Dockerfile (mirrors FastfetchImageDefault). The shared
+        # toolchain base does NOT clone, so this image clones full history then
+        # checks out ${BASE_COMMIT} inline. Because dependency() is an Image, the
+        # DockerfileEnhancer returns this Dockerfile verbatim -- the clone +
+        # hardening below are kept as written. Image._HARDENING_BLOCK is
+        # concatenated raw (not via the f-string) so its ${BASE_COMMIT} /
+        # %(refname) tokens stay literal. prepare.sh installs node_modules +
+        # builds (network is available at build time, before the hardening
+        # strip); node_modules is untracked so the history rewrite leaves it in
+        # place for the offline eval runs.
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/{file.name}\n"
 
-        return f"""FROM {image_name}
+        header = f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    ca-certificates \\
-    curl \\
-    build-essential \\
-    git \\
-    gnupg \\
-    make \\
-    python3 \\
-    sudo \\
-    wget \\
-    && rm -rf /var/lib/apt/lists/*
-
-RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
 WORKDIR /home/{self.pr.repo}
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
 {copy_commands}
 RUN bash /home/prepare.sh
 
-{Image._HARDENING_BLOCK}
+"""
 
+        tail = f"""
 {self.clear_env}
 
 CMD ["/bin/bash"]
 """
+        return header + Image._HARDENING_BLOCK + tail
 
     def files(self) -> list[File]:
         return [
