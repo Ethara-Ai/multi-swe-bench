@@ -1,44 +1,9 @@
-import json as _json
 import re
 from typing import Optional
 
-from multi_swe_bench.harness import pull_request as _pull_request
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-
-
-# --- number_interval auto-fill (kept ENTIRELY inside this registry) ----------
-# build_dataset/gen_report leave number_interval empty because the raw bundle
-# list (prs_in_bundle) is not a PullRequest field, and gen_report reloads PRs
-# independently of the Instance/Image classes — so it cannot be set from them.
-# To keep the change scoped to the rich registry (no edits to pull_request.py /
-# gen_report.py), we wrap PullRequest.from_json HERE, at registry import time,
-# and derive number_interval = dash-joined prs_in_bundle (e.g. [146,147,150] ->
-# "146-147-150", NOT a range) for Textualize/rich records only. gen_report's
-# raw-dataset loader uses from_json, so the generated dataset jsonl carries
-# number_interval automatically on every build.
-if not getattr(_pull_request.PullRequest, "_rich_number_interval_patched", False):
-    _rich_orig_from_json = _pull_request.PullRequest.from_json.__func__
-
-    def _rich_from_json(cls, json_str):
-        pr = _rich_orig_from_json(cls, json_str)
-        try:
-            raw = _json.loads(json_str)
-            if (
-                raw.get("org") == "Textualize"
-                and raw.get("repo") == "rich"
-                and not getattr(pr, "number_interval", "")
-                and raw.get("prs_in_bundle")
-            ):
-                pr.number_interval = "-".join(str(p) for p in raw["prs_in_bundle"])
-        except Exception:
-            pass
-        return pr
-
-    _pull_request.PullRequest.from_json = classmethod(_rich_from_json)
-    _pull_request.PullRequest._rich_number_interval_patched = True
-# -----------------------------------------------------------------------------
 
 
 # Textualize/rich — a Python library for rich text & formatting in the terminal.

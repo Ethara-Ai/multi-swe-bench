@@ -596,3 +596,85 @@ class Wasmtime(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# ---------------------------------------------------------------------------
+# number_interval derivation from `prs_in_bundle`
+# ---------------------------------------------------------------------------
+# The raw bundle records carry `prs_in_bundle` (e.g. [146, 147, 150, 155, 157])
+# but leave `number_interval` unset.  The required output form is the EXPLICIT
+# dash-joined member list ("146-147-150-155-157") — NOT a range like "146-157",
+# which would wrongly imply every PR in between is part of the bundle.
+#
+# `PullRequest.from_json` drops unknown fields, so `prs_in_bundle` never reaches
+# the harness and the emitted dataset's `number_interval` comes out empty.  We
+# fix this in the registry (no edits to the shared harness core) with two
+# narrowly-scoped, idempotent monkeypatches:
+#
+#   1. Wrap PullRequest.from_json to STASH the raw `prs_in_bundle` list onto the
+#      parsed PR as a plain attribute `_prs_in_bundle`.  We deliberately do NOT
+#      set `number_interval` here: Instance.create() routes on
+#      `f"{org}/{number_interval}"` and raises if that key is unregistered, so a
+#      populated number_interval at parse/route time would break every build.
+#
+#   2. Wrap Dataset.build (the single output-serialization point, invoked in
+#      gen_report AFTER all routing is finished) to fill in
+#      `number_interval = "-".join(prs_in_bundle)` from that stash whenever the
+#      record's number_interval is still empty.  Routing never sees it; only the
+#      emitted *_dataset.jsonl record does.
+#
+# Guarded with a sentinel so importing the registry twice patches only once.
+import json as _json
+
+from multi_swe_bench.harness.dataset import Dataset as _Dataset
+
+
+def _number_interval_from_bundle(bundle) -> str:
+    # Explicit member list in original bundle order; dash-joined, de-duplicated
+    # while preserving order.  Range collapsing is intentionally avoided.
+    seen = set()
+    members = []
+    for n in bundle:
+        if n not in seen:
+            seen.add(n)
+            members.append(str(n))
+    return "-".join(members)
+
+
+# NOTE: sentinels are checked against each class's OWN __dict__ (not getattr,
+# which would see inherited attrs — Dataset subclasses PullRequest and would
+# otherwise inherit the from_json sentinel and skip its own patch).
+if "_wasmtime_from_json_patch" not in PullRequest.__dict__:
+    _orig_pr_from_json = PullRequest.from_json.__func__
+
+    @classmethod
+    def _pr_from_json_with_bundle(cls, json_str):
+        pr = _orig_pr_from_json(cls, json_str)
+        try:
+            raw = _json.loads(json_str)
+            bundle = raw.get("prs_in_bundle")
+            if bundle:
+                # stash only; number_interval stays "" so routing is unaffected
+                pr._prs_in_bundle = list(bundle)
+        except Exception:
+            pass
+        return pr
+
+    PullRequest.from_json = _pr_from_json_with_bundle
+    PullRequest._wasmtime_from_json_patch = True
+
+
+if "_wasmtime_build_patch" not in _Dataset.__dict__:
+    _orig_dataset_build = _Dataset.build.__func__
+
+    @classmethod
+    def _dataset_build_with_interval(cls, pr, report):
+        ds = _orig_dataset_build(cls, pr, report)
+        if not getattr(ds, "number_interval", ""):
+            bundle = getattr(pr, "_prs_in_bundle", None)
+            if bundle:
+                ds.number_interval = _number_interval_from_bundle(bundle)
+        return ds
+
+    _Dataset.build = _dataset_build_with_interval
+    _Dataset._wasmtime_build_patch = True

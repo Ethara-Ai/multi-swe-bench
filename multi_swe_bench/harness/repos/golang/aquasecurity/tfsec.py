@@ -7,6 +7,73 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 _REPO_PREFIX = "github.com/aquasecurity/tfsec/"
 
+# ---------------------------------------------------------------------------
+# Emit `number_interval` on the OUTPUT (resolved jsonl) rows for aquasecurity/tfsec.
+#
+# Each instance is a release-delta BUNDLE. The raw record carries
+# `prs_in_bundle` (e.g. [1005, 1006, 1009]) but an EMPTY `number_interval`.
+# The required output format is the dash-JOINED bundle list ("1005-1006-1009") —
+# NOT a "146-157" range, which would wrongly imply every PR in between.
+#
+# Two constraints force the approach below:
+#   * `prs_in_bundle` is NOT a PullRequest field, so the dataclass-json schema
+#     loader DROPS it — the registry classes never see it.
+#   * Setting `pr.number_interval` during load would change the ROUTING key
+#     (instance.py: name becomes "aquasecurity/1005-1006-1009"), which is not
+#     registered → instance creation fails.
+#
+# So, following the ytdl-org/youtube-dl convention, we do two import-time
+# monkeypatches SCOPED TO THIS REGISTRY (no edits to harness source):
+#   1. PullRequest.from_json — re-read the raw json and stash the dash-joined
+#      value in a NON-field attr `_tfsec_number_interval` (routing key stays "").
+#   2. Dataset.build — stamp `ds.number_interval` from that stash onto the
+#      OUTPUT row only. gen_report builds every resolved-jsonl row via
+#      Dataset.build(raw_dataset[id], report), so the output then carries it.
+import multi_swe_bench.harness.pull_request as _pull_request
+
+if not getattr(_pull_request.PullRequest, "_tfsec_number_interval_patched", False):
+    _tfsec_orig_from_json = _pull_request.PullRequest.from_json.__func__
+
+    def _tfsec_from_json(cls, json_str):
+        pr = _tfsec_orig_from_json(cls, json_str)
+        try:
+            raw = _json.loads(json_str)
+            if (
+                raw.get("org") == "aquasecurity"
+                and raw.get("repo") == "tfsec"
+                and raw.get("prs_in_bundle")
+            ):
+                # Stash only — do NOT set pr.number_interval (the routing key).
+                pr._tfsec_number_interval = "-".join(
+                    str(p) for p in raw["prs_in_bundle"]
+                )
+        except Exception:
+            pass
+        return pr
+
+    _pull_request.PullRequest.from_json = classmethod(_tfsec_from_json)
+    _pull_request.PullRequest._tfsec_number_interval_patched = True
+
+    # Stamp number_interval onto the OUTPUT row only.
+    # NOTE: Dataset subclasses PullRequest, so it INHERITS the flag set above;
+    # use a distinct flag and check the class's OWN __dict__ (not getattr, which
+    # would see the inherited PullRequest flag and wrongly skip this patch).
+    from multi_swe_bench.harness.dataset import Dataset as _Dataset
+
+    if not _Dataset.__dict__.get("_tfsec_build_patched", False):
+        _tfsec_orig_build = _Dataset.build.__func__
+
+        def _tfsec_build(cls, pr, report):
+            ds = _tfsec_orig_build(cls, pr, report)
+            ni = getattr(pr, "_tfsec_number_interval", "")
+            if ni:
+                ds.number_interval = ni
+            return ds
+
+        _Dataset.build = classmethod(_tfsec_build)
+        _Dataset._tfsec_build_patched = True
+# ---------------------------------------------------------------------------
+
 
 def parse_go_test_log(log: str) -> TestResult:
     """Parse `go test -json` output. Test names are kept package-qualified
