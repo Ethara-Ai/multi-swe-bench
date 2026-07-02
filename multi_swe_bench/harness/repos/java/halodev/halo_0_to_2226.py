@@ -102,11 +102,18 @@ class Halo0To2226ImageBase(Image):
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
-# DEBIAN_FRONTEND and LANG are injected by DockerfileEnhancer; only LC_ALL
-# needs setting here.
-ENV LC_ALL=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive \\
+    TZ=UTC \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
