@@ -1,38 +1,27 @@
-"""mswjs/msw registry.
+"""mswjs/msw registry — two-level build with explicit hardening.
 
-Conformant with image.py's hardening model: every PR image's dependency()
-returns a base-image *string* (node:18 / node:20), so the shared
-Image.dockerfile() owns the build:
+Base images (ImageBaseNode18/22/20) install the toolchain (node + APT packages +
+corepack).  Per-PR images (ImageDefault) depend on the appropriate base, then
+clone the repo, check out the base commit, run prepare.sh, and apply the
+hardening block with the commit hash hardcoded directly in the generated
+Dockerfile.
 
-    git clone "${REPO_URL}"  ->  git checkout "${BASE_COMMIT}"
-        ->  extra_setup()  ->  _HARDENING_BLOCK
+Because ImageDefault.dependency() returns an Image (not a str), DockerfileEnhancer
+bails and does NOT inject infra ARGs or hardening.  Both are handled manually:
+  - dockerfile() writes "# syntax=docker/dockerfile:1.6" as the first line,
+    which also prevents DockerfileEnhancer from running.
+  - Image._HARDENING_BLOCK is embedded with ${BASE_COMMIT} substituted inline.
 
-and DockerfileEnhancer injects the proxy/cert infra ARGs and the final
-sanitize pass. The _HARDENING_BLOCK detaches HEAD at ${BASE_COMMIT}, removes
-the origin remote, deletes every other ref (heads/remotes/tags/replace),
-expires the reflog and gc-prunes, then asserts the repo contains *only* the
-base commit's history -- so the PR's fix can no longer be read out of git
-history / fetched from origin (reward-hacking prevention).
-
-The previous version chained ImageBase18/ImageBase20 Image objects and
-overrode dockerfile() on every PR image. Because dependency() returned an
-Image (not a str), DockerfileEnhancer.enhance() bailed out early: no
-hardening, no infra, and BASE_COMMIT/REPO_URL build-args were never passed
-(build_dataset.py only sets them when dependency() is a str). The clone kept
-its origin remote and full history, leaving the fix reachable.
-
-# ---------------------------------------------------------------------------
-# Era boundaries (by PR number)
-#
-# Group 1: PRs  ..#607    -- yarn + jest --runInBand      (node:18)
-# Group 2: PRs #608-#1375 -- yarn + jest --maxWorkers=3   (node:18)
-# Group 3: PRs #1376-#1436 -- pnpm + jest --maxWorkers=3  (node:18)
-# Group 4: PRs #1437-#2578 -- pnpm + vitest run           (node:18)
-# Group 5: PRs #2579+      -- pnpm + vitest run           (node:20)
-# ---------------------------------------------------------------------------
+Era boundaries (by PR number)
+  Group 1: PRs  ≤607      -- yarn + jest --runInBand     (node:18) → ImageBaseNode18
+  Group 2: PRs 608-1375   -- yarn + jest --maxWorkers=3  (node:18) → ImageBaseNode18
+  Group 3: PRs 1376-1436  -- pnpm + jest --maxWorkers=3  (node:22) → ImageBaseNode22
+  Group 4: PRs 1437-2578  -- pnpm + vitest run           (node:18) → ImageBaseNode18
+  Group 5: PRs 2579+      -- pnpm + vitest run           (node:20) → ImageBaseNode20
 """
 
 import re
+from types import SimpleNamespace
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -40,11 +29,10 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-# --- shared script fragments ----------------------------------------------
+# ---------------------------------------------------------------------------
+# Shared script fragments
+# ---------------------------------------------------------------------------
 
-# Type-declaration (*.test-d.ts) check for the jest --runInBand era (group 1),
-# emitted after the test run with `set +e` so a tsc failure is reported as a
-# per-file PASS/FAIL line rather than aborting the script.
 _TESTD_TSC_BLOCK = """
 set +e
 
@@ -61,8 +49,6 @@ if [ -n "$TEST_D_FILES" ]; then
 fi
 """
 
-# Vitest-era (groups 4/5) extra passes: an optional node-environment vitest
-# config and the package.json `test:ts` type-declaration check.
 _VITEST_EXTRA_BLOCK = """
 set +e
 
@@ -92,22 +78,123 @@ def _group_for(number: int) -> int:
     if number <= 607:
         return 1  # yarn + jest --runInBand     (node:18)
     elif number <= 1375:
-        return 2  # yarn + jest --maxWorkers=3   (node:18)
+        return 2  # yarn + jest --maxWorkers=3  (node:18)
     elif number <= 1436:
-        return 3  # pnpm + jest --maxWorkers=3   (node:18)
+        return 3  # pnpm + jest --maxWorkers=3  (node:22)
     elif number <= 2578:
-        return 4  # pnpm + vitest run            (node:18)
+        return 4  # pnpm + vitest run           (node:18)
     else:
-        return 5  # pnpm + vitest run            (node:20)
+        return 5  # pnpm + vitest run           (node:20)
 
+
+# ---------------------------------------------------------------------------
+# Base image classes
+# ---------------------------------------------------------------------------
+
+def _base_proxy_pr():
+    """Minimal PR-like object for base images.
+
+    build_dataset.py accesses image.pr.org, image.pr.repo, and image.pr.base.sha
+    unconditionally when dependency() returns a str.  Base images declare ARG
+    REPO_URL / ARG BASE_COMMIT in their Dockerfile but never use them, so
+    passing these dummy values as build-args is harmless.
+    """
+    base = SimpleNamespace(sha="")
+    return SimpleNamespace(org="mswjs", repo="msw", base=base)
+
+
+_BASE_DOCKERFILE_TEMPLATE = """\
+# syntax=docker/dockerfile:1.6
+
+FROM {node_version}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/mswjs/msw.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="mswjs/msw" \\
+      org.opencontainers.image.description="mswjs/msw Docker image" \\
+      org.opencontainers.image.source="https://github.com/mswjs/msw" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates curl build-essential git gnupg make python3 sudo wget \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable
+
+CMD ["/bin/bash"]
+"""
+
+
+class _ImageBase(Image):
+    """Abstract toolchain base image.  Concrete subclasses set _node_version/_tag."""
+
+    _node_version: str
+    _tag: str
+
+    def __init__(self, config: Config):
+        self._config = config
+        self._pr_proxy = _base_proxy_pr()
+
+    @property
+    def pr(self):
+        return self._pr_proxy
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        return self._node_version
+
+    def image_name(self) -> str:
+        return "mswebench/mswjs_m_msw"
+
+    def image_tag(self) -> str:
+        return self._tag
+
+    def workdir(self) -> str:
+        return self._tag
+
+    def files(self):
+        return []
+
+    def dockerfile(self) -> str:
+        return _BASE_DOCKERFILE_TEMPLATE.format(node_version=self._node_version)
+
+
+class ImageBaseNode18(_ImageBase):
+    _node_version = "node:18"
+    _tag = "base-node18"
+
+
+class ImageBaseNode22(_ImageBase):
+    _node_version = "node:22"
+    _tag = "base-node22"
+
+
+class ImageBaseNode20(_ImageBase):
+    _node_version = "node:20"
+    _tag = "base-node20"
+
+
+# ---------------------------------------------------------------------------
+# Per-PR image
+# ---------------------------------------------------------------------------
 
 class ImageDefault(Image):
-    """Single PR-image type, parametrized by era (PR number).
+    """Per-PR image built on top of the appropriate toolchain base.
 
-    dependency() returns a base-image *string*, so the shared, hardened
-    Image.dockerfile() builds the image and DockerfileEnhancer injects infra
-    + the final git-history sanitize. dockerfile() is intentionally NOT
-    overridden here.
+    dependency() returns an Image, so DockerfileEnhancer bails.
+    dockerfile() is overridden to include the full build sequence with
+    hardening applied using the PR's base commit hash.
     """
 
     def __init__(self, pr: PullRequest, config: Config):
@@ -122,17 +209,15 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    # --- era helpers -------------------------------------------------------
-
     def _group(self) -> int:
         return _group_for(self.pr.number)
 
-    def dependency(self) -> Union[str, "Image"]:
-        # Era 3 needs node:22 (node:sqlite built-in used in tests).
-        # Era 5 needs node:20+. Everything else on node:18.
+    def dependency(self) -> Image:
         if self._group() == 3:
-            return "node:22"
-        return "node:20" if self._group() == 5 else "node:18"
+            return ImageBaseNode22(self._config)
+        if self._group() == 5:
+            return ImageBaseNode20(self._config)
+        return ImageBaseNode18(self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -140,14 +225,12 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    # --- era helpers -------------------------------------------------------
+
     def _pm_setup(self) -> str:
-        """corepack / package-manager activation, run inside prepare.sh."""
         if self._group() <= 2:
-            # yarn classic eras
             return "corepack enable\ncorepack prepare yarn@1.22.22 --activate"
         if self._group() == 3:
-            # pnpm 11 (ships with node:22 corepack) blocks postinstall scripts;
-            # pin to pnpm 9.x which has no approve-builds restriction.
             return "corepack enable\ncorepack prepare pnpm@9.15.4 --activate"
         return "corepack enable"
 
@@ -157,13 +240,11 @@ class ImageDefault(Image):
         return "pnpm install --no-frozen-lockfile || true"
 
     def _reinstall_cmd(self) -> str:
-        # After applying a patch the lockfile may need to give; never frozen.
         if self._group() <= 2:
             return "yarn install || true"
         return "pnpm install --no-frozen-lockfile || true"
 
     def _build_cmd(self) -> str:
-        # vitest eras build before running tests.
         return "pnpm build || true" if self._group() >= 4 else ""
 
     def _runner_block(self) -> str:
@@ -180,11 +261,6 @@ class ImageDefault(Image):
     # --- dockerfile glue ---------------------------------------------------
 
     def extra_setup(self) -> str:
-        # Runs after `git checkout ${BASE_COMMIT}` and before _HARDENING_BLOCK.
-        # Stage patches + eval scripts into /home/ and run prepare.sh, which
-        # installs deps (+ builds) so the eval scripts run offline. Installed
-        # node_modules is untracked, so the hardening pass (which only rewrites
-        # git history) leaves it intact.
         return (
             "COPY fix.patch /home/fix.patch\n"
             "COPY test.patch /home/test.patch\n"
@@ -195,6 +271,38 @@ class ImageDefault(Image):
             "RUN bash /home/prepare.sh"
         )
 
+    def dockerfile(self) -> str:
+        repo = self.pr.repo
+        org = self.pr.org
+        commit = self.pr.base.sha
+        base_full = self.dependency().image_full_name()
+
+        # Substitute the hardcoded commit hash into the hardening block so that
+        # ARG BASE_COMMIT is not needed (build_dataset.py does not pass it when
+        # dependency() returns an Image).
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", commit)
+
+        extra = self.extra_setup()
+
+        return "\n".join([
+            "# syntax=docker/dockerfile:1.6",
+            "",
+            f"FROM {base_full}",
+            "",
+            f'RUN git clone "https://github.com/{org}/{repo}.git" /home/{repo}',
+            "",
+            f"WORKDIR /home/{repo}",
+            "",
+            "RUN git reset --hard",
+            f"RUN git checkout {commit}",
+            "",
+            extra,
+            "",
+            hardening,
+            'CMD ["/bin/bash"]',
+            "",
+        ])
+
     def files(self) -> list[File]:
         repo = self.pr.repo
         pm_setup = self._pm_setup()
@@ -203,10 +311,6 @@ class ImageDefault(Image):
         build_cmd = self._build_cmd()
         runner_block = self._runner_block()
 
-        # prepare.sh: repo is ALREADY cloned + checked out at ${BASE_COMMIT}
-        # and (about to be) hardened by Image.dockerfile(); so no git
-        # fetch/checkout here -- just activate the package manager, install
-        # dependencies, and build.
         build_line = f"{build_cmd}\n" if build_cmd else ""
         prepare = (
             "#!/bin/bash\n"
@@ -372,9 +476,7 @@ class Msw(Instance):
 
 
 # ---------------------------------------------------------------------------
-# Bundle-level era registrations (number_interval = dash-joined prs_in_bundle)
-# Each resolved PR's bundle from the LHT dataset is registered here so the
-# harness can route by the canonical number_interval format.
+# Bundle-level era registrations
 # ---------------------------------------------------------------------------
 _BUNDLE_INTERVALS = [
     "121-124",

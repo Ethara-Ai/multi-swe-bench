@@ -188,6 +188,39 @@ if [ "$RAN" = 0 ]; then echo "NO_TEST_DIRS"; exit 0; fi
         ]
 
 
+@Instance.register("Wei-Shaw", "10-36-66-92-110-166-178-208-216-221-236-278-300-316-332-489-513-519-543-561-621-670-724-761-872-944-986-1010-1036-1047-1162-1262-1382-1391-1460-1575-1731-1850-1948-2247")
+class SUB2API_PERPR40(Instance):
+    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
+        super().__init__()
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    def dependency(self) -> Optional[Image]:
+        return Sub2apiImageDefault(self.pr, self._config)
+
+    def run(self, run_cmd: str = "") -> str:
+        if run_cmd:
+            return run_cmd
+        return "bash /home/run.sh"
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+        if test_patch_run_cmd:
+            return test_patch_run_cmd
+        return "bash /home/test-run.sh"
+
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+        if fix_patch_run_cmd:
+            return fix_patch_run_cmd
+        return "bash /home/fix-run.sh"
+
+    def parse_log(self, log: str) -> TestResult:
+        return parse_go_test_log(log)
+
+
 @Instance.register("Wei-Shaw", "213-550-579-621-1382-2116")
 class SUB2API(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
