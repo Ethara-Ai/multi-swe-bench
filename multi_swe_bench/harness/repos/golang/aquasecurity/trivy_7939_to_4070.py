@@ -321,7 +321,7 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("aquasecurity", "trivy_7939_to_4070")
+@Instance.register("aquasecurity", "4457-4691-4731-4863-4872-5154-5633-5923-6025-6231-6607-6875-6892-6965-7365-7489-7516-7939")
 class TRIVY_7939_TO_4070(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

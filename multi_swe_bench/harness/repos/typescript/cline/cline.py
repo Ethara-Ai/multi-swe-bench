@@ -210,7 +210,7 @@ WORKDIR /home/{self.pr.repo}
 """
 
 
-@Instance.register("cline", "cline")
+@Instance.register("cline", "2789-3246-6872-8789-9103-9632-10090")
 class Cline(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

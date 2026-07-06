@@ -333,7 +333,7 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("aquasecurity", "trivy_3855_to_81")
+@Instance.register("aquasecurity", "272-375-398-433-456-467-482-509-539-552-567-583-614-679-735-752-782-832-978-986-989-1081-1095-1230-1247-1304-1315-1522-1638-1643-1871-1893-1959-2006-2461-2521-2539-2589-2666-2718-2860-2902-2910-2916-2974-3061-3599-3641-3652-3723-3724-3855")
 class TRIVY_3855_TO_81(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
