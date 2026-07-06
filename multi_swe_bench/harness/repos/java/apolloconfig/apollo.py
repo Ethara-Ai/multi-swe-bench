@@ -298,7 +298,7 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("apolloconfig", "apollo")
+@Instance.register("apolloconfig", "5035-5182-5333-5566")
 class Apollo(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
