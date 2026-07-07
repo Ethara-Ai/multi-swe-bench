@@ -422,10 +422,49 @@ echo "prepare: GOTOOLCHAIN=$GOTOOLCHAIN"
 TEST_FILES="{test_files}"
 if [ -n "$TEST_FILES" ]; then
   bash /home/group_pkgs.sh "/home/{repo}" $TEST_FILES | while read mod_root pkg; do
-    (cd "$mod_root" && go mod download || true)
+    (cd "$mod_root" && go mod download all || true)
     (cd "$mod_root" && go test -vet=off -count=1 "$pkg" || true)
   done
 fi
+
+# --- Fixed-state dependency pre-cache --------------------------------------
+# Pre-populate this image layer with EVERY module version the fix stage will
+# need, so the model does not have to fetch them from an external source at
+# eval time. (We only PRE-CACHE here; we do NOT block egress -- enforcing an
+# offline environment is the trajectory team's responsibility, not the image's.)
+# The base warm-up above only cached the BASE go.mod versions; the fix.patch
+# bumps a whole cluster of deps (protobuf, urfave/cli, x/tools, x/text, x/net,
+# x/sys, x/sync, x/mod, goquery, aurora, moq, ... across the root module AND the
+# _examples submodules). Here we apply the same test+fix patches the fix stage
+# applies, `go mod download all` every module in the resulting tree (which also
+# pulls the fixed-state Go toolchain via GOTOOLCHAIN), then restore the pristine
+# base tree so the baseline run.sh still sees the unpatched code. Build time has
+# network. `|| true` throughout: a warm miss must never fail the build (worst
+# case a single dep is fetched at eval, exactly as before this change).
+BOOT_HEAD="$(git rev-parse HEAD)"
+# The base warm-up above runs gqlgen's CODEGEN tests, which write generated .go
+# files into the working tree (and `go test` may touch go.sum). Restore a
+# pristine base tree BEFORE applying the fix patch -- otherwise the patch's
+# context does not match and `git apply` fails, silently dropping us into the
+# base-only fallback (observed: arm64 build cached no fixed deps while amd64,
+# whose emulated tests didn't run, applied fine).
+git reset --hard "$BOOT_HEAD" >/dev/null 2>&1 || true
+git clean -fd >/dev/null 2>&1 || true
+bash /home/strip_binary.sh /home/test.patch > /home/test.clean.patch 2>/dev/null || true
+bash /home/strip_binary.sh /home/fix.patch  > /home/fix.clean.patch  2>/dev/null || true
+if git apply --whitespace=nowarn /home/test.clean.patch /home/fix.clean.patch 2>/dev/null; then
+  echo "prepare: warming fixed-state module cache for offline eval"
+  find . -name go.mod -not -path '*/vendor/*' -print | while read -r gm; do
+    d="$(dirname "$gm")"
+    tc="$(bash /home/select_gotoolchain.sh "$d/go.mod")"
+    (cd "$d" && GOTOOLCHAIN="$tc" go mod download all 2>/dev/null || true)
+  done
+else
+  echo "prepare: fixed-state patch did not apply; offline warm limited to base deps"
+fi
+git reset --hard "$BOOT_HEAD" >/dev/null 2>&1 || true
+git clean -fd >/dev/null 2>&1 || true
+bash /home/check_git_changes.sh
 
 """.format(repo=self.pr.repo, base_sha=self.pr.base.sha, test_files=test_files),
             ),
