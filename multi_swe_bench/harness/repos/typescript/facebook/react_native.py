@@ -5,6 +5,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_NUMBER_INTERVAL = "38553-38888-39575-41276-41445-41781-41958-42075-42138-42142-42227-42734-42943-43240-43246-44757-44793-44794-45580-45993-45995-46127-47287-47712-48139-49789-49890-50095-50129-50431-50646-51569-51964-52504-53389-53567-53980-55722-56372-56399-56574-56593-56607"
+
 
 class ReactNativeImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -37,20 +39,44 @@ class ReactNativeImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f"RUN git clone --no-single-branch https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    curl \\
+    build-essential \\
+    git \\
+    gnupg \\
+    make \\
+    python3 \\
+    sudo \\
+    wget \\
+    && rm -rf /var/lib/apt/lists/*
+
 {code}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -78,52 +104,8 @@ class ReactNativeImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-yarn install --frozen-lockfile || yarn install || true
-
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "run.sh",
@@ -131,6 +113,7 @@ yarn install --frozen-lockfile || yarn install || true
 set -e
 
 cd /home/{pr.repo}
+yarn install --frozen-lockfile || yarn install || true
 yarn test
 
 """.format(pr=self.pr),
@@ -155,7 +138,8 @@ yarn test
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply /home/test.patch
+git apply /home/fix.patch
 yarn install --frozen-lockfile || yarn install || true
 yarn test
 
@@ -172,22 +156,21 @@ yarn test
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        return f"""# syntax=docker/dockerfile:1.6
 
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
+FROM {name}:{tag}
 
 {copy_commands}
+WORKDIR /home/{self.pr.repo}
 
-{prepare_commands}
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
-{self.clear_env}
+{Image._HARDENING_BLOCK}
 
 """
 
 
-@Instance.register("facebook", "react-native")
+@Instance.register("facebook", _NUMBER_INTERVAL)
 class ReactNative(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -204,19 +187,16 @@ class ReactNative(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
@@ -245,7 +225,6 @@ class ReactNative(Instance):
                     failed_suites.add(current_suite)
                 continue
 
-            # ✓ / ✔ format (newer Jest)
             pass_match = re.match(
                 r"^[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", stripped
             )
@@ -259,7 +238,6 @@ class ReactNative(Instance):
                 passed_tests.add(test_name)
                 continue
 
-            # ✕ / ✗ / ✘ / × format (newer Jest)
             fail_match = re.match(
                 r"^[✕✗✘×]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", stripped
             )
@@ -273,7 +251,6 @@ class ReactNative(Instance):
                 failed_tests.add(test_name)
                 continue
 
-            # ○ format (skipped)
             skip_match = re.match(r"^[○⊘]\s+(.+)", stripped)
             if skip_match:
                 has_checkmark_tests = True
@@ -285,7 +262,6 @@ class ReactNative(Instance):
                 skipped_tests.add(test_name)
                 continue
 
-            # ● suite › test name (older Jest failure detail)
             bullet_match = re.match(r"^●\s+(.+?)\s+›\s+(.+)", stripped)
             if bullet_match and current_suite_status == "FAIL":
                 test_name = (

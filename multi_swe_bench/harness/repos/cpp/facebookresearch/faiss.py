@@ -5,6 +5,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_NUMBER_INTERVAL = "344-516-583-628-843-964-1065-1121"
+
 
 class FaissImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -37,42 +39,58 @@ class FaissImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f"RUN git clone --no-single-branch https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    gcc-10 \
-    g++-10 \
-    libopenblas-dev \
-    liblapack-dev \
-    python3 \
-    python3-pip \
-    python3-numpy \
-    swig \
-    curl \
-    git \
-    autoconf \
-    automake \
-    libtool \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100 \
-    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 100 \
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    build-essential \\
+    gcc-10 \\
+    g++-10 \\
+    libopenblas-dev \\
+    liblapack-dev \\
+    ca-certificates \\
+    python3 \\
+    python3-pip \\
+    python3-numpy \\
+    swig \\
+    curl \\
+    git \\
+    gnupg \\
+    make \\
+    sudo \\
+    wget \\
+    autoconf \\
+    automake \\
+    libtool \\
+    && rm -rf /var/lib/apt/lists/* \\
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100 \\
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 100 \\
     && pip3 install cmake
 
 {code}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -252,41 +270,6 @@ fi
             ),
             File(
                 ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {sha}
-bash /home/check_git_changes.sh
-
-""".format(repo=self.pr.repo, sha=self.pr.base.sha),
-            ),
-            File(
-                ".",
                 "run.sh",
                 """#!/bin/bash
 set -e
@@ -314,12 +297,8 @@ fi
                 """#!/bin/bash
 
 cd /home/{repo}
-if [ -s /home/test.patch ]; then
-  git apply --whitespace=nowarn --reject /home/test.patch 2>/dev/null || true
-fi
-if [ -s /home/fix.patch ]; then
-  git apply --whitespace=nowarn --reject /home/fix.patch 2>/dev/null || true
-fi
+git apply --whitespace=nowarn --reject /home/test.patch 2>/dev/null || true
+git apply --whitespace=nowarn --reject /home/fix.patch 2>/dev/null || true
 {detect_build}
 
 """.format(repo=self.pr.repo, detect_build=detect_build),
@@ -335,22 +314,21 @@ fi
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        return f"""# syntax=docker/dockerfile:1.6
 
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
+FROM {name}:{tag}
 
 {copy_commands}
+WORKDIR /home/{self.pr.repo}
 
-{prepare_commands}
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
-{self.clear_env}
+{Image._HARDENING_BLOCK}
 
 """
 
 
-@Instance.register("facebookresearch", "faiss")
+@Instance.register("facebookresearch", _NUMBER_INTERVAL)
 class Faiss(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
