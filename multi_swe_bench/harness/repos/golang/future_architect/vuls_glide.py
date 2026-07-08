@@ -11,7 +11,14 @@ from multi_swe_bench.harness.pull_request import PullRequest
 GOPATH_DIR = "/go/src/github.com/future-architect/vuls"
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
+    """Shared per-era base image (built once, reused by every glide PR).
+
+    Installs the pinned glide binary, clones the repo into /home/vuls with the
+    GOPATH symlink, and keeps full history; the PR layer checks out base.sha and
+    does the strict history-strip.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -26,6 +33,83 @@ class ImageDefault(Image):
 
     def dependency(self) -> str:
         return "golang:1.10"
+
+    def image_prefix(self) -> str:
+        return "mswebench"
+
+    def image_tag(self) -> str:
+        return "base-glide"
+
+    def workdir(self) -> str:
+        return "base-glide"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    GO111MODULE=off \\
+    GOPATH=/go
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+# glide is the pinned dependency manager for this era. TARGETARCH is only set by
+# buildx --platform; fall back to dpkg for native (classification) builds.
+RUN ARCH="${{TARGETARCH:-$(dpkg --print-architecture)}}"; \\
+    curl -sSL -o /tmp/glide.tar.gz https://github.com/Masterminds/glide/releases/download/v0.13.3/glide-v0.13.3-linux-${{ARCH}}.tar.gz \\
+    && tar -xzf /tmp/glide.tar.gz -C /tmp \\
+    && cp /tmp/linux-${{ARCH}}/glide /usr/local/bin/glide \\
+    && chmod +x /usr/local/bin/glide \\
+    && rm -rf /tmp/glide.tar.gz /tmp/linux-${{ARCH}}
+
+WORKDIR /home/
+RUN git config --global --add safe.directory '*'
+RUN git clone "${{REPO_URL}}" /home/{repo}
+# GOPATH layout: symlink $GOPATH/src/github.com/future-architect/vuls -> /home/{repo}.
+RUN mkdir -p /go/src/github.com/future-architect && ln -sfn /home/{repo} {GOPATH_DIR}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
+CMD ["/bin/bash"]
+"""
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> "Image":
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "mswebench"
@@ -127,37 +211,32 @@ go test -v -count=1 ./...
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM golang:1.10
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
 
-ARG TARGETARCH
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GO111MODULE=off
-ENV GOPATH=/go
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
-# `glide` is the pinned dependency manager for this era.
-# Arch-aware so the image builds for both linux/amd64 and linux/arm64.
-RUN curl -sSL -o /tmp/glide.tar.gz https://github.com/Masterminds/glide/releases/download/v0.13.3/glide-v0.13.3-linux-${{TARGETARCH}}.tar.gz \
-    && tar -xzf /tmp/glide.tar.gz -C /tmp \
-    && cp /tmp/linux-${{TARGETARCH}}/glide /usr/local/bin/glide \
-    && chmod +x /usr/local/bin/glide \
-    && rm -rf /tmp/glide.tar.gz /tmp/linux-${{TARGETARCH}}
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git {GOPATH_DIR}
-
-WORKDIR {GOPATH_DIR}
-RUN git reset --hard
-RUN git checkout {self.pr.base.sha}
+{self.global_env}
 
 {copy_commands}
 
 RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
+{self.clear_env}
 
 """
 
@@ -250,3 +329,13 @@ class Vuls_glide(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Delivery scope = RESOLVED (valid) bundles only; keys == #delivered instances (PIPELINE §11c).
+# Bucketed by the authoritative go.mod-at-base.sha era key (NOT a lead-PR proxy).
+_BUNDLE_NIS_Vuls_glide = [
+    "288-289-291-292-293-296-297-298-299-300-301-302-303-304-305-306-308-309-314-317-319-322-324-326-328-329-330-331-332-337-338-339-340-343-344-345-346-347-348-350-351-354-356-358-363-364-369-370-372-374-375-377-378-379-381-382-383-384-386-387-388-392-394-400",
+]
+for _ni in _BUNDLE_NIS_Vuls_glide:
+    Instance.register("future-architect", _ni)(Vuls_glide)

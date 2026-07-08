@@ -6,7 +6,9 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
+    """Shared per-era base image (built once, reused by every go1_12 PR)."""
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -21,6 +23,73 @@ class ImageDefault(Image):
 
     def dependency(self) -> str:
         return "golang:1.12"
+
+    def image_prefix(self) -> str:
+        return "mswebench"
+
+    def image_tag(self) -> str:
+        return "base-go1_12"
+
+    def workdir(self) -> str:
+        return "base-go1_12"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
+        # No apt-get on golang:1.12 (Debian stretch/buster archived repos). The
+        # base image already provides git/curl/ca-certificates.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    GO111MODULE=on
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+RUN git config --global --add safe.directory '*'
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
+CMD ["/bin/bash"]
+"""
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> "Image":
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "mswebench"
@@ -118,32 +187,32 @@ go test -v -count=1 ./...
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM golang:1.12
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
 
-ENV DEBIAN_FRONTEND=noninteractive
-# vuls go.mod for this era declares `go 1.12`. It pins
-# golang.org/x/xerrors@20190410, whose //go:build go1.13 adaptor references a
-# pre-release errors API and fails to compile on any go >= 1.13. The matching
-# 1.12 toolchain excludes that file, so it must be built with go 1.12 exactly.
-# Modules are vendored on demand; force module mode (repo lives outside GOPATH).
-ENV GO111MODULE=on
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
-
-WORKDIR /home/{self.pr.repo}
-RUN git reset --hard
-RUN git checkout {self.pr.base.sha}
+{self.global_env}
 
 {copy_commands}
 
 RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
+{self.clear_env}
 
 """
 
@@ -236,3 +305,13 @@ class Vuls_go1_12(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Delivery scope = RESOLVED (valid) bundles only; keys == #delivered instances (PIPELINE §11c).
+# Bucketed by the authoritative go.mod-at-base.sha era key (NOT a lead-PR proxy).
+_BUNDLE_NIS_Vuls_go1_12 = [
+    "852-855-857-858-859",
+]
+for _ni in _BUNDLE_NIS_Vuls_go1_12:
+    Instance.register("future-architect", _ni)(Vuls_go1_12)

@@ -11,7 +11,13 @@ from multi_swe_bench.harness.pull_request import PullRequest
 GOPATH_DIR = "/go/src/github.com/future-architect/vuls"
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
+    """Shared per-era base image (built once, reused by every dep PR).
+
+    Installs the pinned dep binary, clones the repo into /home/vuls with the GOPATH
+    symlink, and keeps full history; the PR layer checks out base.sha + history-strip.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -26,6 +32,80 @@ class ImageDefault(Image):
 
     def dependency(self) -> str:
         return "golang:1.12"
+
+    def image_prefix(self) -> str:
+        return "mswebench"
+
+    def image_tag(self) -> str:
+        return "base-dep"
+
+    def workdir(self) -> str:
+        return "base-dep"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    GO111MODULE=off \\
+    GOPATH=/go
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+# dep is the pinned dependency manager for this era (v0.5.4 = final release).
+# TARGETARCH is only set by buildx --platform; fall back to dpkg for native builds.
+RUN ARCH="${{TARGETARCH:-$(dpkg --print-architecture)}}"; \\
+    curl -sSL -o /usr/local/bin/dep https://github.com/golang/dep/releases/download/v0.5.4/dep-linux-${{ARCH}} \\
+    && chmod +x /usr/local/bin/dep
+
+WORKDIR /home/
+RUN git config --global --add safe.directory '*'
+RUN git clone "${{REPO_URL}}" /home/{repo}
+# GOPATH layout: symlink $GOPATH/src/github.com/future-architect/vuls -> /home/{repo}.
+RUN mkdir -p /go/src/github.com/future-architect && ln -sfn /home/{repo} {GOPATH_DIR}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
+CMD ["/bin/bash"]
+"""
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> "Image":
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "mswebench"
@@ -131,34 +211,32 @@ go test -v -count=1 ./...
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM golang:1.12
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
 
-ARG TARGETARCH
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GO111MODULE=off
-ENV GOPATH=/go
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
-# `dep` is the pinned dependency manager for this era (v0.5.4 is the final release).
-# Arch-aware so the image builds for both linux/amd64 and linux/arm64.
-RUN curl -sSL -o /usr/local/bin/dep https://github.com/golang/dep/releases/download/v0.5.4/dep-linux-${{TARGETARCH}} \
-    && chmod +x /usr/local/bin/dep
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git {GOPATH_DIR}
-
-WORKDIR {GOPATH_DIR}
-RUN git reset --hard
-RUN git checkout {self.pr.base.sha}
+{self.global_env}
 
 {copy_commands}
 
 RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
+{self.clear_env}
 
 """
 
@@ -251,3 +329,18 @@ class Vuls_dep(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Delivery scope = RESOLVED (valid) bundles only; keys == #delivered instances (PIPELINE §11c).
+# Bucketed by the authoritative go.mod-at-base.sha era key (NOT a lead-PR proxy).
+_BUNDLE_NIS_Vuls_dep = [
+    "460-469-470-472-479-481-484-487-492-496-498-499-507-508-509-514",
+    "478-547-550-551-552-554-555-556-559-562-569-573-574-576-579-582-586-588-592-593-597-601-602-603-604-606-607-609-610-612-613-614-616-617-618-619-620-624-625-626-627-628-630-631-632-634-635-637-638-640-641-642-643-646-654-656-657-660-662-663-664-672-675-677-680-682-683-684-686-700",
+    "516-517-518-522-523-525-530-531-534-536-537-538-539-541-542-543-545-546",
+    "702-706-708-709-711-713-714-715-716-717-718-720-723-724-725-726-729",
+    "738-739-740-741-744-745-746-747-748-753-756-758-759-761-762-763-764",
+    "769-772-780-783-785-786-790-791-792-794-795-796-797-798",
+]
+for _ni in _BUNDLE_NIS_Vuls_dep:
+    Instance.register("future-architect", _ni)(Vuls_dep)
