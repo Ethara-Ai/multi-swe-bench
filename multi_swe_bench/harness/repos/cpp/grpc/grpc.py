@@ -77,25 +77,13 @@ class GrpcImageBase(Image):
             '\n'
             'ARG TARGETARCH\n'
             f'ARG REPO_URL="{repo_url}"\n'
-            'ARG BASE_COMMIT\n'
+            f'ARG BASE_COMMIT="{self.pr.base.sha}"\n'
             '\n'
-            'ARG http_proxy=""\n'
-            'ARG https_proxy=""\n'
-            'ARG HTTP_PROXY=""\n'
-            'ARG HTTPS_PROXY=""\n'
-            'ARG no_proxy="localhost,127.0.0.1,::1"\n'
-            'ARG NO_PROXY="localhost,127.0.0.1,::1"\n'
             'ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"\n'
             '\n'
             'ENV DEBIAN_FRONTEND=noninteractive \\\n'
             '    LANG=C.UTF-8 \\\n'
             '    TZ=UTC \\\n'
-            '    http_proxy=${http_proxy} \\\n'
-            '    https_proxy=${https_proxy} \\\n'
-            '    HTTP_PROXY=${HTTP_PROXY} \\\n'
-            '    HTTPS_PROXY=${HTTPS_PROXY} \\\n'
-            '    no_proxy=${no_proxy} \\\n'
-            '    NO_PROXY=${NO_PROXY} \\\n'
             '    SSL_CERT_FILE=${CA_CERT_PATH} \\\n'
             '    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\\n'
             '    CURL_CA_BUNDLE=${CA_CERT_PATH}\n'
@@ -112,11 +100,6 @@ class GrpcImageBase(Image):
             '    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\\n'
             '    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\\n'
             '    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt\n'
-            '\n'
-            'RUN --mount=type=secret,id=mitm_ca,required=0 \\\n'
-            '    if [ -f /run/secrets/mitm_ca ]; then \\\n'
-            '        cp /run/secrets/mitm_ca /usr/local/share/ca-certificates/mitm-ca.crt && update-ca-certificates; \\\n'
-            '    fi\n'
             '\n'
             'WORKDIR /home/\n'
             '\n'
@@ -141,6 +124,11 @@ class GrpcImageBase(Image):
             '# Initialize submodules (required for WORKSPACE-based Bazel builds)\n'
             'RUN git submodule update --init\n'
             '\n'
+            '# NOTE: no history hardening here. The :base image is SHARED across all\n'
+            '# PRs (constant :base tag) and each per-PR image checks out its own\n'
+            '# base.sha in prepare.sh, so the base must retain full history + origin.\n'
+            '# The anti-reward-hacking hardening lives in the per-PR (default) image,\n'
+            '# after prepare.sh has checked out that PR\'s commit.\n'
             'CMD ["/bin/bash"]\n'
         )
 
@@ -417,25 +405,13 @@ run_bazel_test /home/{pr.repo} $TARGETS
             '\n'
             'ARG TARGETARCH\n'
             f'ARG REPO_URL="{repo_url}"\n'
-            'ARG BASE_COMMIT\n'
+            f'ARG BASE_COMMIT="{self.pr.base.sha}"\n'
             '\n'
-            'ARG http_proxy=""\n'
-            'ARG https_proxy=""\n'
-            'ARG HTTP_PROXY=""\n'
-            'ARG HTTPS_PROXY=""\n'
-            'ARG no_proxy="localhost,127.0.0.1,::1"\n'
-            'ARG NO_PROXY="localhost,127.0.0.1,::1"\n'
             'ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"\n'
             '\n'
             'ENV DEBIAN_FRONTEND=noninteractive \\\n'
             '    LANG=C.UTF-8 \\\n'
             '    TZ=UTC \\\n'
-            '    http_proxy=${http_proxy} \\\n'
-            '    https_proxy=${https_proxy} \\\n'
-            '    HTTP_PROXY=${HTTP_PROXY} \\\n'
-            '    HTTPS_PROXY=${HTTPS_PROXY} \\\n'
-            '    no_proxy=${no_proxy} \\\n'
-            '    NO_PROXY=${NO_PROXY} \\\n'
             '    SSL_CERT_FILE=${CA_CERT_PATH} \\\n'
             '    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\\n'
             '    CURL_CA_BUNDLE=${CA_CERT_PATH}\n'
@@ -457,6 +433,14 @@ run_bazel_test /home/{pr.repo} $TARGETS
             '\n'
             'RUN bash /home/prepare.sh\n'
             '\n'
+            f'WORKDIR /home/{repo}\n'
+            '\n'
+            '# Anti-reward-hacking hardening: runs AFTER prepare.sh has checked out\n'
+            '# THIS PR\'s base.sha, so history/refs/remotes are pruned to this commit\n'
+            '# (the shared :base image keeps full history so each PR can first check\n'
+            '# out its own commit). BASE_COMMIT is pinned to this PR\'s base.sha via the\n'
+            '# ARG default above. Embedded here (not auto-injected) due to # syntax.\n'
+            f'{Image._HARDENING_BLOCK}\n'
             f'{clear_env_section}'
             'CMD ["/bin/bash"]\n'
         )
@@ -589,3 +573,21 @@ class GRPC(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# Route bundled PRs that carry a dash-joined number_interval (the full list of
+# prs_in_bundle, e.g. "33020-33046") to the grpc config. Instance.create() looks
+# up f"{org}/{number_interval}", so each shippable bundle's interval string must
+# be registered against the GRPC class.
+_NUMBER_INTERVALS = [
+    "31697-33298-33369-33530-33798-33842-33860-33888-34002-34235-35762-35814",
+    "32703-32805-33021-33047",
+    "33020-33046",
+    "33667-33681-33698-33705",
+    "34344-34348-34360-34373-34553-34624",
+    "34725-34763-34815-34826",
+    "35337-36315-36539-37368-37376-37390",
+    "37551-37570",
+]
+for _interval in _NUMBER_INTERVALS:
+    Instance.register("grpc", _interval)(GRPC)
