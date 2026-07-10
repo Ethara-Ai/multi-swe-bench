@@ -206,9 +206,7 @@ go mod download || true
 
 EXCLUDES="--exclude=*.lock --exclude=*.png --exclude=*.ico --exclude=*.mp4 \
 --exclude=*.svg --exclude=*.gif --exclude=*.jpg --exclude=*.jpeg \
---exclude=*.webp --exclude=*.pdf --exclude=docs/* --exclude=site/* \
---exclude=helm/* --exclude=offlinedocs/* --exclude=dogfood/* \
---exclude=examples/*"
+--exclude=*.webp --exclude=*.pdf"
 
 apply_patch() {
   local f="$1"
@@ -236,7 +234,7 @@ collect_pkgs() {
       | sort -u
   ) || true
   for d in $out; do
-    if [ -n "$d" ] && [ -d "$d" ]; then
+    if [ -n "$d" ] && [ -d "$d" ] && ls "$d"/*.go >/dev/null 2>&1; then
       echo "./$d"
     fi
   done
