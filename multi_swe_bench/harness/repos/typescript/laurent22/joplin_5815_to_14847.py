@@ -116,13 +116,26 @@ npm run test-ci 2>&1 || true
         for file in self.files():
             copy_commands += "COPY {name} /home/\n".format(name=file.name)
 
-        return """FROM {name}:{tag}
+        # Anti-reward-hack hardening runs in the PR layer (shared base keeps full
+        # history). prepare.sh checks out this PR's base.sha; the canonical block then
+        # detaches at that literal sha and strips every other ref/reflog so the fix
+        # commit is unreachable from git history.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return """# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {global_env}
 
 {copy_commands}
 
 RUN bash /home/prepare.sh
+
+WORKDIR /home/{repo}
+
+{hardening}
 
 {clear_env}
 
@@ -131,6 +144,8 @@ RUN bash /home/prepare.sh
             tag=tag,
             global_env=self.global_env,
             copy_commands=copy_commands,
+            repo=self.pr.repo,
+            hardening=hardening,
             clear_env=self.clear_env,
         )
 

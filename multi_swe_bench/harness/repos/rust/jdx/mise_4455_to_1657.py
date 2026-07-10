@@ -23,54 +23,62 @@ class ImageBase(Image):
     def dependency(self) -> str:
         return "rust:1.82"
 
-    def image_prefix(self) -> str:
-        return "envagent"
-
     def image_tag(self) -> str:
-        # Per-PR base: hardening pins base to ${BASE_COMMIT} + gc-prunes, so a
-        # shared "base" tag can hold only one commit. Each PR needs its own.
-        return f"pr-{self.pr.number}.base"
+        return "base-mise_4455_to_1657"
 
     def workdir(self) -> str:
-        return f"pr-{self.pr.number}.base-era"
+        return "base-mise_4455_to_1657"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
+        # Shared base for every old-era mise PR (built once, tag "base-mise_4455_to_1657").
+        # The `# syntax` directive opts out of DockerfileEnhancer so this hand-written
+        # layout is used verbatim: clone FULL history + light harden only. The strict
+        # anti-reward-hack strip runs in the PR layer at each PR's literal base.sha.
         image_name = self.dependency()
+        org = self.pr.org
+        repo = self.pr.repo
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            fetch = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            fetch = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y --no-install-recommends git libssl-dev pkg-config cmake && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        ca-certificates curl build-essential git \\
+        libssl-dev pkg-config cmake \\
+    && rm -rf /var/lib/apt/lists/*
 
-RUN if [ ! -f /bin/bash ]; then \
-        if command -v apk >/dev/null 2>&1; then \
-            apk add --no-cache bash; \
-        elif command -v apt-get >/dev/null 2>&1; then \
-            apt-get update && apt-get install -y bash; \
-        elif command -v yum >/dev/null 2>&1; then \
-            yum install -y bash; \
-        else \
-            exit 1; \
-        fi \
-    fi
+RUN git config --global --add safe.directory '*'
+{fetch}
 
-{code}
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -89,9 +97,6 @@ class ImageDefault(Image):
 
     def dependency(self) -> Optional[Image]:
         return ImageBase(self.pr, self.config)
-
-    def image_prefix(self) -> str:
-        return "envagent"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -113,13 +118,36 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""".format(),
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
 
 cd /home/{pr.repo}
 git reset --hard
+bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
 
 cargo test || true
 
@@ -130,6 +158,7 @@ cargo test || true
                 "run.sh",
                 """#!/bin/bash
 set -eo pipefail
+
 cd /home/{pr.repo}
 cargo test
 
@@ -140,11 +169,9 @@ cargo test
                 "test-run.sh",
                 """#!/bin/bash
 set -eo pipefail
+
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
+git apply /home/test.patch
 cargo test
 
 """.format(pr=self.pr),
@@ -154,11 +181,9 @@ cargo test
                 "fix-run.sh",
                 """#!/bin/bash
 set -eo pipefail
+
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
+git apply /home/test.patch /home/fix.patch
 cargo test
 
 """.format(pr=self.pr),
@@ -174,20 +199,25 @@ cargo test
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = """WORKDIR /home/mise
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-""".format(pr=self.pr)
+        # Strict anti-reward-hack hardening in the PR layer: prepare.sh checked out
+        # this PR's base.sha; the canonical block then detaches at that literal sha
+        # and strips every other ref/reflog so the fix commit is unreachable.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
 
-        return f"""FROM {name}:{tag}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 
-{prepare_commands}
-
 RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
 
 {self.clear_env}
 

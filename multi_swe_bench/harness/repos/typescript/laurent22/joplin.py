@@ -75,42 +75,62 @@ class JoplinImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
+        # Shared base per era (built once, reused by every PR of that era). The
+        # `# syntax` directive opts out of DockerfileEnhancer so this hand-written
+        # layout is used verbatim: clone FULL history + light harden only. The
+        # strict anti-reward-hack strip runs in the PR layer at each PR's base.sha.
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
 
         if self.config.need_clone:
-            code = "RUN git clone https://github.com/{org}/{repo}.git /home/{repo}".format(
-                org=self.pr.org, repo=self.pr.repo
-            )
+            fetch = 'RUN git clone "${{REPO_URL}}" /home/{repo}'.format(repo=repo)
         else:
-            code = "COPY {repo} /home/{repo}".format(repo=self.pr.repo)
+            fetch = "COPY {repo} /home/{repo}".format(repo=repo)
 
-        return """FROM {image_name}
+        return """# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-{global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list || true && \
-    sed -i 's|http://security.debian.org|http://archive.debian.org|g' /etc/apt/sources.list || true && \
-    sed -i '/stretch-updates/d' /etc/apt/sources.list || true && \
-    sed -i '/buster-updates/d' /etc/apt/sources.list || true && \
+RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list || true && \\
+    sed -i 's|http://security.debian.org|http://archive.debian.org|g' /etc/apt/sources.list || true && \\
+    sed -i '/stretch-updates/d' /etc/apt/sources.list || true && \\
+    sed -i '/buster-updates/d' /etc/apt/sources.list || true && \\
     echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until || true
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git jq build-essential python3 libsqlite3-dev libvips-dev rsync \\
+    git jq build-essential python3 libsqlite3-dev libvips-dev rsync ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git config --global --add safe.directory '*'
+{fetch}
 
-{clear_env}
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
+CMD ["/bin/bash"]
 """.format(
             image_name=image_name,
-            global_env=self.global_env,
-            code=code,
-            clear_env=self.clear_env,
+            org=org,
+            repo=repo,
+            fetch=fetch,
         )
 
 

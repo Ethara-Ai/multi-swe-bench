@@ -90,7 +90,12 @@ set -e
 export CI=true
 
 cd /home/{repo}
-npx lerna run test-ci --stream 2>&1 || true
+# Era2 fix: compile TS -> JS before tests (Era1 does `tsc`, Era3 does `yarn run tsc`; Era2 was
+# missing it, so compiled modules like packages/lib/testing/test-utils.js never existed and jest
+# reported "Test suite failed to run"). --no-bail so an empty package (e.g. @joplin/renderer
+# "No tests found") cannot abort the whole suite before the real tests run.
+npx lerna run tsc --stream --no-bail 2>&1 || true
+npx lerna run test-ci --stream --no-bail 2>&1 || true
 
 """.format(repo=self.pr.repo),
             ),
@@ -126,7 +131,12 @@ SHARPEOF
   fi
 done
 
-npx lerna run test-ci --stream 2>&1 || true
+# Era2 fix: compile TS -> JS before tests (Era1 does `tsc`, Era3 does `yarn run tsc`; Era2 was
+# missing it, so compiled modules like packages/lib/testing/test-utils.js never existed and jest
+# reported "Test suite failed to run"). --no-bail so an empty package (e.g. @joplin/renderer
+# "No tests found") cannot abort the whole suite before the real tests run.
+npx lerna run tsc --stream --no-bail 2>&1 || true
+npx lerna run test-ci --stream --no-bail 2>&1 || true
 
 """.format(repo=self.pr.repo),
             ),
@@ -162,7 +172,12 @@ SHARPEOF
   fi
 done
 
-npx lerna run test-ci --stream 2>&1 || true
+# Era2 fix: compile TS -> JS before tests (Era1 does `tsc`, Era3 does `yarn run tsc`; Era2 was
+# missing it, so compiled modules like packages/lib/testing/test-utils.js never existed and jest
+# reported "Test suite failed to run"). --no-bail so an empty package (e.g. @joplin/renderer
+# "No tests found") cannot abort the whole suite before the real tests run.
+npx lerna run tsc --stream --no-bail 2>&1 || true
+npx lerna run test-ci --stream --no-bail 2>&1 || true
 
 """.format(repo=self.pr.repo),
             ),
@@ -177,13 +192,26 @@ npx lerna run test-ci --stream 2>&1 || true
         for file in self.files():
             copy_commands += "COPY {name} /home/\n".format(name=file.name)
 
-        return """FROM {name}:{tag}
+        # Anti-reward-hack hardening runs in the PR layer (shared base keeps full
+        # history). prepare.sh checks out this PR's base.sha; the canonical block then
+        # detaches at that literal sha and strips every other ref/reflog so the fix
+        # commit is unreachable from git history.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return """# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {global_env}
 
 {copy_commands}
 
 RUN bash /home/prepare.sh
+
+WORKDIR /home/{repo}
+
+{hardening}
 
 {clear_env}
 
@@ -192,6 +220,8 @@ RUN bash /home/prepare.sh
             tag=tag,
             global_env=self.global_env,
             copy_commands=copy_commands,
+            repo=self.pr.repo,
+            hardening=hardening,
             clear_env=self.clear_env,
         )
 

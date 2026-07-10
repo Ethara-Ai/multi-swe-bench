@@ -8,7 +8,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class MiseImageDefault(Image):
+class MiseImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -22,44 +22,88 @@ class MiseImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        # Returning a string (not a chained Image) lets the shared
-        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
-        # checks out "${BASE_COMMIT}", runs extra_setup(), and then appends the
-        # _HARDENING_BLOCK that detaches HEAD at BASE_COMMIT and strips every
-        # other ref/commit so the fix can't be read out of git history. A single
-        # self-contained per-PR image avoids the old shared-base problem (the
-        # hardening gc-prunes the base to one commit, which a shared "base" tag
-        # cannot satisfy across 274 distinct base shas).
         return "rust:1.88"
+
+    def image_tag(self) -> str:
+        return "base-mise"
+
+    def workdir(self) -> str:
+        return "base-mise"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        # Shared base for every new-era mise PR (built once, tag "base-mise"). The
+        # `# syntax` directive opts out of DockerfileEnhancer so this hand-written
+        # layout is used verbatim: clone FULL history + light harden only. The
+        # strict anti-reward-hack strip runs in the PR layer at each PR's base.sha.
+        image_name = self.dependency()
+        org = self.pr.org
+        repo = self.pr.repo
+
+        if self.config.need_clone:
+            fetch = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            fetch = f"COPY {repo} /home/{repo}"
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        ca-certificates curl build-essential git gnupg make python3 sudo wget \\
+        libssl-dev pkg-config \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git config --global --add safe.directory '*'
+{fetch}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
+CMD ["/bin/bash"]
+"""
+
+
+class MiseImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return MiseImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
-
-    def extra_packages(self) -> list[str]:
-        # ca-certificates, curl, build-essential, git, make, python3, etc. are
-        # already in the default set baked by Image.dockerfile(); add only the
-        # native build deps cargo needs to compile mise's openssl-backed crates.
-        return ["libssl-dev", "pkg-config"]
-
-    def extra_setup(self) -> str:
-        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. The helper scripts + patches are staged into /home/ (outside
-        # /home/{repo}), so the hardening pass — which only operates inside the
-        # git tree — leaves them untouched. prepare.sh warms the cargo build
-        # cache so the run/test/fix stages don't recompile from scratch.
-        return (
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY check_git_changes.sh /home/check_git_changes.sh\n"
-            "COPY prepare.sh /home/prepare.sh\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh\n"
-            "RUN bash /home/prepare.sh"
-        )
 
     def files(self) -> list[File]:
         return [
@@ -103,6 +147,8 @@ set -e
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
+git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
 
 cargo test || true
 
@@ -144,6 +190,39 @@ cargo test
 """.format(pr=self.pr),
             ),
         ]
+
+    def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
+
+        # Strict anti-reward-hack hardening in the PR layer: prepare.sh checked out
+        # this PR's base.sha; the canonical block then detaches at that literal sha
+        # and strips every other ref/reflog so the fix commit is unreachable.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
+
+{self.global_env}
+
+{copy_commands}
+
+RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
+{self.clear_env}
+
+"""
 
 
 @Instance.register("jdx", "mise")
