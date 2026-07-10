@@ -31,15 +31,17 @@ an invalid Report that Report.check() drops safely — it cannot silently corrup
 f2p. v2 (14 instances) is a lower-confidence era than v3; this is a documented
 property of pre-modules dependency rot, not a config defect.
 
-Routing: dataset records for this era carry number_interval == "goa_v2".
+Routing: the raw dataset carries an empty number_interval for every era, so all
+rows route to the single `goadesign/goa` Instance (goa.py), which dispatches
+here by `base.ref == "v2"`. This module exports only the Image classes; it no
+longer registers its own Instance. The v2 flaky-test demotion
+(TestAdaptiveSampler/TestFixedSampler/TestHeader) lives in goa.py as
+`_FLAKY_V2_RE`, applied by GOA.parse_log when base.ref == "v2".
 """
 
-import re
-from typing import Optional
-
 from multi_swe_bench.harness.image import Config, File, Image
-from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.golang.goadesign.goa import _harden_block
 
 
 class GoaV2ImageBase(Image):
@@ -73,17 +75,28 @@ class GoaV2ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        # Canonical, enhancer-aware repo fetch (see goa.py for rationale):
-        # ${{REPO_URL}} is injected by DockerfileEnhancer and skipped by
-        # _standardize_repo_fetch() — no hardcoded URL, multi-arch infra intact.
+        org = self.pr.org
+        repo = self.pr.repo
+
+        # ${REPO_URL} is passed as a build-arg by build_dataset (dep is a str →
+        # base image); declared as an ARG below so the clone resolves.
         if self.config.need_clone:
-            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        # See goa.py GoaImageBase for the full rationale: the leading
+        # `# syntax=docker/dockerfile:1.6` directive makes DockerfileEnhancer
+        # emit this Dockerfile VERBATIM, so the enhancer does NOT rewrite the
+        # clone into a `git checkout ${BASE_COMMIT}` + history-strip block that
+        # would pin this SHARED v2 base (tag `base-v2`) to one PR's commit.
+        # Per-PR history hardening is applied in GoaV2ImageDefault.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
@@ -96,6 +109,13 @@ ENV CI=true
 # native-arch builds are unaffected. Inherited by prepare/run/test/fix stages.
 ENV GODEBUG=asyncpreemptoff=1
 
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \\
     git make ca-certificates protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
@@ -104,12 +124,9 @@ RUN GOTOOLCHAIN=auto go install google.golang.org/protobuf/cmd/protoc-gen-go@lat
  || true
 ENV PATH="/go/bin:${{PATH}}"
 
-WORKDIR /home/
-
 {code}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -198,7 +215,16 @@ go mod edit \\
     -replace=golang.org/x/sync=golang.org/x/sync@v0.8.0 \\
     -replace=google.golang.org/grpc=google.golang.org/grpc@v1.68.0 \\
     -replace=google.golang.org/protobuf=google.golang.org/protobuf@v1.35.1 \\
-    -replace=github.com/getkin/kin-openapi=github.com/getkin/kin-openapi@v0.127.0
+    -replace=github.com/getkin/kin-openapi=github.com/getkin/kin-openapi@v0.127.0 \\
+    -replace=github.com/go-openapi/loads=github.com/go-openapi/loads@v0.22.0
+# go-openapi/loads (imported by the openapi codegen tests) published v0.23.0+
+# with a `go 1.24`/`go 1.25` directive; v0.24.0 requires go>=1.25, so an
+# UNPINNED `go mod tidy` under GOTOOLCHAIN=local+go1.24 fails ("toolchain
+# upgrade needed to resolve github.com/go-openapi/loads") and produces ZERO
+# tests. Pin to v0.22.0 (go 1.20): MVS then resolves its whole go-openapi
+# sibling set (spec/strfmt/analysis/swag/jsonpointer/...) to their pre-go1.25
+# tags, keeping v2 on go1.24 (emulates cleanly on amd64/arm64). Verified: tidy
+# RC 0, openapi packages build.
 GOTOOLCHAIN=local go mod tidy || true
 
 """.format(pr=self.pr),
@@ -303,116 +329,25 @@ go test -mod=mod -vet=off -short -timeout 900s -v -count=1 ./...
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # Per-PR git-history hardening, applied AFTER prepare.sh checks out this
+        # PR's base commit and commits the synthesized go.mod (so HEAD is the
+        # synth commit and base.sha is its kept parent — see _harden_block).
+        harden = _harden_block(self.pr.repo)
 
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
+RUN bash /home/prepare.sh
 
-{prepare_commands}
+{harden}
 
 {self.clear_env}
-
 """
 
 
-@Instance.register("goadesign", "goa_v2")
-class GOA_V2(Instance):
-    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
-        super().__init__()
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    def dependency(self) -> Optional[Image]:
-        return GoaV2ImageDefault(self.pr, self._config)
-
-    def run(self, run_cmd: str = "") -> str:
-        return run_cmd if run_cmd else "bash /home/run.sh"
-
-    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        return test_patch_run_cmd if test_patch_run_cmd else "bash /home/test-run.sh"
-
-    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        return fix_patch_run_cmd if fix_patch_run_cmd else "bash /home/fix-run.sh"
-
-    def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set = set()
-        failed_tests: set = set()
-        skipped_tests: set = set()
-
-        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-
-        re_pass = re.compile(r"--- PASS: (\S+)")
-        re_fail = re.compile(r"--- FAIL: (\S+)")
-        re_skip = re.compile(r"--- SKIP: (\S+)")
-
-        # Environmentally non-deterministic tests: goa's adaptive/fixed traffic
-        # samplers are probabilistic — `sampler_test.go` asserts tight bounds on
-        # a random trueCount, so the SAME test flips PASS/FAIL across the
-        # run/test/fix stages independently of the patch (verified for pr-2262:
-        # run=FAIL, test=PASS, fix=FAIL with differing random counts each stage).
-        # That trips Report.check()'s "test=PASS -> fix=FAIL = invalid" rule and
-        # wrongly invalidates an otherwise-good instance. Demote these to SKIP so
-        # cross-stage comparison ignores them (same technique as pulumi.py's
-        # re_flaky). Matches the test func and any of its subtests.
-        # Also demote TestHeader: goa v2's codegen header golden checks iterate
-        # Go maps, so the header order is nondeterministic — TestHeader passes
-        # or fails across stages independently of the patch. Verified flaky:
-        # chunk2 pr-2402 shows run=FAIL/test=PASS/fix=FAIL while pr-2326 shows
-        # PASS/PASS/FAIL (different outcomes in `run` with no patch applied yet).
-        re_flaky = re.compile(r"^(TestAdaptiveSampler|TestFixedSampler|TestHeader)(/|$)")
-
-        for line in test_log.splitlines():
-            line = line.strip()
-
-            m = re_pass.match(line)
-            if m:
-                name = m.group(1)
-                if re_flaky.match(name):
-                    passed_tests.discard(name)
-                    failed_tests.discard(name)
-                    skipped_tests.add(name)
-                    continue
-                if name in failed_tests:
-                    continue
-                skipped_tests.discard(name)
-                passed_tests.add(name)
-                continue
-
-            m = re_fail.match(line)
-            if m:
-                name = m.group(1)
-                if re_flaky.match(name):
-                    passed_tests.discard(name)
-                    failed_tests.discard(name)
-                    skipped_tests.add(name)
-                    continue
-                passed_tests.discard(name)
-                skipped_tests.discard(name)
-                failed_tests.add(name)
-                continue
-
-            m = re_skip.match(line)
-            if m:
-                name = m.group(1)
-                if re_flaky.match(name):
-                    skipped_tests.add(name)
-                    continue
-                if name in passed_tests or name in failed_tests:
-                    continue
-                skipped_tests.add(name)
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+# NOTE: this module intentionally does NOT register an Instance. All rows route
+# to the single `goadesign/goa` Instance (goa.py), which dispatches here by
+# base.ref. The v2 flaky-test demotion lives in goa.py (`_FLAKY_V2_RE`,
+# applied by GOA.parse_log when base.ref == "v2").

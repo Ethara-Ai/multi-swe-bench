@@ -34,15 +34,15 @@ patch). Unpinned `go mod tidy` is not bit-reproducible across time, but any
 resulting flake produces an invalid Report that Report.check() drops safely
 rather than mis-scoring f2p. Documented property of pre-modules dependency rot.
 
-Routing: dataset records for this era carry number_interval == "goa_v1".
+Routing: the raw dataset carries an empty number_interval for every era, so all
+rows route to the single `goadesign/goa` Instance (goa.py), which dispatches
+here by `base.ref == "v1"`. This module exports only the Image classes; it no
+longer registers its own Instance.
 """
 
-import re
-from typing import Optional
-
 from multi_swe_bench.harness.image import Config, File, Image
-from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.golang.goadesign.goa import _harden_block
 
 
 class GoaV1ImageBase(Image):
@@ -76,17 +76,28 @@ class GoaV1ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        # Canonical, enhancer-aware repo fetch (see goa.py for rationale):
-        # ${{REPO_URL}} is injected by DockerfileEnhancer and skipped by
-        # _standardize_repo_fetch() — no hardcoded URL, multi-arch infra intact.
+        org = self.pr.org
+        repo = self.pr.repo
+
+        # ${REPO_URL} is passed as a build-arg by build_dataset (dep is a str →
+        # base image); declared as an ARG below so the clone resolves.
         if self.config.need_clone:
-            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        # See goa.py GoaImageBase for the full rationale: the leading
+        # `# syntax=docker/dockerfile:1.6` directive makes DockerfileEnhancer
+        # emit this Dockerfile VERBATIM, so the enhancer does NOT rewrite the
+        # clone into a `git checkout ${BASE_COMMIT}` + history-strip block that
+        # would pin this SHARED v1 base (tag `base-v1`) to one PR's commit.
+        # Per-PR history hardening is applied in GoaV1ImageDefault.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
@@ -99,6 +110,13 @@ ENV CI=true
 # native-arch builds are unaffected. Inherited by prepare/run/test/fix stages.
 ENV GODEBUG=asyncpreemptoff=1
 
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \\
     git make ca-certificates protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
@@ -107,12 +125,9 @@ RUN GOTOOLCHAIN=auto go install google.golang.org/protobuf/cmd/protoc-gen-go@lat
  || true
 ENV PATH="/go/bin:${{PATH}}"
 
-WORKDIR /home/
-
 {code}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -200,6 +215,16 @@ go mod edit -replace=github.com/satori/go.uuid=github.com/gofrs/uuid@v4.0.0+inco
 # "module declares its path as: sirupsen/logrus but was required as: Sirupsen/logrus".
 # Pin via -replace to the canonical lowercase path so the import resolves.
 go mod edit -replace=github.com/Sirupsen/logrus=github.com/sirupsen/logrus@v1.9.4
+# 2025 dep-rot: onsi/gomega (v1.42.1+) and go-openapi/loads (v0.24.0+, a
+# transitive dep of the swagger codegen) both bumped their go directive to
+# >=1.25, so an UNPINNED `go mod tidy` under GOTOOLCHAIN=local+go1.24 fails
+# ("toolchain upgrade needed to resolve ...") and yields ZERO tests. Pin both
+# to their last go<=1.24 tags (gomega v1.38.0 = go1.23; loads v0.22.0 = go1.20,
+# which drags its go-openapi siblings to pre-go1.25 versions via MVS). Verified:
+# tidy RC 0, `go build ./...` clean. Classic ginkgo v1 (github.com/onsi/ginkgo,
+# unmaintained at v1.16.5 / go1.16) needs no pin.
+go mod edit -replace=github.com/onsi/gomega=github.com/onsi/gomega@v1.38.0
+go mod edit -replace=github.com/go-openapi/loads=github.com/go-openapi/loads@v0.22.0
 GOTOOLCHAIN=local go mod tidy || true
 
 """.format(pr=self.pr),
@@ -299,87 +324,25 @@ go test -mod=mod -vet=off -short -timeout 900s -v -count=1 ./...
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # Per-PR git-history hardening, applied AFTER prepare.sh checks out this
+        # PR's base commit and commits the synthesized go.mod (so HEAD is the
+        # synth commit and base.sha is its kept parent — see _harden_block).
+        harden = _harden_block(self.pr.repo)
 
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
+RUN bash /home/prepare.sh
 
-{prepare_commands}
+{harden}
 
 {self.clear_env}
-
 """
 
 
-@Instance.register("goadesign", "goa_v1")
-class GOA_V1(Instance):
-    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
-        super().__init__()
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    def dependency(self) -> Optional[Image]:
-        return GoaV1ImageDefault(self.pr, self._config)
-
-    def run(self, run_cmd: str = "") -> str:
-        return run_cmd if run_cmd else "bash /home/run.sh"
-
-    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        return test_patch_run_cmd if test_patch_run_cmd else "bash /home/test-run.sh"
-
-    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        return fix_patch_run_cmd if fix_patch_run_cmd else "bash /home/fix-run.sh"
-
-    def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set = set()
-        failed_tests: set = set()
-        skipped_tests: set = set()
-
-        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-
-        re_pass = re.compile(r"--- PASS: (\S+)")
-        re_fail = re.compile(r"--- FAIL: (\S+)")
-        re_skip = re.compile(r"--- SKIP: (\S+)")
-
-        for line in test_log.splitlines():
-            line = line.strip()
-
-            m = re_pass.match(line)
-            if m:
-                name = m.group(1)
-                if name in failed_tests:
-                    continue
-                skipped_tests.discard(name)
-                passed_tests.add(name)
-                continue
-
-            m = re_fail.match(line)
-            if m:
-                name = m.group(1)
-                passed_tests.discard(name)
-                skipped_tests.discard(name)
-                failed_tests.add(name)
-                continue
-
-            m = re_skip.match(line)
-            if m:
-                name = m.group(1)
-                if name in passed_tests or name in failed_tests:
-                    continue
-                skipped_tests.add(name)
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+# NOTE: this module intentionally does NOT register an Instance. All rows route
+# to the single `goadesign/goa` Instance (goa.py), which dispatches here by
+# base.ref. v1's log parsing is identical to the default (no flaky demotion), so
+# goa.parse_goa_log(log) covers it.
