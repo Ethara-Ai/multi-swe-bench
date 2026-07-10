@@ -5,6 +5,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_NUMBER_INTERVAL = "144-37266-37823-38173-38404-38733-38790-38953-40011-40182-40216-40724-40860-40909-41134-41231-41345-41558-41992-42406-42472-43031-43040-43337-43391-43485-43488-44934-44975-45239-46014-46027-46677-46806-46964-47274-47295-47711-47823-48240-48277-48280-48640-48641-49735-49775-49881-50230-50368-50568-50576-50981-51750-51773-52015-52026-52497-52837-53032-53610-53622-53809-53987-54700-55013-55336-55396-55579-55622-55911-56198-56247-56493-56629-57028-57043-57253-57514-57560-58026-58118-58599-58606-58739-58778-58985-59064"
+
 
 class IstioImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -20,7 +22,7 @@ class IstioImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+        return "golang:1.26-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -37,20 +39,47 @@ class IstioImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f"RUN git clone --no-single-branch https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    curl \\
+    build-essential \\
+    git \\
+    gnupg \\
+    make \\
+    python3 \\
+    sudo \\
+    wget \\
+    && rm -rf /var/lib/apt/lists/*
+
+ENV GOTOOLCHAIN=local
+ENV GOFLAGS="-buildvcs=false -mod=mod"
+
 {code}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -155,7 +184,8 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply /home/test.patch
+git apply /home/fix.patch
 go test -v -count=1 ./...
 
 """.format(pr=self.pr),
@@ -171,22 +201,28 @@ go test -v -count=1 ./...
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        return f"""# syntax=docker/dockerfile:1.6
 
-        return f"""FROM {name}:{tag}
+FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 
-{prepare_commands}
+WORKDIR /home/{self.pr.repo}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+
+{Image._HARDENING_BLOCK}
+
+RUN bash /home/prepare.sh
 
 {self.clear_env}
 
 """
 
 
-@Instance.register("istio", "istio")
+@Instance.register("istio", _NUMBER_INTERVAL)
 class Istio(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
