@@ -49,11 +49,11 @@ RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/source
 
 {self.global_env}
 
-RUN mkdir -p /go/src/github.com/ethereum
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
-WORKDIR /go/src/github.com/ethereum
+RUN mkdir -p /go/src/github.com/ethereum && ln -sfn /home/{self.pr.repo} /go/src/github.com/ethereum/go-ethereum
 
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /go/src/github.com/ethereum/go-ethereum
+WORKDIR /home/{self.pr.repo}
 
 {self.clear_env}
 
@@ -221,3 +221,14 @@ class GO_ETHEREUM_3535_TO_3514(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Registers each delivered bundle's dash-joined number_interval to this era's
+# class so Instance.create() resolves f"ethereum/{number_interval}" -> GO_ETHEREUM_3535_TO_3514.
+_BUNDLE_NIS_GO_ETHEREUM_3535_TO_3514 = [
+    "3514-3592-3605-3625-3631-3635-3636-3641-3645-3648-3649-3651-3656-3662-3665-3668-3670-3671",
+    "3535-3536-3538-3542-3544-3545-3546-3548-3551-3553-3555-3558-3559-3560-3568-3570",
+]
+for _ni in _BUNDLE_NIS_GO_ETHEREUM_3535_TO_3514:
+    Instance.register("ethereum", _ni)(GO_ETHEREUM_3535_TO_3514)
