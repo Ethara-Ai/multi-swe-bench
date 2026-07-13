@@ -5,6 +5,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_NUMBER_INTERVAL = "1297-1557-1626-1677-1927-1962-2208-2246-2281-2305-2353-2395-2548-2573-2641-2659-2764-2777-2813-2817-2880-3046-3059-3097-3129-3180-3248-3284-3313-3428-3512-3557-3678-3684-3734-3763-3787-3849-3991-3996-4071-4094-4136-4145-4161-4225-4252-4280-4307-4334-4361-4377-4459-4485-4554-4595-4684"
+
 
 def _extract_ruby_test_info(test_patch: str) -> dict[str, list[str]]:
     """Extract test methods per Ruby file from a patch.
@@ -58,7 +60,7 @@ class FzfImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:1.24"
+        return "golang:1.24-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -75,14 +77,33 @@ class FzfImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f"RUN git clone --no-single-branch https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-RUN apt-get update && apt-get install -y --no-install-recommends ruby ruby-dev build-essential tmux locales && \
-    sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && \
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+ENV GOTOOLCHAIN=local
+ENV GOFLAGS="-buildvcs=false -mod=mod"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates curl build-essential git gnupg make python3 sudo wget patch \\
+    ruby ruby-dev tmux locales && \\
+    sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && \\
     rm -rf /var/lib/apt/lists/*
 
 ENV LANG=en_US.UTF-8
@@ -97,6 +118,7 @@ WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -219,8 +241,8 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
-go test -v -count=1 ./...
+git apply --whitespace=nowarn /home/test.patch
+go test -v -count=1 ./... || true
 {ruby_run}
 """.format(pr=self.pr, ruby_run=ruby_run),
             ),
@@ -231,7 +253,8 @@ go test -v -count=1 ./...
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch
+git apply --whitespace=nowarn /home/fix.patch
 go test -v -count=1 ./...
 {ruby_run}
 """.format(pr=self.pr, ruby_run=ruby_run),
@@ -247,22 +270,26 @@ go test -v -count=1 ./...
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-{prepare_commands}
+WORKDIR /home/{self.pr.repo}
+
+RUN bash /home/prepare.sh
+
+{Image._HARDENING_BLOCK}
 
 {self.clear_env}
-
 """
 
 
-@Instance.register("junegunn", "fzf")
+@Instance.register("junegunn", _NUMBER_INTERVAL)
 class Fzf(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -306,10 +333,6 @@ class Fzf(Instance):
         ]
         re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
 
-        # Ruby minitest verbose format:
-        #   PASS: "TestGoFZF#test_name = 0.15 s = ."
-        #   FAIL summary: "TestGoFZF#test_name [test/test_go.rb:123]:" (after "N) Failure:")
-        #   ERROR summary: "TestGoFZF#test_name [test/test_go.rb:123]:" (after "N) Error:")
         re_ruby_pass = re.compile(r"(\S+#test_\w+) = .* = \.")
         re_ruby_fail = re.compile(r"(\S+#test_\w+) \[.+:\d+\]:")
         re_ruby_error = re.compile(r"^(\S+#test_\w+):$")

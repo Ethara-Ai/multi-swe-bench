@@ -298,8 +298,8 @@ CMD ["/bin/bash"]
 """
 
 
-@Instance.register("apolloconfig", "5035-5182-5333-5566")
-class Apollo(Instance):
+@Instance.register("apolloconfig", "5333-5566")
+class APOLLO_2PR(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

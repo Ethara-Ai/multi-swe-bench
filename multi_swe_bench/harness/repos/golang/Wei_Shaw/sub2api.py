@@ -221,6 +221,66 @@ class SUB2API_PERPR40(Instance):
         return parse_go_test_log(log)
 
 
+@Instance.register("Wei-Shaw", "45-110-166-208-213-221-236-247-278-316-377-493-513-550-579-597-621-630-670-723-761-806-807-908-944-986-1007-1047-1132-1162-1262-1382-1391-1460-1575-1635-1683-1731-1850-1948-2116-2120-2247")
+class SUB2API_43PR(Instance):
+    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
+        super().__init__()
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    def dependency(self) -> Optional[Image]:
+        return Sub2apiImageDefault(self.pr, self._config)
+
+    def run(self, run_cmd: str = "") -> str:
+        if run_cmd:
+            return run_cmd
+        return "bash /home/run.sh"
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+        if test_patch_run_cmd:
+            return test_patch_run_cmd
+        return "bash /home/test-run.sh"
+
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+        if fix_patch_run_cmd:
+            return fix_patch_run_cmd
+        return "bash /home/fix-run.sh"
+
+    def parse_log(self, log: str) -> TestResult:
+        return parse_go_test_log(log)
+
+
+@Instance.register("Wei-Shaw", "110-166-208-213-221-236-247-278-316-377-493-513-550-579-597-630-670-723-761-806-908-944-986-1007-1047-1132-1162-1262-1382-1460-1575-1635-1683-1731-1948-2116-2247")
+class SUB2API_37PR(Instance):
+    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
+        super().__init__()
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    def dependency(self) -> Optional[Image]:
+        return Sub2apiImageDefault(self.pr, self._config)
+
+    def run(self, run_cmd: str = "") -> str:
+        return run_cmd if run_cmd else "bash /home/run.sh"
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+        return test_patch_run_cmd if test_patch_run_cmd else "bash /home/test-run.sh"
+
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+        return fix_patch_run_cmd if fix_patch_run_cmd else "bash /home/fix-run.sh"
+
+    def parse_log(self, log: str) -> TestResult:
+        return parse_go_test_log(log)
+
+
 @Instance.register("Wei-Shaw", "213-550-579-621-1382-2116")
 class SUB2API(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
