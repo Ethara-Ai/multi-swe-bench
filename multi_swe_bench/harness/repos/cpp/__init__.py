@@ -24,6 +24,7 @@ from multi_swe_bench.harness.repos.cpp.uNetworking import *
 from multi_swe_bench.harness.repos.cpp.doctest import *
 # from multi_swe_bench.harness.repos.cpp.danmar import *  # module not present
 from multi_swe_bench.harness.repos.cpp.electron import *
+from multi_swe_bench.harness.repos.cpp.emscripten_core import *
 from multi_swe_bench.harness.repos.cpp.MariaDB import *
 from multi_swe_bench.harness.repos.cpp.Neargye import *
 from multi_swe_bench.harness.repos.cpp.polybar import *
