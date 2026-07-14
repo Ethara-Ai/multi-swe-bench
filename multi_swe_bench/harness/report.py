@@ -12,6 +12,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import functools
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Tuple, Union
@@ -30,6 +32,9 @@ from multi_swe_bench.harness.pull_request import Base, PullRequest, PullRequestB
 from multi_swe_bench.harness.test_result import Test, TestResult, TestStatus
 
 
+REPORT_SCHEMA_VERSION = 2
+
+
 @dataclass_json
 @dataclass
 class Report(PullRequestBase):
@@ -43,9 +48,35 @@ class Report(PullRequestBase):
     run_result: TestResult = None
     test_patch_result: TestResult = None
     fix_patch_result: TestResult = None
+
+    # Raw patch bytes; used at construction to derive *_files, then dropped from JSON.
+    test_patch: str = field(
+        default="", metadata=config(exclude=lambda _: True)
+    )
+    fix_patch: str = field(
+        default="", metadata=config(exclude=lambda _: True)
+    )
+
+    test_patch_files: list[str] = field(default_factory=list)
+    fix_patch_files: list[str] = field(default_factory=list)
+
+    reclassified_from_target: dict[str, Test] = field(default_factory=dict)
+    fix_patch_authored_candidates: dict[str, Test] = field(default_factory=dict)
+    guard_fix_patch_touched_tests: dict[str, Test] = field(default_factory=dict)
+
+    schema_version: int = 1
+
     _tests: dict[str, Test] = field(
         default_factory=dict, metadata=config(exclude=lambda _: True)
     )
+    _test_patch_matcher_ok: bool = field(
+        default=True, metadata=config(exclude=lambda _: True)
+    )
+    _fix_patch_matcher_ok: bool = field(
+        default=True, metadata=config(exclude=lambda _: True)
+    )
+    _test_patch_added: list[str] = field(default_factory=list)
+    _fix_patch_added: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.run_result:
@@ -67,7 +98,40 @@ class Report(PullRequestBase):
             fix = self.fix_patch_result._tests.get(test_name, TestStatus.NONE)
             self._tests[test_name] = Test(run, test, fix)
 
+        # Trust persisted lists on JSON regeneration; ReportTask stubs empty patches.
+        if self.test_patch and not self.test_patch_files:
+            self.test_patch_files = sorted(_extract_touched_files(self.test_patch))
+        if self.fix_patch and not self.fix_patch_files:
+            self.fix_patch_files = sorted(_extract_touched_files(self.fix_patch))
+
+        if self.test_patch and not self._test_patch_added:
+            self._test_patch_added = _extract_added_lines(self.test_patch)
+        if self.fix_patch and not self._fix_patch_added:
+            self._fix_patch_added = _extract_added_lines(self.fix_patch)
+        self._test_patch_matcher_ok = _file_matcher_can_hit(
+            self.test_patch_files, self._tests.keys()
+        )
+        self._fix_patch_matcher_ok = _file_matcher_can_hit(
+            self.fix_patch_files, self._tests.keys()
+        )
+
+        # Loaded artifact predates the current classifier schema. Wipe the
+        # cached classification so check() re-runs under current rules.
+        if self.schema_version < REPORT_SCHEMA_VERSION:
+            self.valid = None
+            self.error_msg = None
+            self.fixed_tests = {}
+            self.p2p_tests = {}
+            self.f2p_tests = {}
+            self.s2p_tests = {}
+            self.n2p_tests = {}
+            self.reclassified_from_target = {}
+            self.fix_patch_authored_candidates = {}
+            self.guard_fix_patch_touched_tests = {}
+
         self.valid, self.error_msg = self.check()
+        if self.valid is True:
+            self.schema_version = REPORT_SCHEMA_VERSION
 
     @classmethod
     def from_dict(cls, d: dict) -> "Report":
@@ -86,6 +150,26 @@ class Report(PullRequestBase):
 
     def json(self) -> str:
         return self.to_json(ensure_ascii=False)
+
+    def _touched_by_test_patch(self, test_name: str) -> bool:
+        if not self.test_patch and not self.test_patch_files:
+            return True
+        # Precise: test's identifier appears as a definition or string in test_patch's + lines.
+        if _authored_via_diff(test_name, self._test_patch_added):
+            return True
+        # File-based fallback (works across regen when patch bytes are lost).
+        if self.test_patch_files and self._test_patch_matcher_ok:
+            return _test_name_matches_files(test_name, self.test_patch_files)
+        return True
+
+    def _touched_by_fix_patch(self, test_name: str) -> bool:
+        if not self.fix_patch and not self.fix_patch_files:
+            return False
+        if _authored_via_diff(test_name, self._fix_patch_added):
+            return True
+        if self.fix_patch_files and self._fix_patch_matcher_ok:
+            return _test_name_matches_files(test_name, self.fix_patch_files)
+        return False
 
     def check(self, force: bool = False) -> Tuple[bool, str]:
         if not force and self.valid is not None:
@@ -127,15 +211,67 @@ class Report(PullRequestBase):
                 self.error_msg = f"By comparing the test results before and after applying the fix patch, an anomalous pattern was detected. A brief summary is as follows: {self.short_report()}. `{name}`: {test}"
                 return (self.valid, self.error_msg)
 
+        # 5. Cheating guard: a fix patch that touches a credited test's file
+        #    is a self-satisfying loop. Scoped to `fixed_tests` so maintenance
+        #    PRs touching test files without crediting any test in them are
+        #    not rejected.
+        for name in self.fixed_tests:
+            if self._touched_by_fix_patch(name):
+                self.guard_fix_patch_touched_tests[name] = self._tests[name]
+        if self.guard_fix_patch_touched_tests:
+            self.valid = False
+            offenders = ", ".join(sorted(self.guard_fix_patch_touched_tests))
+            self.error_msg = (
+                f"Fix patch modified file(s) containing credited test(s); "
+                f"cannot credit the fix as unbiased. A brief summary is as "
+                f"follows: {self.short_report()}. Touched credited tests: "
+                f"{offenders}"
+            )
+            return (self.valid, self.error_msg)
+
+        # 6. Baseline-first classifier. run_result was captured before test.patch,
+        #    so test.run != NONE is temporal proof a test existed at baseline.
+        #    Status alone drives CBC detection and F2P/S2P inference; matchers are
+        #    only needed for the phantom-N2P case where status is genuinely ambiguous.
         for name, test in self._tests.items():
-            if test.test == TestStatus.PASS and test.fix == TestStatus.PASS:
+            if test.fix != TestStatus.PASS:
+                continue
+
+            if test.test == TestStatus.PASS:
                 self.p2p_tests[name] = test
-            elif test.test == TestStatus.FAIL and test.fix == TestStatus.PASS:
+                continue
+
+            if test.test == TestStatus.FAIL:
                 self.f2p_tests[name] = test
-            elif test.test == TestStatus.SKIP and test.fix == TestStatus.PASS:
+                continue
+
+            if test.test == TestStatus.SKIP:
                 self.s2p_tests[name] = test
-            elif test.test == TestStatus.NONE and test.fix == TestStatus.PASS:
+                continue
+
+            # test.test == NONE from here. test.run disambiguates.
+            if test.run == TestStatus.PASS:
+                # Classic CBC: was passing at baseline, hidden by test.patch, restored.
+                self.p2p_tests[name] = test
+                self.reclassified_from_target[name] = test
+                continue
+
+            if test.run == TestStatus.FAIL:
+                # Hidden F2P: was failing at baseline, hidden by test.patch, fixed.
+                self.f2p_tests[name] = test
+                continue
+
+            if test.run == TestStatus.SKIP:
+                # Hidden S2P.
+                self.s2p_tests[name] = test
+                continue
+
+            # test.run == NONE, test.test == NONE, test.fix == PASS.
+            # The one case where matcher is needed: genuine N2P vs phantom.
+            if self._touched_by_test_patch(name):
                 self.n2p_tests[name] = test
+            else:
+                self.fix_patch_authored_candidates[name] = test
 
         self.valid = True
         self.error_msg = ""
@@ -154,6 +290,124 @@ class Report(PullRequestBase):
             f"  test = ({self.test_patch_result.passed_count}, {self.test_patch_result.failed_count}, {self.test_patch_result.skipped_count})\n"
             f"  fix  = ({self.fix_patch_result.passed_count}, {self.fix_patch_result.failed_count}, {self.fix_patch_result.skipped_count})"
         )
+
+
+_DIFF_FILE_RE = re.compile(
+    r'^diff --git "?a/(.+?)"? "?b/(.+?)"?$',
+    re.MULTILINE,
+)
+
+
+def _extract_touched_files(patch_text: str) -> set[str]:
+    if not patch_text:
+        return set()
+    return {m.group(2) for m in _DIFF_FILE_RE.finditer(patch_text)}
+
+
+def _test_name_matches_files(test_name: str, files: Iterable[str]) -> bool:
+    # Path-boundary match; naive substring would false-positive on "test.py"
+    # against "my_test.py::x" etc.
+    file_head = test_name.split("::", 1)[0]
+    for f in files:
+        if file_head == f or file_head.endswith("/" + f):
+            return True
+        # JS/TS: "src/x.test.ts > describe > it" — file appears as head prefix.
+        if test_name.startswith(f + " > "):
+            return True
+    return False
+
+
+def _file_matcher_can_hit(
+    files: Iterable[str], test_names: Iterable[str]
+) -> bool:
+    files_list = list(files)
+    if not files_list:
+        return True
+    for name in test_names:
+        if _test_name_matches_files(name, files_list):
+            return True
+    return False
+
+
+_ADDED_LINE_RE = re.compile(r"^\+(?!\+\+)(.*)$", re.MULTILINE)
+_PYTEST_PARAM_RE = re.compile(r"\[.*?\]$")
+_GO_TEST_RE = re.compile(r"^Test[A-Z_]")
+
+
+def _extract_added_lines(patch_text: str) -> list[str]:
+    if not patch_text:
+        return []
+    return _ADDED_LINE_RE.findall(patch_text)
+
+
+def _candidate_identifiers(test_name: str) -> list[str]:
+    # Extract likely test function / description identifiers across languages.
+    n = test_name.strip()
+    if not n:
+        return []
+    n_noparam = _PYTEST_PARAM_RE.sub("", n)
+    out: list[str] = []
+    for sep in ("::", "#"):
+        if sep in n_noparam:
+            candidate = n_noparam.rsplit(sep, 1)[1].strip()
+            # Reject pure-digit / #N suffixes (subtest indices like
+            # Test_Foo/#04 → "04"). No language allows purely-numeric
+            # identifiers, so these can only be indices and would false-match
+            # on CVE IDs, version numbers, dates in large diffs.
+            if candidate and not candidate.lstrip("#").isdigit():
+                out.append(candidate)
+    if " > " in n:
+        last = n.split(" > ")[-1].split("(")[0].strip()
+        if last:
+            out.append(last)
+        first = n.split(" > ")[0].strip()
+        if first and first != last:
+            out.append(first)
+    if "/" in n_noparam and _GO_TEST_RE.match(n_noparam):
+        out.append(n_noparam.split("/", 1)[0])
+    if "." in n_noparam and not any(s in n_noparam for s in ["/", "::", " > ", "#", " "]):
+        out.append(n_noparam.rsplit(".", 1)[1].strip())
+    out.append(n)
+    out.append(n_noparam)
+    seen: set[str] = set()
+    result: list[str] = []
+    for c in out:
+        c = c.strip()
+        if len(c) >= 3 and c not in seen:
+            seen.add(c)
+            result.append(c)
+    return result
+
+
+@functools.lru_cache(maxsize=4096)
+def _identifier_patterns(name: str) -> Tuple[re.Pattern, re.Pattern]:
+    esc = re.escape(name)
+    return (
+        re.compile(rf"\b{esc}\s*\("),
+        re.compile(rf"""["'`]{esc}["'`]"""),
+    )
+
+
+def _appears_in_added(name: str, added: Iterable[str]) -> bool:
+    if not name:
+        return False
+    hits = [line for line in added if name in line]
+    if not hits:
+        return False
+    ident_pat, str_pat = _identifier_patterns(name)
+    for line in hits:
+        if ident_pat.search(line) or str_pat.search(line):
+            return True
+    return False
+
+
+def _authored_via_diff(test_name: str, added: list[str]) -> bool:
+    if not added:
+        return False
+    for cand in _candidate_identifiers(test_name):
+        if _appears_in_added(cand, added):
+            return True
+    return False
 
 
 def generate_report(
@@ -176,6 +430,8 @@ def generate_report(
         run_result=run_result,
         test_patch_result=test_patch_result,
         fix_patch_result=fix_patch_result,
+        test_patch=instance.pr.test_patch,
+        fix_patch=instance.pr.fix_patch,
     )
 
     return report

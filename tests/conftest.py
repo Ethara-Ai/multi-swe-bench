@@ -32,6 +32,12 @@ def _install_missing_repo_shim() -> None:
             return None
 
         def exec_module(self, module):
+            # Trade-off: unknown attributes on stubbed repo modules resolve
+            # to None so package-wide `import *` cascades keep working on
+            # partial checkouts. Tests that depend on a specific stubbed
+            # symbol will silently receive None; import the target module
+            # directly if you need a loud failure instead.
+            module.__getattr__ = lambda _name: None
             return None
 
     class _MissingRepoFinder(importlib.abc.MetaPathFinder):
