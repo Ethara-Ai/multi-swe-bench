@@ -41,13 +41,27 @@ class ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
 {self.global_env}
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
@@ -58,8 +72,19 @@ RUN sed -i 's/http:\/\/deb.debian.org/http:\/\/archive.debian.org/g' /etc/apt/so
     sed -i '/stretch-updates/d' /etc/apt/sources.list && \
     apt-get update && apt-get install -y --allow-unauthenticated git jq
 
+RUN git config --global --add safe.directory '*'
+
+# Light hardening only: keep FULL history (gc off) so every PR base.sha can be
+# checked out; the PR layer does the strict per-sha strip.
+WORKDIR /home/{self.pr.repo}
+RUN git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -144,7 +169,7 @@ npm test -- --reporter json
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.pdf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' --exclude='yarn.lock' --exclude='package-lock.json' --exclude='pnpm-lock.yaml' /home/test.patch
 npm test -- --reporter json
 
 """.format(pr=self.pr),
@@ -156,7 +181,7 @@ npm test -- --reporter json
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.pdf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' --exclude='yarn.lock' --exclude='package-lock.json' --exclude='pnpm-lock.yaml' /home/test.patch /home/fix.patch
 npm test -- --reporter json
 
 """.format(pr=self.pr),
@@ -174,6 +199,10 @@ npm test -- --reporter json
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Strict anti-reward-hack hardening at the PR layer with this PR's LITERAL
+        # base.sha (shared base keeps full history; each PR strips its own image).
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -182,8 +211,12 @@ npm test -- --reporter json
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -409,3 +442,24 @@ def _parse_mocha_log(test_log: str) -> TestResult:
         failed_tests=failed_tests,
         skipped_tests=skipped_tests,
     )
+
+
+# --- Bundle-level number_interval routing keys (all -> MaterialUi8634to6576) ---
+# Each bundle's dash-joined number_interval registered so Instance.create()
+# resolves f"mui/{number_interval}" to this era class. Fixes routing: records with
+# empty/era-name number_interval otherwise fall through to the mui/material-ui fallback.
+_BUNDLE_NIS_MATERIALUI8634TO6576 = [
+    "6576-6752-6753-6760-6762-6764-6773-6794-6796-6809-6813-6837-6838-6847-6851-6853",
+    "6621-6627-6632-6635-6638-6640-6642-6670-6672-6700-6707-6714-6717-6737-6742",
+    "6857-6862-6868-6870-6871-6876-6887-6890-6895-6908-6910-6919-6929-6930-6942-6965-6983-6992-6993-7014-7022-7030-7032-7056",
+    "7006-7091-7092-7094-7102-7105-7114-7123-7131-7135-7158-7164-7167-7191-7205-7224-7225-7244-7245",
+    "7171-7345-7367-7371-7407-7415-7428-7472-7478-7484-7486",
+    "7260-7262-7267-7273",
+    "7283-7289-7295-7313-7320-7333",
+    "7499-7520-7523-7543-7557-7560-7624-7654-7663-7677-7704-7706-7735",
+    "7835-7863-7930-7933-7967-8010",
+    "8530-8578-8594",
+    "8634-8767-8769-8812-8864-8925-9001-9058-9060-9118-9261-9316-9320-9374-9375",
+]
+for _ni in _BUNDLE_NIS_MATERIALUI8634TO6576:
+    Instance.register("mui", _ni)(MaterialUi8634to6576)

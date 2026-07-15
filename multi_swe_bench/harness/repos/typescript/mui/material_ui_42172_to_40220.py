@@ -41,13 +41,27 @@ class ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
 {self.global_env}
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
@@ -57,8 +71,19 @@ RUN apt update && apt install -y git
 RUN npm install -g pnpm@8
 RUN apt install -y jq
 
+RUN git config --global --add safe.directory '*'
+
+# Light hardening only: keep FULL history (gc off) so every PR's base.sha can be
+# checked out; the PR layer does the strict per-sha strip.
+WORKDIR /home/{self.pr.repo}
+RUN git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -145,7 +170,7 @@ NODE_ENV=test pnpm exec mocha 'packages/**/*.test.{{js,ts,tsx}}' 'docs/**/*.test
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.pdf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' --exclude='yarn.lock' --exclude='package-lock.json' --exclude='pnpm-lock.yaml' /home/test.patch
 NODE_ENV=test pnpm exec mocha 'packages/**/*.test.{{js,ts,tsx}}' 'docs/**/*.test.{{js,ts,tsx}}' --reporter json
 """.format(pr=self.pr),
             ),
@@ -156,7 +181,7 @@ NODE_ENV=test pnpm exec mocha 'packages/**/*.test.{{js,ts,tsx}}' 'docs/**/*.test
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.pdf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' --exclude='yarn.lock' --exclude='package-lock.json' --exclude='pnpm-lock.yaml' /home/test.patch /home/fix.patch
 NODE_ENV=test pnpm exec mocha 'packages/**/*.test.{{js,ts,tsx}}' 'docs/**/*.test.{{js,ts,tsx}}' --reporter json
 """.format(pr=self.pr),
             ),
@@ -173,6 +198,10 @@ NODE_ENV=test pnpm exec mocha 'packages/**/*.test.{{js,ts,tsx}}' 'docs/**/*.test
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Strict anti-reward-hack hardening at the PR layer with this PR's LITERAL
+        # base.sha (shared base keeps full history; each PR strips its own image).
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -181,8 +210,12 @@ NODE_ENV=test pnpm exec mocha 'packages/**/*.test.{{js,ts,tsx}}' 'docs/**/*.test
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -408,3 +441,24 @@ def _parse_mocha_log(test_log: str) -> TestResult:
         failed_tests=failed_tests,
         skipped_tests=skipped_tests,
     )
+
+
+# --- Bundle-level number_interval routing keys (all -> MaterialUi42172to40220) ---
+# Each bundle's dash-joined number_interval registered so Instance.create()
+# resolves f"mui/{number_interval}" to this era class. Fixes routing: records with
+# empty/era-name number_interval otherwise fall through to the mui/material-ui fallback.
+_BUNDLE_NIS_MATERIALUI42172TO40220 = [
+    "40150-40423-40754-40772-40866-40869-40947-40968-40971-40972-40981-40999-41003-41004",
+    "40302-40461-40853-40882-40884-40913-40943-40949-40957-40970-40988-40992-41000-41001-41009-41032-41036-41065",
+    "40324-40332-40453-40457-40459-40481-40503-40524-40541-40552-40567-40587-40617-40623-40632-40643-40645-40646-40647-40652-40655-40657-40661-40670-40673-40674-40679-40683-40689-40691-40697-40699-40701-40704-40711-40724-40732",
+    "40330-40559-40944-41040-41201-41221-41223-41276-41316-41405-41451-41461-41472-41473-41481-41484-41487-41494-41498-41499-41500-41502-41508-41516-41517-41518-41519-41520-41521-41522-41523-41524-41525-41526-41527-41532-41535-41540-41542-41543-41544",
+    "40967-41084-41105-41196-41241-41248-41249-41287-41300-41306-41312-41313-41320-41323-41324-41329-41355-41358-41367-41369-41370-41372-41379-41381-41383-41384-41385-41387-41389-41390-41392-41395-41404-41407-41408-41409-41411-41413-41419-41423-41424-41425-41427-41428-41429-41430-41431-41433-41434-41436-41437-41438-41439-41442-41445-41447-41450-41453-41462-41463-41465-41467-41468-41475-41476-41477",
+    "41188-41474-41742-41786-41815-41820-41822-41842-41864-41905-41914-41924-41929-41996-42009-42014-42030-42034-42054-42057-42059-42074-42075-42078-42084",
+    "41551-41557-41604-41605-41606-41641-41642-41677-41678-41679-41680-41681-41747-41752",
+    "41803-43605-44415-44537-44571-44627-44643-44650-44651-44654-44660-44663-44672-44676-44681-44683-44687-44688-44689-44690-44691-44692-44693-44695-44696-44697-44704-44707-44709-44710",
+    "41956-43243-43406-43407-43426-43427-43428-43429-43430-43431-43432-43448-43464-43465-43467-43469-43472-43474-43483-43488-43489-43490-43493-43494-43498-43500-43510-43515",
+    "42176-42226-42233-42250-42255",
+    "42241-42265-42267-42306-42312-42315-42318-42327-42330-42334-42357-42366-42373-42410-42419-42420-42421-42426-42441-42443",
+]
+for _ni in _BUNDLE_NIS_MATERIALUI42172TO40220:
+    Instance.register("mui", _ni)(MaterialUi42172to40220)

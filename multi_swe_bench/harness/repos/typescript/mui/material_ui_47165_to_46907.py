@@ -41,13 +41,27 @@ class ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
 {self.global_env}
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
@@ -57,8 +71,19 @@ RUN apt update && apt install -y git
 RUN npm install -g pnpm@10
 RUN apt install -y jq
 
+RUN git config --global --add safe.directory '*'
+
+# Light hardening only: keep FULL history (gc off) so every PR's base.sha can be
+# checked out; the PR layer does the strict per-sha strip.
+WORKDIR /home/{self.pr.repo}
+RUN git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -144,7 +169,7 @@ pnpm test:unit -- --reporter json
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.pdf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' --exclude='yarn.lock' --exclude='package-lock.json' --exclude='pnpm-lock.yaml' /home/test.patch
 pnpm test:unit -- --reporter json
 """.format(pr=self.pr),
             ),
@@ -155,7 +180,7 @@ pnpm test:unit -- --reporter json
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.pdf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' --exclude='yarn.lock' --exclude='package-lock.json' --exclude='pnpm-lock.yaml' /home/test.patch /home/fix.patch
 pnpm test:unit -- --reporter json
 """.format(pr=self.pr),
             ),
@@ -172,6 +197,10 @@ pnpm test:unit -- --reporter json
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Strict anti-reward-hack hardening at the PR layer with this PR's LITERAL
+        # base.sha (shared base keeps full history; each PR strips its own image).
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -180,8 +209,12 @@ pnpm test:unit -- --reporter json
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -407,3 +440,15 @@ def _parse_mocha_log(test_log: str) -> TestResult:
         failed_tests=failed_tests,
         skipped_tests=skipped_tests,
     )
+
+
+# --- Bundle-level number_interval routing keys (all -> MaterialUi47165to46907) ---
+# Each bundle's dash-joined number_interval registered so Instance.create()
+# resolves f"mui/{number_interval}" to this era class. Fixes routing: records with
+# empty/era-name number_interval otherwise fall through to the mui/material-ui fallback.
+_BUNDLE_NIS_MATERIALUI47165TO46907 = [
+    "46897-47001-47007-47012-47014-47017",
+    "46925-46946-46955-46965-46974-46981-47010-47015-47018-47020-47021-47022-47023-47024-47025-47026-47027-47028-47029-47030-47031-47032-47033-47034-47036-47037-47038-47043-47044-47045-47051-47054-47055-47056-47057-47058-47059-47060-47061-47062-47063-47064-47065-47066-47067-47071-47074-47076-47077-47081-47083-47084-47085-47086-47087-47088-47089-47090-47091-47092-47093-47094-47095-47096-47097-47098-47101-47104-47105-47106-47107-47120-47121-47122-47123-47124-47125-47126-47127-47128-47132-47133-47134-47136-47139-47141-47142-47146-47147-47151-47156-47157-47158-47164-47167-47168-47169-47170",
+]
+for _ni in _BUNDLE_NIS_MATERIALUI47165TO46907:
+    Instance.register("mui", _ni)(MaterialUi47165to46907)

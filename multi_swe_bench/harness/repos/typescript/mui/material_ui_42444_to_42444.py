@@ -41,13 +41,27 @@ class ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
 {self.global_env}
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
@@ -57,8 +71,19 @@ RUN apt update && apt install -y git
 RUN npm install -g pnpm@8
 RUN apt install -y jq
 
+RUN git config --global --add safe.directory '*'
+
+# Light hardening only: keep FULL history (gc off) so every PR's base.sha can be
+# checked out; the PR layer does the strict per-sha strip.
+WORKDIR /home/{self.pr.repo}
+RUN git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -145,7 +170,7 @@ pnpm test:unit -- --reporter json
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.pdf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' --exclude='yarn.lock' --exclude='package-lock.json' --exclude='pnpm-lock.yaml' /home/test.patch
 pnpm test:unit -- --reporter json
 """.format(pr=self.pr),
             ),
@@ -156,7 +181,7 @@ pnpm test:unit -- --reporter json
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.pdf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' --exclude='yarn.lock' --exclude='package-lock.json' --exclude='pnpm-lock.yaml' /home/test.patch /home/fix.patch
 pnpm test:unit -- --reporter json
 """.format(pr=self.pr),
             ),
@@ -173,6 +198,10 @@ pnpm test:unit -- --reporter json
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Strict anti-reward-hack hardening at the PR layer with this PR's LITERAL
+        # base.sha (shared base keeps full history; each PR strips its own image).
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -181,8 +210,12 @@ pnpm test:unit -- --reporter json
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
