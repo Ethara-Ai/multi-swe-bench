@@ -1,9 +1,88 @@
+from __future__ import annotations
+
 import re
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+# GOPATH layout: $GOPATH/src/github.com/minio/mc -> /home/mc (symlink), so the
+# hardening block (which runs in /home/mc) and the GOPATH build agree.
+GOPATH_DIR = "/go/src/github.com/minio/mc"
+
+
+class ImageBase(Image):
+    """Shared pre-modules base image (built once, reused by every premod PR).
+
+    Clone-only with full history kept so any PR's base.sha is reachable; the PR
+    layer does the checkout + strict history-strip. The `# syntax` directive opts
+    out of DockerfileEnhancer so this hand-written layout is used verbatim.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return "golang:1.10"
+
+    def image_prefix(self) -> str:
+        return "mswebench"
+
+    def image_tag(self) -> str:
+        return "base-premod"
+
+    def workdir(self) -> str:
+        return "base-premod"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    GOPATH=/go
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+RUN git config --global --add safe.directory '*'
+RUN git clone "${{REPO_URL}}" /home/{repo}
+# GOPATH layout: symlink $GOPATH/src/github.com/{org}/{repo} -> /home/{repo}.
+RUN mkdir -p /go/src/github.com/{org} && ln -sfn /home/{repo} {GOPATH_DIR}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
+CMD ["/bin/bash"]
+"""
 
 
 class ImageDefault(Image):
@@ -19,8 +98,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "golang:1.10"
+    def dependency(self) -> "Image":
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "mswebench"
@@ -70,12 +149,7 @@ exit 0
                 """#!/bin/bash
 set -e
 
-export GOPATH=/home/gopath
-export GO111MODULE=off
-mkdir -p $GOPATH/src/github.com/{pr.org}
-ln -sfn /home/{pr.repo} $GOPATH/src/github.com/{pr.org}/{pr.repo}
-cd $GOPATH/src/github.com/{pr.org}/{pr.repo}
-
+cd {gopath_dir}
 git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
@@ -83,7 +157,7 @@ bash /home/check_git_changes.sh
 
 go test -v -vet=off -count=1 ./... || true
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, gopath_dir=GOPATH_DIR),
             ),
             File(
                 ".",
@@ -91,11 +165,9 @@ go test -v -vet=off -count=1 ./... || true
                 """#!/bin/bash
 set -e
 
-export GOPATH=/home/gopath
-export GO111MODULE=off
-cd $GOPATH/src/github.com/{pr.org}/{pr.repo}
+cd {gopath_dir}
 # Extract packages affected by patches
-PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\.$')
+PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
 # Filter to only existing directories
 EXISTING_PKGS=""
 for pkg in $PKGS; do
@@ -112,7 +184,7 @@ for pkg in $PKGS; do
   go test -v -vet=off -count=1 -timeout 15m "$pkg" || true
 done
 
-""".format(pr=self.pr),
+""".format(gopath_dir=GOPATH_DIR),
             ),
             File(
                 ".",
@@ -120,12 +192,10 @@ done
                 """#!/bin/bash
 set -e
 
-export GOPATH=/home/gopath
-export GO111MODULE=off
-cd $GOPATH/src/github.com/{pr.org}/{pr.repo}
+cd {gopath_dir}
 git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
 # Extract packages affected by patches
-PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\.$')
+PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
 # Filter to only existing directories
 EXISTING_PKGS=""
 for pkg in $PKGS; do
@@ -142,7 +212,7 @@ for pkg in $PKGS; do
   go test -v -vet=off -count=1 -timeout 15m "$pkg" || true
 done
 
-""".format(pr=self.pr),
+""".format(gopath_dir=GOPATH_DIR),
             ),
             File(
                 ".",
@@ -150,12 +220,10 @@ done
                 """#!/bin/bash
 set -e
 
-export GOPATH=/home/gopath
-export GO111MODULE=off
-cd $GOPATH/src/github.com/{pr.org}/{pr.repo}
+cd {gopath_dir}
 git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
 # Extract packages affected by patches
-PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\.$')
+PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
 # Filter to only existing directories
 EXISTING_PKGS=""
 for pkg in $PKGS; do
@@ -172,42 +240,41 @@ for pkg in $PKGS; do
   go test -v -vet=off -count=1 -timeout 15m "$pkg" || true
 done
 
-""".format(pr=self.pr),
+""".format(gopath_dir=GOPATH_DIR),
             ),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM golang:1.10
+        # Anti-cheat hardening runs in the PR layer (the shared base keeps full
+        # history). prepare.sh checks out this PR's base.sha, then the canonical
+        # hardening block detaches at that literal sha and strips every other
+        # ref/reflog so later commits (the fix) are unreachable.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
 
-ENV DEBIAN_FRONTEND=noninteractive
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
-# Debian Stretch is EOL
-RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list && \
-    sed -i 's|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' /etc/apt/sources.list && \
-    sed -i '/stretch-updates/d' /etc/apt/sources.list && \
-    apt-get -o Acquire::Check-Valid-Until=false update && apt-get -o Acquire::Check-Valid-Until=false install -y --allow-unauthenticated git
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
-
-ENV GOPATH=/home/gopath
-ENV GO111MODULE=off
-RUN mkdir -p $GOPATH/src/github.com/{self.pr.org}
-RUN ln -sfn /home/{self.pr.repo} $GOPATH/src/github.com/{self.pr.org}/{self.pr.repo}
-
-WORKDIR $GOPATH/src/github.com/{self.pr.org}/{self.pr.repo}
-RUN git reset --hard
-RUN git checkout {self.pr.base.sha}
+{self.global_env}
 
 {copy_commands}
 
 RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
+{self.clear_env}
 
 """
 
@@ -300,3 +367,18 @@ class Mc_premod(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Delivery scope = RESOLVED (valid) bundles only; keys == #delivered instances (PIPELINE §11c).
+# Pre-modules-era bundles (GOPATH, golang:1.10).
+_BUNDLE_NIS_MC_PREMOD = [
+    "1937-1938-1939-1940-1942-1943-1945-1946-1947-1950-1951-1953-1955-1958-1959-1966-1967-1968-1969-1973-1975-1976-1977-1978-1979-1980-1982-1985-1986-1987-1988-1990-1992-1994",
+    "2005-2006-2008-2009-2010-2013-2014-2015-2019-2020-2021-2023-2024-2026-2030-2031-2033-2036-2037-2040-2041-2043-2045-2049-2051-2052-2054-2059-2062-2063-2065-2066-2067-2068-2069-2070-2075-2076-2078-2080-2081-2082-2084-2087-2091-2095-2096-2097-2098-2100-2102-2103-2104",
+    "2101-2106-2109-2111-2113-2114-2116-2118-2119-2120-2121-2122-2126-2127-2131-2133-2135-2138-2139-2141-2143-2146-2149-2150-2153-2155-2160-2165-2167-2171-2173-2177-2178-2179-2180-2181-2182",
+    "2142-2293-2329-2350-2360-2361-2362-2363-2365-2370-2383",
+    "2265-2275-2276-2282-2285-2287-2289-2290-2291-2292-2294-2299-2300-2302-2303-2306-2310-2313-2318-2320-2322-2323-2325-2326-2331",
+    "2511-2518-2520-2521-2523-2525-2529",
+    "2649-2659",
+]
+for _ni in _BUNDLE_NIS_MC_PREMOD:
+    Instance.register("minio", _ni)(Mc_premod)

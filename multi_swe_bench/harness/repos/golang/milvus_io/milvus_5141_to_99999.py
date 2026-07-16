@@ -44,24 +44,31 @@ class MilvusGoImageBase(Image):
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
-{self.global_env}
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    CGO_ENABLED=1 \\
+    GOPROXY=https://proxy.golang.org,direct \\
+    GOTOOLCHAIN=auto
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV CGO_ENABLED=1
-ENV GOPROXY=https://proxy.golang.org,direct
-ENV GOTOOLCHAIN=auto
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y \\
+RUN apt-get update && apt-get install -y --no-install-recommends \\
     git \\
     build-essential \\
     cmake \\
@@ -74,15 +81,20 @@ RUN apt-get update && apt-get install -y \\
     libssl-dev \\
     protobuf-compiler \\
     unzip \\
+    ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git config --global --add safe.directory '*'
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
-WORKDIR /home/{self.pr.repo}
-RUN go mod download || true
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -220,15 +232,27 @@ go test -v -count=1 -timeout 600s ./...
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # Anti-cheat hardening runs in the PR layer (the shared base keeps full
+        # history so every PR's base.sha is reachable). prepare.sh checks out
+        # this PR's base.sha, then the canonical hardening block detaches at that
+        # literal sha and strips every other ref/reflog so later commits (the
+        # fix) are unreachable.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
 
-        return f"""FROM {name}:{tag}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
 
 {self.clear_env}
 
@@ -331,3 +355,22 @@ class Milvus_5141_to_99999(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Registered so delivered records (which carry the dash-joined number_interval)
+# resolve to this era class (PIPELINE §11/§11c). The era-tag key above still
+# routes the build-time dataset.
+# Go era (PRs 5141+): golang:1.25, CGO + C++ core.
+_BUNDLE_NIS_MILVUS_GO = [
+    "11393-14207-14418-15119-15134-15138-15163-15171-15172-15173-15174-15182-15251-15273-15358-15377-15381-15384-15387-15389-15408-15410-15411-15414-15417-15419-15422-15424-15425-15426-15427-15431-15434-15436-15447-15448-15453-15455-15461-15463-15467-15482-15485-15487-15491-15493-15495-15497-15498-15500-15501-15502-15506-15507-15511-15512-15515-15525-15528-15530-15531-15537-15539-15542-15543-15545-15547-15550-15551-15553-15563-15569-15571-15572-15580-15581-15586-15588-15590-15591-15595-15598-15601-15602-15603-15618-15626-15631-15636-15638-15639-15643-15663-15664-15673-15675-15678-15686-15687-15690",
+    "15541-15577-15582-15606-15614-15640-15647-15649-15650-15680-15684-15693-15698-15700-15701-15702-15706-15707-15709-15712-15715-15725-15726-15727-15732-15733-15737-15738-15740-15743-15748-15749-15752-15753-15759-15760-15761-15770-15774-15776-15787-15790-15795-15796-15798-15801-15803-15804-15809-15813-15814-15821-15827-15838-15839-15845-15853-15870-15932-15935-15956-16035-16058-16063-16066-16070-16072-16178-16243-16244-16245-16252-16253-16259-16327-16331-16338",
+    "17899-18570-18584-18627-18632-18658-18678-18679-18683-18693-18701-18708-18714-18727-18732-18733-18740-18745-18753-18783-18784-18790-18795-18796-18797-18844-18850-18858-18881-18884-18886-18889-18895-18906-18919-18934-18937-18947-18953-18990-18991-18996-19002-19010-19021-19028-19045-19060-19076-19080-19091-19111-19112-19131-19132-19135-19136-19173",
+    "18394-18410-18423-18427-18432-18467-18513-18542-18568-18569",
+    "19309-19326-19353-19371-19391-19402-19406-19421-19426-19436-19465-19476-19486-19487",
+    "20499-20631-20690-20696-20699-20722-20728-20737-20739-20742-20750-20754-20759-20762-20770-20778-20782-20785-20788-20814-20826-20827-20834-20840-20844-20847-20872-20881-20883-20887-20890-20899-20900-20901-20902-20903-20910-20923-20930-20931-20939-20940-20941-20942-20943-20950-20971-20974-20976-20984-21010-21011-21012-21016-21019-21024-21028-21029-21030-21040-21048-21054-21058-21066-21067-21073-21079-21083-21105-21114-21119-21121-21130-21132-21133-21135-21136-21137-21139-21145-21146-21150-21154-21155-21163-21164-21174-21178-21183-21214-21224-21226-21227-21232-21233-21241-21243-21244-21246-21255",
+    "21314-21320-21321-21329-21333-21334",
+    "21658-22084-22111-22124-22136-22145-22154-22176-22188-22197-22208-22209-22215-22225-22227-22233-22238-22239-22241-22251-22252-22255-22257-22258-22267-22269-22274-22285-22287-22291-22296-22306-22311-22313-22317-22322-22326-22329-22331-22339-22340-22341-22353-22357-22368-22369-22370-22371-22375-22377-22378-22386-22395-22400-22402-22414-22423-22433-22437-22440-22441-22442-22444-22446-22449-22452-22454-22464-22470-22472-22474-22476-22486-22487-22493-22505-22509-22514-22517-22518-22523-22526-22529-22543-22544-22548-22551-22560-22584-22589-22596-22598-22601-22611-22614-22618-22622-22632-22634-22635-22653-22659-22660-22667-22668-22673-22675-22686-22691-22696-22721-22723-22725-22729-22731-22734-22739-22741-22746-22752-22756-22771-22802-22807-22818",
+    "23814-23835-23838",
+]
+for _ni in _BUNDLE_NIS_MILVUS_GO:
+    Instance.register("milvus-io", _ni)(Milvus_5141_to_99999)
