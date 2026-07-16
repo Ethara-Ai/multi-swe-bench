@@ -3,7 +3,27 @@ from typing import Optional
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-from multi_swe_bench.harness.repos.python.mem0ai.mem0 import parse_pytest_log
+from multi_swe_bench.harness.repos.python.mem0ai.mem0 import (
+    ImageBase,
+    parse_pytest_log,
+    pr_dockerfile,
+    register_era,
+)
+
+# Covers the single-PR bundle 1459, pinned by number_interval rather than by
+# release range so it never competes with the three packaging eras.
+register_era("mem0_1459_to_1459", bundles=("1459",))
+
+
+# Runs in the per-PR layer, in WORKDIR /home/mem0 after the ${BASE_COMMIT}
+# checkout and before the hardening block, so the project is installed at this
+# PR's commit. It cannot live in the shared base: the base has no repo.
+_INSTALL = (
+    "RUN cd /home/mem0/embedchain && pip install poetry-core poetry || true\n"
+    "RUN cd /home/mem0/embedchain && poetry install --all-extras 2>/dev/null "
+    '|| pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true\n'
+    "RUN pip install pytest pytest-mock pytest-env || true"
+)
 
 
 class ImageDefault(Image):
@@ -19,8 +39,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.11-slim"
+    def dependency(self) -> Image:
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -80,32 +100,7 @@ pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-colle
         ]
 
     def dockerfile(self) -> str:
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        return """
-FROM python:3.11-slim
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y --no-install-recommends git build-essential curl && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/{pr.org}/{pr.repo}.git /home/{pr.repo}
-
-WORKDIR /home/{pr.repo}
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-
-RUN cd /home/{pr.repo}/embedchain && pip install --upgrade pip setuptools wheel poetry-core poetry || true
-RUN cd /home/{pr.repo}/embedchain && poetry install --all-extras 2>/dev/null || pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true
-RUN pip install pytest pytest-mock pytest-env || true
-
-{copy_commands}
-""".format(pr=self.pr, copy_commands=copy_commands)
+        return pr_dockerfile(self, _INSTALL)
 
 
 @Instance.register("mem0ai", "mem0_1459_to_1459")

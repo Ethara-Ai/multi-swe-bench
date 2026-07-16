@@ -1,34 +1,85 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.python.mem0ai.mem0 import (
+    ImageBase,
+    pr_dockerfile,
+    register_era,
+)
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
-# Dummy provider credentials so import-time / env-gated tests do not abort
-# collection. mem0 integrates many LLM + vector-DB providers.
-_DUMMY_ENV = """ENV OPENAI_API_KEY=sk-dummy0000000000000000000000000000000000000000
-ENV ANTHROPIC_API_KEY=sk-ant-dummy0000000000000000000000000000000000
-ENV GOOGLE_API_KEY=dummy
-ENV GEMINI_API_KEY=dummy
-ENV COHERE_API_KEY=dummy
-ENV GROQ_API_KEY=dummy
-ENV TOGETHER_API_KEY=dummy
-ENV HUGGINGFACE_API_KEY=dummy
-ENV HUGGINGFACEHUB_API_TOKEN=dummy
-ENV MISTRAL_API_KEY=dummy
-ENV DEEPSEEK_API_KEY=dummy
-ENV XAI_API_KEY=dummy
-ENV OPENROUTER_API_KEY=dummy
-ENV AZURE_OPENAI_API_KEY=dummy
-ENV AWS_ACCESS_KEY_ID=dummy
-ENV AWS_SECRET_ACCESS_KEY=dummy
-ENV AWS_DEFAULT_REGION=us-east-1
-ENV POETRY_VIRTUALENVS_CREATE=false
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PYTHONDONTWRITEBYTECODE=1"""
+# v0.0.24 .. v0.1.33 -- embedchain in-tree, poetry build backend.
+register_era("mem0_1005_to_189", min_version=(0, 0, 0), min_anchor=0)
+
+# embedchain is imported by the tests of this era but is not always installed as
+# a distribution, so importlib.metadata lookups raise PackageNotFoundError at
+# collection time. Synthesising a dist-info directory satisfies the lookup.
+_EMBEDCHAIN_DISTINFO = (
+    "RUN python -c \"import os,sysconfig; nl=chr(10); "
+    "d=os.path.join(sysconfig.get_paths()['purelib'],'embedchain-0.0.0.dist-info'); "
+    "os.makedirs(d,exist_ok=True); "
+    "open(os.path.join(d,'METADATA'),'w').write("
+    "'Metadata-Version: 2.1'+nl+'Name: embedchain'+nl+'Version: 0.0.0'+nl)\" || true"
+)
+
+# Runs in the per-PR layer, in WORKDIR /home/mem0 after the ${BASE_COMMIT}
+# checkout and before the hardening block, so the project is installed at this
+# PR's commit. It cannot live in the shared base: the base has no repo.
+# poetry is pinned to 1.6.1 -- this era's lockfiles predate the poetry 2.x
+# lockfile format and a newer poetry refuses to read them.
+# This era has NO poetry.lock, so `poetry install` re-resolves from scratch and
+# hangs (>>10 min) -- and the setuptools flat-layout build backend makes
+# `pip install .`/`-e .` fail on package discovery. Both silent-|| paths left the
+# image with none of embedchain's deps -> every test file ImportError'd at
+# collection -> (0,0,0). Instead, read THIS commit's own non-optional deps +
+# lightweight dataloaders straight from pyproject.toml and pip-install them
+# (seconds, no resolve). Heavy ML extras (torch/unstructured/sentence-transformers
+# /...) are skipped: not needed to import embedchain or collect its tests. WORKDIR
+# is /home/mem0 here; base declares `# syntax=docker/dockerfile:1.6` so heredoc RUN
+# works, and python3 is 3.11 (tomllib in stdlib).
+_INSTALL = (
+    "RUN pip install --upgrade pip setuptools wheel\n"
+    "RUN python3 <<'PYEOF' || true\n"
+    "import tomllib, subprocess, re\n"
+    "poe = tomllib.load(open('pyproject.toml','rb')).get('tool',{}).get('poetry',{})\n"
+    "deps, extras = poe.get('dependencies',{}), poe.get('extras',{})\n"
+    "HEAVY = {'torch','torchvision','unstructured','sentence-transformers','gpt4all',\n"
+    "         'pymilvus','google-cloud-aiplatform','detectron2','llama-hub','replicate',\n"
+    "         'cohere','weaviate-client','pinecone-client','qdrant-client','opensearch-py',\n"
+    "         'elasticsearch','huggingface_hub'}\n"
+    "def conv(name, spec):\n"
+    "    v = spec.get('version') if isinstance(spec, dict) else spec\n"
+    "    if not v: return name\n"
+    "    v = v.strip()\n"
+    "    if v.startswith('^'):\n"
+    "        b = v[1:].split(',')[0].strip()\n"
+    "        p = [int(x) for x in re.findall(r'\\d+', b)] + [0, 0, 0]\n"
+    "        hi = f'{p[0]+1}.0.0' if p[0] else (f'0.{p[1]+1}.0' if p[1] else f'0.0.{p[2]+1}')\n"
+    "        return f'{name}>={b},<{hi}'\n"
+    "    if v.startswith('~'):\n"
+    "        b = v[1:].strip(); p = [int(x) for x in re.findall(r'\\d+', b)] + [0, 0]\n"
+    "        return f'{name}>={b},<{p[0]}.{p[1]+1}.0'\n"
+    "    if v[0].isdigit(): return f'{name}=={v}'\n"
+    "    return f'{name}{v}'\n"
+    "pk, seen = [], set()\n"
+    "for n, s in deps.items():\n"
+    "    if n.lower()=='python' or n.lower() in HEAVY: continue\n"
+    "    if isinstance(s, dict) and s.get('optional'): continue\n"
+    "    pk.append(conv(n, s)); seen.add(n.lower())\n"
+    "for n in extras.get('dataloaders', []):\n"
+    "    r = 'youtube-transcript-api' if n.lower().startswith('youtube') else n\n"
+    "    if r.lower() in HEAVY or r.lower() in seen: continue\n"
+    "    pk.append(conv(r, deps.get(n) or deps.get(r) or '')); seen.add(r.lower())\n"
+    "print('INSTALLING:', pk, flush=True)\n"
+    "subprocess.run(['pip','install',*pk])\n"
+    "PYEOF\n"
+    f"{_EMBEDCHAIN_DISTINFO}\n"
+    "RUN pip install onnxruntime pyyaml pytest pytest-mock pytest-asyncio pytest-env || true"
+)
 
 
 def parse_pytest_log(log: str) -> TestResult:
@@ -91,8 +142,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.11-slim"
+    def dependency(self) -> Image:
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -153,35 +204,7 @@ pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-colle
         ]
 
     def dockerfile(self) -> str:
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        return """
-FROM python:3.11-slim
-
-ENV DEBIAN_FRONTEND=noninteractive
-{dummy_env}
-
-RUN apt-get update && apt-get install -y --no-install-recommends git build-essential curl libgeos-dev && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/{pr.org}/{pr.repo}.git /home/{pr.repo}
-
-WORKDIR /home/{pr.repo}
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-
-RUN pip install --upgrade pip setuptools wheel && pip install "poetry==1.6.1" || true
-RUN poetry config virtualenvs.create false 2>/dev/null || true
-RUN timeout 600 poetry install --no-root --no-interaction 2>/dev/null || pip install -e . 2>/dev/null || pip install . 2>/dev/null || true
-RUN python -c "import os,sysconfig; nl=chr(10); d=os.path.join(sysconfig.get_paths()['purelib'],'embedchain-0.0.0.dist-info'); os.makedirs(d,exist_ok=True); open(os.path.join(d,'METADATA'),'w').write('Metadata-Version: 2.1'+nl+'Name: embedchain'+nl+'Version: 0.0.0'+nl)" || true
-RUN pip install onnxruntime pytest pytest-mock pytest-asyncio pytest-env || true
-
-{copy_commands}
-""".format(pr=self.pr, copy_commands=copy_commands, dummy_env=_DUMMY_ENV)
+        return pr_dockerfile(self, _INSTALL)
 
 
 @Instance.register("mem0ai", "mem0_1005_to_189")

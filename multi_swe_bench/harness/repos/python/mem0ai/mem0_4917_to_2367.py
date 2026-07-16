@@ -1,34 +1,21 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.python.mem0ai.mem0 import (
+    _PROVIDER_DEPS,
+    ImageBase,
+    pr_dockerfile,
+    register_era,
+)
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
-# Dummy provider credentials so import-time / env-gated tests do not abort
-# collection. mem0 integrates many LLM + vector-DB providers.
-_DUMMY_ENV = """ENV OPENAI_API_KEY=sk-dummy0000000000000000000000000000000000000000
-ENV ANTHROPIC_API_KEY=sk-ant-dummy0000000000000000000000000000000000
-ENV GOOGLE_API_KEY=dummy
-ENV GEMINI_API_KEY=dummy
-ENV COHERE_API_KEY=dummy
-ENV GROQ_API_KEY=dummy
-ENV TOGETHER_API_KEY=dummy
-ENV HUGGINGFACE_API_KEY=dummy
-ENV HUGGINGFACEHUB_API_TOKEN=dummy
-ENV MISTRAL_API_KEY=dummy
-ENV DEEPSEEK_API_KEY=dummy
-ENV XAI_API_KEY=dummy
-ENV OPENROUTER_API_KEY=dummy
-ENV AZURE_OPENAI_API_KEY=dummy
-ENV AWS_ACCESS_KEY_ID=dummy
-ENV AWS_SECRET_ACCESS_KEY=dummy
-ENV AWS_DEFAULT_REGION=us-east-1
-ENV POETRY_VIRTUALENVS_CREATE=false
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PYTHONDONTWRITEBYTECODE=1"""
+# v0.1.101 onward -- hatchling build backend.
+register_era("mem0_4917_to_2367", min_version=(0, 1, 101), min_anchor=2738)
+
 
 
 def parse_pytest_log(log: str) -> TestResult:
@@ -78,6 +65,19 @@ def parse_pytest_log(log: str) -> TestResult:
     )
 
 
+# Runs in the per-PR layer, in WORKDIR /home/mem0 after the ${BASE_COMMIT}
+# checkout and before the hardening block, so the project is installed at this
+# PR's commit. It cannot live in the shared base: the base has no repo.
+_INSTALL = (
+    "RUN pip install poetry-core hatchling poetry || true\n"
+    "RUN poetry config virtualenvs.create false 2>/dev/null || true\n"
+    'RUN pip install -e ".[test]" 2>/dev/null || pip install -e ".[dev,test]" 2>/dev/null '
+    '|| pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true\n'
+    "RUN pip install pytest pytest-mock pytest-asyncio pytest-env || true\n"
+    f"{_PROVIDER_DEPS}"
+)
+
+
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -91,8 +91,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.11-slim"
+    def dependency(self) -> Image:
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -148,34 +148,7 @@ pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-colle
         ]
 
     def dockerfile(self) -> str:
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        return """
-FROM python:3.11-slim
-
-ENV DEBIAN_FRONTEND=noninteractive
-{dummy_env}
-
-RUN apt-get update && apt-get install -y --no-install-recommends git build-essential curl libgeos-dev && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/{pr.org}/{pr.repo}.git /home/{pr.repo}
-
-WORKDIR /home/{pr.repo}
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-
-RUN pip install --upgrade pip setuptools wheel poetry-core hatchling poetry || true
-RUN poetry config virtualenvs.create false 2>/dev/null || true
-RUN pip install -e ".[test]" 2>/dev/null || pip install -e ".[dev,test]" 2>/dev/null || pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true
-RUN pip install pytest pytest-mock pytest-asyncio pytest-env || true
-
-{copy_commands}
-""".format(pr=self.pr, copy_commands=copy_commands, dummy_env=_DUMMY_ENV)
+        return pr_dockerfile(self, _INSTALL)
 
 
 @Instance.register("mem0ai", "mem0_4917_to_2367")
