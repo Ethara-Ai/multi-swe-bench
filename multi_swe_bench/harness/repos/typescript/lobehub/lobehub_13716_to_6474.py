@@ -53,22 +53,22 @@ class LobeHubImageBaseLate(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/"
-                f"{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
+        # Toolchain-only base: deliberately does NOT clone the repo. A single
+        # ``base-late`` tag is shared by every PR in this era, but each PR has a
+        # different ``base.sha``. Cloning here would let DockerfileEnhancer
+        # (which processes string-dependency images like this one) rewrite the
+        # hardcoded clone into a ``git checkout ${BASE_COMMIT}`` + hardening
+        # sequence pinned to whichever PR triggered the shared base build,
+        # pruning every other PR's commit out of git history and breaking them.
+        # The clone + checkout + hardening happen per-PR in
+        # ``LobeHubImageDefaultLate`` instead. With no clone/COPY line here, the
+        # enhancer leaves this base untouched apart from its infra block.
         return f"""FROM {image_name}
 
 {self.global_env}
 
 WORKDIR /home/
 RUN apt-get update && apt-get install -y --no-install-recommends git libvips-dev && rm -rf /var/lib/apt/lists/*
-
-{code}
 
 {self.clear_env}
 
@@ -227,16 +227,34 @@ done
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        # This per-PR image chains to a base *Image* (not a string), so
+        # DockerfileEnhancer returns this dockerfile verbatim and does NOT
+        # auto-inject git-history hardening. We therefore clone, check out
+        # ``${BASE_COMMIT}``, and apply ``Image._HARDENING_BLOCK`` manually so
+        # the fix / future commits cannot be read out of git history (reward
+        # hacking). ``BASE_COMMIT`` is pinned to *this* PR's ``base.sha``.
         return f"""FROM {name}:{tag}
+
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
 {self.global_env}
 
-{copy_commands}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{copy_commands}
 RUN bash /home/prepare.sh
+
+{Image._HARDENING_BLOCK}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
