@@ -186,7 +186,11 @@ go test -v -count=1 ./...
 """
 
 
+_NUMBER_INTERVAL = "558-628-645-726-858-860-1039-1323-2585-2807-3876-3892-3932-4130-4177-4259-4284-4318-4345-4481-4571-4631-4690-4757-4826-5094-5095-5228-5487"
+
+
 @Instance.register("jesseduffield", "lazygit")
+@Instance.register("jesseduffield", _NUMBER_INTERVAL)
 class Lazygit(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
