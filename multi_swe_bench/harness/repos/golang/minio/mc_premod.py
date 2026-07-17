@@ -382,3 +382,16 @@ _BUNDLE_NIS_MC_PREMOD = [
 ]
 for _ni in _BUNDLE_NIS_MC_PREMOD:
     Instance.register("minio", _ni)(Mc_premod)
+
+
+# === remaining bundle keys (full raw dataset coverage, §11b) ===
+# The delivered/resolved subset is registered above; these are the rest of
+# the 102-record raw dataset so every bundle number_interval routes.
+_BUNDLE_NIS_MC_PREMOD_UNRESOLVED = [
+    "2413-2423-2424-2426-2431-2437-2438-2440-2441",  # pr-2413 (9 PRs)
+    "2481-2488-2489-2491-2494",  # pr-2481 (5 PRs)
+    "2593-2594-2595-2598-2599-2602-2603-2605-2613-2616",  # pr-2593 (10 PRs)
+]
+
+for _ni in _BUNDLE_NIS_MC_PREMOD_UNRESOLVED:
+    Instance.register("minio", _ni)(Mc_premod)
