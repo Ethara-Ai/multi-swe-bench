@@ -34,7 +34,16 @@ _APPLY_FN = (
 )
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
+    """Shared per-era base: OS + toolchain + a FULL clone of the repo (all
+    history, NO checkout, NO hardening). Built ONCE and reused by every PR in
+    this era. The leading `# syntax=` directive makes DockerfileEnhancer return
+    this Dockerfile verbatim (image.py: `if SYNTAX_DIRECTIVE in raw: return raw`)
+    so the enhancer does NOT inject the ${BASE_COMMIT} hardening pass here — the
+    base has no BASE_COMMIT and must keep full history so any PR's base.sha stays
+    reachable. Per-PR checkout + hardening live in ImageDefault.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -49,6 +58,52 @@ class ImageDefault(Image):
 
     def dependency(self) -> str:
         return "python:3.8-bullseye"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base-py38-pip"
+
+    def workdir(self) -> str:
+        return "base-py38-pip"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        return """# syntax=docker/dockerfile:1.6
+FROM python:3.8-bullseye
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential libxml2-dev libxslt1-dev patch
+
+RUN printf 'setuptools<58\\nlxml<5\\n' > /cons.txt
+RUN PIP_CONSTRAINT=/cons.txt pip install --upgrade "pip<24" "setuptools<58" wheel
+RUN pip install pytest
+
+WORKDIR /home/
+RUN git clone https://github.com/mealie-recipes/mealie.git /home/mealie
+"""
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -129,35 +184,38 @@ python -m pytest "$TP" --no-header -rA --tb=no -p no:cacheprovider --continue-on
         ]
 
     def dockerfile(self) -> str:
+        # Two-stage: chain to the shared ImageBase *Image*. Because dependency()
+        # returns an Image (not a str), DockerfileEnhancer returns this verbatim
+        # and supplies neither ARG BASE_COMMIT nor the hardening pass — so we set
+        # BASE_COMMIT and embed Image._HARDENING_BLOCK ourselves. The base holds
+        # a full clone + /cons.txt + pytest; here we check out THIS PR's base.sha,
+        # install requirements against it, then the hardening block prunes every
+        # other ref/commit (reward-hack defense). `hardening` is inserted as a
+        # plain value so its ${...}/$(...) tokens stay byte-identical.
+        base = self.dependency()
+        name = base.image_name()
+        tag = base.image_tag()
+        base_sha = self.pr.base.sha
+        repo = self.pr.repo
+        hardening = Image._HARDENING_BLOCK
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-FROM python:3.8-bullseye
+        return f"""FROM {name}:{tag}
 
-ENV DEBIAN_FRONTEND=noninteractive
+ARG BASE_COMMIT="{base_sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-RUN apt-get update && apt-get install -y --no-install-recommends git build-essential libxml2-dev libxslt1-dev patch
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/mealie-recipes/mealie.git /home/mealie
-
-WORKDIR /home/mealie
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-
-RUN printf 'setuptools<58\\nlxml<5\\n' > /cons.txt
-RUN PIP_CONSTRAINT=/cons.txt pip install --upgrade "pip<24" "setuptools<58" wheel
+WORKDIR /home/{repo}
+RUN git checkout {base_sha}
 RUN PIP_CONSTRAINT=/cons.txt pip install -r requirements.txt
-RUN pip install pytest
-"""
-        dockerfile_content += f"""
+
 {copy_commands}
+{hardening}
+CMD ["/bin/bash"]
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("mealie-recipes", "mealie_v0_pip")
@@ -244,3 +302,17 @@ class MEALIE_V0_PIP(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+# Route bundled PRs by their dash-joined `prs_in_bundle` interval to this era.
+# Instance.create() looks up f"{org}/{number_interval}", so every bundle whose
+# base.sha matches this era (requirements.txt era (no pyproject.toml) — python:3.8-bullseye)
+# must be registered here. Era was derived from the repo state at each base.sha
+# (packaging files), not from PR-number ranges — routing is NOT monotonic in PR
+# number (e.g. bundle 5883 is uv-era while the higher 6128/6268 are poetry-era).
+# 2 bundle(s); intervals come from the lht dataset's prs_in_bundle.
+_NUMBER_INTERVALS = [
+    "30-31-33-35-39-40-42-49-52-53-59",
+    "60-74-85",
+]
+for _interval in _NUMBER_INTERVALS:
+    Instance.register("mealie-recipes", _interval)(MEALIE_V0_PIP)
