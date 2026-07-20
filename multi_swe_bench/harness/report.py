@@ -32,7 +32,7 @@ from multi_swe_bench.harness.pull_request import Base, PullRequest, PullRequestB
 from multi_swe_bench.harness.test_result import Test, TestResult, TestStatus
 
 
-REPORT_SCHEMA_VERSION = 2
+REPORT_SCHEMA_VERSION = 3
 
 
 @dataclass_json
@@ -76,7 +76,10 @@ class Report(PullRequestBase):
         default=True, metadata=config(exclude=lambda _: True)
     )
     _test_patch_added: list[str] = field(default_factory=list)
-    _fix_patch_added: list[str] = field(default_factory=list)
+    # Fix-patch added lines kept ONLY for files that are test files (gold test
+    # files or heuristic), so a production method sharing a name with a test
+    # method cannot trip the cheating guard. Keyed by file path.
+    _fix_patch_test_added: dict[str, list[str]] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.run_result:
@@ -106,8 +109,13 @@ class Report(PullRequestBase):
 
         if self.test_patch and not self._test_patch_added:
             self._test_patch_added = _extract_added_lines(self.test_patch)
-        if self.fix_patch and not self._fix_patch_added:
-            self._fix_patch_added = _extract_added_lines(self.fix_patch)
+        if self.fix_patch and not self._fix_patch_test_added:
+            by_file = _extract_added_lines_by_file(self.fix_patch)
+            self._fix_patch_test_added = {
+                f: lines
+                for f, lines in by_file.items()
+                if f in self.test_patch_files or _looks_like_test_file(f)
+            }
         self._test_patch_matcher_ok = _file_matcher_can_hit(
             self.test_patch_files, self._tests.keys()
         )
@@ -135,15 +143,12 @@ class Report(PullRequestBase):
 
     @classmethod
     def from_dict(cls, d: dict) -> "Report":
-        data = cls(**d)
-        data.__post_init__()
-        return data
+        # ``cls(**d)`` already runs __post_init__ once (dataclass); no re-call.
+        return cls(**d)
 
     @classmethod
     def from_json(cls, json_str: str) -> "Report":
-        data = cls.from_dict(cls.schema().loads(json_str))
-        data.__post_init__()
-        return data
+        return cls.from_dict(cls.schema().loads(json_str))
 
     def dict(self) -> dict:
         return asdict(self)
@@ -165,8 +170,15 @@ class Report(PullRequestBase):
     def _touched_by_fix_patch(self, test_name: str) -> bool:
         if not self.fix_patch and not self.fix_patch_files:
             return False
-        if _authored_via_diff(test_name, self._fix_patch_added):
-            return True
+        # Content authorship counts ONLY when the match is inside the test's OWN
+        # file. A method that merely shares a name with the credited test — a
+        # production method (Java's PostCommentSubject.get() vs
+        # PostCommentSubjectTest > get()) OR a same-named method in a DIFFERENT
+        # test file (a shared base class / helper) — must not trip the guard.
+        for path, lines in self._fix_patch_test_added.items():
+            if _file_hosts_test(path, test_name) and _authored_via_diff(test_name, lines):
+                return True
+        # File-path branch (works for pytest/Go IDs that embed a path).
         if self.fix_patch_files and self._fix_patch_matcher_ok:
             return _test_name_matches_files(test_name, self.fix_patch_files)
         return False
@@ -174,6 +186,19 @@ class Report(PullRequestBase):
     def check(self, force: bool = False) -> Tuple[bool, str]:
         if not force and self.valid is not None:
             return (self.valid, self.error_msg)
+
+        # Recomputing (fresh construction, force=True, or a schema-version wipe):
+        # clear every classification bucket first so a re-run cannot leave a test
+        # double-classified (e.g. lingering in f2p after it moves to p2p) or an
+        # invalid verdict sitting on top of previously-populated buckets.
+        self.fixed_tests = {}
+        self.p2p_tests = {}
+        self.f2p_tests = {}
+        self.s2p_tests = {}
+        self.n2p_tests = {}
+        self.reclassified_from_target = {}
+        self.fix_patch_authored_candidates = {}
+        self.guard_fix_patch_touched_tests = {}
 
         # 1. Exist valid fix patch result
         if self.fix_patch_result.all_count == 0:
@@ -218,14 +243,26 @@ class Report(PullRequestBase):
         for name in self.fixed_tests:
             if self._touched_by_fix_patch(name):
                 self.guard_fix_patch_touched_tests[name] = self._tests[name]
-        if self.guard_fix_patch_touched_tests:
+        # Instance-level tamper: the fix patch modifies a gold test file. Language-
+        # agnostic — catches Gradle-style IDs that never map to a file path, and
+        # doctored assertions that do not re-declare the credited test.
+        tampered_files = sorted(set(self.fix_patch_files) & set(self.test_patch_files))
+        if self.guard_fix_patch_touched_tests or (tampered_files and self.fixed_tests):
             self.valid = False
-            offenders = ", ".join(sorted(self.guard_fix_patch_touched_tests))
+            detail = []
+            if self.guard_fix_patch_touched_tests:
+                detail.append(
+                    "Touched credited tests: "
+                    + ", ".join(sorted(self.guard_fix_patch_touched_tests))
+                )
+            if tampered_files:
+                detail.append(
+                    "Fix also modifies gold test file(s): " + ", ".join(tampered_files)
+                )
             self.error_msg = (
                 f"Fix patch modified file(s) containing credited test(s); "
                 f"cannot credit the fix as unbiased. A brief summary is as "
-                f"follows: {self.short_report()}. Touched credited tests: "
-                f"{offenders}"
+                f"follows: {self.short_report()}. " + ". ".join(detail)
             )
             return (self.valid, self.error_msg)
 
@@ -296,12 +333,53 @@ _DIFF_FILE_RE = re.compile(
     r'^diff --git "?a/(.+?)"? "?b/(.+?)"?$',
     re.MULTILINE,
 )
+# Fallback for patches WITHOUT a ``diff --git`` header (plain ``diff -u`` output,
+# ``git diff --no-prefix``, or tool-generated unified diffs). Without it such a
+# patch parses to zero touched files and the cheating guard fails OPEN — a fix
+# patch could doctor a gold test file undetected. Matches the ``---``/``+++``
+# header pair and strips an optional ``a/``/``b/`` prefix and trailing tab-stamp.
+_DIFF_HDR_RE = re.compile(
+    r'^(?:---|\+\+\+) "?(?:[ab]/)?(.+?)"?(?:\t.*)?$',
+    re.MULTILINE,
+)
 
 
 def _extract_touched_files(patch_text: str) -> set[str]:
     if not patch_text:
         return set()
-    return {m.group(2) for m in _DIFF_FILE_RE.finditer(patch_text)}
+    # Normalise line endings first: under ``re.MULTILINE`` a trailing ``\r`` from
+    # a CRLF patch is captured into the path (``"tests/foo.py\r"``), silently
+    # defeating every downstream path comparison and the tamper overlap.
+    text = patch_text.replace("\r\n", "\n").replace("\r", "\n")
+    files = {m.group(2) for m in _DIFF_FILE_RE.finditer(text)}
+    for m in _DIFF_HDR_RE.finditer(text):
+        path = m.group(1)
+        if path and path != "/dev/null":
+            files.add(path)
+    return files
+
+
+def _file_hosts_test(path: str, test_name: str) -> bool:
+    """Does ``path`` plausibly contain the *definition* of ``test_name``?
+
+    Ties a content match to the credited test's own file, so a same-named method
+    added to a DIFFERENT test file (shared base class / helper) cannot flag a
+    test whose own file the fix never touched. Handles two ID shapes:
+
+    * path-embedded IDs (pytest ``file.py::x``, JS ``file > desc``) via the
+      existing path-boundary matcher;
+    * JVM class IDs (``PostCommentSubjectTest > get()``, ``com.pkg.MyClass#m``)
+      where the class name equals the file's basename stem
+      (``PostCommentSubjectTest`` -> ``PostCommentSubjectTest.java``).
+    """
+    if _test_name_matches_files(test_name, [path]):
+        return True
+    cls = re.split(r" > |#", test_name.strip(), maxsplit=1)[0]
+    cls = cls.rsplit(".", 1)[-1].strip()  # drop a dotted FQCN package prefix
+    if not cls or "/" in cls or "::" in cls or " " in cls:
+        return False
+    stem = path.replace("\\", "/").split("/")[-1].rsplit(".", 1)[0]
+    return cls == stem
 
 
 def _test_name_matches_files(test_name: str, files: Iterable[str]) -> bool:
@@ -337,7 +415,96 @@ _GO_TEST_RE = re.compile(r"^Test[A-Z_]")
 def _extract_added_lines(patch_text: str) -> list[str]:
     if not patch_text:
         return []
-    return _ADDED_LINE_RE.findall(patch_text)
+    # Normalise line endings for parity with _extract_added_lines_by_file and
+    # _extract_touched_files: under re.MULTILINE a trailing \r from a CRLF patch
+    # is captured into the added line (``"def test_x(): ...\r"``), leaving dirty
+    # strings in the persisted _test_patch_added.
+    text = patch_text.replace("\r\n", "\n").replace("\r", "\n")
+    return _ADDED_LINE_RE.findall(text)
+
+
+def _extract_added_lines_by_file(patch_text: str) -> dict[str, list[str]]:
+    """Added ('+') lines grouped by the file they belong to.
+
+    Provenance lets the cheating guard ignore matches that occur in production
+    files (a production method that merely shares a name with a test method must
+    not trip the guard).
+    """
+    if not patch_text:
+        return {}
+    # Normalise line endings for parity with _extract_touched_files (a trailing
+    # \r would otherwise leak into the captured path and desync the keys).
+    text = patch_text.replace("\r\n", "\n").replace("\r", "\n")
+    result: dict[str, list[str]] = {}
+    current: Optional[str] = None
+    for line in text.split("\n"):
+        m = _DIFF_FILE_RE.match(line)
+        if m:
+            current = m.group(2)
+            result.setdefault(current, [])
+            continue
+        # Plain diff (no ``diff --git`` header): the ``+++ b/<path>`` line names
+        # the target file. Without this, tool-generated / ``--no-prefix`` patches
+        # parse to zero added lines and the content-based cheating guard is blind
+        # to them — the same fail-open _extract_touched_files was hardened against.
+        if line.startswith("+++"):
+            hm = _DIFF_HDR_RE.match(line)
+            if hm and hm.group(1) and hm.group(1) != "/dev/null":
+                current = hm.group(1)
+                result.setdefault(current, [])
+            continue
+        if current is not None and line.startswith("+"):
+            result[current].append(line[1:])
+    return result
+
+
+_TEST_DIR_SEGMENTS = frozenset({"test", "tests", "__tests__", "testing"})
+
+
+def _looks_like_test_file(path: str) -> bool:
+    """Fallback heuristic for files the gold test_patch did not touch.
+
+    Segment-aware (so a top-level ``tests/foo.py`` is recognised, which a naive
+    ``"/tests/" in path`` check misses) and case-insensitive. The authoritative
+    signal is membership in ``test_patch_files``; this only covers test files a
+    fix patch might add that are not in the gold test patch.
+    """
+    p = path.replace("\\", "/")
+    segments = p.split("/")
+    if any(seg.lower() in _TEST_DIR_SEGMENTS for seg in segments[:-1]):
+        return True
+    base = segments[-1]
+    low = base.lower()
+    return (
+        base.endswith(
+            (
+                "Test.java",
+                "Tests.java",
+                "IT.java",
+                "TestCase.java",
+                "Test.kt",
+                "Tests.kt",
+                "Test.cs",
+                "Tests.cs",
+            )
+        )
+        or low.endswith("_test.go")
+        or (low.startswith("test_") and low.endswith(".py"))
+        or low.endswith("_test.py")
+        or low.endswith(
+            (
+                ".test.js",
+                ".test.jsx",
+                ".test.ts",
+                ".test.tsx",
+                ".spec.js",
+                ".spec.jsx",
+                ".spec.ts",
+                ".spec.tsx",
+            )
+        )
+        or low.endswith("_spec.rb")
+    )
 
 
 def _candidate_identifiers(test_name: str) -> list[str]:
@@ -347,15 +514,20 @@ def _candidate_identifiers(test_name: str) -> list[str]:
         return []
     n_noparam = _PYTEST_PARAM_RE.sub("", n)
     out: list[str] = []
-    for sep in ("::", "#"):
-        if sep in n_noparam:
-            candidate = n_noparam.rsplit(sep, 1)[1].strip()
-            # Reject pure-digit / #N suffixes (subtest indices like
-            # Test_Foo/#04 → "04"). No language allows purely-numeric
-            # identifiers, so these can only be indices and would false-match
-            # on CVE IDs, version numbers, dates in large diffs.
-            if candidate and not candidate.lstrip("#").isdigit():
-                out.append(candidate)
+    if "::" in n_noparam:
+        candidate = n_noparam.rsplit("::", 1)[1].strip()
+        if candidate and not candidate.lstrip("#").isdigit():
+            out.append(candidate)
+    if "#" in n_noparam:
+        prefix, suffix = n_noparam.rsplit("#", 1)
+        suffix = suffix.strip()
+        # Java-only separator: com.pkg.Class#method has a dotted FQCN prefix
+        # with no path separator. Go/pytest subtest disambiguation
+        # (Test.../#04, Test.../foo#bar) has "/" in the prefix; the suffix is
+        # an index or subtest hint, not an identifier, and would false-match
+        # on common words / CVE IDs / version numbers in large diffs.
+        if "/" not in prefix and suffix and not suffix.lstrip("#").isdigit():
+            out.append(suffix)
     if " > " in n:
         last = n.split(" > ")[-1].split("(")[0].strip()
         if last:

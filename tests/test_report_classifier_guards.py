@@ -226,6 +226,32 @@ def test_file_matcher_avoids_substring_false_positive():
     ) is True
 
 
+# --- Regression: `#` split only fires when prefix is Java-shaped (no "/") --
+def test_candidate_identifiers_hash_split_scoped_to_java_shaped_prefix():
+    # Bufbuild PR#372: test ID "internal/buf/buffetch::Test.../foo#bar"
+    # extracted "bar" via the `#` split, which then substring-matched common
+    # occurrences of `bar(` / `"bar"` in large multi-file fix.patches → false
+    # Gate 5 rejection. `#` is a Java-only separator (com.pkg.Class#method);
+    # any prefix containing `/` is Go/pytest subtest disambiguation and must
+    # not produce a suffix candidate.
+    from multi_swe_bench.harness.report import _candidate_identifiers
+
+    bufbuild_id = "internal/buf/buffetch::TestGetParsedRefError/path/to/foo#bar"
+    cands = _candidate_identifiers(bufbuild_id)
+    assert "bar" not in cands
+    assert "TestGetParsedRefError/path/to/foo#bar" in cands  # full suffix kept
+
+    # Java Class#method — prefix has no "/" → suffix MUST be extracted.
+    java_cands = _candidate_identifiers("com.pkg.MyClass#testFoo")
+    assert "testFoo" in java_cands
+
+    # Numeric subtest (trivy PR#5923 case) — still rejected by the numeric filter.
+    trivy_id = "pkg/iac/scanners/terraform::Test_Foo/#04"
+    trivy_cands = _candidate_identifiers(trivy_id)
+    assert "04" not in trivy_cands
+    assert "#04" not in trivy_cands
+
+
 # --- Regression: _candidate_identifiers rejects pure-digit subtest indices -
 def test_candidate_identifiers_rejects_numeric_subtest_index():
     # Trivy PR#5923: test ID has subtest index "#04". Extracting "04" as an
@@ -377,6 +403,50 @@ def test_added_lines_survive_json_round_trip():
     assert r2._test_patch_added == r._test_patch_added
 
 
+def test_extract_added_lines_normalizes_crlf():
+    # A CRLF test patch must not leak a trailing '\r' into the added-line scan
+    # (parity with _extract_added_lines_by_file / _extract_touched_files).
+    from multi_swe_bench.harness.report import _extract_added_lines
+
+    crlf = (
+        "diff --git a/tests/foo.py b/tests/foo.py\r\n"
+        "--- a/tests/foo.py\r\n"
+        "+++ b/tests/foo.py\r\n"
+        "@@ -1 +1,2 @@\r\n"
+        " existing\r\n"
+        "+def test_new(): assert True\r\n"
+    )
+    added = _extract_added_lines(crlf)
+    assert added == ["def test_new(): assert True"]
+    assert all("\r" not in line for line in added)
+
+    # LF input is unchanged by the normalization.
+    lf = crlf.replace("\r\n", "\n")
+    assert _extract_added_lines(lf) == ["def test_new(): assert True"]
+
+
+def test_crlf_test_patch_added_round_trips_clean():
+    # End-to-end: a CRLF test_patch flows through Report and the persisted
+    # _test_patch_added stays clean across a JSON round-trip.
+    r = _report(
+        run={"tests/foo.py::test_a": P},
+        test={},
+        fix={"tests/foo.py::test_a": P},
+        test_patch=(
+            "diff --git a/tests/foo.py b/tests/foo.py\r\n"
+            "--- a/tests/foo.py\r\n"
+            "+++ b/tests/foo.py\r\n"
+            "@@ -1 +1,2 @@\r\n"
+            " existing\r\n"
+            "+def test_a(): assert True\r\n"
+        ),
+    )
+    assert r._test_patch_added == ["def test_a(): assert True"]
+    r2 = Report.from_json(r.json())
+    assert r2._test_patch_added == r._test_patch_added
+    assert all("\r" not in line for line in r2._test_patch_added)
+
+
 def test_candidate_identifiers_rejects_two_letter_descriptions():
     from multi_swe_bench.harness.report import _candidate_identifiers
 
@@ -396,3 +466,293 @@ def test_extract_touched_files_handles_quoted_paths():
         "+++ b/tests/dir with space/foo.py\n"
     )
     assert _extract_touched_files(quoted) == {"tests/dir with space/foo.py"}
+
+
+# --- Cheating guard is file-context aware (Java naming false positive) -------
+def _diff_body(path: str, added_line: str) -> str:
+    return "\n".join([
+        f"diff --git a/{path} b/{path}",
+        f"--- a/{path}",
+        f"+++ b/{path}",
+        "@@ -1 +1,2 @@",
+        " ctx",
+        f"+{added_line}",
+    ])
+
+
+_HALO_TEST_FILE = "src/test/java/run/halo/PostCommentSubjectTest.java"
+_HALO_PROD_FILE = "src/main/java/run/halo/PostCommentSubject.java"
+_HALO_TEST_PATCH = _diff_body(_HALO_TEST_FILE, "@Test void get() {}")
+_HALO_ID = "PostCommentSubjectTest > get()"
+
+
+def test_java_production_only_fix_not_flagged():
+    # halo false positive: fix touches only production code, but the credited
+    # test method `get()` shares its name with a production method. The guard
+    # must NOT fire — no test file is modified.
+    r = _report(
+        run={_HALO_ID: F},
+        test={_HALO_ID: F},
+        fix={_HALO_ID: P},
+        test_patch=_HALO_TEST_PATCH,
+        fix_patch=_diff_body(_HALO_PROD_FILE, "return svc.get();"),
+    )
+    assert r.valid is True
+    assert not r.guard_fix_patch_touched_tests
+    assert _HALO_ID in r.f2p_tests
+
+
+def test_java_multi_verb_pr_not_flagged():
+    # Dataset-scale halo reproduction (PR#3087 fingerprint): several Java tests
+    # whose method names are common English verbs (get/list/create/add) that
+    # inevitably recur in production code. The fix touches ONLY production files
+    # (src/main/java/...); gold test_patch owns the test files. None of the verb
+    # collisions may trip the cheating guard. Regression pin for the reported
+    # 55% Java false-positive rate.
+    cases = {
+        "PostCommentSubjectTest > get()": (
+            "src/main/java/run/halo/PostCommentSubject.java",
+            "public String get() { return subject.get(); }",
+        ),
+        "CategoryFinderImplTest > list()": (
+            "src/main/java/run/halo/CategoryFinderImpl.java",
+            "public List<Category> list() { return repo.list(); }",
+        ),
+        "CommentServiceImplTest > create()": (
+            "src/main/java/run/halo/CommentServiceImpl.java",
+            "public Comment create(Comment c) { return repo.create(c); }",
+        ),
+        "ReplyServiceImplTest > add()": (
+            "src/main/java/run/halo/ReplyServiceImpl.java",
+            "list.add(reply); return service.add(reply);",
+        ),
+    }
+    gold_test_files = {
+        tid: "src/test/java/run/halo/%s.java" % tid.split(" > ")[0]
+        for tid in cases
+    }
+    test_patch = "\n".join(
+        _diff_body(gold_test_files[tid], "@Test void %s() {}" % tid.split(" > ")[1].rstrip("()"))
+        for tid in cases
+    )
+    fix_patch = "\n".join(_diff_body(prod, added) for prod, added in cases.values())
+
+    r = _report(
+        run={tid: F for tid in cases},
+        test={tid: F for tid in cases},
+        fix={tid: P for tid in cases},
+        test_patch=test_patch,
+        fix_patch=fix_patch,
+    )
+    assert r.valid is True
+    assert not r.guard_fix_patch_touched_tests
+    assert set(r.f2p_tests) == set(cases)
+    # No production file leaked into the test-file content bucket.
+    assert r._fix_patch_test_added == {}
+
+
+def test_java_multi_verb_pr_still_catches_real_cheat():
+    # Same multi-verb PR, but the fix ALSO re-declares a credited test method
+    # inside the gold test file. The file-context guard must still fire — the
+    # false-positive fix did not weaken real cheat detection.
+    fix_patch = "\n".join([
+        _diff_body(_HALO_PROD_FILE, "public String get() { return subject.get(); }"),
+        _diff_body(_HALO_TEST_FILE, "void get() { assertEquals(1, 1); }"),
+    ])
+    r = _report(
+        run={_HALO_ID: F},
+        test={_HALO_ID: F},
+        fix={_HALO_ID: P},
+        test_patch=_HALO_TEST_PATCH,
+        fix_patch=fix_patch,
+    )
+    assert r.valid is False
+    assert _HALO_ID in r.guard_fix_patch_touched_tests
+
+
+def test_java_fix_editing_test_file_content_is_invalid():
+    # Real cheat: fix re-declares the credited test method inside the test file.
+    r = _report(
+        run={_HALO_ID: F},
+        test={_HALO_ID: F},
+        fix={_HALO_ID: P},
+        test_patch=_HALO_TEST_PATCH,
+        fix_patch=_diff_body(_HALO_TEST_FILE, "void get() { assertEquals(1, 1); }"),
+    )
+    assert r.valid is False
+    assert "cannot credit" in r.error_msg
+
+
+def test_java_fix_doctored_assertion_in_test_file_is_invalid():
+    # Real cheat the content matcher CANNOT see (no re-declaration of `get`);
+    # the file-overlap rule (fix modifies a gold test file) still rejects it.
+    r = _report(
+        run={_HALO_ID: F},
+        test={_HALO_ID: F},
+        fix={_HALO_ID: P},
+        test_patch=_HALO_TEST_PATCH,
+        fix_patch=_diff_body(_HALO_TEST_FILE, "    expected = 42;  // doctored"),
+    )
+    assert r.valid is False
+    assert "gold test file" in r.error_msg
+
+
+def test_looks_like_test_file_recognizes_conventions():
+    from multi_swe_bench.harness.report import _looks_like_test_file
+
+    # target case + the leading-slash bug (top-level tests/) + major conventions
+    for p in (
+        "src/test/java/run/halo/PostCommentSubjectTest.java",
+        "tests/test_report_classifier_guards.py",   # top-level tests/ dir
+        "test_foo.py",                                # pytest prefix
+        "pkg/foo_test.py",                            # pytest suffix
+        "src/components/Button.spec.ts",              # jest/vitest
+        "src/components/Button.test.jsx",
+        "internal/foo_test.go",                       # go
+    ):
+        assert _looks_like_test_file(p) is True, p
+
+    for p in (
+        "src/main/java/run/halo/PostCommentSubject.java",
+        "src/impl.py",
+        "pkg/service.go",
+    ):
+        assert _looks_like_test_file(p) is False, p
+
+
+def test_fix_test_added_round_trips_through_json():
+    # Derived fix-patch test-file content must survive regen (raw patch dropped).
+    r = _report(
+        run={_HALO_ID: F},
+        test={_HALO_ID: F},
+        fix={_HALO_ID: P},
+        test_patch=_HALO_TEST_PATCH,
+        fix_patch=_diff_body(_HALO_TEST_FILE, "void get() { assertEquals(1, 1); }"),
+    )
+    assert r._fix_patch_test_added
+    r2 = Report.from_json(r.json())
+    assert r2._fix_patch_test_added == r._fix_patch_test_added
+    assert r2.valid is False  # verdict is stable across regen
+
+
+def test_java_fix_editing_a_DIFFERENT_test_file_not_flagged():
+    # Residual Java false positive (containing-file scoping): the fix modifies a
+    # DIFFERENT test file (a shared base class / helper) that merely *calls*
+    # `subject.get()`. The credited test `PostCommentSubjectTest > get()` lives in
+    # its own gold file, which the fix never touches. A common-verb collision in
+    # an unrelated test file must NOT flag the credited test.
+    helper = "src/test/java/run/halo/AbstractServiceTestSupport.java"
+    r = _report(
+        run={_HALO_ID: F},
+        test={_HALO_ID: F},
+        fix={_HALO_ID: P},
+        test_patch=_HALO_TEST_PATCH,
+        fix_patch=_diff_body(helper, "Object v = subject.get();"),
+    )
+    assert r.valid is True
+    assert not r.guard_fix_patch_touched_tests
+    assert _HALO_ID in r.f2p_tests
+    # The helper is a test file (so its lines are retained), but it does not host
+    # the credited test — the content match is scoped to the test's own file.
+    assert helper in r._fix_patch_test_added
+
+
+# --- Robustness: cheating guard must not fail open on non-`diff --git` patches -
+def _plain_diff(path: str) -> str:
+    # Unified diff with NO `diff --git` header (plain `diff -u` / tool output).
+    return "\n".join([
+        f"--- a/{path}",
+        f"+++ b/{path}",
+        "@@ -1 +1 @@",
+        "-real_assertion()",
+        "+assert True  # doctored",
+    ])
+
+
+def test_plain_unified_diff_fix_is_caught():
+    # A fix patch lacking the `diff --git` header used to parse to zero touched
+    # files, so a doctored gold test file sailed through as valid. It must now be
+    # recognised and rejected.
+    r = _report(
+        run={"tests/bug_test.py::test_b": F},
+        test={"tests/bug_test.py::test_b": F},
+        fix={"tests/bug_test.py::test_b": P},
+        test_patch=_diff("tests/bug_test.py"),
+        fix_patch=_plain_diff("tests/bug_test.py"),
+    )
+    assert r.fix_patch_files == ["tests/bug_test.py"]
+    assert r.valid is False
+    assert "cannot credit" in r.error_msg
+
+
+def test_plain_diff_added_lines_have_file_provenance():
+    # Content-based cheat detection was blind to plain diffs: _extract_added_lines
+    # _by_file only recognised `diff --git` headers, so a `--no-prefix` / tool
+    # patch yielded zero added lines by file. The `+++ b/<path>` header must now
+    # give the added lines their file provenance, in parity with the file-list
+    # extractor that already handles headerless diffs.
+    from multi_swe_bench.harness.report import _extract_added_lines_by_file
+
+    by_file = _extract_added_lines_by_file(_plain_diff("tests/bug_test.py"))
+    assert by_file == {"tests/bug_test.py": ["assert True  # doctored"]}
+
+
+def test_no_prefix_git_diff_is_parsed():
+    from multi_swe_bench.harness.report import _extract_touched_files
+
+    no_prefix = "\n".join([
+        "diff --git tests/foo.py tests/foo.py",
+        "--- tests/foo.py",
+        "+++ tests/foo.py",
+        "@@ -1 +1 @@",
+        "-a",
+        "+b",
+    ])
+    assert _extract_touched_files(no_prefix) == {"tests/foo.py"}
+
+
+def test_crlf_patch_paths_are_normalized():
+    from multi_swe_bench.harness.report import _extract_touched_files
+
+    crlf = (
+        "diff --git a/tests/foo.py b/tests/foo.py\r\n"
+        "--- a/tests/foo.py\r\n"
+        "+++ b/tests/foo.py\r\n"
+        "@@ -1 +1 @@\r\n"
+        "-o\r\n"
+        "+n"
+    )
+    # No trailing '\r' leaks into the path.
+    assert _extract_touched_files(crlf) == {"tests/foo.py"}
+
+
+def test_added_file_uses_target_path_not_devnull():
+    from multi_swe_bench.harness.report import _extract_touched_files
+
+    added = "\n".join([
+        "diff --git a/tests/new_test.py b/tests/new_test.py",
+        "new file mode 100644",
+        "--- /dev/null",
+        "+++ b/tests/new_test.py",
+        "@@ -0,0 +1 @@",
+        "+def test_new(): pass",
+    ])
+    assert _extract_touched_files(added) == {"tests/new_test.py"}
+
+
+# --- Regression: force re-check must not leave stale / doubled buckets ---------
+def test_force_recheck_resets_buckets():
+    r = _report(
+        run={"tests/a.py::t": F, "tests/a.py::keep": F},
+        test={"tests/a.py::t": F, "tests/a.py::keep": F},
+        fix={"tests/a.py::t": P, "tests/a.py::keep": P},
+        test_patch=_diff("tests/a.py"),
+    )
+    assert set(r.f2p_tests) == {"tests/a.py::t", "tests/a.py::keep"}
+    # `t` now looks like a p2p (test-stage PASS); a forced recompute must move it
+    # cleanly, never leave it double-classified in both f2p and p2p.
+    r._tests["tests/a.py::t"].test = TestStatus.PASS
+    r.check(force=True)
+    assert set(r.f2p_tests) & set(r.p2p_tests) == set()
+    assert "tests/a.py::t" in r.p2p_tests
+    assert "tests/a.py::t" not in r.f2p_tests
