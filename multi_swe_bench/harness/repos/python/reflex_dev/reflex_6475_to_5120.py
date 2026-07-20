@@ -8,6 +8,18 @@ from multi_swe_bench.harness.pull_request import PullRequest
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 
+def _strip_binary_diffs(patch: str) -> str:
+    """Remove binary diff hunks from a unified diff so `git apply` never aborts
+    on a binary hunk with no full-index line (e.g. `docs/.DS_Store`, images).
+    Safe: binary hunks touch no Python source and never affect test outcomes."""
+    sections = re.split(r"(?=^diff --git )", patch, flags=re.MULTILINE)
+    return "".join(
+        s for s in sections
+        if s and "Binary files " not in s and "GIT binary patch" not in s
+    )
+
+
+
 def parse_pytest_log(log: str) -> TestResult:
     """Parse pytest -v -rA output. Verbose result lines look like:
 
@@ -85,32 +97,53 @@ class ReflexEra3ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        org = self.pr.org
+        repo = self.pr.repo
         if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV TZ=UTC
 
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git build-essential curl && rm -rf /var/lib/apt/lists/*
+    git build-essential curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
 
+RUN git config --global --add safe.directory '*'
 {code}
 
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -141,8 +174,8 @@ class ReflexEra3ImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(".", "fix.patch", f"{self.pr.fix_patch}"),
-            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "fix.patch", _strip_binary_diffs(self.pr.fix_patch)),
+            File(".", "test.patch", _strip_binary_diffs(self.pr.test_patch)),
             File(
                 ".",
                 "prepare.sh",
@@ -231,14 +264,25 @@ uv run --no-sync python -m pytest $EXIST -v --no-header -rA --tb=no \
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM {name}:{tag}
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 RUN bash /home/prepare.sh
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
 {self.clear_env}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -273,3 +317,30 @@ class REFLEX_6475_TO_5120(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         return parse_pytest_log(log)
+
+
+# ---------------------------------------------------------------------------
+# number_interval bundle routing (prs_in_bundle dash-joined)  -- PIPELINE 11b
+# ---------------------------------------------------------------------------
+# Raw dataset leaves number_interval empty; delivery sets it to
+# "-".join(prs_in_bundle). Register REFLEX_6475_TO_5120 (this era) under every bundle key so
+# delivered records resolve to pubkey/<bundle>. Original era-key registration
+# above is kept.
+_BUNDLE_NIS_REFLEX_ERA3 = [
+    "5120-5124-5125-5128-5129-5134-5135-5136-5137-5139",
+    "5169-5271-5279-5288-5289-5309-5312-5314-5316-5318-5319-5322-5323-5324-5326-5335",
+    "5287-5291-5293-5294-5296-5297-5298-5304-5305-5311",
+    "5765-5775-5777-5779-5784",
+    "5986-5991-5992-5993",
+    "6001-6005-6012-6015-6017-6021-6022-6026-6027",
+    "6139-6266-6321-6322-6323-6326-6327-6328-6329-6333-6334-6336-6337-6338-6346-6347-6348",
+    "6170-6289-6354-6358-6371-6414-6450-6459-6460-6461-6466-6467-6470-6472-6473-6474-6476-6485-6486-6487",
+    "6188-6190-6192-6201-6203-6206-6253-6254-6257-6258-6259-6261-6262-6263-6265-6271-6275-6276-6277-6279-6281-6282-6283-6284",
+    "6222-6260-6339-6344-6370-6387-6391-6397-6398-6399-6400-6401-6402-6403-6406-6407-6409-6410-6412-6415-6418-6419-6420-6423-6424-6426-6430-6431-6432-6434-6435-6439-6442-6444-6445-6448-6453-6454-6455-6458",
+    "6251-6267-6280-6287-6290-6291-6292-6293-6294-6297-6298-6299-6300-6302-6303-6306-6307-6308-6309-6310-6311-6313-6314-6315-6317-6318-6319",
+    "6340-6342-6343-6349-6351-6352-6353-6356-6357-6359-6361-6362-6365-6366-6368-6369-6372-6374-6375-6377-6379-6381-6388-6389-6393",
+    "6462-6493-6494-6498-6499-6501",
+    "6475-6492",
+]
+for _ni in _BUNDLE_NIS_REFLEX_ERA3:
+    Instance.register("reflex-dev", _ni)(REFLEX_6475_TO_5120)

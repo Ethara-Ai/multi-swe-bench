@@ -6,6 +6,27 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+def _strip_binary_diffs(patch: str) -> str:
+    """Remove binary diff hunks from a unified diff string.
+
+    Some golden patches include binary hunks for junk files (e.g. macOS
+    ``docs/.DS_Store``). ``git apply`` is atomic, so a single binary hunk with
+    no full index line ("cannot apply binary patch ... without full index
+    line") aborts the ENTIRE apply -- with ``set -e`` the run script then exits
+    before ``go test`` runs, so the fix stage yields 0 results and the PR is
+    misclassified as invalid. Stripping these hunks is safe: they touch no Go
+    source and never affect test outcomes.
+    """
+    sections = re.split(r"(?=^diff --git )", patch, flags=re.MULTILINE)
+    return "".join(
+        s
+        for s in sections
+        if s
+        and "Binary files " not in s
+        and "GIT binary patch" not in s
+    )
+
+
 class PermifyImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -20,7 +41,10 @@ class PermifyImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:1.21-bookworm"
+        # golang:1.25 + GOTOOLCHAIN=auto: the repo's go.mod `go` directive spans
+        # 1.18 -> 1.25.7 across history; 1.25 runs the older ones and
+        # GOTOOLCHAIN=auto auto-fetches any newer toolchain a go.mod pins.
+        return "golang:1.25-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -35,22 +59,57 @@ class PermifyImageBase(Image):
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        # `# syntax` opts this shared base out of the DockerfileEnhancer, which
+        # would otherwise inject `git checkout --detach ${BASE_COMMIT}` +
+        # ref-strip + `git gc --prune` HERE, pruning the shared base to a single
+        # PR's base.sha and breaking every other PR with "reference is not a
+        # tree". The base keeps full history; the strict anti-reward-hack
+        # hardening runs per-PR (see PermifyImageDefault below).
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    GOTOOLCHAIN=auto
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates && \\
+    rm -rf /var/lib/apt/lists/*
 
+RUN git config --global --add safe.directory '*'
 {code}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -81,12 +140,12 @@ class PermifyImageDefault(Image):
             File(
                 ".",
                 "fix.patch",
-                f"{self.pr.fix_patch}",
+                _strip_binary_diffs(self.pr.fix_patch),
             ),
             File(
                 ".",
                 "test.patch",
-                f"{self.pr.test_patch}",
+                _strip_binary_diffs(self.pr.test_patch),
             ),
             File(
                 ".",
@@ -174,7 +233,17 @@ go test -v -count=1 ./...
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
-        return f"""FROM {name}:{tag}
+        # Anti-cheat hardening runs in the PR layer (the shared base keeps full
+        # history so every PR's base.sha is reachable). prepare.sh checks out
+        # this PR's base.sha, then the canonical hardening block detaches at that
+        # literal sha and strips every other ref/reflog so later commits (the
+        # fix) are unreachable from git.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
@@ -182,8 +251,13 @@ go test -v -count=1 ./...
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
