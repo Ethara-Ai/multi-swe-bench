@@ -288,6 +288,18 @@ class Ndarray(Instance):
                 if match:
                     skipped_tests.add(match.group(1))
 
+        # A single test name can surface across multiple cargo binary targets
+        # with different outcomes (names are unique only within one binary), so
+        # the same name may appear in two buckets — or be a genuinely distinct
+        # test that happens to share a name. Collapse to one bucket, failing
+        # closed with priority FAILED > ignored > ok: a name marked ok in one
+        # target but ignored/failed in another is demoted out of passed, and
+        # failed also wins over ignored. The buckets must end pairwise-disjoint
+        # or TestResult.__post_init__ raises and aborts the whole instance run.
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
+
         return TestResult(
             passed_count=len(passed_tests),
             failed_count=len(failed_tests),
