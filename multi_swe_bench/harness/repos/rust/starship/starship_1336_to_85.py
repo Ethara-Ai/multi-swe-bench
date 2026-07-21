@@ -49,13 +49,15 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -F
-###ACTION_DELIMITER###
-cargo build
-###ACTION_DELIMITER###
-cargo test
-###ACTION_DELIMITER###
-echo 'source /root/.cargo/env && cargo test' > /home/starship/test_commands.sh""",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+git reset --hard
+
+source /root/.cargo/env && cargo test || true
+
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -73,7 +75,7 @@ source /root/.cargo/env && cargo test
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
 source /root/.cargo/env && cargo test
 
@@ -86,7 +88,7 @@ source /root/.cargo/env && cargo test
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
 source /root/.cargo/env && cargo test
 
@@ -116,18 +118,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 ENV PATH="/root/.cargo/bin:$PATH"
 
 WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/starship/starship.git /home/starship
+RUN git clone "${{REPO_URL}}" /home/{pr.repo}
 
-WORKDIR /home/starship
+WORKDIR /home/{pr.repo}
 RUN git reset --hard
-RUN git checkout {pr.base.sha}
+RUN git checkout ${{BASE_COMMIT}}
 """
-        dockerfile_content += f"""
+        dockerfile_content += """
 {copy_commands}
 """
-        return dockerfile_content.format(pr=self.pr)
+        return dockerfile_content.format(pr=self.pr, copy_commands=copy_commands)
 
 
 @Instance.register("starship", "starship_1336_to_85")
@@ -212,3 +212,53 @@ class STARSHIP_1336_TO_85(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# --- LHT bundle routing (ubuntu20.04+rust1.47) ---------------------------------------
+# Each dataset record's number_interval is the dash-joined prs_in_bundle
+# (derived from prs_in_bundle by the from_json shim in __init__.py).
+# Instance.create looks up f"starship/{number_interval}", so every bundle
+# in this toolchain era is registered here against STARSHIP_1336_TO_85. (39 bundles)
+_STARSHIP_1336_TO_85_INTERVALS = [
+    "85-136-137-139-142",
+    "96-98-99-101-102-103-105",
+    "111-114-115-116-119-120-121",
+    "127-133-134",
+    "138-306-317-318-321-322-328-333-334-336-338-341-343-347-348-349-355",
+    "140-143",
+    "144-147-150-151-152-153-155",
+    "163-164",
+    "165-166-167-169-171-175-176-177-178-180-181-183-184-186-187-189",
+    "168-195-197-200",
+    "173-234-236-237-239-242-245",
+    "191-207-213-214-216-217-219-221-223-224-228",
+    "233-240-247-248-249-252-254-256-259-260-262-264-265-266-268-269-271-274-275-277-278-281-282-286-287-288-291",
+    "244-642-643-673-683-688-689-693-695",
+    "276-294-296-297",
+    "285-299-307-309-310-311",
+    "314-316-332-335-339-340-356-357-358-359-360-361-363-366-367-369-371-372-374-376-377-379-381-385-388-390-395-396-399",
+    "378-383-403-404-409-414-416-426-430-432-433-438-439-440-441-445-446-451-452-453-454-455-466-478",
+    "380-405-406-408-410-411-413-419-421-425-427-429",
+    "398-507-515-517-571-572-573-574-577-581-586",
+    "434-551-556-575-584-589-592-596-599-604-610-612",
+    "460-470-485-534-535-538-541",
+    "469-483-490-491-492-493-494-495",
+    "482-526-529-531-533",
+    "514-547-548-552-558-563-566",
+    "546-782-819-832-843-844-847-848-850-853-854-855-856-857-858-859-860-861-862-863-864-865-867-871-872-876-878-880-883-884-889-893-897-898",
+    "569-583-619-660-663-669-672-676-679-684-685",
+    "598-699-791-795-797-799-803-804-805-806-807-809",
+    "605-606-628-630-633-635-636-638",
+    "644-694-707-708-710",
+    "646-696-714-739-756-763-764-765",
+    "662-936-948",
+    "692-1033-1046-1095-1097-1098-1101-1103-1104-1109-1113-1121-1122-1125-1129-1132-1135-1136-1140-1141-1147-1150-1151",
+    "738-908-911-914-915-923-924-925-926-927-929-930-931",
+    "750-768-792-812-813-815-817-820-821-825-826-836-837",
+    "881-958-992-1170-1183-1189-1216-1218-1227-1231-1234-1237-1238-1239-1242-1243-1249-1253-1255-1256-1257-1263-1264-1267-1269-1270-1282-1284-1289-1290-1291-1292-1293-1294-1301",
+    "916-997-1021-1035-1047-1054-1055-1058-1067-1069-1076-1077-1079-1082",
+    "1185-1262-1280-1297-1299-1300-1303-1305-1306-1307-1308-1309-1311-1314-1317-1325-1326-1329-1330-1331-1332-1333-1335-1339-1348-1361-1367-1376-1377-1378-1383-1389-1390-1391",
+    "1336-1398-1402-1405-1406-1407-1415-1418-1421-1422-1423-1424-1428-1433-1436-1437-1438-1439-1440",
+]
+for _iv in _STARSHIP_1336_TO_85_INTERVALS:
+    Instance.register("starship", _iv)(STARSHIP_1336_TO_85)
