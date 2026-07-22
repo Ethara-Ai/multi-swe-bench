@@ -41,7 +41,12 @@ class ImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        # The `# syntax` directive makes DockerfileEnhancer.enhance() return this
+        # verbatim: no proxy/cert/MITM ARGs or ENV injected, and no rewrite of the
+        # clone/COPY line above into a single-BASE_COMMIT pin + history strip (this
+        # "base" tag is SHARED across every PR, so it must keep full history/no pin).
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
@@ -70,6 +75,10 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
+        # Returns an Image (the shared base) -> DockerfileEnhancer.enhance()
+        # early-returns (dep is not a str) and leaves our dockerfile() verbatim,
+        # so the hardening below is applied by hand (anchored on HEAD, since
+        # BASE_COMMIT is not a build-arg in FROM-an-image builds).
         return ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
@@ -77,6 +86,64 @@ class ImageDefault(Image):
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    # Defense-in-depth against re-fetching the fix from GitHub by URL. The
+    # hardening block deletes the cloned repo's `origin`, but a model could still
+    # run `git fetch https://github.com/<org>/<repo> <future_sha>` to pull the
+    # commits that come AFTER the base (where the fix lives). We blackhole every
+    # github URL scheme at the git --system level so any git transport to github
+    # is rewritten to an unroutable address and fails fast. (Authoritative block
+    # is still eval-time network isolation, `docker run --network none`; this is
+    # the belt-and-suspenders that survives even a networked run.)
+    _GIT_NET_LOCKDOWN = (
+        'RUN BH="https://0.0.0.0:1/"; \\\n'
+        '    git config --system url."$BH".insteadOf "https://github.com/"; \\\n'
+        '    git config --system url."$BH".insteadOf "http://github.com/"; \\\n'
+        '    git config --system url."$BH".insteadOf "git://github.com/"; \\\n'
+        '    git config --system url."$BH".insteadOf "ssh://git@github.com/"; \\\n'
+        '    git config --system url."$BH".insteadOf "git@github.com:"; \\\n'
+        '    git config --system url."$BH".insteadOf "https://codeload.github.com/"; \\\n'
+        '    git config --system protocol.allow never; \\\n'
+        '    git config --system protocol.file.allow always; \\\n'
+        '    git config --system --unset-all credential.helper 2>/dev/null || true'
+    )
+
+    def _harden(self) -> str:
+        """Git-history hardening for the per-PR image, applied AFTER prepare.sh
+        has checked out THIS PR's base commit -> the commit to KEEP is the
+        current HEAD. Mirrors the harness Image._HARDENING_BLOCK, anchored on
+        HEAD instead of ${BASE_COMMIT}."""
+        repo = self.pr.repo
+        return f"""RUN set -eux; \\
+    cd /home/{repo}; \\
+    git checkout --detach HEAD; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/{repo}/.gitmodules ]; then \\
+        cd /home/{repo} && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi"""
 
     def files(self) -> list[File]:
         return [
@@ -186,6 +253,10 @@ pnpm test -- --verbose --testLocationInResults
 
 {prepare_commands}
 
+{self._GIT_NET_LOCKDOWN}
+
+{self._harden()}
+
 {self.clear_env}
 
 """
@@ -205,6 +276,10 @@ class ImageDefault11199(Image):
         return self._config
 
     def dependency(self) -> Image | None:
+        # Returns an Image (the shared base) -> DockerfileEnhancer.enhance()
+        # early-returns (dep is not a str) and leaves our dockerfile() verbatim,
+        # so the hardening below is applied by hand (anchored on HEAD, since
+        # BASE_COMMIT is not a build-arg in FROM-an-image builds).
         return ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
@@ -212,6 +287,64 @@ class ImageDefault11199(Image):
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    # Defense-in-depth against re-fetching the fix from GitHub by URL. The
+    # hardening block deletes the cloned repo's `origin`, but a model could still
+    # run `git fetch https://github.com/<org>/<repo> <future_sha>` to pull the
+    # commits that come AFTER the base (where the fix lives). We blackhole every
+    # github URL scheme at the git --system level so any git transport to github
+    # is rewritten to an unroutable address and fails fast. (Authoritative block
+    # is still eval-time network isolation, `docker run --network none`; this is
+    # the belt-and-suspenders that survives even a networked run.)
+    _GIT_NET_LOCKDOWN = (
+        'RUN BH="https://0.0.0.0:1/"; \\\n'
+        '    git config --system url."$BH".insteadOf "https://github.com/"; \\\n'
+        '    git config --system url."$BH".insteadOf "http://github.com/"; \\\n'
+        '    git config --system url."$BH".insteadOf "git://github.com/"; \\\n'
+        '    git config --system url."$BH".insteadOf "ssh://git@github.com/"; \\\n'
+        '    git config --system url."$BH".insteadOf "git@github.com:"; \\\n'
+        '    git config --system url."$BH".insteadOf "https://codeload.github.com/"; \\\n'
+        '    git config --system protocol.allow never; \\\n'
+        '    git config --system protocol.file.allow always; \\\n'
+        '    git config --system --unset-all credential.helper 2>/dev/null || true'
+    )
+
+    def _harden(self) -> str:
+        """Git-history hardening for the per-PR image, applied AFTER prepare.sh
+        has checked out THIS PR's base commit -> the commit to KEEP is the
+        current HEAD. Mirrors the harness Image._HARDENING_BLOCK, anchored on
+        HEAD instead of ${BASE_COMMIT}."""
+        repo = self.pr.repo
+        return f"""RUN set -eux; \\
+    cd /home/{repo}; \\
+    git checkout --detach HEAD; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/{repo}/.gitmodules ]; then \\
+        cd /home/{repo} && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi"""
 
     def files(self) -> list[File]:
         return [
@@ -320,6 +453,10 @@ yarn test -- --verbose
 {copy_commands}
 
 {prepare_commands}
+
+{self._GIT_NET_LOCKDOWN}
+
+{self._harden()}
 
 {self.clear_env}
 
