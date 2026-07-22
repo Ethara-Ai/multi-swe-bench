@@ -37,21 +37,44 @@ class LightGBMImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
+        org = self.pr.org
 
-        return f"""FROM {image_name}
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        # SHARED base (tag "base", ONE image reused by every PR > 2334). Light
+        # hardening only — no gc/prune — so each PR's prepare.sh can still
+        # `git checkout <base.sha>`; the strict per-PR pass lives in
+        # LightGBMImageDefault. The `# syntax` directive makes
+        # DockerfileEnhancer.enhance() skip this file, which is what stops it
+        # auto-injecting a ${BASE_COMMIT} checkout + prune (which would pin this
+        # shared base to one PR) and the proxy/CA-cert scaffolding.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    PIP_BREAK_SYSTEM_PACKAGES=1
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
-ENV PIP_BREAK_SYSTEM_PACKAGES=1
-
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y \\
-    build-essential cmake \\
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    build-essential cmake git ca-certificates \\
     python3 python3-pip python3-dev \\
     libcurl4-openssl-dev libssl-dev \\
     libomp-dev && \\
@@ -63,10 +86,17 @@ RUN ln -sf /usr/bin/python3 /usr/bin/python && \\
 
 {code}
 
-RUN cd /home/{self.pr.repo} && git submodule update --init --recursive
+RUN cd /home/{repo} && git submodule update --init --recursive
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -101,19 +131,41 @@ class LightGBMImageBaseV2(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
+        org = self.pr.org
 
-        return f"""FROM {image_name}
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        # SHARED base (tag "base-v2", ONE image reused by every PR <= 2334). See
+        # LightGBMImageBase.dockerfile() for why the `# syntax` opt-out is
+        # required: it keeps DockerfileEnhancer from pinning this shared base to a
+        # single ${BASE_COMMIT} and from injecting proxy/CA-cert scaffolding.
+        # Strict per-PR hardening lives in LightGBMImageDefault.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y \\
-    build-essential cmake git \\
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    build-essential cmake git ca-certificates \\
     libcurl4-openssl-dev libssl-dev \\
     libomp-dev && \\
     rm -rf /var/lib/apt/lists/*
@@ -125,10 +177,17 @@ RUN pip install "pip<23" "setuptools<66" "wheel" && \\
 
 {code}
 
-RUN cd /home/{self.pr.repo} && git submodule update --init --recursive
+RUN cd /home/{repo} && git submodule update --init --recursive
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -281,6 +340,15 @@ pytest tests/python_package_test/ -v --continue-on-collection-errors
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Per-PR anti-reward-hacking hardening (PIPELINE.md §4). dependency()
+        # returns an Image, so DockerfileEnhancer emits this Dockerfile verbatim
+        # (it only auto-injects into str-dependency images) — so the canonical
+        # block from image.py is embedded here, after prepare.sh has checked out
+        # base.sha and initialised submodules, with ${BASE_COMMIT} bound to the
+        # literal sha. Referenced from image.py rather than copied so it cannot
+        # drift from the source of truth.
+        hardening = self._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -289,8 +357,13 @@ pytest tests/python_package_test/ -v --continue-on-collection-errors
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 

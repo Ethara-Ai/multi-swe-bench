@@ -70,24 +70,50 @@ class EraAImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
+        org = self.pr.org
 
-        return f"""FROM {image_name}
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        # SHARED base (tag "base", ONE image reused by every PR in this era).
+        # Light hardening only — no gc/prune — so each PR's prepare.sh can still
+        # `git checkout <base.sha>`; the strict per-PR pass lives in
+        # EraAImageDefault. The `# syntax` directive makes
+        # DockerfileEnhancer.enhance() skip this file, which is what stops it
+        # auto-injecting a ${BASE_COMMIT} checkout + prune (which would pin this
+        # shared base to one PR) and the proxy/CA-cert scaffolding.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y \\
+RUN apt-get update && apt-get install -y --no-install-recommends \\
     python3 \\
     python3-pip \\
     python3-dev \\
     ninja-build \\
     pkg-config \\
     libssl-dev \\
+    git \\
+    ca-certificates \\
     curl \\
     wget \\
     build-essential \\
@@ -97,10 +123,15 @@ RUN pip3 install --break-system-packages 'cmake<4'
 
 {code}
 
-WORKDIR /home/{self.pr.repo}
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -296,6 +327,15 @@ ctest --output-on-failure 2>&1 || true
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Per-PR anti-reward-hacking hardening (PIPELINE.md §4). dependency()
+        # returns an Image, so DockerfileEnhancer emits this Dockerfile verbatim
+        # (it only auto-injects into str-dependency images) — so the canonical
+        # block from image.py is embedded here, after prepare.sh has checked out
+        # base.sha and initialised submodules, with ${BASE_COMMIT} bound to the
+        # literal sha. Referenced from image.py rather than copied so it cannot
+        # drift from the source of truth.
+        hardening = self._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -304,8 +344,13 @@ ctest --output-on-failure 2>&1 || true
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
