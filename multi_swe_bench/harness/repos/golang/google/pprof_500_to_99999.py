@@ -1,6 +1,6 @@
 """google/pprof harness for the go-modules era (PR >= 500).
 
-Covers number_interval: pprof_500_to_99999.
+Covers number_interval: 506-517-557-559-561-564-577-599-615-631-634-649-660-674-676-682-684-711-716-734-741-742-792-814-818-864-878-887-891-920-934-945-949-972-981.
 
 From PR #506 (Feb 2020) onward pprof carries a ``go.mod``. The declared
 ``go`` directive grows over time (1.14 -> 1.24.x), so the base image is
@@ -51,33 +51,41 @@ class _ImageBase(Image):
 
     def dockerfile(self) -> str:
         image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = (
+                f"RUN git clone --no-single-branch "
+                f"https://github.com/{self.pr.org}/{self.pr.repo}.git "
+                f"/home/{self.pr.repo}"
+            )
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOTOOLCHAIN=auto
 ENV GOFLAGS=-mod=mod
 ENV PATH=/go/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git make gcc g++ pkg-config ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
-{self.global_env}
-
 {code}
 
-WORKDIR /home/{self.pr.repo}
-
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -107,122 +115,113 @@ class _ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+
+        prepare = f"""#!/bin/bash
+set -e
+cd /home/{repo}
+go mod download 2>/dev/null || true
+"""
+
+        run_tests = f"""#!/bin/bash
+set -uo pipefail
+cd /home/{repo}
+go mod download 2>/dev/null || true
+PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.\\?$')
+PKGS=$(for p in $PKGS; do [ -d "${{p#./}}" ] && echo "$p"; done 2>/dev/null || true)
+if [ -z "$PKGS" ]; then
+  PKGS="./..."
+fi
+go test -short -vet=off -v -count=1 -timeout 20m $PKGS
+"""
+
+        run_sh = f"""#!/bin/bash
+set -eo pipefail
+export CI=true
+cd /home/{repo}
+bash /home/run_tests.sh
+"""
+
+        excludes = (
+            "--exclude=*.png --exclude=*.jpg --exclude=*.jpeg --exclude=*.gif "
+            "--exclude=*.ico --exclude=*.svg --exclude=*.pdf --exclude=*.zip "
+            "--exclude=*.gz --exclude=*.tar --exclude=*.bin"
+        )
+
+        test_run = f"""#!/bin/bash
+set -eo pipefail
+export CI=true
+cd /home/{repo}
+git apply --3way --whitespace=nowarn {excludes} /home/test.patch \\
+  || git apply --whitespace=nowarn --reject {excludes} /home/test.patch \\
+  || echo "git apply test.patch failed (continuing)"
+bash /home/run_tests.sh
+"""
+
+        fix_run = f"""#!/bin/bash
+set -eo pipefail
+export CI=true
+cd /home/{repo}
+git apply --3way --whitespace=nowarn {excludes} /home/test.patch \\
+  || git apply --whitespace=nowarn --reject {excludes} /home/test.patch \\
+  || echo "git apply test.patch failed (continuing)"
+git apply --3way --whitespace=nowarn {excludes} /home/fix.patch \\
+  || git apply --whitespace=nowarn --reject {excludes} /home/fix.patch \\
+  || echo "git apply fix.patch failed (continuing)"
+bash /home/run_tests.sh
+"""
+
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-go mod download 2>&1 | tail -20 || true
-go test -short -vet=off -count=1 ./... 2>&1 | tail -50 || true
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-go mod download 2>&1 | tail -20 || true
-PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
-PKGS=$(for p in $PKGS; do [ -d "${{p#./}}" ] && echo "$p"; done)
-if [ -z "$PKGS" ]; then
-  PKGS="./..."
-fi
-go test -short -vet=off -v -count=1 -timeout 20m $PKGS
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go mod download 2>&1 | tail -20 || true
-PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
-PKGS=$(for p in $PKGS; do [ -d "${{p#./}}" ] && echo "$p"; done)
-if [ -z "$PKGS" ]; then
-  PKGS="./..."
-fi
-go test -short -vet=off -v -count=1 -timeout 20m $PKGS
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go mod download 2>&1 | tail -20 || true
-PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
-PKGS=$(for p in $PKGS; do [ -d "${{p#./}}" ] && echo "$p"; done)
-if [ -z "$PKGS" ]; then
-  PKGS="./..."
-fi
-go test -short -vet=off -v -count=1 -timeout 20m $PKGS
-
-""".format(pr=self.pr),
-            ),
+            File(".", "prepare.sh", prepare),
+            File(".", "run_tests.sh", run_tests),
+            File(".", "run.sh", run_sh),
+            File(".", "test-run.sh", test_run),
+            File(".", "fix-run.sh", fix_run),
         ]
 
     def dockerfile(self) -> str:
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        repo = self.pr.repo
+        sha = self.pr.base.sha
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        return f"""# syntax=docker/dockerfile:1.6
 
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
+FROM {name}:{tag}
 
 {copy_commands}
+WORKDIR /home/{repo}
 
-{prepare_commands}
+ARG BASE_COMMIT="{sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-{self.clear_env}
+{Image._HARDENING_BLOCK}
 
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+
+RUN rm -f .git/ORIG_HEAD .git/FETCH_HEAD; \\
+    test ! -f .git/ORIG_HEAD
+
+RUN bash /home/prepare.sh
 """
 
 
@@ -231,34 +230,23 @@ def _parse_go_test_log(test_log: str) -> TestResult:
     failed_tests: set[str] = set()
     skipped_tests: set[str] = set()
 
-    re_pass = re.compile(r"--- PASS: (\S+)")
-    re_fail = [
-        re.compile(r"--- FAIL: (\S+)"),
-        re.compile(r"FAIL:?\s?(.+?)\s"),
-    ]
-    re_skip = re.compile(r"--- SKIP: (\S+)")
+    re_result = re.compile(r"^\s*--- (PASS|FAIL|SKIP):\s+(\S+)")
 
     for line in test_log.splitlines():
-        line = line.strip()
-
-        m = re_pass.match(line)
-        if m:
-            name = m.group(1)
+        line = line.rstrip()
+        m = re_result.match(line)
+        if not m:
+            continue
+        status, name = m.group(1), m.group(2)
+        if status == "PASS":
             if name not in failed_tests:
                 skipped_tests.discard(name)
                 passed_tests.add(name)
-
-        for rp in re_fail:
-            m = rp.match(line)
-            if m:
-                name = m.group(1)
-                passed_tests.discard(name)
-                skipped_tests.discard(name)
-                failed_tests.add(name)
-
-        m = re_skip.match(line)
-        if m:
-            name = m.group(1)
+        elif status == "FAIL":
+            passed_tests.discard(name)
+            skipped_tests.discard(name)
+            failed_tests.add(name)
+        elif status == "SKIP":
             if name not in passed_tests and name not in failed_tests:
                 skipped_tests.add(name)
 
@@ -272,7 +260,6 @@ def _parse_go_test_log(test_log: str) -> TestResult:
     )
 
 
-@Instance.register("google", "pprof_500_to_99999")
 class Pprof_500_to_99999(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -297,3 +284,45 @@ class Pprof_500_to_99999(Instance):
 
     def parse_log(self, test_log: str) -> TestResult:
         return _parse_go_test_log(test_log)
+
+
+# Register under each bundle's NI (derived from prs_in_bundle)
+_ERA1_BUNDLE_NIS = [
+    "506-508-509-510-513-514",
+    "517-518-519-520-522-525-527-528-530-531-535",
+    "557-560-563-565",
+    "559-584-590-591-595",
+    "561-562-570-571-572-574-575",
+    "564-579-580-586-587",
+    "577-588-593-596-598-601-605",
+    "599-608-610-613-614",
+    "615-619-620-622-623-627-628",
+    "631-641-642-643-644",
+    "634-635",
+    "649-652-654-657",
+    "660-661-664-665-668-672-673",
+    "674-675-685-688",
+    "676-677",
+    "682-699-702-703-704",
+    "684-691-692-693-694-695",
+    "711-770-772-774-775-776-778-779-780-781-782",
+    "716-717-721-722-723",
+    "734-735-737-739-740",
+    "741-745-749-750-751-756",
+    "742-743-746",
+    "792-793-795-796-798-799-800-801-802-803-804",
+    "814-828-829-831-832-834",
+    "818-825-826-827",
+    "864-866-867-872-873-874",
+    "878-879-880-881",
+    "887-888-892-893-897-898",
+    "891-894-896-899-900-901-902-903-904-905-907",
+    "920-921-923-924-926-927-929",
+    "934-935-937-938-939-940-941-942-944",
+    "945-946-947-948",
+    "949-953-954-956-957-958-959-961-962-964-965",
+    "972-973-974-975-976-979",
+    "981-982-985-986-988-989",
+]
+for _ni in _ERA1_BUNDLE_NIS:
+    Instance._registry[f"google/{_ni}"] = Pprof_500_to_99999
