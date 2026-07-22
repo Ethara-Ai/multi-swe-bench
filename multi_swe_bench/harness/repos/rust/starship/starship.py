@@ -8,15 +8,14 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class StarshipImageDefault(Image):
-    """Single-stage image for the current (rust:latest) era of starship.
+class StarshipLatestImageBase(Image):
+    """Shared TOOLCHAIN-ONLY base for the current (rust:latest) era.
 
-    Collapsed from the previous two-stage (shared base + per-PR) layout so the
-    DockerfileEnhancer hardening applies per-PR: dependency() returns a string
-    toolchain, the repo is cloned via ``${REPO_URL}`` and checked out at
-    ``${BASE_COMMIT}`` inside this image, and the enhancer appends the history
-    strip / origin removal as the terminal build step. A shared base could only
-    pin one commit and would strand every other PR on a pruned, remote-less repo.
+    Contains NO ``git clone`` on purpose: DockerfileEnhancer._inject_final_sanitize()
+    only injects the history-stripping hardening when the Dockerfile mentions
+    git clone/fetch/remote add. With no clone this image is never pinned to a
+    BASE_COMMIT and never has its origin removed, so it is safely reusable by
+    every PR in the era. The per-PR image does clone + checkout + hardening itself.
     """
 
     def __init__(self, pr: PullRequest, config: Config):
@@ -31,8 +30,53 @@ class StarshipImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
+    def dependency(self) -> str:
         return "rust:latest"
+
+    def image_tag(self) -> str:
+        return "base-latest"
+
+    def workdir(self) -> str:
+        return "base-latest"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        return """
+FROM rust:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y git cmake pkg-config libssl-dev
+
+WORKDIR /home/
+"""
+
+
+class StarshipImageDefault(Image):
+    """Per-PR image for the current (rust:latest) era of starship.
+
+    Layers on the clone-less StarshipLatestImageBase. Because dependency() is an
+    Image, the enhancer emits this Dockerfile verbatim and no REPO_URL/BASE_COMMIT
+    build-args are passed, so the clone URL and commit are baked in literally and
+    the hardening block is embedded by hand with this PR's sha.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return StarshipLatestImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -125,28 +169,31 @@ cargo test
         ]
 
     def dockerfile(self) -> str:
+        base = self.dependency()
+        base_ref = f"{base.image_name()}:{base.image_tag()}"
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-FROM rust:latest
+        # dependency() is an Image, so DockerfileEnhancer returns this Dockerfile
+        # VERBATIM and build_dataset.py passes no REPO_URL/BASE_COMMIT build-args.
+        # Clone URL and commit are therefore baked in literally, and the hardening
+        # block is embedded by hand with ${BASE_COMMIT} -> this PR's actual sha.
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y git cmake pkg-config libssl-dev
+        return f"""FROM {base_ref}
 
 WORKDIR /home/
-RUN git clone "${{REPO_URL}}" /home/{pr.repo}
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
-WORKDIR /home/{pr.repo}
+WORKDIR /home/{self.pr.repo}
 RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-"""
-        dockerfile_content += """
+RUN git checkout {self.pr.base.sha}
+
 {copy_commands}
+{hardening}
 """
-        return dockerfile_content.format(pr=self.pr, copy_commands=copy_commands)
 
 
 @Instance.register("starship", "starship")

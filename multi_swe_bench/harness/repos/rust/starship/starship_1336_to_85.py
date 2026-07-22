@@ -9,7 +9,21 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageDefault(Image):
+class StarshipEra2ImageBase(Image):
+    """Shared TOOLCHAIN-ONLY base for the 1336..85 era (ubuntu:20.04 + rust 1.47).
+
+    Deliberately contains NO ``git clone``. That is the safety property that makes
+    a shared base possible here: DockerfileEnhancer._inject_final_sanitize() only
+    injects the history-stripping hardening when the Dockerfile mentions
+    git clone/fetch/remote add. With no clone, this image is never pinned to a
+    BASE_COMMIT and never has its origin removed, so it can be reused by every PR
+    in the era. (Putting the clone here — as PyO3/k3s/processing do — would pin the
+    SHARED base to one commit and strand every other PR on a pruned, remote-less
+    repo.)
+
+    The per-PR image below therefore does clone + checkout + hardening itself.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -24,6 +38,56 @@ class ImageDefault(Image):
 
     def dependency(self) -> str:
         return "ubuntu:20.04"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base-era2"
+
+    def workdir(self) -> str:
+        return "base-era2"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        return """
+FROM ubuntu:20.04
+
+## Set noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install basic requirements and system dependencies for starship
+RUN apt-get update && apt-get install -y git curl cmake pkg-config libssl-dev build-essential
+
+# Ensure bash is available
+RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
+
+# Install Rust 1.47.0 via rustup (last stable version compatible with uom 0.23.x/0.26.x)
+# This is the expensive step the shared base exists to amortise.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.47.0
+ENV PATH="/root/.cargo/bin:$PATH"
+
+WORKDIR /home/
+"""
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return StarshipEra2ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -97,37 +161,33 @@ source /root/.cargo/env && cargo test
         ]
 
     def dockerfile(self) -> str:
+        base = self.dependency()
+        base_ref = f"{base.image_name()}:{base.image_tag()}"
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-FROM ubuntu:20.04
+        # This image's dependency() is an Image, so DockerfileEnhancer.enhance()
+        # returns this Dockerfile VERBATIM (no ARG/infra injection) and
+        # build_dataset.py does NOT pass REPO_URL/BASE_COMMIT build-args. So the
+        # clone URL and the commit must both be baked in literally, and the
+        # hardening block must be embedded by hand with ${BASE_COMMIT}
+        # substituted for this PR's actual sha.
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements and system dependencies for starship
-RUN apt-get update && apt-get install -y git curl cmake pkg-config libssl-dev build-essential
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-# Install Rust 1.47.0 via rustup (last stable version compatible with uom 0.23.x/0.26.x)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.47.0
-ENV PATH="/root/.cargo/bin:$PATH"
+        return f"""FROM {base_ref}
 
 WORKDIR /home/
-RUN git clone "${{REPO_URL}}" /home/{pr.repo}
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
-WORKDIR /home/{pr.repo}
+WORKDIR /home/{self.pr.repo}
 RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-"""
-        dockerfile_content += """
+RUN git checkout {self.pr.base.sha}
+
 {copy_commands}
+{hardening}
 """
-        return dockerfile_content.format(pr=self.pr, copy_commands=copy_commands)
 
 
 @Instance.register("starship", "starship_1336_to_85")

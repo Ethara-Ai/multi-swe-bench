@@ -8,7 +8,16 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class StarshipMid0xImageDefault(Image):
+class StarshipMid0xImageBase(Image):
+    """Shared TOOLCHAIN-ONLY base for the mid-0.x era (rust:1.56.0).
+
+    Contains NO ``git clone`` on purpose: DockerfileEnhancer._inject_final_sanitize()
+    only injects the history-stripping hardening when the Dockerfile mentions
+    git clone/fetch/remote add. With no clone this image is never pinned to a
+    BASE_COMMIT and never has its origin removed, so it is safely reusable by
+    every PR in the era. The per-PR image does clone + checkout + hardening itself.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -23,6 +32,48 @@ class StarshipMid0xImageDefault(Image):
 
     def dependency(self) -> str:
         return "rust:1.56.0"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base-mid0x"
+
+    def workdir(self) -> str:
+        return "base-mid0x"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        return """
+FROM rust:1.56.0
+
+## Set noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies for starship
+RUN apt-get update && apt-get install -y git cmake pkg-config libssl-dev
+
+WORKDIR /home/
+"""
+
+
+class StarshipMid0xImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return StarshipMid0xImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -96,30 +147,31 @@ cargo test
         ]
 
     def dockerfile(self) -> str:
+        base = self.dependency()
+        base_ref = f"{base.image_name()}:{base.image_tag()}"
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-FROM rust:1.56.0
+        # dependency() is an Image, so DockerfileEnhancer returns this Dockerfile
+        # VERBATIM and build_dataset.py passes no REPO_URL/BASE_COMMIT build-args.
+        # Clone URL and commit are therefore baked in literally, and the hardening
+        # block is embedded by hand with ${BASE_COMMIT} -> this PR's actual sha.
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies for starship
-RUN apt-get update && apt-get install -y git cmake pkg-config libssl-dev
+        return f"""FROM {base_ref}
 
 WORKDIR /home/
-RUN git clone "${{REPO_URL}}" /home/{pr.repo}
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
-WORKDIR /home/{pr.repo}
+WORKDIR /home/{self.pr.repo}
 RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-"""
-        dockerfile_content += """
+RUN git checkout {self.pr.base.sha}
+
 {copy_commands}
+{hardening}
 """
-        return dockerfile_content.format(pr=self.pr, copy_commands=copy_commands)
 
 
 @Instance.register("starship", "starship_mid_0x")
