@@ -91,15 +91,20 @@ class TalosEra3ImageBase(Image):
 
         if self.config.need_clone:
             code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
+                f"RUN git clone --no-single-branch https://github.com/{self.pr.org}/{self.pr.repo}.git "
                 f"/home/{self.pr.repo}"
             )
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {image_name}
+
+LABEL org.opencontainers.image.title="siderolabs/talos" \\
+      org.opencontainers.image.description="siderolabs/talos Docker image" \\
+      org.opencontainers.image.source="https://github.com/siderolabs/talos" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CGO_ENABLED=0
@@ -113,7 +118,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 {code}
 
-{self.clear_env}
+CMD ["/bin/bash"]
 """
 
 
@@ -247,18 +252,22 @@ if [ "$RAN" = 0 ]; then echo "NO_TEST_DIRS"; exit 0; fi
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM {name}:{tag}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {name}:{tag}
 
 {copy_commands}
+WORKDIR /home/{self.pr.repo}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=$BASE_COMMIT
+
 RUN bash /home/prepare.sh
 
-{self.clear_env}
+{Image._HARDENING_BLOCK}
 """
 
 
-@Instance.register("siderolabs", "talos_13326_to_10051")
 class TALOS_13326_TO_10051(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -289,3 +298,34 @@ class TALOS_13326_TO_10051(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         return parse_go_test_log(log)
+
+
+_BUNDLE_NIS_ERA1 = [
+    "10051-10053",
+    "10147-10152",
+    "10239-10242",
+    "10321-10360-10363",
+    "10513-10515",
+    "10893-10901",
+    "10908-10919",
+    "11032-11036",
+    "11111-11113",
+    "11136-11143-11195-11196",
+    "11670-11674",
+    "11784-11787",
+    "11881-11889-11890",
+    "12015-12024",
+    "12140-12148",
+    "12248-12250",
+    "12419-12428",
+    "12474-12479",
+    "12635-12639",
+    "12731-12744",
+    "12754-12777-12779",
+    "12900-12902",
+    "13000-13008",
+    "13195-13204",
+    "13326-13334",
+]
+for _ni in _BUNDLE_NIS_ERA1:
+    Instance._registry[f"siderolabs/{_ni}"] = TALOS_13326_TO_10051
