@@ -36,33 +36,48 @@ class ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        gopath_pkg = f"github.com/{self.pr.org}/{self.pr.repo}"
+        org = self.pr.org
+        repo = self.pr.repo
+        gopath_pkg = f"github.com/{org}/{repo}"
 
-        if self.config.need_clone:
-            code = f"RUN mkdir -p /go/src/{gopath_pkg} && git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /go/src/{gopath_pkg}"
-        else:
-            code = f"COPY {self.pr.repo} /go/src/{gopath_pkg}"
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GOPATH=/go
-ENV GO111MODULE=off
-ENV PATH=$GOPATH/bin:$PATH
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    GOPATH=/go \\
+    GO111MODULE=off \\
+    PATH=/go/bin:$PATH
 
-RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
-    sed -i '/buster-updates/d' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y --no-install-recommends git
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+# Debian Buster is EOL -- switch to archive.debian.org
+RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\
+    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \\
+    sed -i '/buster-updates/d' /etc/apt/sources.list && \\
+    apt-get update && apt-get install -y --no-install-recommends git \\
+    && rm -rf /var/lib/apt/lists/*
 
 {self.global_env}
 
-{code}
+RUN mkdir -p /go/src/{gopath_pkg}
+RUN git clone "${{REPO_URL}}" /go/src/{gopath_pkg}
 
 WORKDIR /go/src/{gopath_pkg}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -138,7 +153,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-go test -v ./... || true
+go test -p 1 -v ./... > /dev/null 2>&1 || true
 
 """.format(pr=self.pr, gopath_pkg=gopath_pkg),
             ),
@@ -149,7 +164,7 @@ go test -v ./... || true
 set -e
 
 cd /go/src/{gopath_pkg}
-go test -v ./...
+go test -p 1 -v ./... 2>&1 | tr -cd '\11\12\15\40-\176'
 
 """.format(pr=self.pr, gopath_pkg=gopath_pkg),
             ),
@@ -161,7 +176,7 @@ set -e
 
 cd /go/src/{gopath_pkg}
 git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v ./...
+go test -p 1 -v ./... 2>&1 | tr -cd '\11\12\15\40-\176'
 
 """.format(pr=self.pr, gopath_pkg=gopath_pkg),
             ),
@@ -173,34 +188,58 @@ set -e
 
 cd /go/src/{gopath_pkg}
 git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v ./...
+go test -p 1 -v ./... 2>&1 | tr -cd '\11\12\15\40-\176'
 
 """.format(pr=self.pr, gopath_pkg=gopath_pkg),
             ),
         ]
 
     def dockerfile(self) -> str:
+        """PIPELINE.md §4 PR-image format, GOPATH variant.
+
+        IMPORTANT: this era predates Go modules, so the checkout lives at
+        /go/src/github.com/{org}/{repo}, NOT /home/{repo}.  The hardening block
+        must therefore run with WORKDIR set to the GOPATH package dir -- the
+        canonical block is CWD-relative.  (This is also why the base carries the
+        ``# syntax`` opt-out: the enhancer's auto-injection assumes /home/{repo}
+        and would run the hardening against a non-existent directory here.)
+
+        dependency() is an Image, so enhance() returns this Dockerfile verbatim
+        and the hardening must be spelled out explicitly.
+        """
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+
+        gopath_pkg = f"github.com/{self.pr.org}/{self.pr.repo}"
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        header = f"""FROM {name}:{tag}
 
-        return f"""FROM {name}:{tag}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
 
-{self.clear_env}
+WORKDIR /go/src/{gopath_pkg}
 
 """
+
+        # Canonical Image._HARDENING_BLOCK, concatenated raw so its
+        # ${BASE_COMMIT} / %(refname) tokens stay literal for the shell.
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("schollz", "croc_0_to_99")
@@ -291,3 +330,17 @@ class Croc_0_to_99(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# PIPELINE.md §11b: the JSONL and this registry ship together, and the
+# trajectory harness routes via Instance.create() -> f"{org}/{number_interval}".
+# Every dash-joined bundle value must therefore be a registered key, in
+# addition to the era key above, else create() raises "not registered".
+_BUNDLE_NIS_Croc_0_to_99 = [
+    "41-42-43-45-49-51",
+    "52-55",
+    "63-64",
+]
+for _ni in _BUNDLE_NIS_Croc_0_to_99:
+    Instance.register("schollz", _ni)(Croc_0_to_99)

@@ -20,37 +20,71 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:1.20"
+        return "golang:1.23"
 
     def image_tag(self) -> str:
-        return "base-go120"
+        return "base-go123"
 
     def workdir(self) -> str:
-        return "base-go120"
+        return "base-go123"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
+        """PIPELINE.md §3 reference-format base (SINGLE, shared across the era).
+
+        The leading ``# syntax=docker/dockerfile:1.6`` is the documented §2
+        opt-out: DockerfileEnhancer.enhance() returns this Dockerfile verbatim
+        once it sees that directive.  That is essential here -- this image has a
+        *string* dependency AND clones the repo, so without the opt-out the
+        enhancer would rewrite the clone into ``checkout ${BASE_COMMIT}`` plus
+        the strict hardening block, force-pinning this SHARED base (constant
+        tag, one build for the whole era) to a single PR's commit and destroying
+        the history every other bundle in the era needs.
+
+        Because the enhancer is opted out, this file supplies the whole infra
+        block itself.  Hardening is deliberately LIGHT so the base keeps FULL
+        history; each PR layer checks out its own base.sha and then applies the
+        strict canonical hardening (§4).
+        """
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org = self.pr.org
+        repo = self.pr.repo
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 WORKDIR /home/
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
-{self.clear_env}
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
+CMD ["/bin/bash"]
 """
 
 
@@ -121,7 +155,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-go test -v -count=1 ./... || true
+go test -p 1 -v -count=1 ./... > /dev/null 2>&1 || true
 
 """.format(pr=self.pr),
             ),
@@ -132,7 +166,7 @@ go test -v -count=1 ./... || true
 set -e
 
 cd /home/{pr.repo}
-go test -v -count=1 ./...
+go test -p 1 -v -count=1 ./... 2>&1 | tr -cd '\11\12\15\40-\176'
 
 """.format(pr=self.pr),
             ),
@@ -144,7 +178,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v -count=1 ./...
+go test -p 1 -v -count=1 ./... 2>&1 | tr -cd '\11\12\15\40-\176'
 
 """.format(pr=self.pr),
             ),
@@ -156,34 +190,61 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v -count=1 ./...
+go test -p 1 -v -count=1 ./... 2>&1 | tr -cd '\11\12\15\40-\176'
 
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
+        """PIPELINE.md §4 PR-image format.
+
+        The shared base already cloned FULL history, so this layer does NOT
+        clone -- prepare.sh resets and checks out this PR's base.sha out of that
+        history.  dependency() is an Image, so DockerfileEnhancer.enhance()
+        returns this Dockerfile verbatim and the anti-reward-hacking hardening
+        must be spelled out here.
+
+        build_dataset only passes the BASE_COMMIT build arg for str-dependency
+        images, so the literal base.sha is baked as the ARG default (the
+        ``ARG BASE_COMMIT`` reference-format sanctioned by §2).  Pinning is
+        correct at this layer: it is per-PR, not the shared base.
+        """
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+
+        repo = self.pr.repo
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        header = f"""FROM {name}:{tag}
 
-        return f"""FROM {name}:{tag}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
 
-{self.clear_env}
+WORKDIR /home/{repo}
 
 """
+
+        # Canonical Image._HARDENING_BLOCK (detach at ${BASE_COMMIT}, drop
+        # origin, delete every ref, expire reflog, gc/repack, drop alternates,
+        # + asserts, then the submodule strip).  Concatenated raw rather than
+        # via an f-string so its ${BASE_COMMIT} / %(refname) tokens stay literal.
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("schollz", "croc_530_to_869")
@@ -274,3 +335,21 @@ class Croc_530_to_869(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# PIPELINE.md §11b: the JSONL and this registry ship together, and the
+# trajectory harness routes via Instance.create() -> f"{org}/{number_interval}".
+# Every dash-joined bundle value must therefore be a registered key, in
+# addition to the era key above, else create() raises "not registered".
+_BUNDLE_NIS_Croc_530_to_869 = [
+    "534-547-549-550-553-563-579",
+    "570-587-589-625",
+    "728-731-732",
+    "734-737-740-742",
+    "749-753-761-762-763-766-767",
+    "785-789-792-794",
+    "800-801-803-811-814",
+]
+for _ni in _BUNDLE_NIS_Croc_530_to_869:
+    Instance.register("schollz", _ni)(Croc_530_to_869)

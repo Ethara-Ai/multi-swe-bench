@@ -6,6 +6,99 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+class ImageBase(Image):
+    """PIPELINE.md §3 reference-format base (SINGLE, shared across the era).
+
+    This era previously had no base tier: every PR image built FROM the golang image
+    and re-ran the (EOL Debian buster) apt work per PR.  Splitting the toolchain
+    + clone into one shared base builds it once for the whole era.
+
+    The leading ``# syntax=docker/dockerfile:1.6`` is the documented §2 opt-out,
+    which is required because this image has a *string* dependency AND clones
+    the repo -- without it the enhancer would force-pin this SHARED base to a
+    single PR's ${BASE_COMMIT} and strip the history the other bundles need.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return "golang:1.17"
+
+    def image_prefix(self) -> str:
+        return "mswebench"
+
+    def image_tag(self) -> str:
+        return "base-go117-mod"
+
+    def workdir(self) -> str:
+        return "base-go117-mod"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        org = self.pr.org
+        repo = self.pr.repo
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    GOFLAGS=-mod=mod
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{self.global_env}
+
+# NOTE: no apt step. The golang image already ships git, and this era is now on
+# golang:1.17 (Debian bullseye), so the old buster archive.debian.org rewrite is
+# not only unnecessary but harmful -- it would repoint bullseye's sources at the
+# archive host and can break apt.
+#
+# GOFLAGS=-mod=mod (set above): this era's bundles were authored against Go 1.13,
+# where a missing go.sum entry was resolved automatically. Go 1.16+ made that a
+# hard error ("missing go.sum entry"), which broke PR 103 outright once the era
+# moved to golang:1.17. -mod=mod restores the pre-1.16 auto-update behaviour so
+# the historical go.mod/go.sum pairs still build.
+
+WORKDIR /home/
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
+CMD ["/bin/bash"]
+"""
+
+
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -19,8 +112,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "golang:1.13"
+    def dependency(self) -> Image | None:
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "mswebench"
@@ -76,7 +169,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-go test -v -count=1 ./... || true
+go test -p 1 -v -count=1 ./... > /dev/null 2>&1 || true
 
 """.format(pr=self.pr),
             ),
@@ -87,7 +180,7 @@ go test -v -count=1 ./... || true
 set -e
 
 cd /home/{pr.repo}
-go test -v -count=1 ./...
+go test -p 1 -v -count=1 ./... 2>&1 | tr -cd '\11\12\15\40-\176'
 
 """.format(pr=self.pr),
             ),
@@ -99,7 +192,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v -count=1 ./...
+go test -p 1 -v -count=1 ./... 2>&1 | tr -cd '\11\12\15\40-\176'
 
 """.format(pr=self.pr),
             ),
@@ -111,41 +204,54 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go test -v -count=1 ./...
+go test -p 1 -v -count=1 ./... 2>&1 | tr -cd '\11\12\15\40-\176'
 
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
+        """PIPELINE.md §4 PR-image format.
+
+        The shared base (ImageBase) already installed the toolchain and cloned
+        FULL history, so this layer does NOT clone -- prepare.sh resets and
+        checks out this PR's base.sha out of that history.  dependency() is an
+        Image, so DockerfileEnhancer.enhance() returns this Dockerfile verbatim
+        and the anti-reward-hacking hardening must be spelled out here.
+        """
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
+        repo = self.pr.repo
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM golang:1.13
+        header = f"""FROM {name}:{tag}
 
-ENV DEBIAN_FRONTEND=noninteractive
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-# Debian Buster is EOL — switch to archive.debian.org
-RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list && \
-    sed -i 's|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' /etc/apt/sources.list && \
-    sed -i '/buster-updates/d' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y git
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
-
-WORKDIR /home/{self.pr.repo}
-RUN git reset --hard
-RUN git checkout {self.pr.base.sha}
+{self.global_env}
 
 {copy_commands}
 
 RUN bash /home/prepare.sh
 
+WORKDIR /home/{repo}
+
 """
+
+        # Canonical Image._HARDENING_BLOCK, concatenated raw so its
+        # ${BASE_COMMIT} / %(refname) tokens stay literal for the shell.
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("schollz", "croc_100_to_449")
@@ -236,3 +342,21 @@ class Croc_100_to_449(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# PIPELINE.md §11b: the JSONL and this registry ship together, and the
+# trajectory harness routes via Instance.create() -> f"{org}/{number_interval}".
+# Every dash-joined bundle value must therefore be a registered key, in
+# addition to the era key above, else create() raises "not registered".
+_BUNDLE_NIS_Croc_100_to_449 = [
+    "103-105",
+    "227-228",
+    "244-246-249-251-252-254-259-260",
+    "307-310",
+    "344-376-383",
+    "412-419-420-421-422",
+    "424-426-432-434-435-440",
+]
+for _ni in _BUNDLE_NIS_Croc_100_to_449:
+    Instance.register("schollz", _ni)(Croc_100_to_449)
