@@ -40,7 +40,7 @@ class SlidevImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = "RUN git clone https://github.com/{org}/{repo}.git /home/{repo_dir}".format(
+            code = "RUN git clone --no-single-branch https://github.com/{org}/{repo}.git /home/{repo_dir}".format(
                 org=self.pr.org, repo=self.pr.repo, repo_dir=REPO_DIR
             )
         else:
@@ -48,9 +48,14 @@ class SlidevImageBase(Image):
                 repo=self.pr.repo, repo_dir=REPO_DIR
             )
 
-        return """FROM {image_name}
+        return """# syntax=docker/dockerfile:1.6
 
-{global_env}
+FROM {image_name}
+
+LABEL org.opencontainers.image.title="slidevjs/slidev" \\
+      org.opencontainers.image.description="slidevjs/slidev Docker image" \\
+      org.opencontainers.image.source="https://github.com/slidevjs/slidev" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
@@ -66,13 +71,10 @@ RUN npm install -g pnpm@10.33.2
 
 {code}
 
-{clear_env}
-
+CMD ["/bin/bash"]
 """.format(
             image_name=image_name,
-            global_env=self.global_env,
             code=code,
-            clear_env=self.clear_env,
         )
 
 
@@ -170,7 +172,11 @@ pnpm -r --filter=./packages/** run build 2>&1 || true
 set -eo pipefail
 
 cd /home/{repo_dir}
-pnpm test 2>&1
+if [ -d node_modules/vitest ]; then
+    pnpm test -- --reporter=verbose 2>&1
+else
+    pnpm test 2>&1
+fi
 
 """.format(repo_dir=REPO_DIR),
             ),
@@ -195,7 +201,11 @@ pnpm install --no-frozen-lockfile 2>&1 || true
 # Rebuild workspace packages
 pnpm -r --filter=./packages/** run build 2>&1 || true
 
-pnpm test 2>&1
+if [ -d node_modules/vitest ]; then
+    pnpm test -- --reporter=verbose 2>&1
+else
+    pnpm test 2>&1
+fi
 
 """.format(repo_dir=REPO_DIR),
             ),
@@ -223,7 +233,11 @@ pnpm install --no-frozen-lockfile 2>&1 || true
 # Rebuild workspace packages
 pnpm -r --filter=./packages/** run build 2>&1 || true
 
-pnpm test 2>&1
+if [ -d node_modules/vitest ]; then
+    pnpm test -- --reporter=verbose 2>&1
+else
+    pnpm test 2>&1
+fi
 
 """.format(repo_dir=REPO_DIR),
             ),
@@ -238,22 +252,22 @@ pnpm test 2>&1
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        return f"""# syntax=docker/dockerfile:1.6
 
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
+FROM {name}:{tag}
 
 {copy_commands}
+WORKDIR /home/{REPO_DIR}
 
-{prepare_commands}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=$BASE_COMMIT
 
-{self.clear_env}
+RUN bash /home/prepare.sh
 
+{Image._HARDENING_BLOCK}
 """
 
 
-@Instance.register("slidevjs", "slidev_2466_to_3")
 class Slidev(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -290,13 +304,13 @@ class Slidev(Instance):
         skipped_tests = set()
 
         # Vitest output patterns (strips timing and test count metadata for cross-stage consistency)
-        re_vitest_pass = re.compile(r"^\s*[✓✔√]\s+(.+?)(?:\s+\(\d+\s*tests?\))?(?:\s+\d+ms)?$")
-        re_vitest_fail = re.compile(r"^\s*[❯×✗]\s+(.+?)(?:\s+\(\d+\s*tests?\))?(?:\s+\d+ms)?$")
-        re_vitest_skip = re.compile(r"^\s*-\s+(.+?)(?:\s+\(\d+\s*tests?\))?(?:\s+\d+ms)?$")
+        re_vitest_pass = re.compile(r"^\s*[✓✔√]\s+(.+?)(?:\s+\([^)]*\))?(?:\s+\d+(?:\.\d+)?\s*m?s)?(?:\s+\[skipped\])?$")
+        re_vitest_fail = re.compile(r"^\s*[❯×✗]\s+(.+?)(?:\s+\([^)]*\))?(?:\s+\d+(?:\.\d+)?\s*m?s)?(?:\s+\[skipped\])?$")
+        re_vitest_skip = re.compile(r"^\s*[↓]\s+(.+?)(?:\s+\([^)]*\))?(?:\s+\d+(?:\.\d+)?\s*m?s)?(?:\s+\[skipped\])?$")
 
         # Jest output patterns (individual tests)
-        re_jest_pass = re.compile(r"^\s*[✓✔√]\s+(.+?)(?:\s+\(\d+\s*ms\))?$")
-        re_jest_fail = re.compile(r"^\s*[✕✗×]\s+(.+?)(?:\s+\(\d+\s*ms\))?$")
+        re_jest_pass = re.compile(r"^\s*[✓✔√]\s+(.+?)(?:\s+\([^)]*\))?(?:\s+\d+(?:\.\d+)?\s*m?s)?(?:\s+\[skipped\])?$")
+        re_jest_fail = re.compile(r"^\s*[✕✗×]\s+(.+?)(?:\s+\([^)]*\))?(?:\s+\d+(?:\.\d+)?\s*m?s)?(?:\s+\[skipped\])?$")
         re_jest_skip = re.compile(r"^\s*○\s+(.+)$")
 
         # Jest file-level patterns (PASS/FAIL test/file.ts)
@@ -368,3 +382,64 @@ class Slidev(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+_BUNDLE_NIS = [
+    "3-5",
+    "111-112",
+    "191-192",
+    "225-228",
+    "264-265-269",
+    "276-321-326-335-337-342",
+    "311-313-315",
+    "383-389",
+    "438-451",
+    "482-546-547",
+    "513-531-536-541",
+    "549-550-551",
+    "552-566-567-568",
+    "598-601-604",
+    "620-621-623-624",
+    "633-638-647-650",
+    "783-784-787",
+    "796-797",
+    "813-819-825-826-832-835",
+    "840-845-846",
+    "844-885-891-893-895-904-908-909-910-913",
+    "867-872-874-876-879-881-882",
+    "1001-1005-1006",
+    "1023-1025-1029-1031",
+    "1032-1033-1036-1046-1060-1063",
+    "1058-1059-1090-1101",
+    "1143-1146-1147",
+    "1153-1155",
+    "1186-1189-1191-1192",
+    "1199-1201-1202-1205",
+    "1209-1210-1212-1218",
+    "1220-1228",
+    "1222-1265-1266-1267",
+    "1247-1273-1279-1286-1289-1290-1291-1293-1294-1295-1299-1300-1301-1302-1305-1306-1308-1311-1312-1313-1314-1315-1317-1318-1319-1321-1322-1326-1327-1328-1330-1331-1332-1334-1336-1337-1340-1342-1343-1344-1345-1346-1347-1348-1350-1352-1353-1354-1356-1357-1359-1362-1363-1365-1367-1368-1370-1372-1376-1377-1378-1379-1380-1382-1383-1384-1387-1388-1389-1393-1394-1395-1396-1397-1400-1403-1404",
+    "1402-1435-1464-1475-1508-1512-1516-1517-1518-1521-1523-1526-1529-1530-1534-1535-1536-1543-1544-1545-1546-1548-1549-1553-1556-1557-1559-1562-1564-1566-1571-1576-1578-1581",
+    "1588-1589-1595-1596-1598",
+    "1645-1682-1683-1685-1687-1688-1692-1693-1698-1699",
+    "1673-1708-1736-1737-1739-1740-1741-1744-1747-1755-1758-1760",
+    "1700-1812-1842-1843-1846-1849-1854-1857-1858-1869-1877-1879-1884-1886-1890-1891-1895-1896-1898-1902-1905-1908-1909-1913-1916-1922-1926-1928-1933-1936-1937-1942-1948-1951-1952-1954-1963-1964-1965-1969-1971-1972-1973-1974-1980",
+    "1743-1761-1762-1766-1767-1769",
+    "1782-1788-1789",
+    "1804-1838-1840-1841",
+    "1982-2016-2024-2025-2027-2028-2029",
+    "2026-2320-2329-2343-2344-2345-2347-2348-2349-2350-2351-2354-2355-2358-2359-2360-2361-2362-2369-2370",
+    "2089-2094-2096-2099-2107-2112-2116-2117-2118-2136-2139",
+    "2098-2100-2101-2102-2103",
+    "2175-2176-2178-2179",
+    "2185-2187-2189-2190-2191",
+    "2309-2313",
+    "2317-2318-2319-2321-2323-2324-2330-2333-2334",
+    "2400-2401-2404-2410-2411",
+    "2403-2414-2418-2419-2423-2424",
+    "2425-2451-2452-2453-2457-2458-2459",
+    "2465-2472-2473-2474",
+    "2466-2471",
+]
+for _ni in _BUNDLE_NIS:
+    Instance._registry[f"slidevjs/{_ni}"] = Slidev
