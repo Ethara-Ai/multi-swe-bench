@@ -9,7 +9,17 @@ from multi_swe_bench.harness.pull_request import PullRequest
 TEST_CMD = "python -m pytest --no-header -rA --tb=no -p no:cacheprovider"
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
+    """Shared base layer: OS + Python dependencies only.
+
+    Deliberately does NOT clone the repo, so it stays PR-independent and is
+    reused by every pr-N image. It carries the BuildKit syntax directive so
+    DockerfileEnhancer skips it (image.py: `if cls.SYNTAX_DIRECTIVE in raw`):
+    the auto-injected hardening block begins with `git checkout --detach` and
+    would fail here, since there is no working tree yet. Hardening is applied
+    in ImageDefault instead, where the repo actually exists.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -24,6 +34,54 @@ class ImageDefault(Image):
 
     def dependency(self) -> str:
         return "python:3.7-bookworm"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        return (
+            "# syntax=docker/dockerfile:1.6\n"
+            "FROM python:3.7-bookworm\n"
+            "\n"
+            "ENV DEBIAN_FRONTEND=noninteractive\n"
+            "ENV LANG=C.UTF-8\n"
+            "ENV TZ=UTC\n"
+            "\n"
+            "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+            "    git ca-certificates curl \\\n"
+            "    && rm -rf /var/lib/apt/lists/*\n"
+            "\n"
+            "RUN pip install --upgrade pip\n"
+            "RUN pip install 'urllib3<2' 'pyOpenSSL<24.0.0' mock 'responses==0.18.0'\n"
+            "\n"
+            'CMD ["/bin/bash"]\n'
+        )
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -51,7 +109,7 @@ class ImageDefault(Image):
                 "prepare.sh",
                 f"""ls -F
 ###ACTION_DELIMITER###
-pip install 'urllib3<2' 'pyOpenSSL<24.0.0'
+pip install 'urllib3<2' 'pyOpenSSL<24.0.0' mock 'responses==0.18.0'
 pip install -e ".[dev]" || (pip install -e . && ([ -f requirements-dev.txt ] && pip install -r requirements-dev.txt || true))
 python -m pytest --version || pip install pytest pytest-httpbin
 ###ACTION_DELIMITER###
@@ -105,43 +163,37 @@ git -C /home/{self.pr.repo} apply --whitespace=nowarn --allow-binary-replacement
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        base_image = self.dependency().image_full_name()
+        repo_url = f"https://github.com/{self.pr.org}/{self.pr.repo}.git"
+        base_commit = self.pr.base.sha
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.7-bookworm
+        # dependency() returns an Image, so DockerfileEnhancer returns this
+        # content untouched and the harness does not supply the REPO_URL /
+        # BASE_COMMIT build args (both are gated on `isinstance(dep, str)`).
+        # The clone URL and commit are therefore baked in literally, and the
+        # anti-reward-hacking hardening block is applied here explicitly.
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", base_commit)
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GITHUB_ACTIONS=true
-
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-RUN git clone https://github.com/httpie/cli.git /home/cli
-
-WORKDIR /home/cli
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-
-RUN pip install --upgrade pip
-RUN pip install 'urllib3<2' 'pyOpenSSL<24.0.0'
-RUN pip install -e ".[dev]" || (pip install -e . && ([ -f requirements-dev.txt ] && pip install -r requirements-dev.txt || true))
-RUN python -m pytest --version || pip install pytest pytest-httpbin
-"""
-        dockerfile_content += f"""
-{copy_commands}
-"""
-        return dockerfile_content.format(pr=self.pr)
+        return (
+            f"FROM {base_image}\n"
+            "\n"
+            "ENV DEBIAN_FRONTEND=noninteractive\n"
+            "ENV GITHUB_ACTIONS=true\n"
+            "\n"
+            "WORKDIR /home/\n"
+            f'RUN git clone "{repo_url}" /home/{self.pr.repo}\n'
+            "\n"
+            f"WORKDIR /home/{self.pr.repo}\n"
+            "RUN git reset --hard\n"
+            f"RUN git checkout {base_commit}\n"
+            "\n"
+            'RUN pip install -e ".[dev]" || (pip install -e . && ([ -f requirements-dev.txt ] && pip install -r requirements-dev.txt || true))\n'
+            "RUN python -m pytest --version || pip install pytest pytest-httpbin\n"
+            "\n"
+            f"{hardening}\n"
+            "\n"
+            f"{copy_commands}"
+        )
 
 
 @Instance.register("httpie", "cli")
@@ -183,7 +235,7 @@ class CLI(Instance):
         skipped_tests = set()
         test_results = {}
         pattern = re.compile(
-            r"^(PASSED|FAILED|ERROR|SKIPPED(?: \[[\d]+\])?)\s+([^:\s]+)"
+            r"^(PASSED|FAILED|ERROR|SKIPPED(?: \[[\d]+\])?)\s+(\S+)"
         )
         for line in log.splitlines():
             match = pattern.search(line)
