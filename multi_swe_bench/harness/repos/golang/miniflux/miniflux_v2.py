@@ -1,7 +1,7 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, File, Image, _safe_path_component
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -52,12 +52,50 @@ class MinifluxVersionBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # Validate before interpolating into RUN/WORKDIR paths so an org/repo
+        # name carrying shell metacharacters cannot inject build commands.
+        org = _safe_path_component(self.pr.org, "org")
+        repo = _safe_path_component(self.pr.repo)
 
-        return f"""FROM {image_name}
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{org}/{repo}.git /home/{repo}"
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        # Base-image hardening: strip the remote and all refs so this shared
+        # base cannot be used to browse branch/tag/PR history. Skips gc/repack
+        # (unlike Image._HARDENING_BLOCK) so every commit object stays present
+        # for the per-PR `git checkout <sha>` done later in
+        # MinifluxImageDefault; full history scrubbing happens once more via
+        # Image._HARDENING_BLOCK on that per-PR image.
+        base_hardening = (
+            "RUN set -eux; \\\n"
+            "    git checkout --detach HEAD; \\\n"
+            "    git remote remove origin 2>/dev/null || true; \\\n"
+            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\\n"
+            "        | xargs -r -n1 git update-ref -d; \\\n"
+            "    git reflog expire --expire=now --all; \\\n"
+            "    git reflog expire --expire-unreachable=now --all; \\\n"
+            "    rm -f .git/objects/info/alternates; \\\n"
+            "    git config --local gc.auto 0; \\\n"
+            "    git config --local fetch.recurseSubmodules false; \\\n"
+            "    git config --local remote.pushDefault \"\"; \\\n"
+            "    test -z \"$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)\"; \\\n"
+            "    test -z \"$(git remote)\""
+        )
+
+        # The syntax directive makes DockerfileEnhancer.enhance() treat this as
+        # already-final and return it verbatim (see its `SYNTAX_DIRECTIVE in raw`
+        # check) -- registry-local opt-out of the proxy/CA-cert/MITM injection
+        # it would otherwise perform on any Image with a string dependency()
+        # (this base image's dependency() is "golang:{go_version}"). Also avoids
+        # the enhancer's git-clone-line rewrite, which would otherwise bake one
+        # PR's BASE_COMMIT into this image tag that's meant to stay generic and
+        # shared across every PR in the version interval.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
 ENV GOTOOLCHAIN=auto
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
@@ -67,6 +105,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 WORKDIR /home/
 
 {code}
+
+WORKDIR /home/{repo}
+
+{base_hardening}
+
+RUN rm -f .git/ORIG_HEAD && test ! -e .git/ORIG_HEAD
+
+CMD ["/bin/bash"]
 """
 
 
@@ -300,11 +346,20 @@ exit 0
         name = image.image_name()
         tag = image.image_tag()
 
+        # Validate before interpolating into the WORKDIR path below.
+        repo = _safe_path_component(self.pr.repo)
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        # Image._HARDENING_BLOCK references ${BASE_COMMIT} as a shell var; this
+        # registry bakes the sha directly into prepare.sh rather than routing
+        # it through DockerfileEnhancer, so declare it here for the block to see.
         return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
@@ -312,8 +367,20 @@ exit 0
 
 RUN bash /home/prepare.sh
 
+WORKDIR /home/{repo}
+
+{Image._HARDENING_BLOCK}
+
+# Image._HARDENING_BLOCK's own checkout happens to overwrite ORIG_HEAD with
+# the (already-known) base commit, since prepare.sh already checked it out
+# first -- but that's incidental to this ordering, not a guarantee. Remove
+# ORIG_HEAD explicitly so it can never leak whatever HEAD was before the
+# base-commit checkout, regardless of how prepare.sh/hardening are ordered.
+RUN rm -f .git/ORIG_HEAD && test ! -e .git/ORIG_HEAD
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 

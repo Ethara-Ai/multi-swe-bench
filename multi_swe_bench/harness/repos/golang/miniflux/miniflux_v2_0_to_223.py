@@ -58,3 +58,30 @@ class MinifluxV2_0_to_223(Instance):
 
     def parse_log(self, test_log: str) -> TestResult:
         return miniflux_parse_log(test_log)
+
+
+# LHT bundled-PR dataset instances: Instance.create() uses pr.number_interval as a
+# registry-key substitute (see harness/instance.py) -- for a single-PR instance
+# number_interval is empty and the plain "miniflux/v2" key is used, but an LHT
+# record bundles several PR numbers into one instance and stamps the exact
+# dash-joined list (NOT a min-max range -- the bundle can have gaps) into
+# number_interval, e.g. prs_in_bundle [146, 147, 150, 155, 157] -> "146-147-150-155-157".
+# Each bundle in miniflux__v2_lht_final.jsonl with a lead PR number < 224 (pre-modules
+# era) must resolve to a registered class, so alias every literal bundle string found
+# in that dataset to MinifluxV2_0_to_223 (same image/build logic regardless of which
+# PRs were squashed into the instance).
+_LHT_BUNDLE_INTERVALS = [
+    "9-17-20-29-30",
+    "34-44-47",
+    "53-56-60-67-69",
+    "86-90-99",
+    "100-101",
+    "115-116",
+    "125-131-133-135",
+    "143-144-145-152-153-154-157-158-160-161-162-164",
+    "166-167-168-169-171-172-175-177-181-182-183",
+    "191-199-209-211-212-213-215-216-218-219",
+]
+
+for _interval in _LHT_BUNDLE_INTERVALS:
+    Instance.register("miniflux", _interval)(MinifluxV2_0_to_223)
