@@ -6,6 +6,22 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 class ImageBase(Image):
+    """Level 1: toolchain-only base image, shared by every PR of this repo.
+
+    dependency() returns a *string*, so this Dockerfile carries no ``# syntax``
+    directive and the DockerfileEnhancer engages, prepending the
+    ``# syntax``/ARG/ENV/LABEL infra block.
+
+    IMPORTANT: this image must NOT clone the repository. The enhancer rewrites
+    any clone/COPY of the repo into a ``${BASE_COMMIT}``-pinned clone followed
+    by the history-stripping hardening block. On an image shared per-repo (tag
+    "base", built once) that would force-pin the shared base to one PR's commit
+    and delete every other ref, so `git checkout <base.sha>` would fail for
+    every other PR sharing it. The clone therefore lives in ImageDefault, which
+    depends on an Image and is left verbatim by the enhancer, and is done
+    per-PR. This image only provides the Node toolchain.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -31,26 +47,36 @@ class ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
+        base_img = self.dependency()
 
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/"
-                f"{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        default_packages = [
+            "ca-certificates",
+            "curl",
+            "build-essential",
+            "git",
+            "gnupg",
+            "make",
+            "python3",
+            "sudo",
+            "wget",
+        ]
+        all_packages = default_packages + self.extra_packages()
+        packages_str = " \\\n    ".join(all_packages)
+        apt_command = self._get_apt_update_command(packages_str, base_img)
 
-        return f"""FROM {image_name}
+        return f"""FROM {base_img}
 
 {self.global_env}
 
 WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
 
-{code}
+{apt_command}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -67,7 +93,7 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Image:
         return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -89,6 +115,7 @@ class ImageDefault(Image):
                 f"{self.pr.test_patch}",
             ),
             File(
+          
                 ".",
                 "check_git_changes.sh",
                 """#!/bin/bash
@@ -113,14 +140,14 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
+# The repo is cloned and checked out at the base commit inline in the Dockerfile
+# and hardened there, so this only resets the working tree and installs deps.
 set -eo pipefail
 
 export CI=true
 
 cd /home/{pr.repo}
 git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
 npm install || true
@@ -199,19 +226,40 @@ done
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # The shared toolchain base does NOT clone, so this per-PR image clones
+        # full history and checks out ${BASE_COMMIT} inline. Because dependency()
+        # is an Image, the DockerfileEnhancer returns this Dockerfile verbatim --
+        # the clone and hardening below are kept as written (and pinning here is
+        # correct: it is per-PR, not the shared base).
+        header = f"""FROM {name}:{tag}
 
-        return f"""FROM {name}:{tag}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
+WORKDIR /home/
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
 {copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
+RUN bash /home/prepare.sh
 
 """
+
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal.
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("airbnb", "javascript")
