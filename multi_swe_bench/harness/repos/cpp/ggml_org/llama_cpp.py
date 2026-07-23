@@ -1,3 +1,4 @@
+import json as _ggml_json  # underscore-aliased: `import *` must not re-export it
 import re
 from typing import Optional, Union
 
@@ -19,13 +20,15 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #     single toolchain covers all eras -- no era split is needed.
 #
 #   * Multi-arch (linux/amd64 + linux/arm64), built natively per platform
-#     (no --platform pin).  Caveats, accepted intentionally:
+#     (no --platform pin).  Caveats:
 #       - PR 502's bundle carries a buggy ARM-NEON `k_quants.c`
-#         (`incompatible types ... uint32x4_t` / `vdotq_s32`) that does
-#         NOT compile on aarch64 with any modern gcc (verified gcc 12/16).
-#         On arm64 that single instance build-fails (run_llama_cpp emits
-#         LLAMA_STAGE=FAIL make and exits 0 -> empty TestResult); the other
-#         10 PRs build on arm64.  All 11 build on amd64.
+#         (`incompatible types ... uint32x4_t` / `vdotq_s32`) that does not
+#         compile on aarch64 with modern gcc's strict NEON vector-type
+#         checking (verified gcc 12/16).  `-flax-vector-conversions` (GCC's
+#         own diagnostic suggests this exact flag) restores the pre-gcc-12
+#         implicit-conversion behavior and lets it build; passed globally
+#         via CMAKE_C_FLAGS below since it only affects NEON code paths and
+#         is a no-op for the other 10 PRs / on amd64.
 #       - llama.cpp is SIMD quantization code: test-sampling /
 #         test-quantize-* / test-tokenizer can yield different pass/fail
 #         on AVX vs NEON, so arm64 results may diverge from amd64.  The
@@ -43,9 +46,12 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #   * The stripped binaries include models/ggml-vocab.bin, which
 #     test-tokenizer-0 needs at runtime.  That blob is identical (432610 B)
 #     across the whole era and is never modified, so the canonical copy is
-#     baked into the base image and restored into models/ before the test
-#     run.  This takes test-tokenizer-0 from FAIL to PASS (PR 51/109/502/
-#     1237 -> 100% of tests pass).
+#     extracted once into /home/ggml-vocab.bin (outside the work tree) and
+#     restored into models/ before the test run.  This takes test-tokenizer-0
+#     from FAIL to PASS (PR 51/109/502/1237 -> 100% of tests pass).
+#     The extraction lives in the per-PR image and must run BEFORE the
+#     hardening block: VOCAB_SRC_COMMIT is unreachable from most base commits,
+#     so the gc --prune=now in hardening deletes it.
 #
 #   * The gguf-beta bundles (PR 2397 range) reference models/
 #     ggml-vocab-llama.gguf with an early/incompatible gguf magic; those
@@ -114,7 +120,7 @@ run_llama_cpp() {
     rm -rf build
     mkdir build
     cd build
-    if ! cmake .. ; then
+    if ! cmake -DCMAKE_C_FLAGS=-flax-vector-conversions .. ; then
         echo "LLAMA_STAGE=FAIL cmake"
         return 0
     fi
@@ -130,6 +136,31 @@ run_llama_cpp() {
 
 
 class LlamaCppImageBase(Image):
+    """Level 1: toolchain-only base image (SINGLE, shared across all PRs).
+
+    dependency() returns a *string* ("gcc:12"), which would normally make the
+    DockerfileEnhancer inject its infra block (proxy ARGs, CA-cert symlink farm,
+    MITM secret mount).  This Dockerfile carries the BuildKit ``# syntax``
+    directive instead, so ``enhance()`` returns it UNCHANGED (image.py:
+    ``if SYNTAX_DIRECTIVE in raw: return raw``) -- NO proxy / cert / MITM
+    injection, and image.py is left untouched.  The ARG/ENV/LABEL infra the
+    enhancer would have supplied is written out here instead.  Same opt-out
+    pattern as Radare2ImageBase.
+
+    IMPORTANT: this image must NOT clone the repository.  image_tag() is the
+    constant "base", so exactly one base image is shared by all 11 PRs -- but
+    run_evaluation passes ``BASE_COMMIT=<that PR's base.sha>`` as a build arg to
+    every string-dependency image.  If the clone lived here, the enhancer's
+    _standardize_repo_fetch would rewrite it into clone + checkout ${BASE_COMMIT}
+    + the hardening block, force-pinning the ONE shared base to whichever PR
+    happened to build it and gc-pruning every other PR's base commit out of the
+    object store.  The other 10 PRs' `git checkout <sha>` would then fail.
+
+    So the clone lives in LlamaCppImageDefault (an Image dependency, left
+    verbatim by the enhancer), done per-PR.  This image only provides the
+    C/CMake build toolchain.  Same rule as FluidSynthImageBase.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -159,61 +190,50 @@ class LlamaCppImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org, repo = self.pr.org, self.pr.repo
 
-        return f"""FROM {image_name}
+        # The leading `# syntax` directive makes DockerfileEnhancer.enhance()
+        # return this file verbatim, so no proxy/cert/MITM block is injected; the
+        # image uses gcc:12's own CA trust store and ambient network settings.
+        #
+        # No `git clone` here on purpose (see class docstring) -- the repo is
+        # cloned per-PR in LlamaCppImageDefault, so this shared base is never
+        # pinned to a single ${BASE_COMMIT}.
+        #
+        # dependency() is a string, so build_dataset/run_evaluation pass the
+        # REPO_URL/BASE_COMMIT build-args; both are declared (REPO_URL baked with
+        # its default) purely to consume them, otherwise Docker warns that the
+        # build-args went unused.
+        repo_url = f"https://github.com/{org}/{repo}.git"
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="{repo_url}"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \\
     git ca-certificates cmake build-essential python3 \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
-
-RUN git -C /home/{self.pr.repo} cat-file blob {VOCAB_SRC_COMMIT}:models/ggml-vocab.bin > /home/ggml-vocab.bin
-
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
-
-
-_HARDENING_BLOCK = r"""RUN set -eux; \
-    git checkout --detach "${BASE_COMMIT}"; \
-    git remote remove origin 2>/dev/null || true; \
-    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \
-        | xargs -r -n1 git update-ref -d; \
-    git reflog expire --expire=now --all; \
-    git reflog expire --expire-unreachable=now --all; \
-    git gc --prune=now --aggressive; \
-    git repack -a -d -l --quiet; \
-    rm -f .git/objects/info/alternates; \
-    git config --local gc.auto 0; \
-    git config --local fetch.recurseSubmodules false; \
-    git config --local remote.pushDefault ""; \
-    test "$(git rev-parse HEAD)" = "$(git rev-parse "${BASE_COMMIT}")"; \
-    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \
-    test -z "$(git remote)"; \
-    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
-
-RUN if [ -f .gitmodules ]; then \
-        git submodule foreach --recursive ' \
-            git checkout --detach HEAD; \
-            git remote remove origin 2>/dev/null || true; \
-            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \
-                | xargs -r -n1 git update-ref -d; \
-            git reflog expire --expire=now --all; \
-            git reflog expire --expire-unreachable=now --all; \
-            git gc --prune=now --aggressive; \
-            rm -f .git/objects/info/alternates; \
-        '; \
-    fi"""
 
 
 class LlamaCppImageDefault(Image):
@@ -342,25 +362,49 @@ run_llama_cpp /home/test.patch /home/fix.patch
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
+        # The shared toolchain base does NOT clone, so this per-PR image clones
+        # full history first.  Because this image's dependency() is an Image, the
+        # DockerfileEnhancer returns this Dockerfile verbatim -- the clone and the
+        # hardening below are kept as written, and pinning to ${BASE_COMMIT} here
+        # is correct: it is per-PR, not the shared base.
+        #
+        # Ordering is load-bearing: the vocab blob is extracted while full history
+        # is still present, because VOCAB_SRC_COMMIT is unreachable from most base
+        # commits and the hardening block's `gc --prune=now` deletes it.  The blob
+        # lands in /home/ (outside the work tree), so it survives hardening and the
+        # `git clean -ffdx` in the run scripts.
+        header = f"""FROM {name}:{tag}
 
 ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
+WORKDIR /home/
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
+
+RUN git -C /home/{self.pr.repo} cat-file blob {VOCAB_SRC_COMMIT}:models/ggml-vocab.bin > /home/ggml-vocab.bin
+
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
 
 WORKDIR /home/{self.pr.repo}
 
-{_HARDENING_BLOCK}
+"""
 
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal, and so this registry tracks the harness block
+        # instead of carrying a fork of it.
+        tail = f"""
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("ggml-org", "llama.cpp")
@@ -440,3 +484,98 @@ class LlamaCpp(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# ---------------------------------------------------------------------------
+# number_interval auto-population -- REGISTRY-SCOPED shim (no other file edited).
+#
+# `number_interval` must enumerate the EXACT PRs in the bundle, dash-joined:
+#
+#     prs_in_bundle [146, 147, 150, 155, 157]  ->  "146-147-150-155-157"
+#
+# NOT a "146-157" range: a range implies every PR from 146 to 157, which is not
+# what the bundle contains.
+#
+# The output dataset/report jsonl writes `number_interval` from the loaded
+# PullRequest (dataset.Dataset.build and gen_report's dataset lookup both read
+# `pr.number_interval`), but PullRequest has no `prs_in_bundle` field, so
+# from_json drops the bundle list and leaves number_interval "". As this must
+# live ONLY in the registry, two small, idempotent, ggml-org-scoped shims are
+# installed at import time (this file is the only one changed):
+#
+#   1. PullRequest.from_json -- for ggml-org/llama.cpp records, derive
+#      number_interval from the raw line's prs_in_bundle. This runs on both
+#      parse paths that matter: build_dataset (-> dataset jsonl) and gen_report
+#      (-> resolved/report jsonl).
+#
+#      prs_in_bundle is treated as AUTHORITATIVE whenever present, so a legacy
+#      range-format value ("146-157") is rewritten to the enumerated list. That
+#      is the one deliberate difference from the radareorg shim, which only
+#      fills EMPTY values: radareorg shares its org with era-keyed registry keys
+#      whose pre-set number_interval must survive, whereas ggml-org registers
+#      exactly one key ("ggml-org/llama.cpp"), so there is no era value to
+#      preserve and correcting stale ranges is safe. Records with no
+#      prs_in_bundle are left untouched.
+#
+#   2. Instance.create -- a non-empty number_interval makes routing look up
+#      `ggml-org/<that-list>`, which is not a registered key; fall back to
+#      `ggml-org/llama.cpp` so the build still routes. Other repos are
+#      unaffected: shim 1 only fills ggml-org, and the fallback re-raises for
+#      anything else.
+#
+# Both shims chain safely with the equivalent radareorg shims (each wraps the
+# previous callable and re-raises for orgs it does not own), regardless of
+# module import order.
+# ---------------------------------------------------------------------------
+_GGML_ORG = "ggml-org"
+_GGML_REPO = "llama.cpp"
+
+
+def _ggml_interval_from_bundle(json_str: str) -> str:
+    """Dash-join prs_in_bundle -> "146-147-150-155-157" ("" when absent)."""
+    prs = (_ggml_json.loads(json_str) or {}).get("prs_in_bundle") or []
+    # Sort numerically so ordering matches the collector (build_lht_dataset
+    # joins sorted_pr_numbers) and is stable regardless of the raw line's order.
+    return "-".join(str(p) for p in sorted(prs, key=int))
+
+
+if not getattr(PullRequest, "_ggml_org_ni_shim", False):
+    _ggml_orig_from_json = PullRequest.from_json.__func__
+
+    def _ggml_from_json(cls, json_str):
+        pr = _ggml_orig_from_json(cls, json_str)
+        try:
+            if (
+                getattr(pr, "org", "") == _GGML_ORG
+                and getattr(pr, "repo", "") == _GGML_REPO
+            ):
+                interval = _ggml_interval_from_bundle(json_str)
+                if interval:
+                    pr.number_interval = interval
+        except Exception:
+            # Never let metadata enrichment break dataset parsing.
+            pass
+        return pr
+
+    PullRequest.from_json = classmethod(_ggml_from_json)
+    PullRequest._ggml_org_ni_shim = True
+
+
+if not getattr(Instance, "_ggml_org_route_shim", False):
+    _ggml_orig_create = Instance.create.__func__
+
+    def _ggml_create(cls, pr, config, *args, **kwargs):
+        try:
+            return _ggml_orig_create(cls, pr, config, *args, **kwargs)
+        except ValueError:
+            if (
+                getattr(pr, "org", "") == _GGML_ORG
+                and getattr(pr, "repo", "") == _GGML_REPO
+            ):
+                name = f"{pr.org}/{pr.repo}"
+                if name in cls._registry:
+                    return cls._registry[name](pr, config, *args, **kwargs)
+            raise
+
+    Instance.create = classmethod(_ggml_create)
+    Instance._ggml_org_route_shim = True
