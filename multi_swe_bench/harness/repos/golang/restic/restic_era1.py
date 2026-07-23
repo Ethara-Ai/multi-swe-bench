@@ -9,12 +9,33 @@ Test command: GOPATH=/home/restic/vendor:/home/restic GO111MODULE=off go test -v
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import (
+    Config,
+    File,
+    Image,
+    _safe_path_component,
+)
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
 class ResticEra1ImageBase(Image):
+    """Toolchain + full-history checkout, shared by every PR in era 1.
+
+    ``image_tag()`` is the constant ``"base-era1"``, so ONE image serves all six
+    era-1 bundles while each carries a different ``base.sha``. The ``# syntax``
+    directive makes ``DockerfileEnhancer.enhance()`` return this content
+    verbatim, which stops the enhancer's ``_standardize_repo_fetch`` from
+    rewriting the clone below into ``git clone`` + ``git checkout
+    ${BASE_COMMIT}`` + ``Image._HARDENING_BLOCK``. That rewrite would prune this
+    SHARED tag down to whichever base.sha built first, breaking `git checkout`
+    for the other five bundles.
+
+    Full history is therefore kept here; only the network remote is dropped (no
+    later layer, and no agent, can re-fetch upstream). Per-PR hardening lives in
+    ResticEra1ImageDefault.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -28,7 +49,15 @@ class ResticEra1ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+        # PINNED, not golang:latest. Era-1 code is from 2017 (its .travis.yml
+        # targets go 1.6.4/1.7.4) and does an in-place AES-CTR decrypt with
+        # overlapping buffers, which modern Go rejects with "crypto/aes:
+        # invalid buffer overlap"; go1.26 additionally fails to BUILD the
+        # restic/filter and restic/backend/test packages. Measured on the
+        # pr-723 base: go1.26.5 -> 13 packages ok / 7 FAIL, go1.9 -> 20 ok /
+        # 0 FAIL, and all 6 era-1 base shas build EXIT 0. Available for
+        # linux/arm64 as well as amd64.
+        return "golang:1.9"
 
     def image_tag(self) -> str:
         return "base-era1"
@@ -44,25 +73,59 @@ class ResticEra1ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # Validated before interpolation into the clone URL / WORKDIR paths.
+        org = _safe_path_component(self.pr.org, "org")
+        repo = _safe_path_component(self.pr.repo)
 
-        return f"""FROM {image_name}
+        if self.config.need_clone:
+            fetch = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            fetch = f"COPY {repo} /home/{repo}"
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 WORKDIR /home/
 
-{code}
+{fetch}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
 class ResticEra1ImageDefault(Image):
+    """Per-PR grading image for era 1 — this tier carries the hardening.
+
+    ``prepare.sh`` checks this PR's ``base.sha`` out of the shared base's full
+    history; ``Image._HARDENING_BLOCK`` then detaches at that literal sha and
+    strips every other ref, the reflogs and all unreachable objects, so the PR's
+    fix commit is not recoverable from git inside the image.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -175,13 +238,24 @@ GOPATH=/home/{pr.repo}/vendor:/home/{pr.repo} GO111MODULE=off go test -v -count=
         name = image.image_name()
         tag = image.image_tag()
 
+        repo = _safe_path_component(self.pr.repo)
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
-        return f"""FROM {name}:{tag}
+        # dependency() is an Image, so DockerfileEnhancer returns this content
+        # verbatim and injects nothing -- the hardening must be emitted here.
+        # ${BASE_COMMIT} is substituted with the literal sha because the pipeline
+        # only passes REPO_URL/BASE_COMMIT build args to string-dependency images.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
@@ -189,8 +263,13 @@ GOPATH=/home/{pr.repo}/vendor:/home/{pr.repo} GO111MODULE=off go test -v -count=
 
 {prepare_commands}
 
+WORKDIR /home/{repo}
+
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -267,3 +346,25 @@ class ResticEra1(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# instance.py routes on f"{org}/{number_interval}" whenever number_interval is
+# set, so every dash-joined bundle value a record can carry must resolve to a
+# class. These are the era 1 (src/ layout, GOPATH) bundles. Without them a delivered
+# jsonl that carries number_interval raises "Instance 'restic/<bundle>' is not
+# registered" before a single image is built. The bare "restic/restic_era1" key
+# registered above still routes records whose number_interval is empty.
+#
+# Explicit dash-joined member lists, never ranges -- the bundles are sparse.
+_BUNDLE_NIS_RESTIC_ERA1 = [
+    "723-727-728-729-731-737-739-740-741-745-746-748-749-750-760-761-762-764",  # pr-723 (18 PRs, v0.3.3..v0.4.0)
+    "763-766-768-771-773-775-778-779-782-783-792-793-794-795-798-800-803-806-808-809-814-817-829-835-837-840-844-845-847-850-853-854-855-857-858-860-861-864-865-866-867",  # pr-763 (41 PRs, v0.4.0..v0.5.0)
+    "871-872-876-877-878-883-887-896-897-898-902-903-905-908-911-912-913-916-918-919-920-922-927-930-935-936-938-941-943-945-946-947-952-957-960-961-962-964-966-967-968-971",  # pr-871 (42 PRs, v0.5.0..v0.6.0)
+    "975-978-990-993-994-997-998-999-1002-1003-1004-1008-1010-1011-1019-1024-1025-1027-1034-1035-1036-1038-1043-1045-1046-1048-1049-1050-1051-1056-1066-1070",  # pr-975 (32 PRs, v0.6.1..v0.7.0)
+    "1044-1061-1126-1129-1130-1131-1133-1134-1138-1139-1144-1147-1148-1149-1150-1156-1157-1158-1164-1170-1174-1182-1184-1185-1187-1189-1191-1194-1196-1200-1201-1202-1203-1205-1209-1210-1214-1220-1222-1223-1224-1227-1228-1230-1231-1232-1236",  # pr-1044 (47 PRs, v0.7.1..v0.7.2)
+    "1075-1077-1080-1082-1086-1090-1100-1103-1105-1107-1108-1112-1115-1117-1121-1122-1124",  # pr-1075 (17 PRs, v0.7.0..v0.7.1)
+]
+
+for _ni in _BUNDLE_NIS_RESTIC_ERA1:
+    Instance.register("restic", _ni)(ResticEra1)
