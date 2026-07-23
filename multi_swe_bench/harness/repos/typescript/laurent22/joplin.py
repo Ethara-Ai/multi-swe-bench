@@ -6,6 +6,20 @@ from multi_swe_bench.harness.instance import TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+def _strip_binary_diffs(patch: str) -> str:
+    """Remove binary diff hunks so `git apply` never leaves .rej / partially
+    applies on a binary hunk (96 of joplin's 208 records carry them, mostly
+    images / *.node / snapshot fixtures). Safe: binary hunks touch no TS source
+    and never affect the unit test outcome."""
+    import re as _re
+    sections = _re.split(r"(?=^diff --git )", patch or "", flags=_re.MULTILINE)
+    return "".join(
+        s for s in sections
+        if s and "Binary files " not in s and "GIT binary patch" not in s
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # Shared constants
 # ---------------------------------------------------------------------------

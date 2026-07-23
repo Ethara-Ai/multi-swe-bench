@@ -62,6 +62,19 @@ def parse_django_test_log(log: str) -> TestResult:
     )
 
 
+
+
+def _strip_binary_diffs(patch: str) -> str:
+    """Remove binary diff hunks so `git apply` never aborts on a binary hunk
+    with no full-index line (e.g. *.png/*.sqlite/*.afdesign). Safe: binary
+    hunks touch no Python source and never affect test outcomes."""
+    import re as _re
+    sections = _re.split(r"(?=^diff --git )", patch, flags=_re.MULTILINE)
+    return "".join(
+        s for s in sections
+        if s and "Binary files " not in s and "GIT binary patch" not in s
+    )
+
 class LinkdingEraBImageBase(Image):
     """linkding era B (PRs 389-1160, v1.20->1.43): deps via `requirements.txt`
     plus `requirements.dev.txt` (compiled with pip-tools); the dev set carries
@@ -96,30 +109,51 @@ class LinkdingEraBImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        org = self.pr.org
+        repo = self.pr.repo
         if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV TZ=UTC
 
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git build-essential && rm -rf /var/lib/apt/lists/*
+    git build-essential ca-certificates && rm -rf /var/lib/apt/lists/*
 
+RUN git config --global --add safe.directory '*'
 {code}
 
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -150,8 +184,8 @@ class LinkdingEraBImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(".", "fix.patch", f"{self.pr.fix_patch}"),
-            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "fix.patch", _strip_binary_diffs(self.pr.fix_patch)),
+            File(".", "test.patch", _strip_binary_diffs(self.pr.test_patch)),
             File(
                 ".",
                 "prepare.sh",
@@ -250,14 +284,25 @@ python manage.py test $LABELS --verbosity=2 2>&1
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM {name}:{tag}
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 RUN bash /home/prepare.sh
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
 {self.clear_env}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -292,3 +337,29 @@ class LINKDING_1160_TO_389(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         return parse_django_test_log(log)
+
+
+# --- number_interval bundle routing (prs_in_bundle dash-joined) -- PIPELINE 11b
+_BUNDLE_NIS_LINKDING_B = [
+    "613-618-620-625-633-638",
+    "657-675-683",
+    "661-667-670-672",
+    "662-663-665-666",
+    "684-686-687-688-689-691",
+    "693-694-695-696-697",
+    "699-702-703-704-706-708-713",
+    "701-762-763-765-769-772-775-788-795-800-804-805",
+    "721-724-725-733-734-735-736-737-740",
+    "806-822-823-824",
+    "808-809-810-811-812-819-820",
+    "825-826-829",
+    "833-835-836-837-839-840-841-842-843-844-845-846-847",
+    "849-850-851-852-853-854-855-856-858-860-863-865-866",
+    "880-884-887-892-897-914-928-929-944-945-947-949-953-959-962",
+    "965-968-971-974-975-977-984",
+    "989-990-992-993-994",
+    "995-996-1001-1002-1003",
+    "999-1007-1009-1014-1015-1019-1020-1021-1024-1025-1028-1030-1033-1034-1035-1036-1037-1045-1051-1052-1055-1058-1059-1060",
+]
+for _ni in _BUNDLE_NIS_LINKDING_B:
+    Instance.register("sissbruecker", _ni)(LINKDING_1160_TO_389)

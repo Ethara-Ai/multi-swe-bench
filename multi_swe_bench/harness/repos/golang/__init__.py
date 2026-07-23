@@ -41,7 +41,7 @@ from multi_swe_bench.harness.repos.golang.tigrisdata_archive import *
 from multi_swe_bench.harness.repos.golang.woodpecker_ci import *
 from multi_swe_bench.harness.repos.golang.permify import *
 from multi_swe_bench.harness.repos.golang.synapsecns import *
-from multi_swe_bench.harness.repos.golang.superplanehq.superplane import *
+# [auto-disabled missing] from multi_swe_bench.harness.repos.golang.superplanehq.superplane import *
 from multi_swe_bench.harness.repos.golang.pactus_project import *
 from multi_swe_bench.harness.repos.golang.moby import *
 from multi_swe_bench.harness.repos.golang.ignite import *
@@ -72,6 +72,7 @@ from multi_swe_bench.harness.repos.golang.inngest import *
 from multi_swe_bench.harness.repos.golang.grafana import *
 from multi_swe_bench.harness.repos.golang.openfga import *
 from multi_swe_bench.harness.repos.golang.hashicorp_terraform import *
+from multi_swe_bench.harness.repos.golang.hashicorp_aws import *  # noqa: F401,F403
 from multi_swe_bench.harness.repos.golang.envoyproxy import *
 from multi_swe_bench.harness.repos.golang.ory import *
 from multi_swe_bench.harness.repos.golang.go_task import *
