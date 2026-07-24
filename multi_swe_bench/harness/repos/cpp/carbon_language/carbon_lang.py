@@ -1,11 +1,135 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+class CarbonLangImageBase(Image):
+    """Shared base for carbon-language/carbon-lang (single-era). Installs the
+    LLVM 19 toolchain + Bazelisk ONCE and clones the full repo history; every PR
+    image builds `FROM` this base. `# syntax` opts the base out of the
+    DockerfileEnhancer so it is NOT pruned/checked-out to a single PR's base.sha
+    here — the per-PR anti-reward-hack hardening runs in CarbonLangImageDefault
+    at that PR's literal base.sha."""
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return "ubuntu:22.04"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
+
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        return f'''# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{self.global_env}
+
+# Base build deps (image.py defaults + carbon-lang / llvm.sh requirements).
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    __APT__ && \\
+    rm -rf /var/lib/apt/lists/*
+
+# Install the LLVM 19 toolchain ONCE (shared by every PR image) and symlink the
+# unversioned names.
+RUN curl -fSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh && \\
+    bash /tmp/llvm.sh 19 all && \\
+    apt-get install -y --no-install-recommends libc++-19-dev libc++abi-19-dev lld-19 lldb-19 && \\
+    ln -sf /usr/bin/clang-19 /usr/bin/clang && \\
+    ln -sf /usr/bin/clang++-19 /usr/bin/clang++ && \\
+    ln -sf /usr/bin/lld-19 /usr/bin/lld && \\
+    ln -sf /usr/bin/ld.lld-19 /usr/bin/ld.lld && \\
+    ln -sf /usr/bin/llvm-ar-19 /usr/bin/llvm-ar && \\
+    ln -sf /usr/bin/llvm-nm-19 /usr/bin/llvm-nm && \\
+    ln -sf /usr/bin/llvm-strip-19 /usr/bin/llvm-strip && \\
+    ln -sf /usr/bin/lldb-19 /usr/bin/lldb && \\
+    rm /tmp/llvm.sh && rm -rf /var/lib/apt/lists/*
+
+# Install Bazelisk as bazel (auto-selects the version from .bazelversion per checkout).
+RUN ARCH=$(dpkg --print-architecture) && \\
+    curl -fSL "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${{TARGETARCH:-$ARCH}}" \\
+      -o /tmp/bazel && \\
+    install -m 755 /tmp/bazel /usr/local/bin/bazel && \\
+    rm /tmp/bazel
+
+RUN git config --global --add safe.directory '*'
+{code}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
+{self.clear_env}
+
+CMD ["/bin/bash"]
+'''.replace("__APT__", r"""ca-certificates \
+    curl \
+    build-essential \
+    git \
+    gnupg \
+    make \
+    python3 \
+    sudo \
+    wget \
+    lsb-release \
+    software-properties-common \
+    pkg-config \
+    zip \
+    unzip \
+    python3-pip \
+    python-is-python3 \
+    openjdk-21-jdk-headless \
+    libtinfo5 \
+    libxml2 \
+    m4""")
 
 
 class CarbonLangImageDefault(Image):
@@ -21,81 +145,14 @@ class CarbonLangImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        # Returning a string (rather than a chained Image) lets the shared
-        # Image.dockerfile() in image.py own the build: it installs the default
-        # + extra_packages, clones "${REPO_URL}", checks out "${BASE_COMMIT}",
-        # runs extra_setup(), and appends the _HARDENING_BLOCK that strips every
-        # other ref/commit so the fix can't be read out of git history.
-        # DockerfileEnhancer then injects the proxy/cert infra and the final
-        # sanitize pass. None of that fires when dockerfile() is overridden,
-        # which is why the previous two-stage build bypassed it.
-        return "ubuntu:22.04"
+    def dependency(self) -> Optional[Image]:
+        return CarbonLangImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
-
-    def extra_packages(self) -> list[str]:
-        # Appended to image.py's default_packages (ca-certificates, curl,
-        # build-essential, git, gnupg, make, python3, sudo, wget). These are the
-        # carbon-lang specific build deps + what apt.llvm.org's llvm.sh needs
-        # (lsb-release, software-properties-common, gnupg).
-        return [
-            "lsb-release",
-            "software-properties-common",
-            "pkg-config",
-            "zip",
-            "unzip",
-            "python3-pip",
-            "python-is-python3",
-            "openjdk-21-jdk-headless",
-            "libtinfo5",
-            "libxml2",
-            "m4",
-        ]
-
-    def extra_setup(self) -> str:
-        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. Installs the LLVM 19 toolchain + Bazelisk (as bazel), then
-        # stages the runtime helper scripts + patches into /home/. The copied
-        # files live outside /home/{repo}, so the hardening pass (which only
-        # operates inside the git tree) leaves them untouched. Everything runs
-        # as root; Bazel builds fine as root in this harness (see cpp/grpc).
-        return (
-            "# Install the LLVM 19 toolchain and symlink the unversioned names.\n"
-            "RUN curl -fSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh && \\\n"
-            "    bash /tmp/llvm.sh 19 all && \\\n"
-            "    apt-get install -y --no-install-recommends "
-            "libc++-19-dev libc++abi-19-dev lld-19 lldb-19 && \\\n"
-            "    ln -sf /usr/bin/clang-19 /usr/bin/clang && \\\n"
-            "    ln -sf /usr/bin/clang++-19 /usr/bin/clang++ && \\\n"
-            "    ln -sf /usr/bin/lld-19 /usr/bin/lld && \\\n"
-            "    ln -sf /usr/bin/ld.lld-19 /usr/bin/ld.lld && \\\n"
-            "    ln -sf /usr/bin/llvm-ar-19 /usr/bin/llvm-ar && \\\n"
-            "    ln -sf /usr/bin/llvm-nm-19 /usr/bin/llvm-nm && \\\n"
-            "    ln -sf /usr/bin/llvm-strip-19 /usr/bin/llvm-strip && \\\n"
-            "    ln -sf /usr/bin/lldb-19 /usr/bin/lldb && \\\n"
-            "    rm /tmp/llvm.sh && rm -rf /var/lib/apt/lists/*\n"
-            "\n"
-            "# Install Bazelisk as bazel (auto-selects the version from\n"
-            "# .bazelversion / tools/bazel wrapper per checkout).\n"
-            "RUN ARCH=$(dpkg --print-architecture) && \\\n"
-            '    curl -fSL "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${ARCH}" \\\n'
-            "      -o /tmp/bazel && \\\n"
-            "    install -m 755 /tmp/bazel /usr/local/bin/bazel && \\\n"
-            "    rm /tmp/bazel\n"
-            "\n"
-            "# Stage runtime helper scripts + patches.\n"
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY bazel_utils.sh /home/bazel_utils.sh\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh"
-        )
 
     def files(self) -> list[File]:
         return [
@@ -108,6 +165,17 @@ class CarbonLangImageDefault(Image):
                 ".",
                 "test.patch",
                 f"{self.pr.test_patch}",
+            ),
+            File(
+                ".",
+                "prepare.sh",
+                """#!/bin/bash
+set +e
+
+cd /home/{pr.repo}
+git reset --hard
+git checkout {pr.base.sha}
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -318,8 +386,45 @@ echo "cc_test targets : $DERIVED_CC_TARGETS"
 run_carbon_tests /home/{pr.repo} || true
 
 """.format(pr=self.pr),
-            ),
+            )
         ]
+
+    def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
+
+        prepare_commands = "RUN bash /home/prepare.sh"
+
+        # Per-PR anti-cheat hardening at the LITERAL base.sha. The shared base
+        # keeps full history so every PR's base.sha is reachable; prepare.sh
+        # checks out this PR's base.sha, then the hardening block detaches at that
+        # literal sha and strips every other ref/reflog so the fix is unreachable.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
+
+{self.global_env}
+
+{copy_commands}
+
+{prepare_commands}
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
 
 
 @Instance.register("carbon-language", "carbon-lang")
@@ -420,3 +525,141 @@ class CarbonLang(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# --- §11b bundle keys: every dash-joined prs_in_bundle routes to CarbonLang.
+# --- 129 bundles (single-era; all share the CarbonLang config).
+_BUNDLE_NIS_CARBON = [
+    "5545-6694",
+    "6235-6245-6256-6257-6259-6260-6262-6263-6266-6267",
+    "6254-6571-6572",
+    "6255-6264-6265-6269",
+    "6273-6274",
+    "6278-6337",
+    "6286-6304-6305-6308",
+    "6320-6336",
+    "6357-6361-6375-6376-6380-6381-6388-6390-6393",
+    "6435-6437-6443-6447",
+    "6449-6463-6467-6478-6482-6483-6487",
+    "6453-6465-6466-6480-6481",
+    "6474-6491-6495-6499",
+    "6475-6484-6497-6513",
+    "6489-6493",
+    "6518-6667-6701-6726-6741-6745-6762-6764",
+    "6519-6520-6521",
+    "6522-6523-6550-6555-6559-6560",
+    "6544-6545",
+    "6546-6547-6552",
+    "6548-6549-6556-6558",
+    "6557-6583-6587-6588-6592-6594-6596-6597-6598-6599-6600-6602",
+    "6561-6563-6564-6565-6566-6568",
+    "6567-6578-6582",
+    "6569-6574-6577-6579-6586-6589-6591",
+    "6595-6609-6610-6611-6612-6613-6614-6618",
+    "6623-6686-6687-6688-6689-6692",
+    "6642-6645",
+    "6648-6649-6650",
+    "6664-6672",
+    "6668-6700-6702-6704",
+    "6679-6765",
+    "6684-6685",
+    "6690-6693-6696",
+    "6699-6716-6718-6719-6720-6723-6724",
+    "6705-6707-6708-6711",
+    "6725-6750-6757-6759",
+    "6760-6771-6775-6778",
+    "6805-6863-6869-6870",
+    "6816-6826-6828-6829",
+    "6827-6831-6835-6838-6839-6840-6842",
+    "6872-6878-6879-6880-6881-6882-6889",
+    "6877-6890-6894-6899-6903",
+    "6902-6915-6963-6965-6967",
+    "6917-6918-6921-6922",
+    "6923-6925-6933-6935",
+    "6929-6936-6937-6939-6941-6945",
+    "6940-6942-6956-6957-6959",
+    "6947-6995-6996-7000-7002-7003-7004-7007-7011",
+    "6950-7049-7051-7053-7059-7061-7066-7067-7068-7069-7070-7071-7072-7073-7074-7075-7079-7080-7084",
+    "6951-7093-7094-7099-7102-7103-7106-7107",
+    "6954-6955-6960-6962-6964-6966-6968-6969",
+    "6979-6981",
+    "7006-7022-7024-7032-7034-7035",
+    "7009-7010-7019-7021",
+    "7012-7039-7044",
+    "7016-7135-7185-7187-7190-7193-7195",
+    "7023-7122-7125-7127-7128-7131-7136-7137",
+    "7025-7026",
+    "7029-7033-7037-7040-7041",
+    "7036-7042-7043-7058",
+    "7038-7048",
+    "7052-7057-7060",
+    "7076-7078-7087-7088-7089-7090-7092-7095-7096-7098",
+    "7081-7083-7085-7086",
+    "7100-7115-7119-7130",
+    "7126-7174-7181-7182-7189",
+    "7132-7141-7145-7148-7149-7150-7153-7154-7155-7156-7158",
+    "7133-7139-7143-7147-7161-7166",
+    "7164-7172",
+    "7170-7173-7177-7178",
+    "7175-7176-7179-7180",
+    "7183-7188-7191-7194-7196-7198-7200-7202-7204-7206",
+    "6177-6241-6243-6246-6247-6251",
+    "6225-6293-6309-6315-6322",
+    "6231-6238-6253-6258-6261",
+    "6234-6281-6287",
+    "6236-6395-6410-6422-6432-6433",
+    "6268-6271-6272-6276-6277",
+    "6279-6283-6284-6288-6289-6292-6294-6295-6296-6299",
+    "6290-6297-6298-6300-6301",
+    "6302-6311-6313",
+    "6306-6316-6317-6319-6323-6327-6328",
+    "6312-6318-6321-6326-6345-6348-6350",
+    "6325-6332-6334-6339-6340",
+    "6329-6468-6469-6470-6486-6488",
+    "6333-6425-6616-6620-6628-6632-6634-6635-6636-6637-6638-6639-6640",
+    "6338-6352-6353-6355-6356",
+    "6344-6364-6368-6369-6372-6374",
+    "6349-6351-6354-6359-6360-6363-6365-6367",
+    "6358-6729-6810-6814-6815-6818-6819-6820",
+    "6371-6383-6392-6394-6398-6399-6400-6401-6403-6404",
+    "6377-6384-6387-6389",
+    "6385-6408-6413-6417",
+    "6386-6424-6431-6436",
+    "6391-6405-6406-6407-6409-6412-6414",
+    "6415-6416-6418-6419-6423-6426-6427-6428",
+    "6434-6438-6444-6445-6452",
+    "6440-6442",
+    "6441-6454-6455-6457-6458",
+    "6460-6479-6485-6496-6515-6516-6517",
+    "6477-6584-6593-6601-6604-6605-6606-6607-6608",
+    "6490-6537-6539-6542",
+    "6512-6524-6525-6526-6527-6528",
+    "6540-6541",
+    "6543-6641-6721-6722-6730-6731-6732-6734-6737-6738",
+    "6570-6573-6575-6580-6581",
+    "6621-6622-6625",
+    "6627-6629-6630-6631-6633",
+    "6643-6654",
+    "6644-6659-6660",
+    "6652-6653-6657-6662-6663-6666",
+    "6661-6665-6670",
+    "6674-6747-6781-6787-6794-6796-6797-6800-6801-6802-6803",
+    "6675-6770-6779-6780-6788",
+    "6676-6761-6769-6782-6784-6790-6791-6792-6795",
+    "6740-6744-6746-6751-6754-6758",
+    "6743-6749",
+    "6798-6804-6808-6809-6811-6813",
+    "6812-6817-6841-6843-6844-6845-6846-6847-6848-6849-6850-6851-6852-6853-6854-6855-6856-6859-6865-6866",
+    "6834-6930-6938-6944-6946-6948",
+    "6896-6897-6900-6901-6904-6906-6910",
+    "6907-6908-6909-6911-6914",
+    "6916-6924-6926-6927-6928-6934",
+    "6943-7005-7008-7013-7014-7015-7017-7018-7020",
+    "6958-6987-6988-6989-6992-6994-6997-6998-7001",
+    "6971-6972-6973-6974-6975-6976-6977-6978-6980-6982-6984-6985-6986",
+    "7091-7097-7101-7104-7105-7108-7109-7110-7111-7112",
+    "7114-7117-7121-7123-7124",
+]
+for _ni in _BUNDLE_NIS_CARBON:
+    Instance.register("carbon-language", _ni)(CarbonLang)
+

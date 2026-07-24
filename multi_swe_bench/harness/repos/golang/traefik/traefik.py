@@ -6,6 +6,27 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+def _strip_binary_diffs(patch: str) -> str:
+    """Drop binary file sections from a unified diff.
+
+    ``git apply`` is atomic: a single binary hunk lacking a full index line
+    (``Binary files a/x and b/x differ`` or a ``GIT binary patch`` block)
+    aborts the WHOLE apply, so with ``set -e`` in *-run.sh the fix stage
+    yields zero results and the record is misclassified invalid. Splitting on
+    the ``diff --git`` boundary and dropping only the binary sections lets the
+    text hunks (the Go test/source changes that carry the f2p/n2p signal)
+    apply cleanly.
+    """
+    if not patch:
+        return patch
+    sections = re.split(r"(?=^diff --git )", patch, flags=re.MULTILINE)
+    kept = [
+        s for s in sections
+        if "Binary files " not in s and "GIT binary patch" not in s
+    ]
+    return "".join(kept)
+
+
 class TraefikImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -31,8 +52,9 @@ class TraefikImageDefault(Image):
         # it clones "${REPO_URL}", checks out "${BASE_COMMIT}", runs
         # extra_setup(), and appends the _HARDENING_BLOCK that strips every other
         # ref/commit so the fix can't be read out of git history.
-        # DockerfileEnhancer then injects the proxy/cert infra and the final
-        # sanitize pass.
+        # DockerfileEnhancer then injects the reference-format infra (syntax,
+        # ARG TARGETARCH/REPO_URL/BASE_COMMIT, ethara LABEL) + final sanitize.
+        # No proxy/cert.
         return "golang:1.13"
 
     def image_tag(self) -> str:
@@ -78,12 +100,12 @@ class TraefikImageDefault(Image):
             File(
                 ".",
                 "fix.patch",
-                f"{self.pr.fix_patch}",
+                _strip_binary_diffs(self.pr.fix_patch),
             ),
             File(
                 ".",
                 "test.patch",
-                f"{self.pr.test_patch}",
+                _strip_binary_diffs(self.pr.test_patch),
             ),
             File(
                 ".",
@@ -230,6 +252,13 @@ class Traefik(Instance):
                     if test_name not in failed_tests:
                         continue
                     skipped_tests.add(get_base_name(test_name))
+
+        # Go subtests share a base name (get_base_name strips "/sub"); if any
+        # subtest failed, the base must not also remain in passed/skipped, or the
+        # harness rejects the report ("passed and failed should not overlap").
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
