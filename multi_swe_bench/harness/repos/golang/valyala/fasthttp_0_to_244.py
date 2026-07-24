@@ -20,11 +20,11 @@ class FasthttpLegacyImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # Pre-modules era (PR #234). The base snapshot ships no go.mod/go.sum
-        # and no vendor/ tree, so the build must run under GOPATH mode. Modern
-        # toolchains dropped GOPATH-mode `go get`, so we pin to golang:1.13 and
-        # vendor the three external deps the package (and PR #234's fix.patch)
-        # need at versions contemporary with the 2017 snapshot.
+        # Pre-modules era (PR #234). The base snapshot ships no go.mod/go.sum and
+        # no vendor/ tree, so the build must run under GOPATH mode. Modern
+        # toolchains dropped GOPATH-mode `go get`, so pin golang:1.13 and vendor
+        # the deps the package + PR #234's fix.patch need at 2017-contemporary
+        # versions.
         return "golang:1.13"
 
     def image_tag(self) -> str:
@@ -41,23 +41,40 @@ class FasthttpLegacyImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
+        org = self.pr.org
 
-        # fasthttp imports itself as github.com/valyala/fasthttp, so the tree
-        # has to live under $GOPATH/src at that path; symlink the clone there.
-        # The external deps are cloned at versions compatible with go1.13 and
-        # with the 2017 source: klauspost/compress v1.4.0 (newer tags use Go
-        # generics syntax that go1.13 cannot parse) plus the stable
-        # bytebufferpool/tcplisten packages referenced by PR #234's fix.patch.
-        return f"""FROM {image_name}
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        # `# syntax` = enhancer opt-out (PIPELINE §2): keeps the SHARED legacy
+        # base from being pinned/pruned by the auto-injected checkout. fasthttp
+        # imports itself as github.com/valyala/fasthttp, so the tree must live
+        # under $GOPATH/src at that path (symlinked). External deps are pinned to
+        # go1.13-compatible tags: klauspost/compress v1.4.0 (newer tags use
+        # generics go1.13 cannot parse) + bytebufferpool/tcplisten.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    GOPATH=/go \\
+    GO111MODULE=off
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
-ENV GOPATH=/go
-ENV GO111MODULE=off
 RUN git config --global --add safe.directory '*'
 
 WORKDIR /home/
@@ -65,15 +82,22 @@ WORKDIR /home/
 {code}
 
 RUN mkdir -p /go/src/github.com/valyala /go/src/github.com/klauspost \\
-    && ln -sfn /home/{self.pr.repo} /go/src/github.com/valyala/{self.pr.repo} \\
+    && ln -sfn /home/{repo} /go/src/github.com/valyala/{repo} \\
     && git clone https://github.com/klauspost/compress.git /go/src/github.com/klauspost/compress \\
     && git -C /go/src/github.com/klauspost/compress checkout v1.4.0 \\
     && git clone https://github.com/valyala/bytebufferpool.git /go/src/github.com/valyala/bytebufferpool \\
     && git -C /go/src/github.com/valyala/bytebufferpool checkout v1.0.0 \\
     && git clone https://github.com/valyala/tcplisten.git /go/src/github.com/valyala/tcplisten
 
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -101,16 +125,8 @@ class FasthttpLegacyImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -155,9 +171,8 @@ ln -sfn /home/{pr.repo} /go/src/github.com/valyala/{pr.repo}
                 ".",
                 "common.sh",
                 """#!/bin/bash
-# Shared helpers for the fasthttp pre-modules era (PR #234).
-# Work inside $GOPATH/src/github.com/valyala/fasthttp (a symlink) so the
-# package's self-imports resolve under GO111MODULE=off.
+# Pre-modules era (PR #234): work inside $GOPATH/src/github.com/valyala/fasthttp
+# (a symlink) so the package self-imports resolve under GO111MODULE=off.
 REPO_SRC=/go/src/github.com/valyala/fasthttp
 
 apply_patch() {
@@ -229,6 +244,7 @@ run_go_tests
             copy_commands += f"COPY {file.name} /home/\n"
 
         prepare_commands = "RUN bash /home/prepare.sh"
+        hardening = self._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
 
         return f"""FROM {name}:{tag}
 
@@ -238,8 +254,13 @@ run_go_tests
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -260,24 +281,19 @@ class Fasthttp0To244(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        # `go test` is not colorized by default, but strip ANSI escapes
-        # defensively in case the log was captured through a colorizing tee.
         test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
         passed_tests: set[str] = set()
@@ -287,8 +303,6 @@ class Fasthttp0To244(Instance):
         re_pass = re.compile(r"^--- PASS: (\S+)")
         re_fail = re.compile(r"^--- FAIL: (\S+)")
         re_skip = re.compile(r"^--- SKIP: (\S+)")
-        # A package summary line ("ok   <import-path>", "FAIL <import-path>",
-        # "?    <import-path>") closes the block of tests printed above it.
         re_pkg = re.compile(r"^(?:ok|FAIL|\?)\s+(\S+/\S+)")
 
         pending_pass: set[str] = set()
@@ -308,26 +322,18 @@ class Fasthttp0To244(Instance):
 
         for raw_line in test_log.splitlines():
             line = raw_line.strip()
-
-            pass_match = re_pass.match(line)
-            if pass_match:
-                pending_pass.add(pass_match.group(1))
-                continue
-
-            fail_match = re_fail.match(line)
-            if fail_match:
-                pending_fail.add(fail_match.group(1))
-                continue
-
-            skip_match = re_skip.match(line)
-            if skip_match:
-                pending_skip.add(skip_match.group(1))
-                continue
-
-            pkg_match = re_pkg.match(line)
-            if pkg_match:
-                flush(pkg_match.group(1))
-
+            m = re_pass.match(line)
+            if m:
+                pending_pass.add(m.group(1)); continue
+            m = re_fail.match(line)
+            if m:
+                pending_fail.add(m.group(1)); continue
+            m = re_skip.match(line)
+            if m:
+                pending_skip.add(m.group(1)); continue
+            m = re_pkg.match(line)
+            if m:
+                flush(m.group(1))
         flush("unknown")
 
         passed_tests -= failed_tests
@@ -342,3 +348,12 @@ class Fasthttp0To244(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined, PIPELINE §11b) ===
+# Pre-modules bundles (lead PR <= 244). Data-derived; regenerate if bundles change.
+_BUNDLE_NIS_FASTHTTP_LEGACY = [
+    "234-280",
+]
+for _ni in _BUNDLE_NIS_FASTHTTP_LEGACY:
+    Instance.register("valyala", _ni)(Fasthttp0To244)
