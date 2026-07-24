@@ -81,30 +81,39 @@ class SktimePy311ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
-{self.global_env}
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV TZ=UTC
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git build-essential curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates build-essential && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git config --global --add safe.directory '*'
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
-{self.clear_env}
+WORKDIR /home/{self.pr.repo}
+RUN git remote remove origin 2>/dev/null || true; \
+    git config --local gc.auto 0; \
+    git config --local fetch.recurseSubmodules false; \
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
+CMD ["/bin/bash"]
 """
 
 
@@ -243,18 +252,22 @@ python -m pytest $EXIST -v --no-header --tb=no \\
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM {name}:{tag}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {name}:{tag}
 
 {copy_commands}
+WORKDIR /home/{self.pr.repo}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=$BASE_COMMIT
+
 RUN bash /home/prepare.sh
 
-{self.clear_env}
+{Image._HARDENING_BLOCK}
 """
 
 
-@Instance.register("sktime", "sktime_5277_to_3003")
 class SKTIME_5277_TO_3003(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -285,3 +298,22 @@ class SKTIME_5277_TO_3003(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         return parse_pytest_log(log)
+
+
+_BUNDLE_NIS_ERA2 = [
+    "3003-3667-4012-4381-4416-4439-4444-4452-4455-4456-4461-4464-4465-4466-4469-4470-4472-4474-4476-4477-4478-4479-4480-4481-4483-4484-4486-4487-4488-4490-4492-4493-4497-4501-4503-4505-4506",
+    "3151-3777-3843-4508-4510-4512-4513-4514",
+    "3630-3822-4005-4160-4190-4214-4215-4221-4223-4225-4228-4231-4232-4238-4241-4243-4244-4245-4246-4247-4248-4250-4252-4253-4255-4261-4267-4269-4270-4271-4272-4274-4275-4276-4279-4284-4285-4287-4288-4289-4290-4291-4294-4297-4302-4305-4306-4308-4309-4310-4311-4312-4316-4317-4318-4319-4320-4321-4322-4323-4324-4328-4329-4331-4334-4337-4339-4340-4342-4346-4347-4353-4355-4356-4358-4360-4361-4364-4366-4367-4368-4371-4376-4382-4388-4389-4390-4391-4392-4393-4394-4395-4397-4398-4399-4402-4406-4411-4412-4414-4415-4417-4421-4423-4424-4425-4428",
+    "4112-4216-4463-4580-4637-4644-4681-4724-4729-4736-4738-4757-4758-4759-4760-4761-4763-4764-4768-4770-4771-4772-4774-4775-4779-4780-4781-4782-4784-4788-4789-4793-4795-4800-4810-4811-4812-4813-4815-4816-4819-4821-4823-4824-4825-4826-4828-4831-4832-4833-4836-4851-4852-4854-4855-4856-4859-4860-4861-4862-4867-4870-4876-4879-4890",
+    "4185-4496-4498-4499-4522-4523-4525-4526-4527-4529-4530-4531-4532-4533-4538-4539-4542-4545-4546-4548-4551-4552-4554-4556-4559-4560-4561-4563-4564-4567-4568-4571-4572-4573-4575-4577-4583-4586-4588-4589-4590-4593-4594-4597-4599-4600-4601-4603-4604-4605-4606-4607-4609-4612-4613-4614-4616-4618-4619-4620-4621-4625-4627-4628-4629-4630-4631-4633-4634-4636-4640-4641-4647",
+    "4427-4432-4433-4435-4436-4437-4438-4442-4443-4448-4450",
+    "4429-4622-4646-4654-4657",
+    "4638-4648-4649-4662-4663-4667-4672-4673-4675-4679-4680-4682-4684-4686-4689-4693-4694-4699-4705-4707-4711-4714-4715-4716-4719-4722-4732-4737",
+    "4717-4720-4725-4726-4731-4733-4734-4735-4741",
+    "4778-4790-4880-4894-4913-4914-4915",
+    "4822-5106-5120-5121",
+    "5224-5226",
+    "5277-5299-5319-5342-5345-5396-5403-5404-5415-5419",
+]
+for _ni in _BUNDLE_NIS_ERA2:
+    Instance._registry[f"sktime/{_ni}"] = SKTIME_5277_TO_3003
