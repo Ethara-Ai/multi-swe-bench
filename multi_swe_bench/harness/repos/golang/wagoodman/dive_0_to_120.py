@@ -60,25 +60,49 @@ class DiveImageBaseGopath(Image):
         return []
 
     def dockerfile(self) -> str:
+        """PIPELINE.md §3 reference-format base (SINGLE, shared across the era).
+
+        Leading ``# syntax`` = §2 opt-out so DockerfileEnhancer.enhance() returns
+        this verbatim instead of force-pinning this shared (constant-tag) base to
+        one PR's ${BASE_COMMIT} and stripping the history every other bundle
+        needs.  Light hardening (drop origin) keeps FULL history; each PR layer
+        applies the strict canonical hardening at its own base.sha (§4).
+        """
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 WORKDIR /home/
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
-{code}
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -212,27 +236,40 @@ go test -v -count=1 ./filetree/
         ]
 
     def dockerfile(self) -> str:
+        """PIPELINE.md §4 PR-image format.  FROM the shared base (full history);
+        prepare.sh resets + checks out this PR's base.sha, then the canonical
+        anti-reward-hacking hardening with the LITERAL base.sha.  dependency() is
+        an Image, so enhance() returns this verbatim -- hardening is spelled out
+        here."""
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        repo = self.pr.repo
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
+        header = f"""FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
+RUN bash /home/prepare.sh
 
-{prepare_commands}
-
-{self.clear_env}
+WORKDIR /home/{repo}
 
 """
+        # §4: hardening uses the LITERAL base.sha, not a variable.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        )
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        return header + hardening + tail
 
 
 @Instance.register("wagoodman", "dive_0_to_120")
@@ -313,3 +350,15 @@ class DIVE_0_TO_120(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# PIPELINE.md §11b: every dash-joined bundle value must be a registered key
+# in addition to the era key, else Instance.create() raises "not registered".
+_BUNDLE_NIS_DIVE_0_TO_120 = [
+    "39-40-43",
+    "41-48-53-54",
+    "77-78-87-91-100-101-102-103-104-108-114-115-120",
+]
+for _ni in _BUNDLE_NIS_DIVE_0_TO_120:
+    Instance.register("wagoodman", _ni)(DIVE_0_TO_120)
