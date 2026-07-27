@@ -58,7 +58,7 @@ def parse_go_test_log(log: str) -> TestResult:
 class RookEra3ImageBase(Image):
     """rook era 3 (PRs 14029-17289, v1.14->1.19): go.mod `go 1.21`-`1.25`.
     Pure-Go Kubernetes/Ceph operator — CGO disabled, `go test` unit suite
-    under `pkg/` + `cmd/`. Built with Go 1.25; GOTOOLCHAIN=local pins it (>= every go.mod here)."""
+    under `pkg/` + `cmd/`. Built with Go 1.25 (>= every go.mod in this era); GOTOOLCHAIN=auto as safety net."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -89,31 +89,40 @@ class RookEra3ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
-{self.global_env}
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV TZ=UTC
 ENV CGO_ENABLED=0
-ENV GOTOOLCHAIN=local
-ENV GOFLAGS=-buildvcs=false -mod=mod
-
+ENV GOTOOLCHAIN=auto
+ENV GOFLAGS="-buildvcs=false -mod=mod"
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git jq ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git jq curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git config --global --add safe.directory '*'
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
-{self.clear_env}
+WORKDIR /home/{self.pr.repo}
+RUN git remote remove origin 2>/dev/null || true; \
+    git config --local gc.auto 0; \
+    git config --local fetch.recurseSubmodules false; \
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
+CMD ["/bin/bash"]
 """
 
 
@@ -154,7 +163,7 @@ set -e
 cd /home/{pr.repo}
 git reset --hard
 git checkout {pr.base.sha}
-go mod download || true
+timeout 600 go mod download || true
 """.format(pr=self.pr),
             ),
             File(
@@ -168,10 +177,22 @@ export ROOK_UNIT_JQ_PATH="$(which jq)"
 # the tests/ tree holds integration tests that need a real cluster).
 TEST_DIRS=$({{ grep -E '^diff --git a/(pkg|cmd)/\\S+_test\\.go' /home/test.patch \
     | sed -E 's#^diff --git a/(.+) b/.*#\\1#' | sed -E 's#/[^/]+$##' | sort -u; }} || true)
-EXIST=""
-for d in $TEST_DIRS; do if [ -d "$d" ]; then EXIST="$EXIST ./$d/"; fi; done
-if [ -z "$EXIST" ]; then echo "NO_BASELINE_TEST_DIRS"; exit 0; fi
-go test -json -count=1 $EXIST 2>&1
+MAIN=""
+APIS=""
+for d in $TEST_DIRS; do
+    if [ -d "$d" ]; then
+        case "$d" in
+            pkg/apis/*)
+                if [ -f pkg/apis/go.mod ]; then APIS="$APIS ./${{d#pkg/apis/}}/"; else MAIN="$MAIN ./$d/"; fi ;;
+            *) MAIN="$MAIN ./$d/" ;;
+        esac
+    fi
+done
+if [ -z "$MAIN" ] && [ -z "$APIS" ]; then echo "NO_BASELINE_TEST_DIRS"; exit 0; fi
+RC=0
+if [ -n "$MAIN" ]; then go test -json -count=1 $MAIN 2>&1 || RC=$?; fi
+if [ -n "$APIS" ]; then (cd pkg/apis && go test -json -count=1 $APIS 2>&1) || RC=$?; fi
+exit $RC
 """.format(pr=self.pr),
             ),
             File(
@@ -186,14 +207,26 @@ EXCLUDES=(--exclude='Documentation/*' --exclude='design/*' --exclude='*.png' \
 git apply --whitespace=nowarn "${{EXCLUDES[@]}}" /home/test.patch 2>/dev/null \
     || git apply --whitespace=nowarn --reject "${{EXCLUDES[@]}}" /home/test.patch 2>/dev/null || true
 if grep -qE '^diff --git a/go\\.(mod|sum)' /home/test.patch 2>/dev/null; then
-    go mod download || true
+    timeout 600 go mod download || true
 fi
 TEST_DIRS=$({{ grep -E '^diff --git a/(pkg|cmd)/\\S+_test\\.go' /home/test.patch \
     | sed -E 's#^diff --git a/(.+) b/.*#\\1#' | sed -E 's#/[^/]+$##' | sort -u; }} || true)
-EXIST=""
-for d in $TEST_DIRS; do if [ -d "$d" ]; then EXIST="$EXIST ./$d/"; fi; done
-if [ -z "$EXIST" ]; then echo "NO_TEST_DIRS"; exit 0; fi
-go test -json -count=1 $EXIST 2>&1
+MAIN=""
+APIS=""
+for d in $TEST_DIRS; do
+    if [ -d "$d" ]; then
+        case "$d" in
+            pkg/apis/*)
+                if [ -f pkg/apis/go.mod ]; then APIS="$APIS ./${{d#pkg/apis/}}/"; else MAIN="$MAIN ./$d/"; fi ;;
+            *) MAIN="$MAIN ./$d/" ;;
+        esac
+    fi
+done
+if [ -z "$MAIN" ] && [ -z "$APIS" ]; then echo "NO_TEST_DIRS"; exit 0; fi
+RC=0
+if [ -n "$MAIN" ]; then go test -json -count=1 $MAIN 2>&1 || RC=$?; fi
+if [ -n "$APIS" ]; then (cd pkg/apis && go test -json -count=1 $APIS 2>&1) || RC=$?; fi
+exit $RC
 """.format(pr=self.pr),
             ),
             File(
@@ -210,14 +243,26 @@ git apply --whitespace=nowarn "${{EXCLUDES[@]}}" /home/test.patch 2>/dev/null \
 git apply --whitespace=nowarn "${{EXCLUDES[@]}}" /home/fix.patch 2>/dev/null \
     || git apply --whitespace=nowarn --reject "${{EXCLUDES[@]}}" /home/fix.patch 2>/dev/null || true
 if grep -qhE '^diff --git a/go\\.(mod|sum)' /home/test.patch /home/fix.patch 2>/dev/null; then
-    go mod download || true
+    timeout 600 go mod download || true
 fi
 TEST_DIRS=$({{ grep -E '^diff --git a/(pkg|cmd)/\\S+_test\\.go' /home/test.patch \
     | sed -E 's#^diff --git a/(.+) b/.*#\\1#' | sed -E 's#/[^/]+$##' | sort -u; }} || true)
-EXIST=""
-for d in $TEST_DIRS; do if [ -d "$d" ]; then EXIST="$EXIST ./$d/"; fi; done
-if [ -z "$EXIST" ]; then echo "NO_TEST_DIRS"; exit 0; fi
-go test -json -count=1 $EXIST 2>&1
+MAIN=""
+APIS=""
+for d in $TEST_DIRS; do
+    if [ -d "$d" ]; then
+        case "$d" in
+            pkg/apis/*)
+                if [ -f pkg/apis/go.mod ]; then APIS="$APIS ./${{d#pkg/apis/}}/"; else MAIN="$MAIN ./$d/"; fi ;;
+            *) MAIN="$MAIN ./$d/" ;;
+        esac
+    fi
+done
+if [ -z "$MAIN" ] && [ -z "$APIS" ]; then echo "NO_TEST_DIRS"; exit 0; fi
+RC=0
+if [ -n "$MAIN" ]; then go test -json -count=1 $MAIN 2>&1 || RC=$?; fi
+if [ -n "$APIS" ]; then (cd pkg/apis && go test -json -count=1 $APIS 2>&1) || RC=$?; fi
+exit $RC
 """.format(pr=self.pr),
             ),
         ]
@@ -231,18 +276,22 @@ go test -json -count=1 $EXIST 2>&1
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM {name}:{tag}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {name}:{tag}
 
 {copy_commands}
+WORKDIR /home/{self.pr.repo}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=$BASE_COMMIT
+
 RUN bash /home/prepare.sh
 
-{self.clear_env}
+{Image._HARDENING_BLOCK}
 """
 
 
-@Instance.register("rook", "rook_17289_to_14029")
 class ROOK_17289_TO_14029(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -273,3 +322,59 @@ class ROOK_17289_TO_14029(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         return parse_go_test_log(log)
+
+
+_BUNDLE_NIS_ERA3 = [
+    "14029-14031-14032-14047-14053-14055-14061-14066-14068-14078-14081-14084",
+    "14090-14091-14095-14097",
+    "14105-14112-14113-14121-14122-14127-14130-14132-14146-14148-14149-14150-14153-14156-14157",
+    "14164-14168-14170-14172-14176-14179-14195-14205-14207-14218-14224-14225-14226-14228",
+    "14237-14239-14242-14252-14261-14268-14274-14277-14280-14284-14285",
+    "14288-14301-14306-14310-14315-14321-14327-14329-14333-14335-14336",
+    "14340-14348-14359-14360-14369",
+    "14448-14450-14452-14463-14490-14492-14493-14494-14498",
+    "14504-14571-14581-14609-14614",
+    "14619-14628-14633-14635-14639-14640-14657-14658-14661-14664-14669-14682-14687",
+    "14632-14634-14638-14668-14739-14741-14743",
+    "14683-14691-14692-14696-14706-14707-14711-14712-14721-14734-14735-14740-14742-14744",
+    "14745-14749-14759-14762-14768-14785-14787-14788-14794-14796-14799-14802-14803",
+    "14806-14839-14868-14907-14911-14973-14975",
+    "14807-14814-14828-14840-14851-14856-14857-14863-14866-14867",
+    "14871-14873-14876-14879-14885-14887-14892-14904-14905-14908-14912-14924-14927-14929-14931-14940-14946-14948-14950-14953-14960-14961-14963-14967-14968-14974",
+    "15042-15046-15059-15069-15089-15092-15095-15117-15144-15171-15181-15193",
+    "15198-15202-15212-15213-15216-15229-15230",
+    "15237-15247-15249-15252-15267-15268-15278-15280-15285-15287-15290",
+    "15312-15314-15318-15320-15321-15343-15345-15365-15366",
+    "15396-15417-15438-15463-15465-15468-15487-15491-15507",
+    "15397-15413-15414-15416-15418-15419-15434-15436-15437-15439",
+    "15444-15452-15453-15462-15464-15466-15467-15475-15476-15478-15488-15489-15492-15494-15504-15506-15508",
+    "15516-15533-15581-15582-15584-15586-15587-15589-15590-15595",
+    "15626-15654-15663-15667-15673-15679-15684-15691-15707-15720-15722-15726-15728-15730-15735-15737",
+    "15748-15757-15760-15765-15770-15771-15772-15773",
+    "15756-15774-15786-15802-15810-15826-15939-15943-15990-15993",
+    "15787-15799-15800-15803-15806-15807-15811-15812-15816-15827-15828-15831-15832-15833-15834-15836",
+    "15843-15860-15864-15865-15874-15877-15880-15881-15885-15900-15901-15910-15911-15919-15920",
+    "15921-15927-15932-15940-15941-15944-15959",
+    "15964-15965-15968-15975-15976-15977-15982-15991-15998-16001-16006-16012-16018-16019-16021-16022-16028-16034-16036",
+    "16046-16051-16053-16065-16066-16084-16100-16107-16116-16117-16118-16120",
+    "16054-16083-16121-16122-16276-16323-16324-16325-16327",
+    "16136-16137-16138-16139-16145-16147-16148-16160-16165-16180-16187-16191-16193-16204-16207-16212",
+    "16213-16221-16234-16240-16262-16264-16266-16314-16316-16333-16357-16359",
+    "16380-16394-16397-16404-16407-16410-16411-16412-16413",
+    "16398-16422-16423-16424-16429-16444-16445-16450-16455-16459-16460-16461-16463-16464",
+    "16458-16502-16534-16633-16634-16686-16703-16716",
+    "16465-16475-16476-16477-16487-16490-16491-16495-16498-16500-16503-16509-16510-16519-16525-16527-16529-16533-16539-16544-16545-16546-16547-16562-16564-16565-16566",
+    "16579-16586-16587-16590-16604-16605-16606-16608-16611-16612-16621-16630-16631-16632-16635",
+    "16666-16671-16676-16682-16683-16684-16687-16701-16704-16709-16717",
+    "16708-16714-16732-16733-16738-16740-16749-16752-16785",
+    "16796-16800-16814-16820-16832-16856-16859-16863-16893-16902-16906-16909-16915",
+    "16917-16980-16986-16999-17007-17011-17027-17035-17053-17063-17124-17180-17182-17241",
+    "16942-16945-16955-16970-16971-16981-16987-17000-17003-17008-17012-17021-17026-17028-17031-17032-17033-17036",
+    "17040-17042-17054-17055-17061-17062-17066-17069-17086-17088-17100-17106-17107-17109",
+    "17115-17118-17125-17126-17127-17128-17138-17139-17142-17156-17158-17159-17162-17163-17178-17179-17181-17186-17203-17211-17219-17242-17243",
+    "17247-17251-17252-17277-17291-17292-17297-17299-17325-17326-17327-17329-17330-17353-17355",
+    "17289-17360-17367-17368-17375-17378-17390-17392-17396-17424-17436-17449",
+]
+
+for _ni in _BUNDLE_NIS_ERA3:
+    Instance._registry[f"rook/{_ni}"] = ROOK_17289_TO_14029
