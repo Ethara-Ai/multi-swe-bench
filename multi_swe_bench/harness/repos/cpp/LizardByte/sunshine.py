@@ -1,7 +1,12 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import (
+    Config,
+    File,
+    Image,
+    _safe_path_component,
+)
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -22,7 +27,28 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #    a submodule bump — they have no test and cannot resolve. One config,
 #    no era split: the build script adapts itself to each commit.
 #  - Sunshine pulls many git submodules (googletest, moonlight-common-c,
-#    inputtino, ...) — cloned recursively and refreshed in prepare.sh.
+#    inputtino, ...) — initialized at the PR image's base-commit checkout and
+#    refreshed in run_tests.sh.
+#
+# Two-level image layout
+# ----------------------
+#   level 1  <prefix>/lizardbyte_m_sunshine:base   — ONE image, shared by every
+#            PR. Ubuntu + the full apt build-dependency set. Deliberately holds
+#            NO source: it is PR-independent, so it builds once and every
+#            pr-<n> image layers on top of it.
+#   level 2  <prefix>/lizardbyte_m_sunshine:pr-<n> — per PR. Clones the repo,
+#            checks out that PR's base commit, syncs submodules, then runs the
+#            hardening block.
+#
+# Why the fetch + hardening live at level 2 rather than being inherited from
+# Image.dockerfile(): that contract puts the clone, the ${BASE_COMMIT} checkout
+# and the hardening block in the *base* image. Hardening deletes every ref and
+# prunes every object unreachable from ${BASE_COMMIT}, which pins the image to
+# exactly one commit — irreconcilable with a base shared across PRs that each
+# have a different base.sha. So the base stays source-free and each PR image
+# does its own fetch + checkout + harden. The hardening text itself is still
+# the single canonical copy from image.py (Image._HARDENING_BLOCK) — referenced,
+# not forked, so it cannot drift from the harness.
 
 
 _LB = (
@@ -30,6 +56,21 @@ _LB = (
     "--publisher-name=msb --publisher-website=https://example.com "
     "--publisher-issue-url=https://example.com"
 )
+
+# Mirrors Image.dockerfile()'s own default package set. The base image builds
+# its apt layer by hand (see SunshineImageBase.dockerfile), so it has to supply
+# these itself rather than getting them from the inherited skeleton.
+_BASE_PACKAGES = [
+    "ca-certificates",
+    "curl",
+    "build-essential",
+    "git",
+    "gnupg",
+    "make",
+    "python3",
+    "sudo",
+    "wget",
+]
 
 
 class SunshineImageBase(Image):
@@ -60,49 +101,90 @@ class SunshineImageBase(Image):
     def files(self) -> list[File]:
         return []
 
+    def extra_packages(self) -> list[str]:
+        # scripts/linux_build.sh apt-installs build deps per commit, but it was
+        # only added in PR #2946 -- earlier base commits don't have it. So
+        # install the full Sunshine Debian/Ubuntu build-dependency set here,
+        # making the build work for every PR regardless of whether that script
+        # exists. Image.dockerfile() already provides ca-certificates, curl,
+        # build-essential, git, gnupg, make, python3, sudo and wget.
+        return [
+            "lsb-release",
+            "software-properties-common",
+            "pkg-config",
+            "bison",
+            "flex",
+            "cmake",
+            "ninja-build",
+            "doxygen",
+            "graphviz",
+            "npm",
+            "udev",
+            "xvfb",
+            "gcc-13",
+            "g++-13",
+            "gcc-14",
+            "g++-14",
+            "libboost-all-dev",
+            "libavcodec-dev",
+            "libavdevice-dev",
+            "libavfilter-dev",
+            "libavformat-dev",
+            "libavutil-dev",
+            "libswscale-dev",
+            "libcap-dev",
+            "libcurl4-openssl-dev",
+            "libdrm-dev",
+            "libevdev-dev",
+            # gbm.h, included by src/platform/linux/wayland.cpp from ~#2186 on.
+            # libdrm-dev does not provide it; without this the wayland TU fails
+            # with "fatal error: gbm.h: No such file or directory".
+            "libgbm-dev",
+            "libminiupnpc-dev",
+            "libnotify-dev",
+            "libnuma-dev",
+            "libopus-dev",
+            "libpulse-dev",
+            "libssl-dev",
+            "libvdpau-dev",
+            "libva-dev",
+            "libwayland-dev",
+            "libx11-dev",
+            "libxcb-shm0-dev",
+            "libxcb-xfixes0-dev",
+            "libxcb1-dev",
+            "libxfixes-dev",
+            "libxrandr-dev",
+            "libxtst-dev",
+            "libayatana-appindicator3-dev",
+        ]
+
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        # Source-free by design: this image is shared by every PR, so it must
+        # not contain a commit. It also must not contain the strings
+        # "git clone" / "git fetch" / "git remote add" / "COPY <repo> ...",
+        # or DockerfileEnhancer would standardize the fetch and inject the
+        # hardening block here (image.py `_standardize_repo_fetch` /
+        # `_inject_final_sanitize`) — re-pinning the shared base to a single
+        # ${BASE_COMMIT}. The PR image does the fetch and the hardening.
+        base_img = self.dependency()
+        assert isinstance(base_img, str)
 
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone --recurse-submodules "
-                f"https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        packages_str = " \\\n    ".join(_BASE_PACKAGES + self.extra_packages())
+        apt_command = self._get_apt_update_command(packages_str, base_img)
 
-        return f"""FROM {image_name}
+        sections = [f"FROM {base_img}"]
+        if self.global_env:
+            sections.append(self.global_env)
+        sections.append(
+            "WORKDIR /home/\nENV DEBIAN_FRONTEND=noninteractive\nENV LANG=C.UTF-8"
+        )
+        sections.append(apt_command)
+        if self.clear_env:
+            sections.append(self.clear_env)
+        sections.append('CMD ["/bin/bash"]')
 
-{self.global_env}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-WORKDIR /home/
-
-# scripts/linux_build.sh apt-installs build deps per commit, but it was only
-# added in PR #2946 -- earlier base commits don't have it. So install the full
-# Sunshine Debian/Ubuntu build-dependency set directly here, making the build
-# work for every PR regardless of whether that script exists.
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git curl wget ca-certificates sudo gnupg lsb-release \\
-    software-properties-common build-essential pkg-config \\
-    bison flex cmake ninja-build doxygen graphviz npm udev xvfb \\
-    gcc-13 g++-13 gcc-14 g++-14 \\
-    libcap-dev libcurl4-openssl-dev libdrm-dev libevdev-dev \\
-    libminiupnpc-dev libnotify-dev libnuma-dev libopus-dev libpulse-dev \\
-    libssl-dev libvdpau-dev libva-dev libwayland-dev \\
-    libx11-dev libxcb-shm0-dev libxcb-xfixes0-dev libxcb1-dev \\
-    libxfixes-dev libxrandr-dev libxtst-dev \\
-    libayatana-appindicator3-dev libnotify-dev \\
-    && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-
-"""
+        return "\n\n".join(sections) + "\n"
 
 
 class SunshineImageDefault(Image):
@@ -118,7 +200,7 @@ class SunshineImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Union[str, "Image"]:
         return SunshineImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -149,9 +231,12 @@ exit 0
 set -e
 cd /home/__REPO__
 git config --global --add safe.directory '*'
-git reset --hard
-git checkout __SHA__
-git submodule update --init --recursive || true
+
+# The image already cloned, checked out __SHA__ and ran the hardening block,
+# so the tree sits at the base commit with no refs or remotes left. Assert
+# that rather than re-checking-out: after hardening there is nothing to
+# check out *to*, and a silent drift here would poison every test result.
+test "$(git rev-parse HEAD)" = "$(git rev-parse __SHA__)"
 bash /home/check_git_changes.sh || true
 
 # Warm-up: run the project's own build script at the base commit. It
@@ -168,22 +253,47 @@ timeout --kill-after=60 5400 __LB__ || true
 set -uo pipefail
 cd /home/__REPO__
 
-# Submodules: era pins. A few pinned commits were force-pushed away upstream
-# (e.g. third-party/Simple-Web-Server); for any submodule left empty, clone it
-# fresh and fall back to its branch tip when the exact pin is gone.
+# Submodules: put each at the commit the PR *intends*. git apply patches the
+# working tree, not the index, so any gitlink a patch ADDs or BUMPs never reaches
+# the index -- `git submodule update` would then use the stale base pin (a BUMP,
+# e.g. #1090's moonlight-common-c) or nothing at all (an ADD, e.g. #1090's
+# third-party/build-deps). We therefore take each submodule's target pin from the
+# patch's post-image (`+Subproject commit` under `+++ b/<path>`), fall back to the
+# index gitlink, and force that commit -- cloning when the submodule is absent,
+# fetching the exact sha when a shallow clone lacks it. Force-pushed pins that no
+# longer exist upstream fall through to whatever is already checked out.
 git submodule update --init --recursive 2>/dev/null || true
 git config -f .gitmodules --get-regexp '\\.path$' 2>/dev/null | while read -r k p; do
   n=${k%.path}; n=${n#submodule.}
   u=$(git config -f .gitmodules --get "submodule.${n}.url" 2>/dev/null)
   [ -z "$u" ] && continue
-  [ -n "$(ls -A "$p" 2>/dev/null)" ] && continue
-  pin=$(git rev-parse ":$p" 2>/dev/null || true)
-  rm -rf "$p"
-  if git clone "$u" "$p" 2>/dev/null; then
-    [ -n "$pin" ] && ( cd "$p" && git checkout -q "$pin" 2>/dev/null || true )
-    ( cd "$p" && git submodule update --init --recursive 2>/dev/null || true )
-    echo "submodule: cloned $p"
+  # Target pin: post-image of the patches APPLIED IN THIS STAGE only, else the
+  # index gitlink (--verify -q so an unresolved path yields "" not an echo).
+  # MSB_PATCHES is set by the stage wrapper (empty for the unpatched run stage);
+  # reading test/fix.patch unconditionally would check out post-fix submodules
+  # during the base run and destroy the fail->pass signal.
+  pin=""
+  for pf in ${MSB_PATCHES:-}; do
+    [ -f "$pf" ] || continue
+    s=$(awk -v hdr="+++ b/$p" '$0==hdr{f=1;next} /^\\+\\+\\+ /{f=0} f&&/^\\+Subproject commit /{v=$3} END{if(v)print v}' "$pf")
+    [ -n "$s" ] && pin="$s"
+  done
+  [ -z "$pin" ] && pin=$(git rev-parse --verify -q ":$p" 2>/dev/null || true)
+  [ -z "$pin" ] && continue
+  cur=$(git -C "$p" rev-parse --verify -q HEAD 2>/dev/null || true)
+  [ "$cur" = "$pin" ] && continue
+  if [ -z "$(ls -A "$p" 2>/dev/null)" ]; then
+    rm -rf "$p"; git clone "$u" "$p" 2>/dev/null || continue
   fi
+  # Fetch from the .gitmodules URL, not "origin": submodules materialised by
+  # `git submodule update` often have no origin remote configured here.
+  ( cd "$p" \\
+    && (git checkout -q "$pin" 2>/dev/null \\
+        || (git fetch --depth 1 "$u" "$pin" 2>/dev/null && git checkout -q "$pin" 2>/dev/null) \\
+        || (git fetch "$u" 2>/dev/null && git checkout -q "$pin" 2>/dev/null) \\
+        || true) \\
+    && git submodule update --init --recursive 2>/dev/null || true )
+  echo "submodule: $p @ $(git -C "$p" rev-parse --verify -q HEAD 2>/dev/null || echo "$pin")"
 done
 
 # Prefer the project's own build script (only exists from PR #2946 onward).
@@ -194,8 +304,22 @@ BUILD_RC=1
 if find build -name test_sunshine -type f 2>/dev/null | grep -q .; then
   BUILD_RC=0
 else
+  # Force-include a few standard headers. Pre-gcc-11 Sunshine (e.g. #321, v0.14)
+  # relied on libstdc++ pulling <string>/<cctype>/<algorithm>/<cstdint> in
+  # transitively; gcc-13 on ubuntu:24.04 no longer does, so src/utility.h fails
+  # with "std::string is incomplete" / "isdigit not declared". -include injects
+  # them into every C++ TU without touching the source under test (CXX-only, so
+  # the C submodules are unaffected); redundant on newer commits, harmless there.
+  # BUILD_DOCS=OFF: Sunshine from ~#2186 onward requires Doxygen >= 1.10, but
+  # ubuntu:24.04 ships 1.9.8 (newest in apt), so `find_package(Doxygen 1.10)`
+  # aborts configure -> no build.ninja -> the whole build fails before a single
+  # object compiles. Docs are irrelevant to the build/test signal, and the option
+  # gates only the docs target (cmake/prep/options.cmake), so turning it off
+  # restores the build without touching the source under test.
   cmake -B build -G Ninja -S . -DBUILD_TESTS=ON -DBUILD_WERROR=OFF \\
-      -DCMAKE_BUILD_TYPE=Release -DSUNSHINE_ENABLE_CUDA=OFF 2>&1 | tail -25 || true
+      -DCMAKE_BUILD_TYPE=Release -DSUNSHINE_ENABLE_CUDA=OFF -DBUILD_DOCS=OFF \\
+      -DCMAKE_CXX_FLAGS="-include cstdint -include string -include cctype -include algorithm" \\
+      2>&1 | tail -25 || true
   # Build the test target if it exists; else the main target; else everything.
   if ninja -C build test_sunshine 2>&1 | tail -25; then BUILD_RC=0
   elif ninja -C build sunshine 2>&1 | tail -25; then BUILD_RC=0
@@ -220,6 +344,8 @@ fi
         run_sh = """#!/bin/bash
 set -eo pipefail
 export CI=true
+# No patches applied in this stage: submodules must stay at their base pins.
+export MSB_PATCHES=""
 cd /home/__REPO__
 bash /home/run_tests.sh
 """.replace("__REPO__", repo)
@@ -238,6 +364,7 @@ bash /home/run_tests.sh
         test_run = """#!/bin/bash
 set -eo pipefail
 export CI=true
+export MSB_PATCHES="/home/test.patch"
 cd /home/__REPO__
 git apply --3way --whitespace=nowarn __EXCLUDES__ /home/test.patch \\
   || git apply --whitespace=nowarn --reject __EXCLUDES__ /home/test.patch \\
@@ -248,6 +375,7 @@ bash /home/run_tests.sh
         fix_run = """#!/bin/bash
 set -eo pipefail
 export CI=true
+export MSB_PATCHES="/home/test.patch /home/fix.patch"
 cd /home/__REPO__
 git apply --3way --whitespace=nowarn __EXCLUDES__ /home/test.patch /home/fix.patch \\
   || git apply --whitespace=nowarn --reject __EXCLUDES__ /home/test.patch /home/fix.patch \\
@@ -267,27 +395,54 @@ bash /home/run_tests.sh
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        dep = self.dependency()
+        assert isinstance(dep, Image)
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        # This image's dependency is an Image, so DockerfileEnhancer.enhance()
+        # returns our text verbatim and build_dataset passes no REPO_URL /
+        # BASE_COMMIT build args (both are gated on a str dependency). We
+        # therefore declare those ARGs ourselves, defaulted to this PR's own
+        # values, and keep the same names the hardening block expects.
+        # Validate before interpolating into RUN/WORKDIR paths, exactly as
+        # image.py does, so a name carrying shell metacharacters cannot inject
+        # build commands.
+        org = _safe_path_component(self.pr.org, "org")
+        repo = _safe_path_component(self.pr.repo)
+        sha = _safe_path_component(self.pr.base.sha, "base commit")
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
 
-        return f"""FROM {name}:{tag}
+        sections = [
+            f"FROM {dep.image_name()}:{dep.image_tag()}",
+            f'ARG REPO_URL="https://github.com/{org}/{repo}.git"\n'
+            f'ARG BASE_COMMIT="{sha}"',
+        ]
+        if self.global_env:
+            sections.append(self.global_env)
 
-{self.global_env}
+        sections.append("WORKDIR /home/")
+        sections.append(f'RUN git clone "${{REPO_URL}}" /home/{repo}')
+        sections.append(f"WORKDIR /home/{repo}")
+        sections.append("RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}")
 
-{copy_commands}
+        # Submodules are era-pinned: init them *after* the base-commit checkout
+        # so they match this PR's pins rather than the default branch's.
+        # Non-fatal — a few pinned commits were force-pushed away upstream, and
+        # run_tests.sh re-clones whatever is left empty.
+        sections.append("RUN git submodule update --init --recursive || true")
 
-{prepare_commands}
+        # The canonical hardening block from image.py, referenced rather than
+        # copied so it stays in lockstep with the harness.
+        sections.append(Image._HARDENING_BLOCK.rstrip("\n"))
 
-{self.clear_env}
+        sections.append(copy_commands.rstrip("\n"))
+        sections.append("RUN bash /home/prepare.sh")
 
-"""
+        if self.clear_env:
+            sections.append(self.clear_env)
+        sections.append('CMD ["/bin/bash"]')
+
+        return "\n\n".join(sections) + "\n"
 
 
 @Instance.register("LizardByte", "Sunshine")
