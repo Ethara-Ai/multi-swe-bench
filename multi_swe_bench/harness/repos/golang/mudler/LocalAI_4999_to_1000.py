@@ -27,10 +27,10 @@ class _ImageBase(Image):
         return _GO_IMAGE
 
     def image_tag(self) -> str:
-        return f"base-{_TAG}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-{_TAG}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -40,17 +40,37 @@ class _ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # SINGLE shared toolchain base for every era (tag "base"). The `# syntax`
+        # directive makes DockerfileEnhancer.enhance() return this verbatim: no
+        # proxy args / cert symlinks / MITM mount injected. It must NOT clone the
+        # repo -- the tag is shared by all 35 PRs, so a clone here would be
+        # force-pinned by the hardening pass to whichever PR built the base first,
+        # breaking the rest. The clone lives per-PR in _ImageDefault.
+        #
+        # BOTH protobuf-codegen toolchains are installed side by side: protoc-gen-go
+        # is a single-name binary that cannot hold two versions at once, and old
+        # LocalAI (<= PR 4999) regenerates .pb.go with protoc-gen-go v1.31.0 /
+        # grpc v1.3.0 while newer PRs use v1.34.2 / grpc HEAD. Each era's prepare.sh
+        # symlinks the version its checkout expects to /go/bin/protoc-gen-go before
+        # `make protogen-go`, so one base serves all eras without a codegen mismatch.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
 ENV GOTOOLCHAIN=auto
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     build-essential \\
     ca-certificates \\
+    clang \\
     cmake \\
     curl \\
     git \\
@@ -59,15 +79,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     unzip \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.31.0 && \\
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
-
-WORKDIR /home/
-
-{code}
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.31.0 && mv /go/bin/protoc-gen-go /go/bin/protoc-gen-go-1.31.0 && \\
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2 && mv /go/bin/protoc-gen-go /go/bin/protoc-gen-go-1.34.2 && \\
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0 && mv /go/bin/protoc-gen-go-grpc /go/bin/protoc-gen-go-grpc-1.3.0 && \\
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@1958fcbe2ca8bd93af633f11e97d44e567e945af && mv /go/bin/protoc-gen-go-grpc /go/bin/protoc-gen-go-grpc-new
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -166,17 +185,20 @@ GO_TEST_PKGS=$(_extract_go_packages "$@")
 set -e
 
 cd /home/{pr.repo}
+# Repo is already cloned and checked out at ${{BASE_COMMIT}} by the Dockerfile;
+# no git checkout here (it would fight the hardening pass that follows).
 git reset --hard
-bash /home/check_git_changes.sh
-git fetch --depth 1 origin {pr.base.sha} || true
-git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
 export PATH="$PATH:/go/bin"
-make prepare-sources 2>&1 | tail -20 || true
-make get-sources 2>&1 | tail -20 || true
-make protogen-go 2>&1 | tail -30 || true
-make assets 2>&1 | tail -10 || true
+# Select the protobuf codegen version this era's checkout expects
+# (both are pre-installed in the shared base).
+ln -sf /go/bin/protoc-gen-go-1.31.0 /go/bin/protoc-gen-go
+ln -sf /go/bin/protoc-gen-go-grpc-1.3.0 /go/bin/protoc-gen-go-grpc
+timeout 300 make prepare-sources 2>&1 | tail -20 || true
+timeout 900 make get-sources 2>&1 | tail -20 || true
+timeout 300 make protogen-go 2>&1 | tail -30 || true
+timeout 600 make assets 2>&1 | tail -10 || true
 
 go test -v -count=1 -timeout 3m ./pkg/utils/... 2>&1 | tail -5 || true
 
@@ -303,25 +325,45 @@ exit 0
         ]
 
     def dockerfile(self) -> str:
+        # Two-level per-PR image FROM the shared era base. dependency() is an
+        # *Image*, so DockerfileEnhancer returns this verbatim -- the clone,
+        # checkout and Image._HARDENING_BLOCK below are kept exactly as written.
+        # BASE_COMMIT is defaulted to this PR's sha because build_dataset only
+        # passes REPO_URL/BASE_COMMIT build args for string-dependency images.
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        org, repo = self.pr.org, self.pr.repo
 
         copy_commands = ""
         for f in self.files():
             copy_commands += f"COPY {f.name} /home/\n"
 
-        return f"""FROM {name}:{tag}
+        header = f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
+
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
+WORKDIR /home/{repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
+
+{copy_commands}
 RUN bash /home/prepare.sh
 
+"""
+
+        tail = f"""
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
+        return header + Image._HARDENING_BLOCK + tail
 
 
 def _parse_go_test_log(test_log: str) -> TestResult:
