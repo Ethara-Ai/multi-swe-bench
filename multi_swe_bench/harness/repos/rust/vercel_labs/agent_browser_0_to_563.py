@@ -1,9 +1,20 @@
 import re
 from typing import Optional
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+# A git commit SHA charset (full or abbreviated). Validated before raw
+# interpolation into a generated Dockerfile RUN command -- see the comment on
+# ImageDefault.dockerfile() for why this path doesn't go through an ARG.
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _safe_sha(sha: str) -> str:
+    if not sha or not _SHA_RE.match(sha):
+        raise ValueError(f"unsafe commit sha for Dockerfile interpolation: {sha!r}")
+    return sha
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +38,123 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #       ` ↓ src/foo.test.ts > suite > name`        (skipped/todo)
 #   * Full suite verified green (481 passed | 17 skipped) and the PR
 #     test_patch + fix_patch apply cleanly with `git apply --whitespace=nowarn`.
+#
+# Two-stage build (base image + per-PR image), added so the (network-bound)
+# clone and the (slow) pnpm-install/Chromium-download only happen once per
+# era, cached across every PR, instead of once per PR:
+#   * ImageBase clones the repo at whatever HEAD currently is (no commit
+#     pinned) and warms pnpm/Chromium. It is commit-agnostic and reused
+#     as-is for every PR image via normal Docker layer/tag caching -- it is
+#     NEVER shipped standalone, only ever as the FROM of a PR image.
+#   * ImageDefault (the per-PR image) is FROM ImageBase, then re-derives the
+#     commit-correct state: checks out BASE_COMMIT and re-runs the FULL
+#     _HARDENING_BLOCK (strip every other ref/remote, expire reflogs,
+#     gc --prune) against it, exactly as the single-stage build did. This is
+#     the one detail that matters: a prior version of this registry (see
+#     commit e7ba6835) chained to a base image the same way but never
+#     re-applied hardening in the child, so the child image inherited the
+#     base image's full, unstripped git history -- letting an agent read the
+#     real fix straight out of `git log`/`git show`. dependency() returning
+#     an Image (rather than a string) makes Image.dockerfile() refuse to run
+#     ("Subclass must override dockerfile() or return a string from
+#     dependency()"), which is exactly why that gap was possible; the fix is
+#     that this class's own dockerfile() below re-applies hardening itself,
+#     not that chaining is unsafe in general.
 # ---------------------------------------------------------------------------
+
+
+class ImageBase(Image):
+    """Shared, commit-agnostic base image for the TS era.
+
+    Clones the repo once and warms the pnpm/Chromium caches. Carries no
+    BASE_COMMIT and no hardening -- it is never evaluated against directly,
+    only used as the FROM of ImageDefault, which re-hardens per commit.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        return "node:20-bookworm"
+
+    def image_tag(self) -> str:
+        # Constant (not PR-derived): every TS-era PR resolves the same tag,
+        # so Docker/the harness build this once and every PR image reuses it.
+        # Named after the era's PR range (matches this file's own name), not
+        # the toolchain, per convention.
+        return "base-0-563"
+
+    def workdir(self) -> str:
+        return "base-0-563"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        # Syntax directive prefix makes DockerfileEnhancer.enhance() skip its
+        # proxy ARGs / CA-cert symlinks / MITM mount (same reasoning as
+        # ImageDefault.dockerfile() below) so this base image stays exactly
+        # what's written here.
+        repo = self.pr.repo
+        repo_url = f"https://github.com/{self.pr.org}/{self.pr.repo}.git"
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+
+FROM node:20-bookworm
+ARG TARGETARCH
+ARG REPO_URL="{repo_url}"
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV CI=true
+# Containers run as root, where $HOME defaults to /root -- some of this
+# repo's own tests assert their home-relative fallback path contains "home"
+# or "Users" (see connection.rs's test_get_socket_dir_home_fallback in the
+# Rust era; harmless here but kept for parity/consistency across both base
+# images), which /root never satisfies. Not evaluation-relevant either way
+# for the TS era, just avoids the two base images diverging for no reason.
+ENV HOME=/home/{repo}
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image (TS-era base)" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}"
+
+WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    curl \\
+    build-essential \\
+    git \\
+    gnupg \\
+    make \\
+    python3 \\
+    sudo \\
+    wget \\
+    dbus \\
+    dbus-x11 \\
+    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm@9
+
+# rm -rf first: makes this step idempotent against a stale/reused BuildKit
+# cache layer that already has something at this path (observed on the
+# arm64 leg of multi-arch builds: `git clone` failing with "destination
+# path ... already exists and is not an empty directory" even though
+# nothing earlier in this Dockerfile creates it) -- rebuilding this same
+# tag repeatedly with different content across the base image's lifetime is
+# exactly the kind of history that produces a stale cache hit like this.
+RUN rm -rf /home/{repo} && git clone "${{REPO_URL}}" /home/{repo}
+WORKDIR /home/{repo}
+RUN pnpm install || true
+RUN pnpm exec playwright install --with-deps chromium || npx --yes playwright install --with-deps chromium || true
+
+CMD ["/bin/bash"]
+"""
 
 
 class ImageDefault(Image):
@@ -43,15 +170,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        # Returning a string (rather than a chained Image) lets the shared
-        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
-        # checks out "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that
-        # strips every other ref/commit so the fix can't be read out of git
-        # history. DockerfileEnhancer then injects the proxy/cert infra and the
-        # final sanitize pass. None of that fires when dockerfile() is
-        # overridden, which is why the previous two-stage build bypassed it.
-        return "node:20-bookworm"
+    def dependency(self) -> Image:
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -59,24 +179,55 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    def extra_setup(self) -> str:
-        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. We install pnpm (needed by prepare.sh), stage the runtime
-        # helper scripts + patches into /home/, and warm the pnpm install +
-        # bundled Chromium. The copied files live outside /home/{repo}, so the
-        # hardening pass (which only operates inside the git tree) leaves them
-        # untouched.
-        return (
-            "ENV CI=true\n"
-            "RUN npm install -g pnpm@9\n"
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh\n"
-            "COPY prepare.sh /home/prepare.sh\n"
-            "RUN bash /home/prepare.sh"
-        )
+    def dockerfile(self) -> str:
+        # dependency() returns an Image, so the shared Image.dockerfile()
+        # refuses to run and this class must build the Dockerfile itself.
+        # REPO_URL/BASE_COMMIT never arrive as build-args in this case (the
+        # harness only injects those when dependency() is a string), so the
+        # commit is baked in directly rather than via an ARG -- validated
+        # first (_safe_sha) since it's raw string interpolation.
+        #
+        # Image._HARDENING_BLOCK is reused verbatim (imported, not
+        # hand-copied) so this can never silently drift from the canonical
+        # definition in image.py; "${BASE_COMMIT}" is substituted with the
+        # literal, validated sha since no ARG declares it here.
+        base = self.dependency()
+        repo = self.pr.repo
+        sha = _safe_sha(self.pr.base.sha)
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", sha)
+
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+
+FROM {base.image_full_name()}
+
+WORKDIR /home/{repo}
+RUN git fetch origin || true
+
+{hardening}
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+
+COPY fix.patch /home/fix.patch
+COPY test.patch /home/test.patch
+COPY run.sh /home/run.sh
+COPY test-run.sh /home/test-run.sh
+COPY fix-run.sh /home/fix-run.sh
+COPY prepare.sh /home/prepare.sh
+RUN bash /home/prepare.sh
+
+CMD ["/bin/bash"]
+"""
 
     def files(self) -> list[File]:
         return [
@@ -96,10 +247,13 @@ class ImageDefault(Image):
                 """#!/bin/bash
 # Warm the pnpm install + bundled Chromium at image-build time so the eval
 # runs don't need network. The repo is already checked out at ${{BASE_COMMIT}}
-# and hardened by Image.dockerfile(), so this script no longer performs any
-# git checkout itself. Steps are allowed to fail (|| true) because their only
-# purpose here is to populate node_modules + the browser cache; the real
-# pass/fail signal comes from the run/test-run/fix-run scripts.
+# and hardened by ImageDefault.dockerfile() above, so this script no longer
+# performs any git checkout itself. pnpm/Chromium are already warmed once in
+# the base image's HEAD snapshot; this re-run picks up whatever changed
+# between that snapshot and this commit's actual manifest. Steps are allowed
+# to fail (|| true) because their only purpose here is to populate
+# node_modules + the browser cache; the real pass/fail signal comes from the
+# run/test-run/fix-run scripts.
 set -e
 
 cd /home/{pr.repo}
@@ -117,6 +271,16 @@ pnpm exec playwright install --with-deps chromium || npx --yes playwright instal
 set -eo pipefail
 export CI=true
 
+# Headless Chromium needs a D-Bus session bus; without one, browser launches
+# intermittently crash with SIGSEGV ("Failed to connect to the bus: Failed to
+# connect to socket /run/dbus/system_bus_socket: No such file or directory").
+# Verified fix (PR 373, TS era): the exact same launch that crashed before
+# passes cleanly once this daemon is running. || true: a daemon that's
+# already running (or fails to start for an unrelated reason) shouldn't fail
+# the whole test run -- the real pass/fail signal is the test suite itself.
+mkdir -p /run/dbus
+dbus-daemon --system --fork 2>/dev/null || true
+
 cd /home/{pr.repo}
 pnpm exec vitest run --reporter=verbose
 
@@ -128,6 +292,9 @@ pnpm exec vitest run --reporter=verbose
                 """#!/bin/bash
 set -eo pipefail
 export CI=true
+
+mkdir -p /run/dbus
+dbus-daemon --system --fork 2>/dev/null || true
 
 cd /home/{pr.repo}
 git apply --exclude pnpm-lock.yaml --whitespace=nowarn /home/test.patch
@@ -141,6 +308,9 @@ pnpm exec vitest run --reporter=verbose
                 """#!/bin/bash
 set -eo pipefail
 export CI=true
+
+mkdir -p /run/dbus
+dbus-daemon --system --fork 2>/dev/null || true
 
 cd /home/{pr.repo}
 git apply --exclude pnpm-lock.yaml --whitespace=nowarn /home/test.patch /home/fix.patch
