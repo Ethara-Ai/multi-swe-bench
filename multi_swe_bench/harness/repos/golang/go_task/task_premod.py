@@ -17,8 +17,58 @@ from multi_swe_bench.harness.pull_request import PullRequest
 _GO_IMAGE = "golang:1.11"
 _TAG_SUFFIX = "premod"
 
+# Toolchain env this era needs, emitted into the shared base image.
+_ERA_ENV = """ENV GO111MODULE=off
+ENV GOPATH=/go
+ENV PATH=$GOPATH/bin:$PATH"""
+
+# Package set copied from the default list in Image.dockerfile() (image.py) so
+# this hand-written base provisions exactly what the shared build provisions.
+# `apt-get update` falls back to archive.debian.org because the older golang
+# images ride Debian releases whose mirrors have been retired -- the same fix
+# Image._get_apt_update_command() applies, keyed off reachability rather than
+# the fixed DEPRECATED_DEBIAN_IMAGES list (which does not name golang tags).
+_APT_INSTALL = (
+    "RUN { apt-get update 2>/dev/null || "
+    "{ sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && "
+    "sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && "
+    "sed -i '/-updates/d' /etc/apt/sources.list && "
+    "apt-get update; }; } && \\\n"
+    "    apt-get install -y --no-install-recommends \\\n"
+    "    ca-certificates \\\n"
+    "    curl \\\n"
+    "    build-essential \\\n"
+    "    git \\\n"
+    "    gnupg \\\n"
+    "    make \\\n"
+    "    python3 \\\n"
+    "    sudo \\\n"
+    "    wget \\\n"
+    "    && rm -rf /var/lib/apt/lists/*"
+)
+
+
+def _checkout_dir(pr: PullRequest) -> str:
+    """Path the repo is cloned to inside the image."""
+    return f"/go/src/github.com/{pr.org}/{pr.repo}"
+
 
 class _ImageBase(Image):
+    """Level 1: toolchain-only base image, shared by every PR of the era.
+
+    ``dependency()`` returns a *string*, so ``DockerfileEnhancer.enhance()``
+    (image.py) engages and prepends the ``# syntax`` directive, the
+    ``REPO_URL``/``BASE_COMMIT`` ARGs, the proxy/TZ/cert ENV block, the OCI
+    labels and the CA-cert symlinks.
+
+    This image deliberately does NOT clone the repository. A shared image that
+    clones would be rewritten by ``DockerfileEnhancer._standardize_repo_fetch``
+    into a ``${BASE_COMMIT}`` checkout plus ``Image._HARDENING_BLOCK``, pinning
+    the whole era to whichever PR happened to build the base first and deleting
+    the history every other PR needs. The clone therefore lives in
+    ``_ImageDefault``, per PR.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -44,45 +94,32 @@ class _ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        sections = [f"FROM {_GO_IMAGE}", "WORKDIR /home/", _APT_INSTALL]
 
-        gopath_pkg = f"github.com/{self.pr.org}/{self.pr.repo}"
+        if _ERA_ENV:
+            sections.append(_ERA_ENV)
+        if self.global_env:
+            sections.append(self.global_env)
+        if self.clear_env:
+            sections.append(self.clear_env)
 
-        if self.config.need_clone:
-            code = (
-                f"RUN mkdir -p /go/src/{gopath_pkg} && "
-                f"git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/go/src/{gopath_pkg}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /go/src/{gopath_pkg}"
+        sections.append('CMD ["/bin/bash"]')
 
-        return f"""FROM {image_name}
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GO111MODULE=off
-ENV GOPATH=/go
-ENV PATH=$GOPATH/bin:$PATH
-
-RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
-    sed -i '/stretch-updates/d' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y --no-install-recommends git
-
-{self.global_env}
-
-{code}
-
-WORKDIR /go/src/{gopath_pkg}
-
-{self.clear_env}
-
-"""
+        return "\n\n".join(sections) + "\n"
 
 
 class _ImageDefault(Image):
+    """Level 2: per-PR image built on the shared era base.
+
+    ``dependency()`` returns an ``Image``, so ``DockerfileEnhancer.enhance()``
+    returns this Dockerfile verbatim -- which is why the clone, the
+    ``${BASE_COMMIT}`` checkout and the history strip are spelled out here. The
+    strip is the canonical ``Image._HARDENING_BLOCK`` (concatenated raw so its
+    ``${BASE_COMMIT}`` and ``%(refname)`` tokens stay literal), so the fix
+    cannot be recovered from git history while ``base.sha`` stays reachable as
+    HEAD.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -98,9 +135,6 @@ class _ImageDefault(Image):
     def dependency(self) -> Image | None:
         return _ImageBase(self.pr, self.config)
 
-    def image_prefix(self) -> str:
-        return "mswebench"
-
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
@@ -108,7 +142,7 @@ class _ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        gopath_pkg = f"github.com/{self.pr.org}/{self.pr.repo}"
+        checkout_dir = _checkout_dir(self.pr)
 
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
@@ -139,16 +173,20 @@ exit 0
                 "prepare.sh",
                 """#!/bin/bash
 
-cd /go/src/{gopath_pkg}
+# The Dockerfile already cloned the repo and checked out ${{BASE_COMMIT}}, so
+# this only asserts a clean tree and warms the module/build caches.
+cd {checkout_dir}
 git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
 go install -v ./... || true
 go test -v -count=1 ./... || true
 
-""".format(pr=self.pr, gopath_pkg=gopath_pkg),
+# Warming the caches can rewrite go.mod/go.sum; restore the tracked tree so the
+# image ships base.sha byte-for-byte and the eval patches apply cleanly.
+git reset --hard || true
+
+""".format(checkout_dir=checkout_dir),
             ),
             File(
                 ".",
@@ -156,15 +194,31 @@ go test -v -count=1 ./... || true
                 """#!/bin/bash
 set -e
 
-cd /go/src/{gopath_pkg}
-go install -v ./...
-PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
+cd {checkout_dir}
+go install -v ./... || true
+# The package list is derived from the patch diff headers, but a patch adds,
+# renames and deletes files: a directory named there may not exist at THIS
+# stage (created by the fix, or removed by it). `go test` treats a missing
+# package as a fatal error and aborts before running anything, so keep only
+# the directories that exist right now and still hold .go files.
+PKGS=""
+for d in $(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$'); do
+  # vendor/ holds third-party code: not ours to test, and in module mode it is
+  # not part of this module at all.
+  case "$d" in ./vendor/*) continue;; esac
+  # Let the toolchain decide what is a real package. A directory can exist and
+  # hold .go files yet still not be a package -- e.g. every file excluded by a
+  # build constraint such as `//+build ignore` -- and `go test` treats that as
+  # a fatal "cannot find module for path" before running anything.
+  go list "$d" >/dev/null 2>&1 || continue
+  PKGS="$PKGS $d"
+done
 if [ -z "$PKGS" ]; then
   PKGS="./..."
 fi
 go test -v -count=1 -timeout 15m $PKGS
 
-""".format(pr=self.pr, gopath_pkg=gopath_pkg),
+""".format(checkout_dir=checkout_dir),
             ),
             File(
                 ".",
@@ -172,16 +226,32 @@ go test -v -count=1 -timeout 15m $PKGS
                 """#!/bin/bash
 set -e
 
-cd /go/src/{gopath_pkg}
+cd {checkout_dir}
 git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go install -v ./...
-PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
+go install -v ./... || true
+# The package list is derived from the patch diff headers, but a patch adds,
+# renames and deletes files: a directory named there may not exist at THIS
+# stage (created by the fix, or removed by it). `go test` treats a missing
+# package as a fatal error and aborts before running anything, so keep only
+# the directories that exist right now and still hold .go files.
+PKGS=""
+for d in $(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$'); do
+  # vendor/ holds third-party code: not ours to test, and in module mode it is
+  # not part of this module at all.
+  case "$d" in ./vendor/*) continue;; esac
+  # Let the toolchain decide what is a real package. A directory can exist and
+  # hold .go files yet still not be a package -- e.g. every file excluded by a
+  # build constraint such as `//+build ignore` -- and `go test` treats that as
+  # a fatal "cannot find module for path" before running anything.
+  go list "$d" >/dev/null 2>&1 || continue
+  PKGS="$PKGS $d"
+done
 if [ -z "$PKGS" ]; then
   PKGS="./..."
 fi
 go test -v -count=1 -timeout 15m $PKGS
 
-""".format(pr=self.pr, gopath_pkg=gopath_pkg),
+""".format(checkout_dir=checkout_dir),
             ),
             File(
                 ".",
@@ -189,41 +259,66 @@ go test -v -count=1 -timeout 15m $PKGS
                 """#!/bin/bash
 set -e
 
-cd /go/src/{gopath_pkg}
+cd {checkout_dir}
 git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
-go install -v ./...
-PKGS=$(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$')
+go install -v ./... || true
+# The package list is derived from the patch diff headers, but a patch adds,
+# renames and deletes files: a directory named there may not exist at THIS
+# stage (created by the fix, or removed by it). `go test` treats a missing
+# package as a fatal error and aborts before running anything, so keep only
+# the directories that exist right now and still hold .go files.
+PKGS=""
+for d in $(cat /home/test.patch /home/fix.patch 2>/dev/null | grep '^diff --git' | sed 's|diff --git a/||;s| b/.*||' | grep '\\.go$' | xargs -I{{}} dirname {{}} | sort -u | sed 's|^|./|' | grep -v '^\\.$'); do
+  # vendor/ holds third-party code: not ours to test, and in module mode it is
+  # not part of this module at all.
+  case "$d" in ./vendor/*) continue;; esac
+  # Let the toolchain decide what is a real package. A directory can exist and
+  # hold .go files yet still not be a package -- e.g. every file excluded by a
+  # build constraint such as `//+build ignore` -- and `go test` treats that as
+  # a fatal "cannot find module for path" before running anything.
+  go list "$d" >/dev/null 2>&1 || continue
+  PKGS="$PKGS $d"
+done
 if [ -z "$PKGS" ]; then
   PKGS="./..."
 fi
 go test -v -count=1 -timeout 15m $PKGS
 
-""".format(pr=self.pr, gopath_pkg=gopath_pkg),
+""".format(checkout_dir=checkout_dir),
             ),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        base = self.dependency()
+        checkout_dir = _checkout_dir(self.pr)
+        copy_files = " ".join(file.name for file in self.files())
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        header = f"""FROM {base.image_name()}:{base.image_tag()}
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/
+RUN mkdir -p {checkout_dir} && git clone https://github.com/{self.pr.org}/{self.pr.repo}.git {checkout_dir}
 
-{prepare_commands}
+WORKDIR {checkout_dir}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
-{self.clear_env}
+COPY {copy_files} /home/
+
+RUN bash /home/prepare.sh || true
 
 """
+
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+
+        return header + Image._HARDENING_BLOCK + tail
 
 
 def _parse_go_test_log(test_log: str) -> TestResult:
@@ -301,3 +396,24 @@ class _TaskInstanceBase(Instance):
 @Instance.register("go-task", "task_premod")
 class TaskPremod(_TaskInstanceBase):
     pass
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Every record in go-task__task_lht_final.jsonl carries a `number_interval` that
+# is its `prs_in_bundle` joined by "-" (e.g. "101-204-305-409"). Instance.create()
+# prefers that key, looking up f"go-task/{number_interval}", so each delivered
+# bundle whose toolchain requirement lands in this era (golang:1.11) is registered
+# to TaskPremod. A bundle sits in the era of the highest Go version it needs -- the
+# `go` directive at its base sha, or a higher one introduced by its patches.
+_BUNDLE_NIS_TASK_PREMOD = [
+    "24-25",
+    "32-35",
+    "39-41-43-48-50",
+    "60-62-64",
+    "85-93",
+    "97-102",
+    "123-124-126",
+    "142-143",
+]
+for _ni in _BUNDLE_NIS_TASK_PREMOD:
+    Instance.register("go-task", _ni)(TaskPremod)
