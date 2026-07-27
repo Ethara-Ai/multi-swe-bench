@@ -17,11 +17,15 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #     test:unit = `vitest run test/unit`, package manager pnpm (via corepack).
 #
 # Boundary 12455: no dataset PRs fall in (11906, 12563); kept for continuity.
-# The dataset JSONL has no `number_interval`, so the harness routes every
-# record by `vuejs/vue`; a single registration with PR-number-conditional
-# dependency is therefore required (multi-file/number_interval would leave
-# every record unroutable). Each era still has its own ImageBase/ImageDefault
-# and a unique image_tag, and parse_log handles both reporters.
+# Each dataset record carries a dash-joined `number_interval` (the explicit
+# `prs_in_bundle` list, e.g. "11906-12002-12104" -- NOT a "start-end" range,
+# because a bundle's PRs are non-contiguous). Instance.create() therefore routes
+# by `vuejs/<number_interval>`, so every interval is registered below via
+# `_BUNDLE_NIS_Vue` (the plain `vuejs/vue` registration is kept as a fallback for
+# records that lack the field). The interval also flows through Dataset.build ->
+# the resolved JSONL. Routing stays PR-number-conditional (representative number
+# = first interval element) so each era still selects its own ImageBase/
+# ImageDefault + unique image_tag, and parse_log handles both reporters.
 #
 # Docker-verified end-to-end (run -> test-run -> fix-run, valid f2p):
 #   Era A: v2.1.8(790) v2.3.0(892) v2.5.0(1035) v2.5.11(1070) v2.6.13(1292);
@@ -84,6 +88,45 @@ module.exports = function (config) {
   }))
 }
 """
+
+
+# Runtime network blackhole — the second half of the reward-hacking defense
+# (Image._HARDENING_BLOCK is the first). Hardening strips the fix from LOCAL git
+# history; without this, an evaluated model could still recover it by re-cloning
+# or fetching from github.com at run/test/fix time. Rewrite every github.com URL
+# form to a dead address and forbid all git transfer protocols except local
+# file. Placed in the per-PR image AFTER prepare.sh (so yarn/pnpm install still
+# has network) and BEFORE the hardening block. Mirrors n8n_io/_common.GIT_BLACKHOLE.
+GIT_BLACKHOLE = r"""RUN BH="https://0.0.0.0:1/"; \
+    git config --system url."$BH".insteadOf "https://github.com/"; \
+    git config --system url."$BH".insteadOf "http://github.com/"; \
+    git config --system url."$BH".insteadOf "git://github.com/"; \
+    git config --system url."$BH".insteadOf "ssh://git@github.com/"; \
+    git config --system url."$BH".insteadOf "git@github.com:"; \
+    git config --system url."$BH".insteadOf "https://codeload.github.com/"; \
+    git config --system protocol.allow never; \
+    git config --system protocol.file.allow always; \
+    git config --system --unset-all credential.helper 2>/dev/null || true"""
+
+
+# Robust, self-diagnosing patch application shared by test-run.sh / fix-run.sh.
+# The single `git apply --3way` we used before hard-fails the WHOLE stage on any
+# hiccup (context drift, an index quirk in the hardened repo, or a working tree
+# dirtied by dep-install), leaving test/fix with zero captured tests -> no
+# fail->pass -> the record is dropped as an invalid report. Instead try
+# progressively: plain `git apply` (works even on the hardened tree), then
+# `--3way`, then `patch --fuzz`; on total failure print the git diagnostics and
+# still return 0 so the test command runs and the log shows the real reason.
+# Deliberately NO `--reject` (it would half-apply a spec file and make the test
+# runner error on a broken source instead of the honest "did not apply").
+APPLY_PATCH_SH = r'''apply_patch() {
+  local p="$1"
+  [ -s "$p" ] || { echo "apply_patch: $p missing/empty, skipping"; return 0; }
+  if git apply --whitespace=nowarn "$p" 2>/dev/null; then echo "apply_patch: applied $p (git apply)"; return 0; fi
+  if git apply --whitespace=nowarn --3way "$p" 2>/dev/null; then echo "apply_patch: applied $p (git apply --3way)"; return 0; fi
+  if patch -p1 --fuzz=3 --no-backup-if-mismatch -i "$p" >/dev/null 2>&1; then echo "apply_patch: applied $p (patch --fuzz)"; return 0; fi
+  echo "apply_patch: FAILED to apply $p -- diagnostics:"; git apply --whitespace=nowarn --3way "$p" 2>&1 | head -20 | sed "s/^/  /"; return 0
+}'''
 
 
 class ImageBaseKarma(Image):
@@ -262,11 +305,16 @@ export CI=true
 export CHROME_BIN=/usr/bin/chromium
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+# Dep-install (prepare.sh) can leave tracked files modified; a dirty tree makes
+# git apply --3way fail with "does not match index". Restore pristine base first
+# (node_modules is untracked, so it survives).
+git checkout -f -- . 2>/dev/null || git reset --hard 2>/dev/null || true
+{apply}
+apply_patch /home/test.patch
 if [ -f test/unit/karma.unit.config.js ]; then KCFG=test/unit/karma.headless.js; else KCFG=build/karma.headless.js; fi
 node_modules/.bin/karma start "$KCFG"
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, apply=APPLY_PATCH_SH),
             ),
             File(
                 ".",
@@ -277,11 +325,17 @@ export CI=true
 export CHROME_BIN=/usr/bin/chromium
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+# Dep-install (prepare.sh) can leave tracked files modified; a dirty tree makes
+# git apply --3way fail with "does not match index". Restore pristine base first
+# (node_modules is untracked, so it survives).
+git checkout -f -- . 2>/dev/null || git reset --hard 2>/dev/null || true
+{apply}
+apply_patch /home/test.patch
+apply_patch /home/fix.patch
 if [ -f test/unit/karma.unit.config.js ]; then KCFG=test/unit/karma.headless.js; else KCFG=build/karma.headless.js; fi
 node_modules/.bin/karma start "$KCFG"
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, apply=APPLY_PATCH_SH),
             ),
         ]
 
@@ -307,6 +361,8 @@ node_modules/.bin/karma start "$KCFG"
 {copy_commands}
 
 {prepare_commands}
+
+{GIT_BLACKHOLE}
 
 WORKDIR /home/{self.pr.repo}
 
@@ -481,10 +537,15 @@ set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+# Dep-install (prepare.sh) can leave tracked files modified; a dirty tree makes
+# git apply --3way fail with "does not match index". Restore pristine base first
+# (node_modules is untracked, so it survives).
+git checkout -f -- . 2>/dev/null || git reset --hard 2>/dev/null || true
+{apply}
+apply_patch /home/test.patch
 pnpm exec vitest run test/unit --reporter verbose
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, apply=APPLY_PATCH_SH),
             ),
             File(
                 ".",
@@ -494,10 +555,16 @@ set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+# Dep-install (prepare.sh) can leave tracked files modified; a dirty tree makes
+# git apply --3way fail with "does not match index". Restore pristine base first
+# (node_modules is untracked, so it survives).
+git checkout -f -- . 2>/dev/null || git reset --hard 2>/dev/null || true
+{apply}
+apply_patch /home/test.patch
+apply_patch /home/fix.patch
 pnpm exec vitest run test/unit --reporter verbose
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, apply=APPLY_PATCH_SH),
             ),
         ]
 
@@ -523,6 +590,8 @@ pnpm exec vitest run test/unit --reporter verbose
 {copy_commands}
 
 {prepare_commands}
+
+{GIT_BLACKHOLE}
 
 WORKDIR /home/{self.pr.repo}
 
@@ -584,8 +653,13 @@ class Vue(Instance):
         # Era C: vitest --reporter verbose -> "√|✓ <name>" pass, "× <name>"
         #   fail, "↓ <name>" skipped; <name> = "file.spec.ts > suite > test".
         re_pass = re.compile(r"^[√✓] (.+?)\s*$")
-        re_fail = re.compile(r"^× (.+?)\s*$")
+        re_fail = re.compile(r"^[×✗] (.+?)\s*$")
         re_skip = re.compile(r"^↓ (.+?)\s*$")
+        # vitest verbose appends a per-test duration (" 12ms") to slower specs.
+        # It is non-deterministic across stages, so strip it before matching —
+        # otherwise the same spec yields different names in test-run vs fix-run
+        # and the f2p intersection silently drops it.
+        re_vitest_dur = re.compile(r"\s+\d+(?:\.\d+)?\s*m?s$")
         # Guard against any reporter summary line being captured as a name.
         re_summary = re.compile(
             r"^\d+\s+(passed|failed|skipped)|tests?\s+(completed|passed|failed)"
@@ -609,17 +683,17 @@ class Vue(Instance):
 
             m = re_pass.match(line)
             if m and not re_summary.match(m.group(1)):
-                passed_tests.add(m.group(1))
+                passed_tests.add(re_vitest_dur.sub("", m.group(1)))
                 continue
 
             m = re_fail.match(line)
             if m and not re_summary.match(m.group(1)):
-                failed_tests.add(m.group(1))
+                failed_tests.add(re_vitest_dur.sub("", m.group(1)))
                 continue
 
             m = re_skip.match(line)
             if m and not re_summary.match(m.group(1)):
-                skipped_tests.add(m.group(1))
+                skipped_tests.add(re_vitest_dur.sub("", m.group(1)))
 
         # Enforce TestResult disjoint-set invariants (a test reported both
         # pass and fail — e.g. flaky/retried — counts as failed).
