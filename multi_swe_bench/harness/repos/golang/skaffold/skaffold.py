@@ -1,9 +1,84 @@
+import json as _json
 import re
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+# ---------------------------------------------------------------------------
+# Emit `number_interval` on the OUTPUT (resolved jsonl) rows for
+# GoogleContainerTools/skaffold.
+#
+# Each instance is a release-delta BUNDLE. The raw record carries
+# `prs_in_bundle` (e.g. [1060, 1338, 1340, 1342, ...]) but an EMPTY / null
+# `number_interval`. The required output format is the dash-JOINED bundle list
+# ("1060-1338-1340-1342-..."), NOT a "1060-1414" RANGE -- a range would wrongly
+# imply every PR between 1060 and 1414 belongs to the bundle, which is untrue.
+#
+# Two constraints force the approach below:
+#   * `prs_in_bundle` is NOT a PullRequest field, so the dataclass-json schema
+#     loader DROPS it -- the registry classes never see it.
+#   * Setting `pr.number_interval` during load would change the ROUTING key
+#     (instance.py: name becomes "GoogleContainerTools/1060-1338-..."), which is
+#     not registered -> instance creation fails.
+#
+# So, following the grafana/mimir + aquasecurity/tfsec convention, we do two
+# import-time monkeypatches SCOPED TO THIS REGISTRY (no edits to harness source):
+#   1. PullRequest.from_json -- re-read the raw json and stash the dash-joined
+#      value in a NON-field attr `_skaffold_number_interval` (routing key stays "").
+#   2. Dataset.build -- stamp `ds.number_interval` from that stash onto the
+#      OUTPUT row only. gen_report builds every resolved-jsonl row via
+#      Dataset.build(raw_dataset[id], report), so the output then carries it.
+#
+# Both wrappers chain safely with the identical grafana/mimir patches (each
+# guards on its OWN flag, captures the current from_json/build as its `orig`,
+# and only acts on its own org/repo) regardless of registry import order.
+import multi_swe_bench.harness.pull_request as _pull_request
+
+if not getattr(_pull_request.PullRequest, "_skaffold_number_interval_patched", False):
+    _skaffold_orig_from_json = _pull_request.PullRequest.from_json.__func__
+
+    def _skaffold_from_json(cls, json_str):
+        pr = _skaffold_orig_from_json(cls, json_str)
+        try:
+            raw = _json.loads(json_str)
+            if (
+                raw.get("org") == "GoogleContainerTools"
+                and raw.get("repo") == "skaffold"
+                and raw.get("prs_in_bundle")
+            ):
+                # Stash only -- do NOT set pr.number_interval (the routing key).
+                pr._skaffold_number_interval = "-".join(
+                    str(p) for p in raw["prs_in_bundle"]
+                )
+        except Exception:
+            pass
+        return pr
+
+    _pull_request.PullRequest.from_json = classmethod(_skaffold_from_json)
+    _pull_request.PullRequest._skaffold_number_interval_patched = True
+
+    # Stamp number_interval onto the OUTPUT row only.
+    # NOTE: Dataset subclasses PullRequest, so it INHERITS the flag set above;
+    # use a distinct flag and check the class's OWN __dict__ (not getattr, which
+    # would see the inherited PullRequest flag and wrongly skip this patch).
+    from multi_swe_bench.harness.dataset import Dataset as _Dataset
+
+    if not _Dataset.__dict__.get("_skaffold_build_patched", False):
+        _skaffold_orig_build = _Dataset.build.__func__
+
+        def _skaffold_build(cls, pr, report):
+            ds = _skaffold_orig_build(cls, pr, report)
+            ni = getattr(pr, "_skaffold_number_interval", "")
+            if ni:
+                ds.number_interval = ni
+            return ds
+
+        _Dataset.build = classmethod(_skaffold_build)
+        _Dataset._skaffold_build_patched = True
+# ---------------------------------------------------------------------------
 
 
 # GoogleContainerTools/skaffold — Kubernetes-native CI/CD tool (Go).
@@ -68,29 +143,64 @@ class SkaffoldImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org = self.pr.org
+        repo = self.pr.repo
 
-        return f"""FROM {image_name}
+        # The leading `# syntax=docker/dockerfile:1.6` directive makes
+        # DockerfileEnhancer.enhance() return this Dockerfile VERBATIM (it
+        # early-returns when the directive is present). That deliberately
+        # suppresses the enhancer's proxy / MITM / CA-cert injection AND its
+        # `_standardize_repo_fetch` rewrite -- the latter would otherwise splice
+        # a `git checkout ${{BASE_COMMIT}}` + history-strip block into this SHARED
+        # base, whose build never receives a BASE_COMMIT, breaking the base build
+        # outright. The `ca-certificates` apt package below is unrelated -- it is
+        # the standard CA bundle for HTTPS `git clone` / `go mod download`.
+        #
+        # TOOLCHAIN-ONLY base (NO persistent clone), following the grafana/mimir
+        # (cloudwego/eino) model: the repo clone + `${{BASE_COMMIT}}` checkout live
+        # in the PER-PR image (SkaffoldImageDefault), so this ONE shared base is
+        # reusable by every PR and each PR pins its own base commit. We still warm
+        # the SHARED Go module cache (/go/pkg/mod) here from a THROWAWAY shallow
+        # clone so common deps download once instead of for all 77 PRs -- then
+        # remove it so no /home/{repo} with history is baked into the shared base
+        # (the per-PR image clones fresh and strips history via the hardening
+        # block, closing the git-history reward-hacking vector).
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
 
 {self.global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GOTOOLCHAIN=auto
-ENV GOFLAGS=-mod=mod
-ENV CGO_ENABLED=1
+ENV DEBIAN_FRONTEND=noninteractive \\
+    TZ=UTC \\
+    LANG=C.UTF-8 \\
+    GOTOOLCHAIN=auto \\
+    GOFLAGS=-mod=mod \\
+    CGO_ENABLED=1
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git curl ca-certificates build-essential pkg-config \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN ( git clone --depth 1 "${{REPO_URL}}" /tmp/{repo}-warm \\
+      && cd /tmp/{repo}-warm && go mod download ) || true; \\
+    rm -rf /tmp/{repo}-warm
+
+RUN git config --global --add safe.directory '*'
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -118,35 +228,35 @@ class SkaffoldImageDefault(Image):
 
     def files(self) -> list[File]:
         repo = self.pr.repo
-        sha = self.pr.base.sha
         pkgs = _test_pkgs(self.pr.test_patch)
         pkg_list = " ".join(pkgs) if pkgs else "."
 
-        check_git = """#!/bin/bash
-set -e
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-echo "check_git_changes: No uncommitted changes"
-exit 0
-"""
-
-        prepare = """#!/bin/bash
+        # The per-PR image clones + checks out ${BASE_COMMIT} INLINE in the
+        # Dockerfile (grafana/mimir + netbird model, see dockerfile()) and then
+        # strips git history via the canonical Image._HARDENING_BLOCK. install.sh
+        # warms the go module + build cache at this SHA so the three eval runs
+        # start compiled. Named + wired exactly like the netbird reference image
+        # (ARG TARGETARCH/BUILDARCH passed through to this script).
+        install = """#!/bin/bash
 set -e
 cd /home/__REPO__
-git config --global --add safe.directory /home/__REPO__
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout __SHA__
-bash /home/check_git_changes.sh
+git config --global --add safe.directory /home/__REPO__ || true
 
 go mod download 2>/dev/null || true
-""".replace("__REPO__", repo).replace("__SHA__", sha)
+
+# Compile-warm the build cache ONLY in the modules era AND ONLY on the native
+# build arch. Under multi-arch buildx the non-native arch runs under QEMU
+# (~10-20x slower) and its image is never graded on this host (the run phase
+# uses the native-arch image), so warming it there is pure waste.
+# TARGETARCH/BUILDARCH are buildx auto-args (empty under the classic single-arch
+# builder -> that build IS native). Pre-modules/GOPATH source needs the runtime
+# GOPATH symlink (set up in run_tests.sh), so the build-warm is skipped there;
+# `go mod download` above is a harmless no-op in that era.
+if [ -f go.mod ] && { [ -z "${TARGETARCH:-}" ] || [ "${TARGETARCH:-}" = "${BUILDARCH:-}" ]; }; then
+  export GOFLAGS=-mod=mod
+  go build ./... >/dev/null 2>&1 || true
+fi
+""".replace("__REPO__", repo)
 
         # Two eras: modules (go.mod present) and pre-modules (dep/glide era,
         # vendor/ committed, module path was
@@ -157,8 +267,15 @@ cd /home/__REPO__
 export GOWORK=off
 
 if [ -f go.mod ]; then
-  unset GOFLAGS
+  # Reconcile go.sum for this bundle's go.mod. The cumulative fix.patch bumps
+  # go.mod to a newer dependency set; under the default read-only mode `go test`
+  # aborts every affected package with "missing go.sum entry" (compile knockout,
+  # e.g. pr-7056/6655/6133). Keeping the base image's -mod=mod (instead of the
+  # old `unset GOFLAGS`) lets `go` add the missing sums as it compiles; the
+  # explicit `download` primes go.sum for the direct requirements first.
+  export GOFLAGS=-mod=mod
   go mod download 2>/dev/null || true
+  go mod download all 2>/dev/null || true
   for pkg in __PKGS__; do
     [ -d "$pkg" ] || continue
     echo "### SKAFFPKG: $pkg ###"
@@ -236,8 +353,7 @@ bash /home/run_tests.sh
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(".", "check_git_changes.sh", check_git),
-            File(".", "prepare.sh", prepare),
+            File(".", "install.sh", install),
             File(".", "run_tests.sh", run_tests),
             File(".", "run.sh", run_sh),
             File(".", "test-run.sh", test_run),
@@ -248,24 +364,52 @@ bash /home/run_tests.sh
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        org = self.pr.org
+        repo = self.pr.repo
+        sha = self.pr.base.sha
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        copy_files = " ".join(f.name for f in self.files())
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # Per-PR image (grafana/mimir + netbird / cloudwego/eino model): clone
+        # FULL history, pin ${BASE_COMMIT} inline, COPY scripts, warm the build
+        # cache (install.sh, arch-gated), then the CANONICAL Image._HARDENING_BLOCK
+        # -- detach at
+        # ${BASE_COMMIT}, remove origin, delete all refs, reflog-expire,
+        # gc/repack, drop alternates, plus the HEAD==BASE_COMMIT / empty-refs /
+        # rev-list asserts, then a recursive submodule strip. dependency() returns
+        # an Image, so DockerfileEnhancer returns this Dockerfile VERBATIM -- the
+        # per-PR clone/pin/harden below are kept as written (pinning here is
+        # correct: it is per-PR, NOT the shared base). The hardening block is
+        # concatenated RAW (not via an f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal. This closes the git-history reward-hacking vector:
+        # after the strip, the fix commit and every ref/remote is unreachable.
+        header = f"""FROM {name}:{tag}
 
-        return f"""FROM {name}:{tag}
+ARG BASE_COMMIT="{sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/
+RUN git clone https://github.com/{org}/{repo}.git /home/{repo}
 
-{prepare_commands}
+WORKDIR /home/{repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
-{self.clear_env}
+COPY {copy_files} /home/
+
+ARG TARGETARCH
+ARG BUILDARCH
+RUN TARGETARCH="${{TARGETARCH}}" BUILDARCH="${{BUILDARCH}}" bash /home/install.sh || true
 
 """
+
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("GoogleContainerTools", "skaffold")

@@ -36,25 +36,43 @@ class ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # Shared per-era base: installs the toolchain, clones the repo (default
+        # branch, via ${REPO_URL}) and warms the COMMON npm dependencies once, so
+        # every per-PR image in this era reuses them. The base pins NO commit and
+        # does NOT harden -- it is shared across all era PRs; the per-PR
+        # ImageDefault checks out its own ${BASE_COMMIT} in this inherited clone
+        # and applies the history scrub. `# syntax` keeps DockerfileEnhancer from
+        # rewriting/pinning the base clone.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+ENV LANG=C.UTF-8
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
+
+WORKDIR /home/
 
 RUN apt-get update && apt-get install -y chromium && rm -rf /var/lib/apt/lists/*
 RUN cd /home && npm init -y && npm install puppeteer@13 --unsafe-perm
 RUN ln -sf /usr/bin/chromium /usr/bin/chromium-browser
 
-WORKDIR /home/
-
-{code}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+WORKDIR /home/{self.pr.repo}
+RUN npm install || true
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -252,8 +270,8 @@ npx grunt browserify || npx grunt build || true
                 """#!/bin/bash
 
 cd /home/{pr.repo}
-npx grunt mochaTest || true
-node /home/browser-test-runner.js || true
+timeout 1200 npx grunt mochaTest || true
+timeout 1200 node /home/browser-test-runner.js || true
 
 """.format(pr=self.pr),
             ),
@@ -270,8 +288,8 @@ mkdir -p docs/reference
 node -e "try {{ const Y = require('yuidocjs'); new Y.YUIDoc({{paths: ['src'], outdir: 'docs/reference', project: {{name: 'p5'}}}}).run(); }} catch(e) {{ require('fs').writeFileSync('docs/reference/data.json', JSON.stringify({{classitems:[], classes:{{}}, modules:{{}}}})); }}" || true
 npx grunt browserify || npx grunt build || true
 
-npx grunt mochaTest || true
-node /home/browser-test-runner.js || true
+timeout 1200 npx grunt mochaTest || true
+timeout 1200 node /home/browser-test-runner.js || true
 
 """.format(pr=self.pr),
             ),
@@ -288,8 +306,8 @@ mkdir -p docs/reference
 node -e "try {{ const Y = require('yuidocjs'); new Y.YUIDoc({{paths: ['src'], outdir: 'docs/reference', project: {{name: 'p5'}}}}).run(); }} catch(e) {{ require('fs').writeFileSync('docs/reference/data.json', JSON.stringify({{classitems:[], classes:{{}}, modules:{{}}}})); }}" || true
 npx grunt browserify || npx grunt build || true
 
-npx grunt mochaTest || true
-node /home/browser-test-runner.js || true
+timeout 1200 npx grunt mochaTest || true
+timeout 1200 node /home/browser-test-runner.js || true
 
 """.format(pr=self.pr),
             ),
@@ -300,26 +318,40 @@ node /home/browser-test-runner.js || true
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        copy_files = " ".join(file.name for file in self.files())
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # The shared base already cloned the repo and warmed the common deps, so
+        # this per-PR image REUSES that clone: it checks out its own ${BASE_COMMIT}
+        # in /home/{repo}, COPYs the scripts, runs prepare.sh (installs the PR's
+        # required deps on top of the reused node_modules + builds), then the
+        # canonical Image._HARDENING_BLOCK strips origin/all refs/future history
+        # (HEAD==BASE_COMMIT asserts + submodule pass). dependency() is an Image,
+        # so DockerfileEnhancer returns this Dockerfile verbatim -- the checkout +
+        # hardening stay as written (pinning here is correct: per-PR, not the base).
+        header = f"""FROM {name}:{tag}
 
-        return f"""FROM {name}:{tag}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
-{prepare_commands}
+COPY {copy_files} /home/
 
-{self.clear_env}
+RUN bash /home/prepare.sh
 
 """
 
+        tail = f"""
+{self.clear_env}
 
-@Instance.register("processing", "p5.js_3089_to_1812")
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
+
+
 class P5JS_3089_to_1812(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()

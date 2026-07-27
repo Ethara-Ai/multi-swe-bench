@@ -4,6 +4,29 @@ from typing import Optional, Union
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.test_result import get_modified_files
+
+
+def _target_test_files(test_patch: str) -> str:
+    """Space-joined `test/**/*.js` spec files touched by this bundle's test.patch.
+
+    Passing these to `vitest run` isolates the run to the bundle's own tests, so a
+    genuine fail->pass isn't drowned out by the full browser suite's unrelated
+    (often GPU/network-dependent) failures. Non-spec artifacts (screenshots,
+    .ts type tests, manual-test html, visual runner infra) are excluded. Empty
+    string means "no targetable spec" -> fall back to the whole project.
+    """
+    specs = [
+        f
+        for f in get_modified_files(test_patch or "")
+        if f.startswith("test/")
+        and f.endswith(".js")
+        and "/screenshots/" not in f
+        and "/manual-test" not in f
+        and "visualTestList" not in f
+        and "visualTestRunner" not in f
+    ]
+    return " ".join(specs)
 
 
 class ImageBase(Image):
@@ -36,25 +59,43 @@ class ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # Shared per-era base: installs the toolchain, clones the repo (default
+        # branch, via ${REPO_URL}) and warms the COMMON npm dependencies once, so
+        # every per-PR image in this era reuses them. The base pins NO commit and
+        # does NOT harden -- it is shared across all era PRs; the per-PR
+        # ImageDefault checks out its own ${BASE_COMMIT} in this inherited clone
+        # and applies the history scrub. `# syntax` keeps DockerfileEnhancer from
+        # rewriting/pinning the base clone.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+ENV LANG=C.UTF-8
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
+
+WORKDIR /home/
 
 RUN apt-get update && apt-get install -y chromium chromium-driver libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 libxshmfence1 && rm -rf /var/lib/apt/lists/*
 ENV CHROME_BIN=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-WORKDIR /home/
-
-{code}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+WORKDIR /home/{self.pr.repo}
+RUN npm install || true
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -81,6 +122,7 @@ class ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        targets = _target_test_files(self.pr.test_patch)
         return [
             File(
                 ".",
@@ -335,9 +377,10 @@ PROJECT=unit
 if grep -q "name: 'unit-tests'" vitest.workspace.mjs 2>/dev/null || grep -q "name: 'unit-tests'" vitest.config.js 2>/dev/null; then
   PROJECT=unit-tests
 fi
-./node_modules/.bin/vitest run --project=$PROJECT --reporter=verbose || true
+TARGET_TESTS="{t}"
+timeout 1200 ./node_modules/.bin/vitest run --project=$PROJECT $TARGET_TESTS --reporter=verbose || true
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, t=targets),
             ),
             File(
                 ".",
@@ -359,9 +402,10 @@ PROJECT=unit
 if grep -q "name: 'unit-tests'" vitest.workspace.mjs 2>/dev/null || grep -q "name: 'unit-tests'" vitest.config.js 2>/dev/null; then
   PROJECT=unit-tests
 fi
-./node_modules/.bin/vitest run --project=$PROJECT --reporter=verbose || true
+TARGET_TESTS="{t}"
+timeout 1200 ./node_modules/.bin/vitest run --project=$PROJECT $TARGET_TESTS --reporter=verbose || true
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, t=targets),
             ),
             File(
                 ".",
@@ -383,9 +427,10 @@ PROJECT=unit
 if grep -q "name: 'unit-tests'" vitest.workspace.mjs 2>/dev/null || grep -q "name: 'unit-tests'" vitest.config.js 2>/dev/null; then
   PROJECT=unit-tests
 fi
-./node_modules/.bin/vitest run --project=$PROJECT --reporter=verbose || true
+TARGET_TESTS="{t}"
+timeout 1200 ./node_modules/.bin/vitest run --project=$PROJECT $TARGET_TESTS --reporter=verbose || true
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, t=targets),
             ),
         ]
 
@@ -394,26 +439,40 @@ fi
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        copy_files = " ".join(file.name for file in self.files())
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # The shared base already cloned the repo and warmed the common deps, so
+        # this per-PR image REUSES that clone: it checks out its own ${BASE_COMMIT}
+        # in /home/{repo}, COPYs the scripts, runs prepare.sh (installs the PR's
+        # required deps on top of the reused node_modules + builds), then the
+        # canonical Image._HARDENING_BLOCK strips origin/all refs/future history
+        # (HEAD==BASE_COMMIT asserts + submodule pass). dependency() is an Image,
+        # so DockerfileEnhancer returns this Dockerfile verbatim -- the checkout +
+        # hardening stay as written (pinning here is correct: per-PR, not the base).
+        header = f"""FROM {name}:{tag}
 
-        return f"""FROM {name}:{tag}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
-{prepare_commands}
+COPY {copy_files} /home/
 
-{self.clear_env}
+RUN bash /home/prepare.sh
 
 """
 
+        tail = f"""
+{self.clear_env}
 
-@Instance.register("processing", "p5.js_8476_to_7653")
+CMD ["/bin/bash"]
+"""
+        return header + Image._HARDENING_BLOCK + tail
+
+
 class P5JS_8476_to_7653(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
