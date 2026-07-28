@@ -443,3 +443,6 @@ Instance.register("capnproto", "1069-1071-1072-1073-1082-1083-1088-1091")(Capnpr
 Instance.register("capnproto", "1086-1087-1094-1096-1098-1099-1100-1102-1103-1105-1108-1110-1111-1114-1115-1117")(Capnproto)  # base PR 1086
 Instance.register("capnproto", "1069-1071-1072-1073-1079-1082-1083-1085-1088-1091")(Capnproto)  # genuine dataset, base PR 1069
 Instance.register("capnproto", "1075-1087-1089-1094-1096-1098-1099-1100-1102-1103-1105-1108-1110-1111-1114-1115-1117")(Capnproto)  # genuine dataset, base PR 1086
+
+# --- recut single-PR record #1069: bare number_interval "1069" -> Capnproto (§11a single-PR).
+Instance.register("capnproto", "1069")(Capnproto)

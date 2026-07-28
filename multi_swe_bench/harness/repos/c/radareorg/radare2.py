@@ -554,3 +554,16 @@ if not getattr(Instance, "_radareorg_route_shim", False):
 
     Instance.create = classmethod(_r2_create)
     Instance._radareorg_route_shim = True
+
+
+# --- §11b bundle key: this recut record's dash-joined number_interval routes to Radare2.
+# --- lead number 25155, 29 PRs in the interval.
+_BUNDLE_NIS_RADARE2 = [
+    "25182-25183-25203-25247-25275-25286-25305-25316-25320-25327-25330-25355-25362-25365-25369-25371-25376-25377-25379-25381-25386-25389-25390-25404-25405-25406-25437-25446-25448",
+]
+for _ni in _BUNDLE_NIS_RADARE2:
+    Instance.register("radareorg", _ni)(Radare2)
+
+# --- recut v2 (2026-07-28): 6 PRs dropped (25247/25275/25305/25316/25446/25448) to remove
+# --- the io_srec.c r_unref/RBuffer-refcount dependency that failed to compile at base 151a020.
+Instance.register("radareorg", "25182-25183-25203-25286-25320-25327-25330-25355-25362-25365-25369-25371-25376-25377-25379-25381-25386-25389-25390-25404-25405-25406-25437")(Radare2)
