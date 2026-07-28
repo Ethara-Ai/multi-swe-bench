@@ -21,10 +21,15 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.7-slim"
+        # buster (Debian 10), NOT default slim (now bookworm): anki tests import
+        # aqt -> `from PyQt5.Qt import *`. PyQt5 has no pip wheel for py3.7/arm64,
+        # and bookworm apt PyQt5 is cp311 (ABI-incompatible with this 3.7 runtime).
+        # On buster the system python IS 3.7, so apt python3-pyqt5 + python3-sip
+        # import cleanly under /usr/local's 3.7 via dist-packages on PYTHONPATH.
+        return "python:3.7-slim-buster"
 
     def image_prefix(self) -> str:
-        return "envagent"
+        return "mswebench"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -52,13 +57,14 @@ set -e
 
 apt-get update && apt-get install -y gcc portaudio19-dev
 
-pip install nose mock beautifulsoup4 send2trash requests decorator markdown pyaudio
+pip install nose mock beautifulsoup4 send2trash requests decorator markdown pyaudio jsonschema
 
 cd /home/anki
 git reset --hard
 git checkout {pr.base.sha}
 
-PYTHONPATH=/home/anki nosetests -vs tests || true
+bash tools/build_ui.sh >/dev/null 2>&1 || true
+QT_QPA_PLATFORM=offscreen PYTHONPATH=/usr/lib/python3/dist-packages:/home/anki nosetests -vs tests || true
 
 """.format(pr=self.pr),
             ),
@@ -69,7 +75,8 @@ PYTHONPATH=/home/anki nosetests -vs tests || true
 set -e
 
 cd /home/anki
-PYTHONPATH=/home/anki nosetests -vs tests
+bash tools/build_ui.sh >/dev/null 2>&1 || true
+QT_QPA_PLATFORM=offscreen PYTHONPATH=/usr/lib/python3/dist-packages:/home/anki nosetests -vs tests
 
 """,
             ),
@@ -84,7 +91,8 @@ if ! git -C /home/anki apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-PYTHONPATH=/home/anki nosetests -vs tests
+bash tools/build_ui.sh >/dev/null 2>&1 || true
+QT_QPA_PLATFORM=offscreen PYTHONPATH=/usr/lib/python3/dist-packages:/home/anki nosetests -vs tests
 
 """,
             ),
@@ -99,7 +107,8 @@ if ! git -C /home/anki apply --whitespace=nowarn /home/test.patch /home/fix.patc
     echo "Error: git apply failed" >&2
     exit 1
 fi
-PYTHONPATH=/home/anki nosetests -vs tests
+bash tools/build_ui.sh >/dev/null 2>&1 || true
+QT_QPA_PLATFORM=offscreen PYTHONPATH=/usr/lib/python3/dist-packages:/home/anki nosetests -vs tests
 
 """,
             ),
@@ -111,12 +120,18 @@ PYTHONPATH=/home/anki nosetests -vs tests
             copy_commands += f"COPY {file.name} /home/\n"
 
         dockerfile_content = """
-FROM python:3.7-slim
+FROM python:3.7-slim-buster
 
 ## Set noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y git gcc portaudio19-dev
+# buster is EOL -> repoint apt at archive.debian.org, then install the Qt stack.
+# python3-pyqt5 + python3-sip land in /usr/lib/python3/dist-packages (cp37, ABI
+# matched to this 3.7 runtime); the run scripts add that dir to PYTHONPATH.
+RUN sed -i 's|deb.debian.org|archive.debian.org|g; s|security.debian.org|archive.debian.org|g; /buster-updates/d' /etc/apt/sources.list \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y git gcc portaudio19-dev \
+       python3-pyqt5 python3-sip python3-pyqt5.qtwebengine pyqt5-dev-tools
 
 RUN if [ ! -f /bin/bash ]; then \
         if command -v apk >/dev/null 2>&1; then \
@@ -130,7 +145,7 @@ RUN if [ ! -f /bin/bash ]; then \
         fi \
     fi
 
-RUN pip install nose mock beautifulsoup4 send2trash requests decorator markdown pyaudio
+RUN pip install nose mock beautifulsoup4 send2trash requests decorator markdown pyaudio jsonschema
 
 WORKDIR /home/
 COPY fix.patch /home/
@@ -208,3 +223,20 @@ class ANKI_692_TO_255(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# PIPELINE.md §11b: every dash-joined bundle value must be a registered key
+# in addition to the era key, else Instance.create() raises "not registered".
+_BUNDLE_NIS_ANKI_692_TO_255 = [
+    "255-257-260-262-263-264-265-266",
+    "283-285-286-287-288-289-292",
+    "304-306",
+    "324-325-326-327-328-329-330-332-338-339-340-343-345-346-347-352-353-354-355-356-357-359",
+    "362-363-365-366-367-369-370-372-375-377-378-381-382-383-384-385-386-387-388-390-392-394-395-396-397-399-400-401-402-403-404-405-406-408-409-410-412-413-417-418-419",
+    "554-610-611-613-616-618-619-620-624-625-626-627-628-629-630-633-634-635-636-637-639-640-641-642-643-645-646-648-650-653-655-657-658-659-660-662-663-665-666-667-669-670-671-673-675-676-678-679-682-684-685-686-687-688-689-690-691",
+    "578-579-581-582-583-587-592-593-595-596",
+    "692-693-694-695-696-697-698-700-701-702-704-705",
+]
+for _ni in _BUNDLE_NIS_ANKI_692_TO_255:
+    Instance.register("ankitects", _ni)(ANKI_692_TO_255)
