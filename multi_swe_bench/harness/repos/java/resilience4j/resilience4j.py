@@ -39,15 +39,17 @@ class Resilience4jImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        # No repo clone/COPY here on purpose: this base is SHARED (constant tag)
+        # and its dependency() is a string, so the pipeline's DockerfileEnhancer
+        # would rewrite a clone into one force-pinned to a single BASE_COMMIT with
+        # history stripped -- freezing the shared base at one PR's base.sha and
+        # breaking `git checkout` for every other PR. The clone + per-PR checkout
+        # + hardening live in Resilience4jImageDefault instead. python3 is
+        # REQUIRED by the run scripts' binary-patch stripper (ubuntu ships none).
         return f"""FROM {image_name}
 
 {self.global_env}
@@ -56,14 +58,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 WORKDIR /home/
-RUN apt-get update && apt-get install -y git openjdk-17-jdk
-
-{code}
+RUN apt-get update && apt-get install -y git openjdk-17-jdk python3
 
 {copy_commands}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -99,15 +100,15 @@ class Resilience4jImageBaseJDK8(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        # No repo clone/COPY here -- shared base, same reason as
+        # Resilience4jImageBase. python3 REQUIRED: ubuntu:20.04 ships none, and
+        # the run scripts' binary-patch stripper silently falls back to the raw
+        # patch without it, so `git apply` rejects any fix touching a binary file
+        # (this invalidated every Era-1/2 binary-patch PR before the fix).
         return f"""FROM {image_name}
 
 {self.global_env}
@@ -116,14 +117,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 WORKDIR /home/
-RUN apt-get update && apt-get install -y git openjdk-8-jdk
-
-{code}
+RUN apt-get update && apt-get install -y git openjdk-8-jdk python3
 
 {copy_commands}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -575,21 +575,45 @@ exit 0
                     RUN rm -f ~/.gradle/gradle.properties
                 """
                 )
-        return f"""FROM {name}:{tag}
+        # ${BASE_COMMIT} must be defined before the hardening block runs. The
+        # pipeline only passes a BASE_COMMIT buildarg for *string* dependencies,
+        # so it is baked in here from the PR's base.sha (with an override ARG).
+        header = f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
 
 {self.global_env}
 
 {proxy_setup}
+
+WORKDIR /home/
+RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard && git checkout ${{BASE_COMMIT}}
 
 {copy_commands}
 
 {prepare_commands}
 
 {proxy_cleanup}
+"""
 
+        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
+        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
+        # expire, gc/repack, drop alternates, + asserts, then submodule strip).
+        # Concatenated raw (not via f-string) so its ${BASE_COMMIT} / %(refname)
+        # tokens stay literal. Strips future history / the upstream fix commit and
+        # the origin remote, so an agent with a shell cannot recover the reference
+        # fix via `git log`/`git show`/`git fetch`. Runs AFTER prepare.sh so the
+        # pre-warm build still sees full history.
+        tail = f"""
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
+        return header + Image._HARDENING_BLOCK + tail
 
 
 @Instance.register("resilience4j", "resilience4j")
