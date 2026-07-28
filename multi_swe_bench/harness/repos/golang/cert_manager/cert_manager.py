@@ -126,19 +126,45 @@ class ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        # DockerfileEnhancer already injects `ENV DEBIAN_FRONTEND=noninteractive`
-        # plus TZ/LANG/proxy/cert vars before our content, so we only emit env
-        # vars it doesn't set (just GOTOOLCHAIN). No blank line after FROM
-        # because the enhancer's prepended block already ends with one.
-        return f"""FROM {self.dependency()}
-ENV GOTOOLCHAIN=auto
+        # The `# syntax` directive opts this file out of DockerfileEnhancer
+        # rewriting, which is required here: the enhancer's
+        # `_standardize_repo_fetch` would turn our `git clone` into
+        # `git checkout ${BASE_COMMIT}` + the hardening block. That is wrong for
+        # a *shared* base -- BASE_COMMIT is per-PR, so the base would get pinned
+        # to whichever PR happened to trigger its build and `git gc --prune=now`
+        # would make every other PR's base.sha unreachable. The base therefore
+        # stays clone-only with full history; hardening happens in the PR layer
+        # (ImageDefault) where the literal base.sha is known.
+        org = self.pr.org
+        repo = self.pr.repo
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {self.dependency()}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    GOTOOLCHAIN=auto
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git ca-certificates make gcc libc6-dev \\
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
+# Full history + all remote-tracking refs are kept deliberately: cert-manager
+# base SHAs live on release-0.14 .. release-1.20 branches, not just the default
+# branch, so every PR's base.sha must stay reachable in the shared base. The
+# origin removal / ref purge / gc happens per-PR in ImageDefault.
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -301,11 +327,24 @@ bash /home/run_tests.sh
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        # Anti-cheat hardening runs in the PR layer, because the shared base
+        # keeps full history and BASE_COMMIT is per-PR. DockerfileEnhancer does
+        # not rewrite this file (dependency() returns an Image, so `enhance()`
+        # returns the raw Dockerfile), which means the hardening block has to be
+        # emitted here explicitly and with the literal base.sha substituted --
+        # no BASE_COMMIT build arg is passed for Image-dependency builds.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
         # Base image already contains golang + apt deps + a cloned
         # /home/cert-manager. Per-PR work is just: checkout the base SHA,
         # copy scripts/patches, run prepare.sh (which does `go mod download`
-        # for every module so the test stage doesn't pay network cost).
-        return f"""FROM {base_ref}
+        # for every module so the test stage doesn't pay network cost), then
+        # strip every ref/reflog/remote so the fix commit and all later history
+        # are unreachable from inside the container.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {base_ref}
 
 ENV GOTOOLCHAIN=auto
 
@@ -320,6 +359,10 @@ RUN git checkout {self.pr.base.sha}
 {copy_commands}
 
 RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
 
 """
 
@@ -428,3 +471,87 @@ class CertManager(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# ---------------------------------------------------------------------------
+# number_interval auto-population -- REGISTRY-SCOPED shim (no other file edited).
+#
+# The resolved dataset jsonl writes `number_interval` straight off the loaded
+# PullRequest (harness/dataset.py Dataset.build), but the bundle's PR list
+# (`prs_in_bundle`) is dropped when the raw jsonl record is parsed into a
+# PullRequest, and the harness never derives one from the other. Every record in
+# cert-manager__cert-manager_lht_final.jsonl carries prs_in_bundle (2-55 members)
+# and none carries number_interval, so without this shim every resolved record
+# would ship number_interval="".
+#
+# The value is the EXACT member list, dash-joined -- prs_in_bundle
+# [146, 147, 150, 155, 157] -> "146-147-150-155-157". Deliberately NOT a
+# first-last range like "146-157", which would falsely claim 148/149/151-154/156
+# are part of the bundle.
+#
+# Both jsonl loaders (build_dataset.py and gen_report.py) go through
+# PullRequest.from_json, so that is the single hook point. Two idempotent,
+# cert-manager-scoped patches are installed at import time:
+#
+#   1. PullRequest.from_json -- for cert-manager/cert-manager records whose
+#      number_interval is empty, fill it from the raw line's prs_in_bundle.
+#      That value then flows straight into the resolved dataset record.
+#   2. Instance.create -- routing keys on f"{org}/{number_interval}" as soon as
+#      number_interval is non-empty, and "cert-manager/2720-2721-2728-..." is not
+#      a registered key. Fall back to the registered "cert-manager/cert-manager".
+#      Deriving the fallback beats hardcoding 62 dash-joined literals, which
+#      would silently break the moment the bundling is regenerated.
+#
+# Both patches chain rather than replace (each captures whatever from_json /
+# create was installed before it) and both are no-ops for every other repo, so
+# they compose with the equivalent shims in other registries.
+# ---------------------------------------------------------------------------
+import json as _cm_json  # noqa: E402
+
+_CM_ORG = "cert-manager"
+_CM_REPO = "cert-manager"
+
+
+def _cm_is_target(pr) -> bool:
+    return getattr(pr, "org", "") == _CM_ORG and getattr(pr, "repo", "") == _CM_REPO
+
+
+if not getattr(PullRequest, "_cert_manager_ni_shim", False):
+    _cm_orig_from_json = PullRequest.from_json.__func__
+
+    def _cm_from_json(cls, json_str):
+        pr = _cm_orig_from_json(cls, json_str)
+        try:
+            if _cm_is_target(pr) and not getattr(pr, "number_interval", ""):
+                prs = (_cm_json.loads(json_str) or {}).get("prs_in_bundle")
+                # Must be a real sequence of PR numbers. A bare string would
+                # otherwise iterate per-character and yield "1-4-6-..." nonsense
+                # that then becomes a routing key, so require list/tuple and
+                # force every member through int().
+                if isinstance(prs, (list, tuple)) and prs:
+                    pr.number_interval = "-".join(str(int(p)) for p in prs)
+        except Exception:
+            # Never let interval derivation break dataset loading; an empty
+            # number_interval is the pre-shim status quo, not a corruption.
+            pass
+        return pr
+
+    PullRequest.from_json = classmethod(_cm_from_json)
+    PullRequest._cert_manager_ni_shim = True
+
+
+if not getattr(Instance, "_cert_manager_route_shim", False):
+    _cm_orig_create = Instance.create.__func__
+
+    def _cm_create(cls, pr, config, *args, **kwargs):
+        try:
+            return _cm_orig_create(cls, pr, config, *args, **kwargs)
+        except ValueError:
+            if _cm_is_target(pr):
+                name = f"{pr.org}/{pr.repo}"
+                if name in cls._registry:
+                    return cls._registry[name](pr, config, *args, **kwargs)
+            raise
+
+    Instance.create = classmethod(_cm_create)
+    Instance._cert_manager_route_shim = True
