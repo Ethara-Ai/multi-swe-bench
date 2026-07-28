@@ -1,7 +1,13 @@
+import json
 import re
 from typing import Optional, Union
-import textwrap
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import (
+    Config,
+    DockerfileEnhancer,
+    File,
+    Image,
+    _safe_path_component,
+)
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -30,6 +36,32 @@ def _filter_binary_patches(patch_content: str) -> str:
 
 
 class AndroidImageBase(Image):
+    """Android toolchain + FULL clone, SHARED by every PR in this repo.
+
+    `image_tag()` is the literal "base", so ONE image (…_m_androidutilcode:base)
+    is built once and reused by all PRs. That is why this Dockerfile must NOT
+    check out any PR's base.sha and must NOT run image.py's `_HARDENING_BLOCK`:
+    hardening pins HEAD to a single sha and runs `git gc --prune=now
+    --aggressive`, which would prune the shared clone down to whichever PR
+    happened to build first and break every other PR's `git checkout
+    <its own base.sha>` in prepare.sh with "reference is not a tree". The
+    per-PR checkout is a per-PR concern and already lives in prepare.sh /
+    run.sh / test-run.sh, which run inside AndroidImageDefault.
+
+    The `# syntax` directive is what makes that safe: `DockerfileEnhancer.
+    enhance()` returns any Dockerfile already carrying it verbatim (image.py
+    line 284), so `_standardize_repo_fetch` does not rewrite the clone below
+    into clone + `git checkout ${BASE_COMMIT}` + hardening, and
+    `_inject_final_sanitize` does not append that hardening for the mere
+    presence of "git clone". This is the same opt-out SCRCPY_*_ImageBase and
+    S2nTlsImageBase use. Opting out also skips the enhancer's ARG/LABEL
+    injection, so the ARG TARGETARCH + ARG REPO_URL/BASE_COMMIT + ENV + LABEL
+    blocks it would have emitted are replicated by hand below — multi-arch
+    buildx support and the OCI labels are not lost, and BASE_COMMIT is still
+    declared (build_dataset.py passes it as a build arg for any string
+    dependency) so the build does not warn about an unconsumed arg.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -54,33 +86,81 @@ class AndroidImageBase(Image):
     def files(self) -> list[File]:
         return []
 
+    def extra_packages(self) -> list[str]:
+        """Android/Gradle toolchain on top of image.py's default package set."""
+        return [
+            "openjdk-8-jdk",
+            "openjdk-11-jdk",
+            "unzip",
+        ]
+
     def dockerfile(self) -> str:
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # Validate org/repo before they are interpolated into the clone URL and
+        # RUN/COPY/WORKDIR paths, exactly as image.py does — a name carrying
+        # shell metacharacters cannot inject commands into the generated build.
+        org = _safe_path_component(self.pr.org, "org")
+        repo = _safe_path_component(self.pr.repo)
 
-        return f"""FROM {image_name}
+        # Reuse image.py's apt builder so the default package set (which includes
+        # the python3 this repo's android-fixup.sh depends on, plus
+        # ca-certificates for the HTTPS SDK download), --no-install-recommends,
+        # and the deprecated-Debian archive rewrite all stay in one place.
+        default_packages = [
+            "ca-certificates",
+            "curl",
+            "build-essential",
+            "git",
+            "gnupg",
+            "make",
+            "python3",
+            "sudo",
+            "wget",
+        ]
+        all_packages = default_packages + self.extra_packages()
+        packages_str = " \\\n    ".join(all_packages)
+        apt_command = self._get_apt_update_command(packages_str, image_name)
+
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        # Replicated by hand because the `# syntax` directive opts this file out
+        # of DockerfileEnhancer.enhance() — see the class docstring.
+        build_args = (
+            f"ARG TARGETARCH\n"
+            f'ARG REPO_URL="https://github.com/{org}/{repo}.git"\n'
+            f"ARG BASE_COMMIT"
+        )
+        label_block = (
+            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
+
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+
+FROM {image_name}
+
+{build_args}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+{label_block}
+
 {self.global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
 ENV ANDROID_HOME=/opt/android-sdk
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
 
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y \\
-    git \\
-    openjdk-8-jdk \\
-    openjdk-11-jdk \\
-    wget \\
-    unzip \\
-    && rm -rf /var/lib/apt/lists/*
+{apt_command}
 
 RUN ln -sf /usr/lib/jvm/java-8-openjdk-$(dpkg --print-architecture) /usr/lib/jvm/java-8
 RUN ln -sf /usr/lib/jvm/java-11-openjdk-$(dpkg --print-architecture) /usr/lib/jvm/java-11
@@ -96,8 +176,11 @@ ENV PATH=${{ANDROID_HOME}}/cmdline-tools/latest/bin:${{ANDROID_HOME}}/platform-t
 
 {code}
 
+WORKDIR /home/{repo}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -114,7 +197,7 @@ class AndroidImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Union[str, "Image"]:
         return AndroidImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -162,13 +245,28 @@ exit 0
                 """#!/bin/bash
 # Centralised gradle surgery for Blankj/AndroidUtilCode.
 # Run after every git apply that may have re-introduced jcenter()/blankj refs.
-# 1) jcenter -> mavenCentral + google maven + gradle plugin portal.
+# 1) jcenter -> mavenCentral + google maven + gradle plugin portal + JCenter mirror.
 #    NOTE: inject `maven { url 'https://maven.google.com' }` rather than the
 #    bare `google()` shorthand — `google()` is a Gradle 4.0+ method and old-era
 #    PRs run Gradle 3.x, where it errors "Could not find method google()".
 #    The explicit maven{} form is the same repo and works on every Gradle.
+#
+#    The JCenter mirror is LAST on purpose, so it is only consulted after the
+#    canonical repos 404. It is required because a set of artifacts this repo
+#    pins were published ONLY to JCenter, which is shut down, and were never
+#    rehosted on mavenCentral or maven.google.com:
+#      * com.android.tools.build:gradle 2.2.3 / 2.3.1 / 2.3.3 -- Google Maven
+#        only starts at AGP 3.0.0, so old-era PRs cannot resolve their
+#        buildscript ':classpath' at all and fail during the configuration
+#        phase, before a single test runs.
+#      * com.blankj:bus, :free-proguard, :swipe-panel, :base-transform -- the
+#        author's own artifacts. These are consumed as real DEPENDENCIES (e.g.
+#        `api depConfig.bus` in config.gradle), not just plugin classpath
+#        entries, so the dead-plugin surgery in steps 2-4 below cannot remove
+#        them without breaking compilation of the module under test.
+#    Without this mirror those builds fail with "Could not find <artifact>".
 find . -type f -name '*.gradle' -exec sed -i 's|jcenter()|mavenCentral()|g' {} + 2>/dev/null || true
-find . -type f -name build.gradle -exec sed -i "s|mavenCentral()|mavenCentral()\\n        maven { url 'https://maven.google.com' }\\n        maven { url 'https://plugins.gradle.org/m2/' }|" {} + 2>/dev/null || true
+find . -type f -name build.gradle -exec sed -i "s|mavenCentral()|mavenCentral()\\n        maven { url 'https://maven.google.com' }\\n        maven { url 'https://plugins.gradle.org/m2/' }\\n        maven { url 'https://maven.aliyun.com/repository/public' }|" {} + 2>/dev/null || true
 # 2) Drop bintray classpath / plugin application lines (the dead artifact).
 #    Catch every variant: classpath '...', apply plugin: '...', apply plugin: "...", id "...", id '...'
 find . -type f -name '*.gradle' -exec sed -i '/com\\.jfrog\\.bintray/d' {} + 2>/dev/null || true
@@ -520,56 +618,57 @@ echo "===== JUNIT XML RESULTS END ====="
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        repo = _safe_path_component(self.pr.repo)
+
+        # The shared base already cloned the full repo and left WORKDIR at
+        # /home/{repo}, so prepare.sh just resets and checks out this PR's
+        # base.sha against that existing clone -- no re-clone needed here.
         prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
 
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p ~/.gradle && \\
-                        if [ ! -f "$HOME/.gradle/gradle.properties" ]; then \\
-                            touch "$HOME/.gradle/gradle.properties"; \\
-                        fi && \\
-                        if ! grep -q "systemProp.http.proxyHost" "$HOME/.gradle/gradle.properties"; then \\
-                            echo 'systemProp.http.proxyHost={proxy_host}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.http.proxyPort={proxy_port}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.https.proxyHost={proxy_host}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.https.proxyPort={proxy_port}' >> "$HOME/.gradle/gradle.properties"; \\
-                        fi && \\
-                        echo 'export GRADLE_USER_HOME=/root/.gradle' >> ~/.bashrc && \\
-                        /bin/bash -c "source ~/.bashrc"
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f ~/.gradle/gradle.properties
-                """
-                )
+        # ANTI-REWARD-HACKING: the git history strip MUST be applied here, in
+        # the per-PR layer, and NOT in AndroidImageBase.
+        #
+        # AndroidImageBase is a SHARED image (tag "base", one build for all
+        # PRs), so hardening there would prune the clone to whichever PR built
+        # first and break every other PR's checkout -- see its docstring. But
+        # leaving it off entirely is worse: without this block the graded
+        # container keeps all ~1434 commits plus the `origin` remote, so a
+        # model can run `git log --all` / `git rev-list <base>..origin/master`
+        # / `git show <future-sha>` and simply read the real fix diff instead
+        # of solving the task.
+        #
+        # Applying it here fixes both: because Docker layers are copy-on-write,
+        # this layer's history-stripping never touches the shared base image,
+        # only the per-PR image built on top of it. Because this image's
+        # dependency() is another Image (not a string), DockerfileEnhancer.
+        # enhance() returns this Dockerfile untouched and will NOT inject the
+        # block for us -- hence the explicit reference to Image._HARDENING_BLOCK.
+        # ENV BASE_COMMIT is a literal SHA (not a build ARG) purely so that
+        # block's ${BASE_COMMIT} references resolve; its trailing `test`
+        # assertions fail the build if any ref, remote, or unreachable commit
+        # survives, so a regression here cannot pass silently.
+        #
+        # No proxy setup here, deliberately. DockerfileEnhancer states the
+        # policy for generated Dockerfiles: "Deliberately injects no proxy
+        # ARGs/ENV, CA-cert symlinks, or MITM cert mount: builds talk to
+        # upstream directly" (image.py). This image used to scrape
+        # http(s)_proxy out of `global_env` and write systemProp.*.proxyHost
+        # into ~/.gradle/gradle.properties, which reintroduced exactly that
+        # coupling for Gradle only. The run scripts already `unset HTTP_PROXY
+        # HTTPS_PROXY http_proxy https_proxy`, so the scraped properties
+        # contradicted the runtime environment anyway.
         return f"""FROM {name}:{tag}
 
 {self.global_env}
-
-{proxy_setup}
 
 {copy_commands}
 
 {prepare_commands}
 
-{proxy_cleanup}
+WORKDIR /home/{repo}
+ENV BASE_COMMIT={self.pr.base.sha}
+
+{Image._HARDENING_BLOCK}
 
 {self.clear_env}
 
@@ -685,3 +784,109 @@ class AndroidUtilCode(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# ---------------------------------------------------------------------------
+# number_interval for Blankj/AndroidUtilCode bundles -- REGISTRY-SCOPED shim.
+#
+# The dataset records carry exact bundle membership in `prs_in_bundle`. The
+# required `number_interval` is those PRs joined with '-', never a range:
+#
+#     prs_in_bundle:   [1306, 1314, 1320, 1344]
+#     number_interval: "1306-1314-1320-1344"      (NOT "1306-1344")
+#
+# A range would claim every PR in between, which is wrong -- these bundles are
+# sparse (e.g. anchor 1385 bundles 1385-1423-...-1671, skipping most of the
+# intervening PRs).
+#
+# `Dataset.build()` copies number_interval straight off the loaded PullRequest
+# into the resolved output jsonl, so filling it at load time is what makes it
+# appear downstream. As this must live ONLY in the registry, two small,
+# idempotent, Blankj/AndroidUtilCode-scoped shims are installed at import time
+# (this file is already imported by the package __init__, so nothing else is
+# touched):
+#
+#   1. PullRequest.from_json / .from_dict -- for Blankj/AndroidUtilCode records
+#      whose number_interval is EMPTY, fill it from the raw record's
+#      prs_in_bundle. Only empty values are filled, so an explicitly-set
+#      number_interval is never overwritten, and other repos are untouched.
+#   2. Instance.create -- routing looks up `Blankj/<number_interval>`, and a
+#      dash-joined bundle list is not a registered key. On the resulting
+#      ValueError, fall back to the single registered `Blankj/AndroidUtilCode`
+#      class, which owns every era of this repo.
+# ---------------------------------------------------------------------------
+
+_BLANKJ_ORG = "Blankj"
+_BLANKJ_REPO = "AndroidUtilCode"
+
+
+def blankj_number_interval(prs_in_bundle) -> str:
+    """Dash-join a bundle's PR numbers: [178, 179] -> '178-179'."""
+    if not prs_in_bundle:
+        return ""
+    return "-".join(str(p) for p in prs_in_bundle)
+
+
+def _blankj_fill_number_interval(pr, raw) -> None:
+    if not isinstance(raw, dict):
+        return
+    if getattr(pr, "org", "") != _BLANKJ_ORG or getattr(pr, "repo", "") != _BLANKJ_REPO:
+        return
+    if getattr(pr, "number_interval", ""):
+        return
+    interval = blankj_number_interval(raw.get("prs_in_bundle"))
+    if interval:
+        pr.number_interval = interval
+
+
+if not getattr(PullRequest, "_blankj_ni_shim", False):
+    _blankj_orig_from_json = PullRequest.from_json.__func__
+    _blankj_orig_from_dict = PullRequest.from_dict.__func__
+
+    # Signature-transparent (*args/**kwargs): the @dataclass_json decorator
+    # REPLACES the class-body from_dict/from_json, so the live signatures are
+    # dataclass_json's -- from_dict(cls, kvs, *, infer_missing=False) and
+    # from_json(cls, s, *, parse_float=..., **kw). Its from_json delegates to
+    # cls.from_dict(kvs, infer_missing=...), so a fixed 2-arg shim here breaks
+    # every repo's loader, not just this one.
+    def _blankj_from_json(cls, *args, **kwargs):
+        pr = _blankj_orig_from_json(cls, *args, **kwargs)
+        try:
+            if args:
+                _blankj_fill_number_interval(pr, json.loads(args[0]))
+        except Exception:
+            pass
+        return pr
+
+    def _blankj_from_dict(cls, *args, **kwargs):
+        pr = _blankj_orig_from_dict(cls, *args, **kwargs)
+        try:
+            raw = args[0] if args else kwargs.get("kvs")
+            _blankj_fill_number_interval(pr, raw)
+        except Exception:
+            pass
+        return pr
+
+    PullRequest.from_json = classmethod(_blankj_from_json)
+    PullRequest.from_dict = classmethod(_blankj_from_dict)
+    PullRequest._blankj_ni_shim = True
+
+
+if not getattr(Instance, "_blankj_route_shim", False):
+    _blankj_orig_create = Instance.create.__func__
+
+    def _blankj_create(cls, pr, config, *args, **kwargs):
+        try:
+            return _blankj_orig_create(cls, pr, config, *args, **kwargs)
+        except ValueError:
+            if (
+                getattr(pr, "org", "") == _BLANKJ_ORG
+                and getattr(pr, "repo", "") == _BLANKJ_REPO
+            ):
+                key = f"{_BLANKJ_ORG}/{_BLANKJ_REPO}"
+                if key in cls._registry:
+                    return cls._registry[key](pr, config, *args, **kwargs)
+            raise
+
+    Instance.create = classmethod(_blankj_create)
+    Instance._blankj_route_shim = True
