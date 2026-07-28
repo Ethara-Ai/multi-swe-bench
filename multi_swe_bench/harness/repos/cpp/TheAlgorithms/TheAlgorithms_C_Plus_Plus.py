@@ -22,13 +22,18 @@ compile_and_run() {
     fb=$(basename "$f")
     out=$(mktemp -u /tmp/ta_cpp_XXXXXX)
 
-    # Phase 1: standalone compile. If the file links on its own it has a main()
-    # and all symbols resolved -> the run result is DEFINITIVE, decide now.
-    # (Falling through to sibling-linking here is what caused an O(n^2)
-    # bulk-recompile of every main()-bearing file in the directory.)
+    # Many of these files are interactive demo main()s (cin >> size, cin >>
+    # array[i], ...). Feeding /dev/null makes every cin extraction fail
+    # immediately -- on a plain "int size; cin>>size;" that's usually a
+    # harmless 0, but "cin>>size; int array[size];" (a stack VLA) turns a
+    # failed read into an indeterminate/garbage size and segfaults. A bounded
+    # stream of a harmless small number gives every extraction a valid value
+    # instead of an undefined one; bounded (not infinite) so a program that
+    # loops on a failed read still hits real EOF instead of spinning for the
+    # whole 15s timeout.
     for std in gnu++17 gnu++11; do
         if g++ -O0 -w -std=$std -I "$dir" -I . -o "$out" "$f" -lm -fopenmp 2>/dev/null; then
-            if timeout 15s "$out" </dev/null >/dev/null 2>&1; then
+            if timeout 15s "$out" < <(yes 1 2>/dev/null | head -n 500) >/dev/null 2>&1; then
                 rm -f "$out"
                 return 0
             fi
@@ -53,7 +58,7 @@ compile_and_run() {
     if [ "${#link_sources[@]}" -gt 1 ]; then
         for std in gnu++17 gnu++11; do
             if g++ -O0 -w -std=$std -I "$dir" -I . -o "$out" "${link_sources[@]}" -lm -fopenmp 2>/dev/null; then
-                if timeout 15s "$out" </dev/null >/dev/null 2>&1; then
+                if timeout 15s "$out" < <(yes 1 2>/dev/null | head -n 500) >/dev/null 2>&1; then
                     rm -f "$out"
                     return 0
                 fi
@@ -137,34 +142,64 @@ class TheAlgorithmsCppImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
+        """PIPELINE.md §3 reference-format base (SINGLE, shared across the era).
+
+        The leading ``# syntax=docker/dockerfile:1.6`` is the documented §2
+        opt-out: DockerfileEnhancer.enhance() returns this Dockerfile verbatim
+        once it sees that directive. That is required here -- this image has a
+        *string* dependency AND clones the repo, so without the opt-out the
+        enhancer would rewrite the clone into ``checkout ${BASE_COMMIT}`` plus
+        the strict hardening block, force-pinning this SHARED base to one PR's
+        commit and destroying the history every other bundle needs.
+
+        Hardening here is deliberately LIGHT so the base keeps FULL history;
+        each PR layer checks out its own base.sha and then applies the strict
+        canonical hardening (§4).
+        """
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org = self.pr.org
+        repo = self.pr.repo
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
 
-RUN apt-get update && \\
-    apt-get install -y --no-install-recommends \\
-        build-essential g++ cmake libomp-dev \\
-        git ca-certificates python3 coreutils \\
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    build-essential g++ cmake libomp-dev \\
+    git ca-certificates python3 coreutils \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -296,27 +331,49 @@ run_patch_tests /home/test.patch /home/fix.patch
         ]
 
     def dockerfile(self) -> str:
+        """PIPELINE.md §4 PR-image format.
+
+        The shared base already cloned FULL history, so this layer does NOT
+        clone -- prepare.sh resets and checks out this PR's base.sha out of
+        that history. dependency() is an Image, so DockerfileEnhancer.enhance()
+        returns this Dockerfile verbatim, which means the anti-reward-hacking
+        hardening is NOT auto-injected and must be spelled out here (it was
+        missing entirely before, leaving the fix commit reachable via
+        `git log`/`git checkout` on the still-present branch refs).
+        """
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+
+        repo = self.pr.repo
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
+        header = f"""FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
 
-{self.clear_env}
+WORKDIR /home/{repo}
 
 """
+        tail = f"""
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+        # PIPELINE.md §4: hardening must use the LITERAL base.sha, not a
+        # variable -- an ARG could be overridden at build time
+        # (--build-arg BASE_COMMIT=...) and re-pin the image elsewhere.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        )
+        return header + hardening + tail
 
 
 @Instance.register("TheAlgorithms", "C-Plus-Plus")
@@ -392,3 +449,26 @@ class TheAlgorithmsCPlusPlus(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# PIPELINE.md §11b: the JSONL and this registry ship together, and the
+# trajectory harness routes via Instance.create() -> f"{org}/{number_interval}".
+# Every dash-joined bundle value must be a registered key in addition to the
+# era key above, else create() raises "not registered" before any build.
+_BUNDLE_NIS_THEALGORITHMS_CPLUSPLUS = [
+    "197-609-694-695-711-715-718-720-721-722-723-724-725-730-731-732-733",
+    "1984-2020-2136-2224-2242-2400-2413-2416-2417-2429-2432",
+    "2235-2410",
+    "277-517-561-585-589-604-606-607-622-625-634-638-639-641-642-643-644-645-646-647-648-649-650-651-652-653-654-655-656-657-671-673-674-676-677-678-679-680-681-683-684-687-688-691",
+    "280-281-286-288-289",
+    "287-696-698-700-701-704",
+    "51-58-88",
+    "860-861",
+    "31-32-44-45-48-57-59-65-70-73-74-75-77-79-80-81-82-83-85-86",
+    "803-805-816-835-845-855-856-864-871-872-873-874-878-879-881-882-884-885-886-888-889-890-893-894-899-901-902-904-905-906-907-912-913-914-917-927-929-930-933-936-941-942-943-945-947-948-949-950-952-953-956-957-960-961",
+    "916-954-958-962-964-969-970-972-973-975-976-977-978-979-980-986-990-991-992-993-994-997-998-1000-1016-1018-1021-1023-1024-1025-1027-1030-1033-1034-1035-1036",
+    "94-97-101-102-103-104-105-114-117-121-123-140-142-143-145-146-148-155-156-166-167-169-171-176-180",
+]
+for _ni in _BUNDLE_NIS_THEALGORITHMS_CPLUSPLUS:
+    Instance.register("TheAlgorithms", _ni)(TheAlgorithmsCPlusPlus)
