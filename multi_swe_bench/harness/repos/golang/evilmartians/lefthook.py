@@ -26,6 +26,15 @@ class LefthookImageBase(Image):
         # builds every era -> single base image.
         return "golang:1.26-bookworm"
 
+    # Shared base: built ONCE per architecture, then every per-PR image FROMs
+    # it. dockerfile() below emits the `# syntax=` directive, which opts this
+    # file out of DockerfileEnhancer rewriting -- so the enhancer does NOT turn
+    # the clone into `git checkout ${BASE_COMMIT}` + Image._HARDENING_BLOCK.
+    # The base therefore stays a plain FULL-HISTORY clone, so every PR's base.sha
+    # (Arkweid -> evilmartians -> /v2 eras, spread across branches) remains
+    # reachable from the one shared image. The per-PR checkout + anti-cheat
+    # hardening is done in LefthookImageDefault, where the literal base.sha is
+    # known. One shared base + N eval images, not a base per PR.
     def image_tag(self) -> str:
         return "base"
 
@@ -40,25 +49,47 @@ class LefthookImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        org = self.pr.org
+        repo = self.pr.repo
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        # GOFLAGS=-mod=mod and `git config safe.directory '*'` are lefthook
+        # specific: the multi-era builds and root-owned git ops rely on them.
+        #
+        # The `# syntax` directive makes DockerfileEnhancer.enhance() return this
+        # file verbatim (it early-returns when the directive is already present),
+        # so the enhancer does NOT rewrite the clone into a BASE_COMMIT checkout
+        # + hardening. Full history is kept on purpose -- see image_tag() above.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
-ENV GOFLAGS=-mod=mod
-ENV GOTOOLCHAIN=auto
-RUN git config --global --add safe.directory '*'
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    GOTOOLCHAIN=auto \\
+    GOFLAGS=-mod=mod
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates make gcc libc6-dev \\
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/
+RUN git config --global --add safe.directory '*'
 
 {code}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -256,13 +287,30 @@ run_go_tests
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
-        return f"""FROM {name}:{tag}
+        # Anti-cheat hardening runs HERE, in the per-PR layer -- not in the
+        # shared base, which keeps full history. dependency() returns an Image,
+        # so DockerfileEnhancer.enhance() returns this file raw; the hardening
+        # block is therefore emitted explicitly, with the literal base.sha
+        # substituted for ${BASE_COMMIT} (no BASE_COMMIT build arg is passed for
+        # Image-dependency builds). prepare.sh has already checked out base.sha;
+        # this detaches at it, then strips every ref/reflog/remote so the fix
+        # commit and all later history are unreachable inside the container.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 
 {prepare_commands}
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
 
 {self.clear_env}
 
@@ -368,3 +416,165 @@ class Lefthook(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# ---------------------------------------------------------------------------
+# number_interval -- bundle member list, NOT a first-last range.
+#
+# A lefthook record's `prs_in_bundle` is the explicit set of PRs squashed into
+# one instance, and those sets are sparse: PR #130 bundles
+# [130, 142, 146, 148, 150, 154, 167, 168].  Writing that as the range
+# "130-168" would claim ~50 PRs that are not in the bundle, so the interval is
+# always the sorted members joined by "-":
+#
+#     prs_in_bundle [146, 147, 150, 155, 157]  ->  "146-147-150-155-157"
+#
+# Two registry-scoped pieces are needed, because nothing outside the registry
+# derives this field:
+#
+#   1. `PullRequest.from_json` drops `prs_in_bundle` when parsing a raw record
+#      and the harness never rebuilds it, so `number_interval` stays "" and the
+#      resolved jsonl (written from `pr.number_interval` in dataset.py) would
+#      carry an empty field.  The shim below fills it for evilmartians/lefthook
+#      records whose value is empty; it then flows straight into the output.
+#   2. `Instance.create()` routes on f"{org}/{number_interval}" whenever that
+#      field is non-empty and raises if the key is absent -- so every delivered
+#      interval is registered against `Lefthook` below, and a scoped fallback
+#      catches bundles from a regenerated dataset that are not in this list.
+#
+# Both shims are idempotent, guarded by a sentinel attribute, and match only
+# org == "evilmartians" / repo == "lefthook"; every other repo is untouched.
+# ---------------------------------------------------------------------------
+_LEFTHOOK_BUNDLE_NIS = [
+    "88-89",
+    "116-123-124-126",
+    "130-142-146-148-150-154-167-168",
+    "169-171-172",
+    "173-186-187-188-189-193-194-196-201-205-209-218-223-224-231-235-236-242-256-260-263-265-273",
+    "175-177-179-181-182-184",
+    "244-245-264-275",
+    "280-301-304-305-306-307-308-309-310-311-312-314-316",
+    "318-324-330",
+    "333-334-335-337-338",
+    "343-351",
+    "363-368-370-371",
+    "373-375-376-377",
+    "393-395-396",
+    "397-398",
+    "402-429",
+    "448-449",
+    "450-455-457",
+    "461-462",
+    "474-475",
+    "481-482-483",
+    "484-485-487",
+    "489-490-491-492-493-499",
+    "519-520-521-523-524",
+    "525-526-527-529",
+    "531-532-533",
+    "534-536-537",
+    "541-543",
+    "545-546-547-548",
+    "549-550",
+    "553-556-561",
+    "572-575",
+    "577-601-604-606",
+    "589-590",
+    "596-609",
+    "602-607-851-853-854",
+    "616-630-638",
+    "634-637-653-668-670-672-673-674",
+    "678-684-687",
+    "689-690-692-694-695",
+    "701-711-716",
+    "735-737-738-739-740-742",
+    "748-754",
+    "813-881-883-884-886",
+    "847-848-849-850",
+    "857-858",
+    "861-896-897-898-899",
+    "875-879",
+    "917-918",
+    "924-925-926",
+    "930-931",
+    "936-937",
+    "964-969",
+    "974-976-977-978",
+    "1015-1017",
+    "1027-1031-1034-1040-1044",
+    "1064-1071",
+    "1067-1069",
+    "1072-1074-1075",
+    "1094-1101-1102",
+    "1095-1103-1104-1107-1108-1115-1116",
+    "1117-1118-1119-1129-1130-1131",
+    "1132-1133-1135",
+    "1138-1139",
+    "1140-1141",
+    "1143-1145-1146-1147-1148-1150-1151-1152",
+    "1160-1161",
+    "1181-1243-1255-1263-1278-1285-1287-1288-1297",
+    "1189-1190-1200-1206",
+    "1209-1246-1261-1274-1275",
+    "1210-1230-1234",
+    "1219-1220-1221-1222-1223-1224-1225-1229",
+    "1227-1235-1236-1242",
+    "1244-1245-1250-1259",
+    "1251-1318-1319-1323-1324-1326-1327",
+    "1291-1381-1382-1383-1391-1393",
+    "1292-1301",
+    "1308-1339-1340-1343-1346-1347-1348",
+    "1349-1362-1368-1370-1371-1372-1373-1375",
+]
+
+for _ni in _LEFTHOOK_BUNDLE_NIS:
+    Instance.register("evilmartians", _ni)(Lefthook)
+
+
+import json as _lht_json  # noqa: E402
+from multi_swe_bench.harness.pull_request import PullRequest as _LhtPullRequest  # noqa: E402
+
+if not getattr(_LhtPullRequest, "_evilmartians_ni_shim", False):
+    _lht_orig_from_json = _LhtPullRequest.from_json.__func__
+
+    def _lht_from_json(cls, json_str):
+        pr = _lht_orig_from_json(cls, json_str)
+        try:
+            if (
+                getattr(pr, "org", "") == "evilmartians"
+                and getattr(pr, "repo", "") == "lefthook"
+                and not getattr(pr, "number_interval", "")
+            ):
+                prs = (_lht_json.loads(json_str) or {}).get("prs_in_bundle") or []
+                if prs:
+                    # Sorted members joined by "-" -- never a first-last range.
+                    pr.number_interval = "-".join(str(p) for p in sorted(prs))
+        except Exception:
+            pass
+        return pr
+
+    _LhtPullRequest.from_json = classmethod(_lht_from_json)
+    _LhtPullRequest._evilmartians_ni_shim = True
+
+if not getattr(Instance, "_evilmartians_route_shim", False):
+    _lht_orig_create = Instance.create.__func__
+
+    def _lht_create(cls, pr, config, *args, **kwargs):
+        try:
+            return _lht_orig_create(cls, pr, config, *args, **kwargs)
+        except ValueError:
+            # A regenerated dataset can bundle PRs differently, producing an
+            # interval absent from _LEFTHOOK_BUNDLE_NIS. lefthook is a single
+            # era (one base image spans every go.mod), so the bare key is the
+            # correct target for any such bundle.
+            if (
+                getattr(pr, "org", "") == "evilmartians"
+                and getattr(pr, "repo", "") == "lefthook"
+            ):
+                name = f"{pr.org}/{pr.repo}"
+                if name in cls._registry:
+                    return cls._registry[name](pr, config, *args, **kwargs)
+            raise
+
+    Instance.create = classmethod(_lht_create)
+    Instance._evilmartians_route_shim = True
