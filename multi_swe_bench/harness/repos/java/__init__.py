@@ -32,6 +32,7 @@ from multi_swe_bench.harness.repos.java.provectus import *
 from multi_swe_bench.harness.repos.java.ReactiveX import *
 from multi_swe_bench.harness.repos.java.reactor import *
 from multi_swe_bench.harness.repos.java.resilience4j import *
+from multi_swe_bench.harness.repos.java.smallrye import *
 from multi_swe_bench.harness.repos.java.spotbugs import *
 from multi_swe_bench.harness.repos.java.springprojects import *
 from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe import *
@@ -56,3 +57,7 @@ from multi_swe_bench.harness.repos.java.xiaojieonly.ehviewer_cn_sxj_400_to_2199 
 from multi_swe_bench.harness.repos.java.xiaojieonly.ehviewer_cn_sxj_2200_to_99999 import *
 from multi_swe_bench.harness.repos.java.xkcoding import *
 from multi_swe_bench.harness.repos.java.YunaiV import *
+from multi_swe_bench.harness.repos.java.agustinanisaf import *
+from multi_swe_bench.harness.repos.java.Visual_Regression_Tracker import *
+from multi_swe_bench.harness.repos.java.spring_cloud import *
+from multi_swe_bench.harness.repos.java.processing import *
