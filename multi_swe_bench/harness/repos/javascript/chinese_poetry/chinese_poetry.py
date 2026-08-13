@@ -89,7 +89,7 @@ fi
                 f"""#!/bin/bash
 set -eo pipefail
 cd /home/{self.pr.repo}
-if ! git -C /home/{self.pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+if ! git -C /home/{self.pr.repo} apply --whitespace=nowarn --binary /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
@@ -201,3 +201,21 @@ class CHINESE_POETRY(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# PIPELINE §11b: one Instance.register key per bundle, dash-joined `prs_in_bundle`,
+# routes to the repo's Instance class. The base `chinese-poetry/chinese-poetry`
+# era key registered above via decorator is preserved (harmless).
+_BUNDLE_NIS_CHINESE_POETRY = [
+    "28-32-41",
+    "72-73-74-78",
+    "88-89-90-91-92",
+    "95-96-99-101-102",
+    "123-124-126-127-132-136",
+    "173-175-183-185",
+    "208-210-211-212-214",
+    "228-229-231",
+]
+for _ni in _BUNDLE_NIS_CHINESE_POETRY:
+    Instance.register("chinese-poetry", _ni)(CHINESE_POETRY)

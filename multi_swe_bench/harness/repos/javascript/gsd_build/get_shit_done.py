@@ -1,9 +1,141 @@
+import json as _json
 import re
 from typing import Optional
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness import pull_request as _pull_request
+from multi_swe_bench.harness.image import (
+    Config,
+    DockerfileEnhancer,
+    File,
+    Image,
+    _safe_path_component,
+)
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+# Bundle records ship with a `prs_in_bundle` list and an empty `number_interval`.
+# Required OUTPUT format is the dash-joined bundle list (e.g. [146,147,150] ->
+# "146-147-150"), NEVER a range like "146-150" (a range would wrongly imply
+# every intermediate PR is included). Instance.create uses `number_interval` as
+# a routing key when non-empty, and only `gsd-build/get-shit-done` is registered
+# here, so we must NOT set pr.number_interval before build/routing. Instead we
+# stash the dash-joined value on a non-field attr and copy it onto the OUTPUT
+# Dataset row inside Dataset.build. Same pattern as ytdl-org/youtube-dl.
+if not getattr(_pull_request.PullRequest, "_gsd_number_interval_patched", False):
+    _gsd_orig_from_json = _pull_request.PullRequest.from_json.__func__
+
+    def _gsd_from_json(cls, json_str):
+        pr = _gsd_orig_from_json(cls, json_str)
+        try:
+            raw = _json.loads(json_str)
+            if (
+                raw.get("org") == "gsd-build"
+                and raw.get("repo") == "get-shit-done"
+                and raw.get("prs_in_bundle")
+            ):
+                pr._gsd_number_interval = "-".join(
+                    str(p) for p in raw["prs_in_bundle"]
+                )
+        except Exception:
+            pass
+        return pr
+
+    _pull_request.PullRequest.from_json = classmethod(_gsd_from_json)
+    _pull_request.PullRequest._gsd_number_interval_patched = True
+
+    from multi_swe_bench.harness.dataset import Dataset as _Dataset
+
+    if not _Dataset.__dict__.get("_gsd_build_patched", False):
+        _gsd_orig_build = _Dataset.build.__func__
+
+        def _gsd_build(cls, pr, report):
+            ds = _gsd_orig_build(cls, pr, report)
+            ni = getattr(pr, "_gsd_number_interval", "")
+            if ni:
+                ds.number_interval = ni
+            return ds
+
+        _Dataset.build = classmethod(_gsd_build)
+        _Dataset._gsd_build_patched = True
+
+
+class GsdBuildImageBase(Image):
+    # Shared base image consumed by every per-PR GsdBuildImageDefault. Carries
+    # the expensive one-time steps: apt install + git clone + warm npm install.
+    # Emits tag ":base". All 28 bundle rows produce instances that hash to the
+    # same image_full_name(), so the harness dependency graph builds it exactly
+    # once (Image.__hash__ / __eq__ key off image_full_name -- image.py:89-95).
+    # Embeds SYNTAX_DIRECTIVE at line 1 so DockerfileEnhancer.enhance()
+    # short-circuits at image.py:317-318 -- skips proxy/cert/MITM injection.
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        return "node:22"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        org = _safe_path_component(self.pr.org, "org")
+        repo = _safe_path_component(self.pr.repo)
+        github_repo = repo[: -len("_root")] if repo.endswith("_root") else repo
+        github_repo = _safe_path_component(github_repo)
+        repo_url = f"https://github.com/{org}/{github_repo}.git"
+
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+FROM node:22
+
+ARG TARGETARCH
+ARG REPO_URL="{repo_url}"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+ENV LANG=C.UTF-8
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} base image (shared across PR bundles)" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    curl \\
+    build-essential \\
+    git \\
+    gnupg \\
+    make \\
+    python3 \\
+    sudo \\
+    wget \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+
+RUN npm install || true
+
+CMD ["/bin/bash"]
+"""
 
 
 class GsdBuildImageDefault(Image):
@@ -19,16 +151,10 @@ class GsdBuildImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        # Returning a string (rather than a chained Image) lets the shared
-        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
-        # checks out "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that
-        # strips every other ref/commit so the fix can't be read out of git
-        # history. DockerfileEnhancer then injects the build args
-        # (REPO_URL/BASE_COMMIT), the base ENV block, the OCI labels, and the
-        # final sanitize pass. None of that fires when dockerfile() is
-        # overridden, which is why the previous two-stage build bypassed it.
-        return "node:22"
+    def dependency(self) -> "GsdBuildImageBase":
+        # Returning an Image (not a str) means DockerfileEnhancer.enhance()
+        # short-circuits at image.py:315-316 -- skips proxy/cert/MITM injection.
+        return GsdBuildImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -36,21 +162,44 @@ class GsdBuildImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    def extra_setup(self) -> str:
-        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. We stage the runtime helper scripts + patches into /home/ and
-        # warm the npm install so the eval scripts run offline. The copied files
-        # live outside /home/{repo}, so the hardening pass (which only operates
-        # inside the git tree) leaves them untouched.
-        return (
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh\n"
-            "COPY prepare.sh /home/prepare.sh\n"
-            "RUN bash /home/prepare.sh"
-        )
+    def dockerfile(self) -> str:
+        # FROM base (already has clone + warm install) -> checkout this PR's
+        # BASE_COMMIT -> copy patches/scripts -> prepare.sh (refreshes npm for
+        # this commit's package.json) -> _HARDENING_BLOCK -> CMD. Hardening runs
+        # AFTER prepare.sh to match single-tier ordering (image.py:243-248).
+        org = _safe_path_component(self.pr.org, "org")
+        repo = _safe_path_component(self.pr.repo)
+        base_full = self.dependency().image_full_name()
+        hardening = Image._HARDENING_BLOCK.rstrip("\n")
+
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+FROM {base_full}
+
+ARG TARGETARCH
+ARG BASE_COMMIT="{self.pr.base.sha}"
+
+LABEL org.opencontainers.image.title="{org}/{repo}#{self.pr.number}" \\
+      org.opencontainers.image.description="{org}/{repo} PR #{self.pr.number} image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+COPY fix.patch /home/fix.patch
+COPY test.patch /home/test.patch
+COPY run.sh /home/run.sh
+COPY test-run.sh /home/test-run.sh
+COPY fix-run.sh /home/fix-run.sh
+COPY prepare.sh /home/prepare.sh
+RUN bash /home/prepare.sh
+
+{hardening}
+
+CMD ["/bin/bash"]
+"""
 
     def files(self) -> list[File]:
         return [
@@ -95,8 +244,12 @@ if [ -f scripts/run-tests.cjs ]; then
     node scripts/run-tests.cjs
 elif ls tests/*.test.cjs 1>/dev/null 2>&1; then
     node --test tests/*.test.cjs
-else
+elif [ -f get-shit-done/bin/gsd-tools.test.js ]; then
     node --test get-shit-done/bin/gsd-tools.test.js
+elif [ -f package.json ] && grep -q '"vitest"' package.json; then
+    npx --no-install vitest run --reporter=tap-flat 2>&1 | awk '/^(ok|not ok) [0-9]+/ {{print "    " $0; next}} {{print}}'
+else
+    echo "No known test runner found" >&2; exit 1
 fi
 
 """.format(pr=self.pr),
@@ -109,13 +262,18 @@ set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo}
+git checkout HEAD -- package-lock.json 2>/dev/null || true
 git apply --whitespace=nowarn /home/test.patch
 if [ -f scripts/run-tests.cjs ]; then
     node scripts/run-tests.cjs
 elif ls tests/*.test.cjs 1>/dev/null 2>&1; then
     node --test tests/*.test.cjs
-else
+elif [ -f get-shit-done/bin/gsd-tools.test.js ]; then
     node --test get-shit-done/bin/gsd-tools.test.js
+elif [ -f package.json ] && grep -q '"vitest"' package.json; then
+    npx --no-install vitest run --reporter=tap-flat 2>&1 | awk '/^(ok|not ok) [0-9]+/ {{print "    " $0; next}} {{print}}'
+else
+    echo "No known test runner found" >&2; exit 1
 fi
 
 """.format(pr=self.pr),
@@ -128,13 +286,18 @@ set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo}
+git checkout HEAD -- package-lock.json 2>/dev/null || true
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 if [ -f scripts/run-tests.cjs ]; then
     node scripts/run-tests.cjs
 elif ls tests/*.test.cjs 1>/dev/null 2>&1; then
     node --test tests/*.test.cjs
-else
+elif [ -f get-shit-done/bin/gsd-tools.test.js ]; then
     node --test get-shit-done/bin/gsd-tools.test.js
+elif [ -f package.json ] && grep -q '"vitest"' package.json; then
+    npx --no-install vitest run --reporter=tap-flat 2>&1 | awk '/^(ok|not ok) [0-9]+/ {{print "    " $0; next}} {{print}}'
+else
+    echo "No known test runner found" >&2; exit 1
 fi
 
 """.format(pr=self.pr),
@@ -224,13 +387,4 @@ class GsdBuildGetShitDone(Instance):
         )
 
 
-# Route bundled PRs that carry a dash-joined number_interval (the list of
-# prs_in_bundle) to this config. Instance.create() looks up
-# f"{org}/{number_interval}", so each bundle's interval string must be
-# registered against this class.
-_NUMBER_INTERVALS = [
-    "1150-1152-1259-1261-1262-1264-1265-1266-1267-1268-1270-1271-1272-1274-1276-1277-1279-1282-1287-1288-1290-1291-1296-1297-1299-1302-1305-1306-1307-1311-1317-1318-1319-1320-1321-1322-1323",
-    "1380-1386-1394-1397-1408-1417-1419-1425-1427-1429-1432-1434-1436-1437-1439-1442-1444-1445-1447-1454-1455-1456-1474-1477-1492-1500-1501-1502-1505-1508-1518-1519-1525-1529-1532-1540-1543-1544-1545",
-]
-for _interval in _NUMBER_INTERVALS:
-    Instance.register("gsd-build", _interval)(GsdBuildGetShitDone)
+
