@@ -37,3 +37,4 @@ from multi_swe_bench.harness.repos.c.obsproject import *
 from multi_swe_bench.harness.repos.c.TheAlgorithms import *
 from multi_swe_bench.harness.repos.c.hashcat import *
 from multi_swe_bench.harness.repos.c.RediSearch import *
+from multi_swe_bench.harness.repos.c.stephane import *

@@ -7,7 +7,10 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
+    """Repo-level base image: OS deps + cloned/checked-out source + baked env.
+    Built once as `<repo>:base`; PR images layer only patches + scripts on top."""
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,8 +23,107 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.10-slim"
+    def dependency(self) -> Union[str, "Image"]:
+        # renku-python at this (2020-era) commit targets Python 3.7/3.8; 3.10 breaks
+        # old ruamel.yaml's C extension (removed CPython APIs). Use 3.8.
+        return "python:3.8-slim"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        # Clone via "${{REPO_URL}}" (the pipeline enhancer leaves this form untouched and
+        # injects its git-hardening block just before our trailing CMD); env installs sit
+        # after checkout so `pip install -e .[tests,docs]` sees the checked-out source.
+        return f"""FROM {image_name}
+ENV DEBIAN_FRONTEND=noninteractive
+# renku's `show inputs/outputs` tests assert on click CliRunner output, which mixes stderr
+# into stdout. PyYAML 5.x emits a YAMLLoadWarning for renku's loaderless `yaml.load()` calls,
+# and that warning line pollutes the captured output -> the target f2p test (test_show_inputs)
+# fails even in the fix stage. Suppressing warnings lets the PR's real behavior change surface:
+# test_show_inputs FAILS at test stage, PASSES at fix stage (clean fail->pass).
+ENV PYTHONWARNINGS=ignore
+# lxml (pulled by renku's [tests,docs] extras) needs libxml2/libxslt dev headers;
+# libffi/libssl/zlib cover cryptography/pillow-style native builds in the same tree.
+RUN apt-get update && apt-get install -y git build-essential curl \\
+    libxml2-dev libxslt1-dev libffi-dev libssl-dev zlib1g-dev \\
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /home/
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard
+# Base image `git clone` can land an incomplete packfile; fetch the base commit by URL if missing.
+RUN git cat-file -e ${{BASE_COMMIT}} 2>/dev/null || git fetch --no-tags "${{REPO_URL}}" ${{BASE_COMMIT}}
+RUN git checkout ${{BASE_COMMIT}}
+
+# --- Environment baked in so human_mode=True works (recipe from prepare.sh notes).
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir 'setuptools<58.0.0' wheel
+# renku's install_requires pins cwltool==1.0.20180820141117 which forces ruamel.yaml<=0.15.51.
+# That ruamel's setup.py does `from _ast import *`, but CPython 3.8 dropped Str/Num/Bytes from the
+# _ast C module (moved to ast.py as deprecated Constant aliases) -> `NameError: name 'Str'`.
+# Repoint the import to `ast` and pre-build/install it so the later editable install is satisfied.
+RUN cd /tmp \\
+    && curl -sL https://files.pythonhosted.org/packages/77/19/c225d7dd6b3678e5f8b76b8101dc903a0f1799b7182eeab4d20b07a32878/ruamel.yaml-0.15.51.tar.gz -o ruamel.tgz \\
+    && tar xzf ruamel.tgz && cd ruamel.yaml-0.15.51 \\
+    && sed -i 's/^from _ast import \\*/from ast import */' setup.py \\
+    && pip install --no-cache-dir --no-build-isolation . \\
+    && cd / && rm -rf /tmp/ruamel.yaml-0.15.51 /tmp/ruamel.tgz
+RUN pip install --no-cache-dir rdflib-jsonld==0.4.0
+# renku declares `pyld>=1.0.3` (unbounded) so pip grabs pyld 3.x, whose jsonld.py has a
+# module-level `Callable[[str | None], Any]` (PEP 604) that dies on Python 3.8. Pin to the
+# renku-era pyld; pre-installing it satisfies >=1.0.3 so the editable install won't upgrade.
+RUN pip install --no-cache-dir pyld==1.0.5
+# renku (and its tests) call `yaml.load(x)` without a Loader; PyYAML 6.x makes Loader required
+# -> `TypeError: load() missing 1 required positional argument`. renku pins only PyYAML>=3.12
+# (unbounded), so pip grabs 6.x. Pin the last 5.x where load-without-Loader still works.
+RUN pip install --no-cache-dir "PyYAML==5.4.1"
+RUN pip install --no-cache-dir -e .[tests,docs]
+RUN pip install --no-cache-dir attrs==19.3.0
+# renku's pytest.ini enables flake8/pep8/yapf plugins that break collection; strip them.
+RUN sed -i 's/--yapf//; s/--flake8 --pep8 //; s/--flake8//; s/--pep8//' pytest.ini || true
+RUN pip uninstall -y pytest-pep8 pytest-flake8 pytest-yapf || true
+# renku's test fixtures run `renku init` (a git commit) which aborts without an identity,
+# surfacing as `assert 1 == 0` (exit_code != 0) errors in fixture setup for ~half the suite.
+RUN git config --global user.email "renku@example.com" \\
+    && git config --global user.name "Renku Test" \\
+    && git config --global init.defaultBranch master
+
+CMD ["/bin/bash"]
+"""
+
+
+class ImageDefault(Image):
+    """PR-specific image: FROM the repo base, add only patches + run scripts."""
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image | None:
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -46,67 +148,42 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
-                """ls
-###ACTION_DELIMITER###
-pip install -e .[tests,docs]
-###ACTION_DELIMITER###
-pip install --upgrade pip
-###ACTION_DELIMITER###
-pip install -e .[tests,docs]
-###ACTION_DELIMITER###
-pip download ruamel.yaml==0.15.51 --no-deps && tar xzf ruamel.yaml-0.15.51.tar.gz && cd ruamel.yaml-0.15.51 && sed -i 's/Str/Constant/g' setup.py && sed -i 's/node.s/node.value/g' setup.py && pip install . && cd ..
-###ACTION_DELIMITER###
-wget https://files.pythonhosted.org/packages/source/r/ruamel.yaml/ruamel.yaml-0.15.51.tar.gz && tar xzf ruamel.yaml-0.15.51.tar.gz && cd ruamel.yaml-0.15.51 && sed -i 's/Str/Constant/g' setup.py && sed -i 's/node.s/node.value/g' setup.py && pip install . && cd ..
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y wget
-###ACTION_DELIMITER###
-wget https://files.pythonhosted.org/packages/source/r/ruamel.yaml/ruamel.yaml-0.15.51.tar.gz && tar xzf ruamel.yaml-0.15.51.tar.gz && cd ruamel.yaml-0.15.51 && sed -i 's/Str/Constant/g' setup.py && sed -i 's/node.s/node.value/g' setup.py && pip install . && cd ..
-###ACTION_DELIMITER###
-cd ruamel.yaml-0.15.51 && sed -i 's/Str/Constant/g' setup.py && sed -i 's/Bytes/Constant/g' setup.py && sed -i 's/node.s/node.value/g' setup.py && pip install . && cd ..
-###ACTION_DELIMITER###
-sed -i 's/Str/Constant/g' setup.py && sed -i 's/Bytes/Constant/g' setup.py && sed -i 's/node.s/node.value/g' setup.py && pip install .
-###ACTION_DELIMITER###
-sed -i 's/Str/Constant/g' setup.py && sed -i 's/Bytes/Constant/g' setup.py && sed -i 's/Num/Constant/g' setup.py && sed -i 's/node.s/node.value/g' setup.py && sed -i 's/node.n/node.value/g' setup.py && pip install .
-###ACTION_DELIMITER###
-sed -i 's/NameConstant/Constant/g' setup.py && pip install .
-###ACTION_DELIMITER###
-cd .. && pip install -e .[tests,docs]
-###ACTION_DELIMITER###
-pip install rdflib-jsonld==0.6.2
-###ACTION_DELIMITER###
-pip install -e .[tests,docs]
-###ACTION_DELIMITER###
-pip install setuptools<58.0.0 && pip install rdflib-jsonld==0.4.0 && pip install -e .[tests,docs]
-###ACTION_DELIMITER###
-pip install 'setuptools<58.0.0' && pip install rdflib-jsonld==0.4.0 && pip install -e .[tests,docs]
-###ACTION_DELIMITER###
-pytest -v
-###ACTION_DELIMITER###
-pip install --upgrade pytest-yapf
-###ACTION_DELIMITER###
-sed -i 's/--yapf//' pytest.ini
-###ACTION_DELIMITER###
-pytest -v
-###ACTION_DELIMITER###
-sed -i 's/--flake8 --pep8 //' pytest.ini
-###ACTION_DELIMITER###
-pip uninstall -y pytest-pep8 pytest-flake8 pytest-yapf
-###ACTION_DELIMITER###
-pytest -v
-###ACTION_DELIMITER###
-pip install attrs==19.3.0
-###ACTION_DELIMITER###
-pytest -v
-###ACTION_DELIMITER###
-echo 'pytest -v' > test_commands.sh && chmod +x test_commands.sh""",
+                """#!/bin/bash
+set -e
+# Re-assert the base commit at PR-build time. Non-destructive on purpose: no `git reset`
+# (this base carries an intentional working-tree edit — pytest.ini stripped of flake8/pep8/yapf)
+# and no test run (tests execute at instance time via run/test/fix-run.sh).
+cd /home/{pr.repo}
+git checkout {pr.base.sha}
+""".format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest -v
+pytest -v -rA --no-cov
 
 """.format(pr=self.pr),
             ),
@@ -117,9 +194,9 @@ pytest -v
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-pytest -v
+pytest -v -rA --no-cov
 
 """.format(pr=self.pr),
             ),
@@ -130,52 +207,28 @@ pytest -v
 cd /home/{pr.repo}
 if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-pytest -v
+pytest -v -rA --no-cov
 
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        return f"""FROM {name}:{tag}
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.10-slim
-
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/SwissDataScienceCenter/renku-python.git /home/renku-python
-
-WORKDIR /home/renku-python
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("SwissDataScienceCenter", "renku_python_369_to_307")

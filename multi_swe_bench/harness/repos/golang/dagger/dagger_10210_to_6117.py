@@ -31,7 +31,7 @@ def parse_go_test_log(log: str) -> TestResult:
         if not test or action not in ("pass", "fail", "skip"):
             continue
         if pkg.startswith(_REPO_PREFIX):
-            pkg = pkg[len(_REPO_PREFIX):]
+            pkg = pkg[len(_REPO_PREFIX) :]
         name = f"{pkg}::{test}"
         if action == "pass":
             passed_tests.add(name)
@@ -91,31 +91,70 @@ class DaggerEra2ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        org = self.pr.org
+        repo = self.pr.repo
+
         if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
-        return f"""FROM {image_name}
+        # SHARED era base: built ONCE (image_tag "base-go123") and reused by every
+        # era-2 PR. It clones the repo at default HEAD with FULL history and
+        # deliberately does NOT check out a per-PR ${BASE_COMMIT} and does NOT run
+        # the anti-cheat hardening block. Pinning + history-stripping a SHARED base
+        # would prune every sibling PR's base.sha, and their `git checkout <sha>`
+        # in prepare.sh would then fail (prepare.sh runs under `set -e`, so the
+        # build of every PR but the one that seeded the base would break). The
+        # per-PR checkout and the hardening happen in DaggerEra2ImageDefault, which
+        # is the image the model is actually evaluated in.
+        #
+        # The leading `# syntax` directive makes DockerfileEnhancer.enhance()
+        # return this Dockerfile verbatim (its first guard is
+        # `if SYNTAX_DIRECTIVE in raw: return raw`); that is precisely what stops
+        # _standardize_repo_fetch() from rewriting the clone into a
+        # `git checkout ${BASE_COMMIT}` + hardening template. Because the enhancer
+        # is opted out, the ARG/ENV/LABEL infra it would have injected is inlined
+        # here. `origin` is dropped at this layer too, so nothing downstream can
+        # `git fetch` the upstream fix even before hardening runs.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC
 ENV CGO_ENABLED=0
 ENV GOTOOLCHAIN=local
-ENV GOFLAGS=-buildvcs=false -mod=mod
+ENV GOFLAGS="-buildvcs=false -mod=mod"
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{self.global_env}
 
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git ca-certificates && rm -rf /var/lib/apt/lists/*
 
+RUN git config --global --add safe.directory '*'
+
 {code}
 
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -247,14 +286,42 @@ if [ "$RAN" = 0 ]; then echo "NO_TEST_DIRS"; exit 0; fi
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM {name}:{tag}
+        # Anti-cheat hardening lives in the PR layer -- this is the image the model
+        # is evaluated in, and the only layer that knows a single BASE_COMMIT.
+        # prepare.sh has already checked out this PR's base.sha, so bake
+        # Image._HARDENING_BLOCK with the literal sha: detach at base.sha, drop
+        # origin, delete every ref (heads/remotes/tags/replace), expire the
+        # reflogs, `gc --prune=now --aggressive` + repack, then ASSERT
+        # HEAD == base.sha, no refs left, no remote left, and
+        # `git rev-list --all --count` == `git rev-list HEAD --count`. Net effect:
+        # the merge/fix commits that come after base.sha become unreachable and
+        # are pruned, so `git log`, `git show <future-sha>` and `git fetch` cannot
+        # be used to recover the gold patch.
+        #
+        # The literal sha (rather than a ${BASE_COMMIT} build-arg) is required:
+        # run_evaluation.build_image only passes REPO_URL/BASE_COMMIT build-args
+        # when dependency() is a str, and here it is an Image. For the same reason
+        # DockerfileEnhancer.enhance() returns this Dockerfile unchanged, so the
+        # layout below is exactly what gets built.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 RUN bash /home/prepare.sh
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
 {self.clear_env}
+
+CMD ["/bin/bash"]
 """
 
 

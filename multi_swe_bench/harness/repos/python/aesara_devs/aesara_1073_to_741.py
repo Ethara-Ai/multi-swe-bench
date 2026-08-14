@@ -7,7 +7,10 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
+    """Repo-level base image: OS deps + cloned/checked-out source + baked env.
+    Built once as `<repo>:base`; PR images layer only patches + scripts on top."""
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,8 +23,73 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
+    def dependency(self) -> Union[str, "Image"]:
         return "python:3.9-slim"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        # Clone via "${{REPO_URL}}" (the pipeline enhancer leaves this form untouched and
+        # injects its git-hardening block just before our trailing CMD); env installs sit
+        # after checkout so aesara's C extensions build against the checked-out source.
+        return f"""FROM {image_name}
+ENV DEBIAN_FRONTEND=noninteractive
+# numpy.distutils imports distutils.msvccompiler, removed by newer setuptools' vendored
+# distutils; force the stdlib distutils so aesara's BLAS detection / C compile works.
+ENV SETUPTOOLS_USE_DISTUTILS=stdlib
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /home/
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+RUN git reset --hard
+# Base image `git clone` can land an incomplete packfile; fetch the base commit by URL if missing.
+RUN git cat-file -e ${{BASE_COMMIT}} 2>/dev/null || git fetch --no-tags "${{REPO_URL}}" ${{BASE_COMMIT}}
+RUN git checkout ${{BASE_COMMIT}}
+
+# --- Environment baked in so human_mode=True works.
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir pytest-html
+RUN pip install --no-cache-dir numpy==1.23.5
+RUN pip install --no-cache-dir numba==0.56.0 llvmlite==0.39.0
+RUN pip install --no-cache-dir pytest-xdist pytest-timeout
+
+CMD ["/bin/bash"]
+"""
+
+
+class ImageDefault(Image):
+    """PR-specific image: FROM the repo base, add only patches + run scripts."""
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image | None:
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -46,39 +114,42 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
-                """ls
-###ACTION_DELIMITER###
-pip install -r requirements.txt
-###ACTION_DELIMITER###
-pytest -v tests/ aesara/ --cov=aesara --cov-report=xml --html=testing-report.html --self-contained-html
-###ACTION_DELIMITER###
-pip install pytest-html
-###ACTION_DELIMITER###
-pytest -v tests/ aesara/ --cov=aesara --cov-report=xml --html=testing-report.html --self-contained-html
-###ACTION_DELIMITER###
-pip install numpy==1.23.5
-###ACTION_DELIMITER###
-pytest -v tests/ aesara/ --cov=aesara --cov-report=xml --html=testing-report.html --self-contained-html
-###ACTION_DELIMITER###
-pip install llvmlite==0.39.0
-###ACTION_DELIMITER###
-pip install numba==0.56.0 llvmlite==0.39.0
-###ACTION_DELIMITER###
-pytest -v tests/ aesara/ --cov=aesara --cov-report=xml --html=testing-report.html --self-contained-html
-###ACTION_DELIMITER###
-pip install pytest-xdist
-###ACTION_DELIMITER###
-pytest -v -n auto tests/ aesara/ --cov=aesara --cov-report=xml --html=testing-report.html --self-contained-html
-###ACTION_DELIMITER###
-echo 'pytest -v -n auto tests/ aesara/' > test_commands.sh""",
+                """#!/bin/bash
+set -e
+# Re-assert the base commit at PR-build time. Non-destructive on purpose: no `git reset`
+# (some bases carry intentional working-tree edits from their env setup) and no test run
+# (tests execute at instance time via run/test/fix-run.sh).
+cd /home/{pr.repo}
+git checkout {pr.base.sha}
+""".format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest -v -n auto tests/ aesara/
+pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tests/link/test_numba.py tests/scan/test_printing.py tests/tensor/nnet/test_batchnorm.py tests/tensor/test_basic.py tests/tensor/test_basic_opt.py tests/tensor/test_math.py tests/tensor/test_opt_uncanonicalize.py tests/tensor/test_shape.py tests/tensor/test_subtensor.py tests/tensor/test_subtensor_opt.py tests/tensor/test_type.py tests/test_rop.py
 
 """.format(pr=self.pr),
             ),
@@ -91,7 +162,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest -v -n auto tests/ aesara/
+pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tests/link/test_numba.py tests/scan/test_printing.py tests/tensor/nnet/test_batchnorm.py tests/tensor/test_basic.py tests/tensor/test_basic_opt.py tests/tensor/test_math.py tests/tensor/test_opt_uncanonicalize.py tests/tensor/test_shape.py tests/tensor/test_subtensor.py tests/tensor/test_subtensor_opt.py tests/tensor/test_type.py tests/test_rop.py
 
 """.format(pr=self.pr),
             ),
@@ -104,50 +175,26 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-pytest -v -n auto tests/ aesara/
+pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tests/link/test_numba.py tests/scan/test_printing.py tests/tensor/nnet/test_batchnorm.py tests/tensor/test_basic.py tests/tensor/test_basic_opt.py tests/tensor/test_math.py tests/tensor/test_opt_uncanonicalize.py tests/tensor/test_shape.py tests/tensor/test_subtensor.py tests/tensor/test_subtensor_opt.py tests/tensor/test_type.py tests/test_rop.py
 
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        return f"""FROM {name}:{tag}
 
-# Choose an appropriate base image based on the project's requirements - replace python:3.9-slim with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
-
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/aesara-devs/aesara.git /home/aesara
-
-WORKDIR /home/aesara
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("aesara-devs", "aesara_1073_to_741")

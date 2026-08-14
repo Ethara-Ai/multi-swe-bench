@@ -120,7 +120,6 @@ set -e
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git fetch origin {pr.base.sha}
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 

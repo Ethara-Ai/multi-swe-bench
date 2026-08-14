@@ -60,8 +60,7 @@ class TsProtoImageBase(Image):
 
 WORKDIR /home/
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git curl && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 
 {code}
@@ -203,6 +202,12 @@ YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
 
 # Build TypeScript
 yarn build || true
+
+# Generate the pbjs/pbts fixtures the integration tests import as `./pbjs`.
+# These are gitignored build artifacts, so they are absent from a fresh clone
+# and every suite importing them fails to compile without this step.
+# pbjs.sh only needs the protobufjs-cli devDependency (no protoc, no docker).
+bash integration/pbjs.sh || true
 """.format(
                     repo=self.pr.repo,
                     base_sha=self.pr.base.sha,
@@ -218,7 +223,12 @@ export CI=true
 
 cd /home/{repo}
 
-# Run Jest tests with verbose output
+# Run Jest tests with verbose output.
+# Do NOT add --runInBand here: integration/nestjs-simple loads @nestjs/microservices,
+# whose loadPackage() calls process.exit(1) when the optional `grpc` package is
+# absent. With worker processes that kills one worker and the run continues; in
+# band it kills the whole jest process, truncating the run after ~12 of 49 suites
+# and making every stage report an identical, useless result.
 yarn jest -c jest.config.js --verbose 2>&1 || true
 """.format(repo=self.pr.repo),
             ),
@@ -258,6 +268,11 @@ YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
 
 # Rebuild TypeScript
 yarn build || true
+
+# Regenerate pbjs fixtures (see prepare.sh). Each block in pbjs.sh is gated on
+# its .proto existing, so suites whose protos arrive only in fix.patch stay
+# uncompilable here -- which is the correct fail state for this stage.
+bash integration/pbjs.sh || true
 
 yarn jest -c jest.config.js --verbose 2>&1 || true
 """.format(repo=self.pr.repo),
@@ -300,6 +315,11 @@ YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install || true
 
 # Rebuild TypeScript
 yarn build || true
+
+# Regenerate pbjs fixtures. This must run after the patches are applied above:
+# fix.patch adds integration/struct/struct.proto and integration/value/value.proto,
+# and pbjs.sh only emits a fixture when the matching .proto is present.
+bash integration/pbjs.sh || true
 
 yarn jest -c jest.config.js --verbose 2>&1 || true
 """.format(repo=self.pr.repo),

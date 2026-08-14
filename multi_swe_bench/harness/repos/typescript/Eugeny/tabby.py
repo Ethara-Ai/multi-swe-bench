@@ -39,15 +39,34 @@ class ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        # SHARED base (tag `base`, reused by every tabby PR). The `# syntax`
+        # directive makes DockerfileEnhancer.enhance() return this verbatim, so the
+        # enhancer cannot rewrite the clone into `checkout ${BASE_COMMIT}` +
+        # history-strip — that would pin the shared base to a single PR's commit and
+        # prune the objects every other PR needs. Per-PR hardening lives in
+        # ImageDefault (Image._HARDENING_BLOCK with the literal base.sha) instead.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
 {self.global_env}
 
 WORKDIR /home/
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV TZ=UTC
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \\
         git jq python3 build-essential libfontconfig1-dev ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
@@ -55,8 +74,15 @@ RUN npm install -g --force yarn@1.22.22
 
 {code}
 
+WORKDIR /home/{self.pr.repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -128,9 +154,22 @@ bash /home/check_git_changes.sh
 
 # Root install without scripts so we control the heavy postinstall.
 # Retry once on transient yarn cache corruption (intermittent under emulation).
-yarn install --ignore-scripts --network-timeout 600000 \
-    || {{ yarn cache clean; yarn install --ignore-scripts --network-timeout 600000; }} \
+# --ignore-engines is REQUIRED: the modern lockfile pulls minimatch@10, whose
+# "engines" demands node >=20 while this base image is node:18. Yarn Classic
+# treats an engine mismatch as FATAL ("Found incompatible module"), so without
+# the flag the install aborts and the image ships with no node_modules --
+# eslint/shelljs missing, so lint and build:typings fail in every stage and the
+# instance yields no signal at all.
+yarn install --ignore-engines --ignore-scripts --network-timeout 600000 \
+    || {{ yarn cache clean; yarn install --ignore-engines --ignore-scripts --network-timeout 600000; }} \
     || true
+
+# Record the nearest tag BEFORE the image-level _HARDENING_BLOCK strips every
+# ref. tabby derives its version with `git describe`; with zero tags that exits
+# 128 ("No names found, cannot describe anything") and both build:typings and
+# scripts/install-deps.mjs die in EVERY grading stage. The tag is recreated at
+# HEAD after hardening, which leaks nothing (HEAD is already reachable).
+git describe --tags --abbrev=0 > /home/.base_tag 2>/dev/null || echo v1.0.0 > /home/.base_tag
 
 # patch-package needs node_modules; tolerate missing patches/ directory
 yarn patch-package || true
@@ -186,10 +225,10 @@ git apply --whitespace=nowarn \
     /home/test.patch
 apply_rc=$?
 if [ $apply_rc -ne 0 ]; then
-    echo '##### TABBY_FAIL apply_test_patch #####'
+    echo '##### TABBY_FAIL apply_patch #####'
     exit 0
 fi
-echo '##### TABBY_PASS apply_test_patch #####'
+echo '##### TABBY_PASS apply_patch #####'
 
 echo '##### TABBY_STEP_START build_typings #####'
 yarn build:typings
@@ -225,10 +264,10 @@ git apply --whitespace=nowarn \
     /home/test.patch /home/fix.patch
 apply_rc=$?
 if [ $apply_rc -ne 0 ]; then
-    echo '##### TABBY_FAIL apply_test_and_fix_patch #####'
+    echo '##### TABBY_FAIL apply_patch #####'
     exit 0
 fi
-echo '##### TABBY_PASS apply_test_and_fix_patch #####'
+echo '##### TABBY_PASS apply_patch #####'
 
 echo '##### TABBY_STEP_START build_typings #####'
 yarn build:typings
@@ -262,6 +301,14 @@ fi
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # Per-PR anti-cheat hardening. This image depends on an Image (the shared
+        # base), so DockerfileEnhancer emits its Dockerfile verbatim — it only
+        # auto-injects hardening into str-dependency images. Bake the canonical
+        # block from image.py with the LITERAL base.sha (BASE_COMMIT is not passed
+        # as a build arg for FROM-an-image builds), so the fix commit cannot be read
+        # back out of git history via git log/show/fetch inside the container.
+        hardening = self._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
+
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -270,8 +317,18 @@ fi
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
+# Restore a single tag at HEAD so `git describe` resolves (see prepare.sh).
+# Placed AFTER the hardening block so it survives; it points at the base commit,
+# which is already reachable, so no pruned history becomes visible again.
+RUN cd /home/{self.pr.repo} && git tag -f "$(cat /home/.base_tag)" HEAD
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 

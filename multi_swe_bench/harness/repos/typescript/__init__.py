@@ -53,6 +53,7 @@ from multi_swe_bench.harness.repos.typescript.decentralized_identity import *
 from multi_swe_bench.harness.repos.typescript.deephaven import *
 from multi_swe_bench.harness.repos.typescript.defenseunicorns import *
 from multi_swe_bench.harness.repos.typescript.drizzle_team import *
+from multi_swe_bench.harness.repos.typescript.DTStack import *
 from multi_swe_bench.harness.repos.typescript.eclipse_theia import *
 from multi_swe_bench.harness.repos.typescript.Effect_TS import *
 from multi_swe_bench.harness.repos.typescript.electron import *
@@ -105,6 +106,7 @@ from multi_swe_bench.harness.repos.typescript.NomicFoundation import *
 from multi_swe_bench.harness.repos.typescript.Northeastern_Electric_Racing import *
 from multi_swe_bench.harness.repos.typescript.nuxt import *
 from multi_swe_bench.harness.repos.typescript.obsidian_tasks_group import *
+from multi_swe_bench.harness.repos.typescript.onaio import *
 from multi_swe_bench.harness.repos.typescript.ONEARMY import *
 from multi_swe_bench.harness.repos.typescript.palantir import *
 from multi_swe_bench.harness.repos.typescript.PalisadoesFoundation import *
