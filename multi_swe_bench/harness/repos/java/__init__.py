@@ -60,3 +60,4 @@ from multi_swe_bench.harness.repos.java.YunaiV import *
 from multi_swe_bench.harness.repos.java.agustinanisaf import *
 from multi_swe_bench.harness.repos.java.Visual_Regression_Tracker import *
 from multi_swe_bench.harness.repos.java.processing import *
+from multi_swe_bench.harness.repos.java.Stirling_Tools import *
