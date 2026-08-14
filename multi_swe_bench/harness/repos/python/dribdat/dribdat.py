@@ -1,5 +1,4 @@
 import re
-import json
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -45,13 +44,11 @@ class ImageBase(Image):
 
         # Clone via "${{REPO_URL}}" (the pipeline enhancer leaves this form untouched and
         # injects its git-hardening block just before our trailing CMD); env installs sit
-        # after checkout so aesara's C extensions build against the checked-out source.
+        # after checkout so `pip install -e .` sees the checked-out source.
         return f"""FROM {image_name}
 ENV DEBIAN_FRONTEND=noninteractive
-# numpy.distutils imports distutils.msvccompiler, removed by newer setuptools' vendored
-# distutils; force the stdlib distutils so aesara's BLAS detection / C compile works.
-ENV SETUPTOOLS_USE_DISTUTILS=stdlib
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+# build-essential + libffi-dev needed to build misaka/cffi; libpq for psycopg2 fallbacks.
+RUN apt-get update && apt-get install -y git build-essential libffi-dev libpq-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/
 RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
@@ -62,12 +59,11 @@ RUN git reset --hard
 RUN git cat-file -e ${{BASE_COMMIT}} 2>/dev/null || git fetch --no-tags "${{REPO_URL}}" ${{BASE_COMMIT}}
 RUN git checkout ${{BASE_COMMIT}}
 
-# --- Environment baked in so human_mode=True works.
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir pytest-html
-RUN pip install --no-cache-dir numpy==1.23.5
-RUN pip install --no-cache-dir numba==0.56.0 llvmlite==0.39.0
-RUN pip install --no-cache-dir pytest-xdist pytest-timeout
+# --- Environment baked in so human_mode=True works. dribdat's 2020-era poetry.lock is
+# unusable with modern OR old Poetry, so install the lock's exact pinned versions
+# directly with pip (the dataclasses backport is dropped — it breaks py3.9).
+RUN pip install --no-cache-dir "setuptools==57.5.0" wheel
+RUN pip install --no-cache-dir --no-build-isolation alembic==1.6.5 aniso8601==7.0.0 atomicwrites==1.4.0 attrs==21.2.0 bcrypt==3.2.0 beautifulsoup4==4.9.3 bleach==3.3.0 blinker==1.4 boto3==1.17.85 botocore==1.20.85 certifi==2021.5.30 cffi==1.14.5 chardet==4.0.0 click==8.0.1 colorama==0.4.4 coverage==5.5 cryptography==3.4.7 cssmin==0.2.0 cssselect==1.1.0 dnspython==1.16.0 email-validator==1.1.2 eventlet==0.30.2 factory-boy==3.2.0 faker==8.4.0 flake8==3.9.2 flake8-blind-except==0.2.0 flake8-debugger==4.0.0 flake8-docstrings==1.6.0 flake8-isort==4.0.0 flake8-polyfill==1.0.2 flake8-quotes==3.2.0 flask==2.0.1 flask-assets==2.0 flask-bcrypt==0.7.1 flask-caching==1.10.1 flask-cors==3.0.10 flask-dance==5.0.0 flask-debugtoolbar==0.11.0 flask-hashing==1.1 flask-login==0.5.0 flask-migrate==3.0.1 flask-misaka==1.0.0 flask-sqlalchemy==2.5.1 flask-talisman==0.7.0 flask-wtf==0.15.1 future==0.18.2 graphene==2.1.8 graphql-core==2.3.2 graphql-relay==2.0.1 greenlet==1.1.0 gunicorn==20.1.0 idna==2.10 iniconfig==1.1.1 isort==5.8.0 itsdangerous==2.0.1 jinja2==3.0.1 jmespath==0.10.0 jsmin==2.2.2 lxml==4.6.3 mako==1.1.4 markupsafe==2.0.1 mccabe==0.6.1 micawber==0.5.3 misaka==2.1.1 oauthlib==3.1.1 packaging==20.9 pep8-naming==0.11.1 pluggy==0.13.1 promise==2.3 psycopg2-binary==2.8.6 py==1.10.0 pycodestyle==2.7.0 pycparser==2.20 pydocstyle==6.1.1 pyflakes==2.3.1 pyopenssl==20.0.1 pyparsing==2.4.7 pyquery==1.4.3 pystache==0.5.4 pytest==6.2.4 python-dateutil==2.8.1 python-dotenv==0.17.1 python-editor==1.0.4 pytz==2021.1 redis==3.5.3 requests==2.25.1 requests-oauthlib==1.3.0 rx==1.6.1 s3transfer==0.4.2 six==1.16.0 snowballstemmer==2.1.0 soupsieve==2.2.1 sqlalchemy==1.4.17 testfixtures==6.17.1 text-unidecode==1.3 toml==0.10.2 typing-extensions==3.10.0.0 urllib3==1.26.5 urlobject==2.4.3 waitress==2.0.0 webassets==2.0 webencodings==0.5.1 webob==1.8.7 webtest==2.0.35 werkzeug==2.0.1 whitenoise==5.2.0 wtforms==2.3.3 zipp==3.4.1 pyyaml==5.4.1
 
 CMD ["/bin/bash"]
 """
@@ -102,16 +98,8 @@ class ImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -149,8 +137,7 @@ git checkout {pr.base.sha}
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tests/link/test_numba.py tests/scan/test_printing.py tests/tensor/nnet/test_batchnorm.py tests/tensor/test_basic.py tests/tensor/test_basic_opt.py tests/tensor/test_math.py tests/tensor/test_opt_uncanonicalize.py tests/tensor/test_shape.py tests/tensor/test_subtensor.py tests/tensor/test_subtensor_opt.py tests/tensor/test_type.py tests/test_rop.py
-
+pytest -v -rA tests/
 """.format(pr=self.pr),
             ),
             File(
@@ -158,12 +145,11 @@ pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tes
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
+if ! git -C /home/{pr.repo} apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tests/link/test_numba.py tests/scan/test_printing.py tests/tensor/nnet/test_batchnorm.py tests/tensor/test_basic.py tests/tensor/test_basic_opt.py tests/tensor/test_math.py tests/tensor/test_opt_uncanonicalize.py tests/tensor/test_shape.py tests/tensor/test_subtensor.py tests/tensor/test_subtensor_opt.py tests/tensor/test_type.py tests/test_rop.py
-
+pytest -v -rA tests/
 """.format(pr=self.pr),
             ),
             File(
@@ -171,12 +157,11 @@ pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tes
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+if ! git -C /home/{pr.repo} apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tests/link/test_numba.py tests/scan/test_printing.py tests/tensor/nnet/test_batchnorm.py tests/tensor/test_basic.py tests/tensor/test_basic_opt.py tests/tensor/test_math.py tests/tensor/test_opt_uncanonicalize.py tests/tensor/test_shape.py tests/tensor/test_subtensor.py tests/tensor/test_subtensor_opt.py tests/tensor/test_type.py tests/test_rop.py
-
+pytest -v -rA tests/
 """.format(pr=self.pr),
             ),
         ]
@@ -197,8 +182,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("aesara-devs", "aesara_1073_to_741")
-class AESARA_1073_TO_741(Instance):
+@Instance.register("dribdat", "dribdat")
+class Dribdat(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -212,50 +197,35 @@ class AESARA_1073_TO_741(Instance):
         return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
-        if run_cmd:
-            return run_cmd
-
-        return "bash /home/run.sh"
+        return run_cmd or "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        if test_patch_run_cmd:
-            return test_patch_run_cmd
-
-        return "bash /home/test-run.sh"
+        return test_patch_run_cmd or "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        if fix_patch_run_cmd:
-            return fix_patch_run_cmd
-
-        return "bash /home/fix-run.sh"
+        return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
-        import re
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        # Parse log content by lines to capture test statuses and names
-        pattern = (
-            r"(?:\[\w+\]\s+\[\s*\d+%\]\s+)?(PASSED|FAILED|SKIPPED)\s+(.+?)(?:\s+-|$)"
-        )
-        for line in log.split("\n"):
-            match = re.search(pattern, line)
-            if match:
-                status = match.group(1)
-                test_name = match.group(2).strip()
-                if status == "PASSED":
-                    passed_tests.add(test_name)
-                elif status == "FAILED":
-                    failed_tests.add(test_name)
-                elif status == "SKIPPED":
-                    skipped_tests.add(test_name)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+        for raw in log.split("\n"):
+            line = raw.strip()
+            m = re.match(r"^(PASSED|FAILED|ERROR|SKIPPED)\s+(\S+)", line)
+            if m:
+                status, name = m.group(1), m.group(2)
+            else:
+                m = re.match(r"^(\S+::\S+)\s+(PASSED|FAILED|ERROR|SKIPPED)", line)
+                if not m:
+                    continue
+                name, status = m.group(1), m.group(2)
+            if status == "PASSED":
+                passed_tests.add(name)
+            elif status in ("FAILED", "ERROR"):
+                failed_tests.add(name)
+            elif status == "SKIPPED":
+                skipped_tests.add(name)
 
         return TestResult(
             passed_count=len(passed_tests),

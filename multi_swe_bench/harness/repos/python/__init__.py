@@ -359,3 +359,10 @@ from multi_swe_bench.harness.repos.python.mealie_recipes import *
 from multi_swe_bench.harness.repos.python.TheAlgorithms import *
 from multi_swe_bench.harness.repos.python.khoj_ai import *
 from multi_swe_bench.harness.repos.python.sktime import *
+from multi_swe_bench.harness.repos.python.feldroy import *
+from multi_swe_bench.harness.repos.python.nils_braun import *
+from multi_swe_bench.harness.repos.python.dribdat import *
+from multi_swe_bench.harness.repos.python.LAAC_LSCP import *
+from multi_swe_bench.harness.repos.python.AlertaDengue import *
+from multi_swe_bench.harness.repos.python.pytition import *
+from multi_swe_bench.harness.repos.python.hummingbot import *

@@ -1,5 +1,4 @@
 import re
-import json
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -45,13 +44,14 @@ class ImageBase(Image):
 
         # Clone via "${{REPO_URL}}" (the pipeline enhancer leaves this form untouched and
         # injects its git-hardening block just before our trailing CMD); env installs sit
-        # after checkout so aesara's C extensions build against the checked-out source.
+        # after checkout so the code + settings edits see the checked-out source.
         return f"""FROM {image_name}
 ENV DEBIAN_FRONTEND=noninteractive
-# numpy.distutils imports distutils.msvccompiler, removed by newer setuptools' vendored
-# distutils; force the stdlib distutils so aesara's BLAS detection / C compile works.
-ENV SETUPTOOLS_USE_DISTUTILS=stdlib
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+# build deps for mysqlclient/uwsgi/lxml in requirements.txt
+RUN apt-get update && apt-get install -y \\
+    git build-essential pkg-config default-libmysqlclient-dev \\
+    libxml2-dev libxslt1-dev libffi-dev \\
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/
 RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
@@ -63,11 +63,13 @@ RUN git cat-file -e ${{BASE_COMMIT}} 2>/dev/null || git fetch --no-tags "${{REPO
 RUN git checkout ${{BASE_COMMIT}}
 
 # --- Environment baked in so human_mode=True works.
+RUN pip install --no-cache-dir -U pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir pytest-html
-RUN pip install --no-cache-dir numpy==1.23.5
-RUN pip install --no-cache-dir numba==0.56.0 llvmlite==0.39.0
-RUN pip install --no-cache-dir pytest-xdist pytest-timeout
+# Django settings: settings/__init__.py does `from .base import *` and base.py does
+# NOT import config.py, so inject the test DB + secret key into base.py itself (where
+# Django actually reads DATABASES) to run `manage.py test` without a DB server.
+RUN cp pytition/pytition/settings/config_example.py pytition/pytition/settings/config.py
+RUN printf "\\nSECRET_KEY = 'ci-test-secret-key'\\nDATABASES = {{'default': {{'ENGINE': 'django.db.backends.sqlite3', 'NAME': '/tmp/pytition_test.db'}}}}\\nMEDIA_ROOT = '/tmp/pytition_media'\\n" >> pytition/pytition/settings/base.py
 
 CMD ["/bin/bash"]
 """
@@ -101,17 +103,11 @@ class ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        # Pytition is a Django project: manage.py lives in the inner pytition/ dir,
+        # tests are Django unittests run via `manage.py test`.
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -138,8 +134,8 @@ exit 0
                 """#!/bin/bash
 set -e
 # Re-assert the base commit at PR-build time. Non-destructive on purpose: no `git reset`
-# (some bases carry intentional working-tree edits from their env setup) and no test run
-# (tests execute at instance time via run/test/fix-run.sh).
+# (this base carries intentional working-tree edits — injected Django settings in base.py)
+# and no test run (tests execute at instance time via run/test/fix-run.sh).
 cd /home/{pr.repo}
 git checkout {pr.base.sha}
 """.format(pr=self.pr),
@@ -148,9 +144,8 @@ git checkout {pr.base.sha}
                 ".",
                 "run.sh",
                 """#!/bin/bash
-cd /home/{pr.repo}
-pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tests/link/test_numba.py tests/scan/test_printing.py tests/tensor/nnet/test_batchnorm.py tests/tensor/test_basic.py tests/tensor/test_basic_opt.py tests/tensor/test_math.py tests/tensor/test_opt_uncanonicalize.py tests/tensor/test_shape.py tests/tensor/test_subtensor.py tests/tensor/test_subtensor_opt.py tests/tensor/test_type.py tests/test_rop.py
-
+cd /home/{pr.repo}/pytition
+python manage.py test -v 2
 """.format(pr=self.pr),
             ),
             File(
@@ -158,12 +153,12 @@ pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tes
                 "test-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
+if ! git apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tests/link/test_numba.py tests/scan/test_printing.py tests/tensor/nnet/test_batchnorm.py tests/tensor/test_basic.py tests/tensor/test_basic_opt.py tests/tensor/test_math.py tests/tensor/test_opt_uncanonicalize.py tests/tensor/test_shape.py tests/tensor/test_subtensor.py tests/tensor/test_subtensor_opt.py tests/tensor/test_type.py tests/test_rop.py
-
+cd /home/{pr.repo}/pytition
+python manage.py test -v 2
 """.format(pr=self.pr),
             ),
             File(
@@ -171,12 +166,12 @@ pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tes
                 "fix-run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-pytest -v -rA --continue-on-collection-errors -n auto tests/link/test_jax.py tests/link/test_numba.py tests/scan/test_printing.py tests/tensor/nnet/test_batchnorm.py tests/tensor/test_basic.py tests/tensor/test_basic_opt.py tests/tensor/test_math.py tests/tensor/test_opt_uncanonicalize.py tests/tensor/test_shape.py tests/tensor/test_subtensor.py tests/tensor/test_subtensor_opt.py tests/tensor/test_type.py tests/test_rop.py
-
+cd /home/{pr.repo}/pytition
+python manage.py test -v 2
 """.format(pr=self.pr),
             ),
         ]
@@ -197,8 +192,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("aesara-devs", "aesara_1073_to_741")
-class AESARA_1073_TO_741(Instance):
+@Instance.register("pytition", "Pytition")
+class Pytition(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -212,50 +207,36 @@ class AESARA_1073_TO_741(Instance):
         return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
-        if run_cmd:
-            return run_cmd
-
-        return "bash /home/run.sh"
+        return run_cmd or "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        if test_patch_run_cmd:
-            return test_patch_run_cmd
-
-        return "bash /home/test-run.sh"
+        return test_patch_run_cmd or "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        if fix_patch_run_cmd:
-            return fix_patch_run_cmd
-
-        return "bash /home/fix-run.sh"
+        return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
-        import re
+        # Django unittest runner (verbosity 2) prints:
+        #   test_method (module.ClassName) ... ok
+        #   test_method (module.ClassName) ... FAIL
+        #   test_method (module.ClassName) ... ERROR
+        #   test_method (module.ClassName) ... skipped 'reason'
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        # Parse log content by lines to capture test statuses and names
-        pattern = (
-            r"(?:\[\w+\]\s+\[\s*\d+%\]\s+)?(PASSED|FAILED|SKIPPED)\s+(.+?)(?:\s+-|$)"
-        )
-        for line in log.split("\n"):
-            match = re.search(pattern, line)
-            if match:
-                status = match.group(1)
-                test_name = match.group(2).strip()
-                if status == "PASSED":
-                    passed_tests.add(test_name)
-                elif status == "FAILED":
-                    failed_tests.add(test_name)
-                elif status == "SKIPPED":
-                    skipped_tests.add(test_name)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+        line_re = re.compile(r"^(test\S*\s+\([^)]+\))\s+\.\.\.\s+(ok|FAIL|ERROR|skipped)", re.IGNORECASE)
+        for raw in log.split("\n"):
+            m = line_re.match(raw.strip())
+            if not m:
+                continue
+            name, status = m.group(1), m.group(2).lower()
+            if status == "ok":
+                passed_tests.add(name)
+            elif status in ("fail", "error"):
+                failed_tests.add(name)
+            elif status == "skipped":
+                skipped_tests.add(name)
 
         return TestResult(
             passed_count=len(passed_tests),
