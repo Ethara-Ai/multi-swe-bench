@@ -1,7 +1,12 @@
 import re
 from typing import Optional, Union
-import textwrap
-from multi_swe_bench.harness.image import Config, File, Image
+
+from multi_swe_bench.harness.image import (
+    Config,
+    File,
+    Image,
+    _safe_path_component,
+)
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -16,16 +21,18 @@ def _filter_binary_patches(patch_content: str) -> str:
     if not patch_content:
         return patch_content
 
-    lines = patch_content.split('\n')
+    lines = patch_content.split("\n")
     result = []
     i = 0
     while i < len(lines):
-        if lines[i].startswith('diff --git'):
+        if lines[i].startswith("diff --git"):
             section_start = i
             i += 1
             is_binary = False
-            while i < len(lines) and not lines[i].startswith('diff --git'):
-                if lines[i].startswith('GIT binary patch') or lines[i].startswith('Binary files'):
+            while i < len(lines) and not lines[i].startswith("diff --git"):
+                if lines[i].startswith("GIT binary patch") or lines[i].startswith(
+                    "Binary files"
+                ):
                     is_binary = True
                 i += 1
             if not is_binary:
@@ -33,7 +40,7 @@ def _filter_binary_patches(patch_content: str) -> str:
         else:
             result.append(lines[i])
             i += 1
-    return '\n'.join(result)
+    return "\n".join(result)
 
 
 class Glide5000To99999ImageBase(Image):
@@ -66,15 +73,30 @@ class Glide5000To99999ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org = _safe_path_component(self.pr.org, "org")
+        repo = _safe_path_component(self.pr.repo)
 
-        return f"""FROM {image_name}
+        # SHARED base (tag "base-jdk17", ONE image reused by every PR in this era):
+        # JDK + Android SDK only, SOURCE-FREE by design. Same rationale as the
+        # era-1 registry: a base shared by several base.shas cannot host the
+        # hardening block, and cloning here made
+        # DockerfileEnhancer._inject_final_sanitize append it to the SHARED image.
+        # The `# syntax` directive keeps the proxy/CA scaffolding out; the
+        # reference-format markers it would otherwise inject are supplied below.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 {self.global_env}
 
 ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
@@ -141,14 +163,13 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \\
 
 # Era 2 (PRs 5000+) uses Gradle 8.x with settings-level repo management.
 # The project build.gradle already has google(), mavenCentral(), gradlePluginPortal().
-# An init.gradle with allprojects { repositories } conflicts with PREFER_SETTINGS mode,
+# An init.gradle with allprojects {{ repositories }} conflicts with PREFER_SETTINGS mode,
 # so we intentionally leave init.gradle empty for this era.
 RUN mkdir -p /root/.gradle && rm -f /root/.gradle/init.gradle
 
-{code}
-
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -175,6 +196,11 @@ class Glide5000To99999ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        # repo/sha land in `cd` and `git checkout` lines that run as root in the
+        # build and in every evaluation container -- validate before interpolating.
+        repo = _safe_path_component(self.pr.repo)
+        sha = _safe_path_component(self.pr.base.sha, "base commit")
+
         filtered_fix_patch = _filter_binary_patches(self.pr.fix_patch)
         filtered_test_patch = _filter_binary_patches(self.pr.test_patch)
 
@@ -216,13 +242,13 @@ exit 0
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout {sha}
 bash /home/check_git_changes.sh
 ./gradlew test testDebugUnitTest --continue || true
-""".format(pr=self.pr),
+""".format(repo=repo, sha=sha),
             ),
             File(
                 ".",
@@ -230,10 +256,10 @@ bash /home/check_git_changes.sh
                 """#!/bin/bash
 set -eo pipefail
 
-cd /home/{pr.repo}
+cd /home/{repo}
 ./gradlew test testDebugUnitTest --continue
 
-""".format(pr=self.pr),
+""".format(repo=repo, sha=sha),
             ),
             File(
                 ".",
@@ -241,11 +267,11 @@ cd /home/{pr.repo}
                 """#!/bin/bash
 set -eo pipefail
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch
 ./gradlew test testDebugUnitTest --continue
 
-""".format(pr=self.pr),
+""".format(repo=repo, sha=sha),
             ),
             File(
                 ".",
@@ -253,11 +279,11 @@ git apply --whitespace=nowarn /home/test.patch
                 """#!/bin/bash
 set -eo pipefail
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 ./gradlew test testDebugUnitTest --continue
 
-""".format(pr=self.pr),
+""".format(repo=repo, sha=sha),
             ),
         ]
 
@@ -266,63 +292,71 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
         name = image.image_name()
         tag = image.image_tag()
 
+        org = _safe_path_component(self.pr.org, "org")
+        repo = _safe_path_component(self.pr.repo)
+        sha = _safe_path_component(self.pr.base.sha, "base commit")
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
+        # Clone + checkout + harden inside a discarded `fetch` STAGE. Layers are
+        # additive, so a `git clone` layer keeps the full-history packfile no
+        # matter what a later RUN prunes -- `git gc` in a subsequent layer only
+        # stacks a whiteout over it, and `docker save` still yields every
+        # post-base-commit upstream fix. Copying only the pruned tree forward is
+        # what makes the guarantee hold on the shipped artifact.
+        #
+        # dependency() returns an Image, so the enhancer emits this verbatim and
+        # build_dataset passes no REPO_URL / BASE_COMMIT build args; we declare
+        # them here with this PR's values, named exactly as the block expects.
+        # The block is emitted verbatim from image.py, never rewritten.
+        #
+        # No Gradle proxy scaffolding is written.
+        hardening = Image._HARDENING_BLOCK.rstrip("\n")
 
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
+        return f"""FROM {name}:{tag} AS fetch
 
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p ~/.gradle && \\
-                        if [ ! -f "$HOME/.gradle/gradle.properties" ]; then \\
-                            touch "$HOME/.gradle/gradle.properties"; \\
-                        fi && \\
-                        if ! grep -q "systemProp.http.proxyHost" "$HOME/.gradle/gradle.properties"; then \\
-                            echo 'systemProp.http.proxyHost={proxy_host}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.http.proxyPort={proxy_port}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.https.proxyHost={proxy_host}' >> "$HOME/.gradle/gradle.properties" && \\
-                            echo 'systemProp.https.proxyPort={proxy_port}' >> "$HOME/.gradle/gradle.properties"; \\
-                        fi && \\
-                        echo 'export GRADLE_USER_HOME=/root/.gradle' >> ~/.bashrc && \\
-                        /bin/bash -c "source ~/.bashrc"
-                """
-                )
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT="{sha}"
 
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f ~/.gradle/gradle.properties
-                """
-                )
-        return f"""FROM {name}:{tag}
+WORKDIR /home/
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+RUN git submodule update --init --recursive || true
+
+{hardening}
+
+
+FROM {name}:{tag}
+
+ARG BASE_COMMIT="{sha}"
 
 {self.global_env}
 
-{proxy_setup}
+COPY --from=fetch /home/{repo} /home/{repo}
+
+WORKDIR /home/{repo}
+
+# Re-assert the invariants on what actually shipped.
+RUN set -eux; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
 {copy_commands}
 
-{prepare_commands}
-
-{proxy_cleanup}
+RUN bash /home/prepare.sh
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -413,3 +447,26 @@ class Glide5000To99999(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Era 5000+: every bundle whose lead PR falls in this era routes to Glide5000To99999.
+#
+# The key is the bundle PR numbers joined with "-", NOT a low-high range:
+# these bundles are non-contiguous, so a range would silently claim PRs the
+# bundle never contained (e.g. 5572-5672 would imply 101 PRs for a 14-PR
+# bundle) and could collide with a neighbouring bundle.
+#
+# Instance.create() looks up f"{org}/{pr.number_interval}" whenever
+# number_interval is non-empty. Without these registrations every bundled
+# record raises "Instance ... is not registered" -- the bare key
+# "bumptech/glide" is registered by neither era module.
+#
+# Data-derived from bumptech__glide_lht_final.jsonl -- regenerate if the
+# bundles change.
+_BUNDLE_NIS_GLIDE_5000_TO_99999 = [
+    "5572-5610-5613-5618-5621-5622-5627-5628-5636-5637-5639-5668-5669-5672",
+    "5598-5600-5606-5607",
+]
+for _ni in _BUNDLE_NIS_GLIDE_5000_TO_99999:
+    Instance.register("bumptech", _ni)(Glide5000To99999)
