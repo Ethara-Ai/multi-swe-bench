@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Optional, Union
 
@@ -25,7 +26,7 @@ exit 0
 """
 
 
-class ServerlessBundleImageBase(Image):
+class ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -39,7 +40,7 @@ class ServerlessBundleImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:14"
+        return "node:12-bullseye"
 
     def image_tag(self) -> str:
         return "base"
@@ -64,6 +65,22 @@ class ServerlessBundleImageBase(Image):
 
 {self.global_env}
 
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        ca-certificates git curl gnupg tzdata \\
+        libssl1.1 libcurl4 \\
+    && rm -rf /var/lib/apt/lists/*
+
+# MongoDB 4.4 does not publish arm64 packages for Debian. Copy the mongod/mongo
+# binaries from the multi-arch official mongo:4.4 image (Ubuntu focal under the
+# hood) instead. Runtime deps satisfied by libssl1.1 + libcurl4 above.
+COPY --from=mongo:4.4 /usr/bin/mongod /usr/local/bin/mongod
+COPY --from=mongo:4.4 /usr/bin/mongo  /usr/local/bin/mongo
+
+RUN mkdir -p /data/db /var/log/mongodb
+
 WORKDIR /home/
 
 {code}
@@ -87,7 +104,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return ServerlessBundleImageBase(self.pr, self._config)
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -123,8 +140,8 @@ git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
-npm install || true
-npm install -g serverless@2 || true
+
+npm install --no-audit --no-fund --loglevel=error || true
 
 """.format(pr=self.pr),
             ),
@@ -132,43 +149,79 @@ npm install -g serverless@2 || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
-
 cd /home/{pr.repo}
-npm test -- --verbose --no-color
 
+mongod --fork --logpath /var/log/mongodb/mongod.log --dbpath /data/db --bind_ip 127.0.0.1 > /dev/null 2>&1 || true
+for i in $(seq 1 30); do
+  if mongo --quiet --eval 'db.runCommand({{ ping: 1 }}).ok' 127.0.0.1:27017/test 2>/dev/null | grep -q '^1$'; then
+    break
+  fi
+  sleep 1
+done
+
+export ATLAS_URI="mongodb://127.0.0.1:27017/test"
+export PORT=3001
+export CI=true
+
+cd backend
+../node_modules/.bin/mocha --reporter json --timeout 15000 --exit 2>&1; echo "TEST_DONE_WITH_EXIT: $?"
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
-
 cd /home/{pr.repo}
-if ! git apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply test.patch failed" >&2
-    exit 1
-fi
-npm test -- --verbose --no-color
+git apply --whitespace=nowarn /home/test.patch || {{
+  echo "Warning: git apply failed cleanly, retrying with --reject"
+  git apply --reject --whitespace=nowarn /home/test.patch || true
+  find . -name '*.rej' -delete
+}}
 
+mongod --fork --logpath /var/log/mongodb/mongod.log --dbpath /data/db --bind_ip 127.0.0.1 > /dev/null 2>&1 || true
+for i in $(seq 1 30); do
+  if mongo --quiet --eval 'db.runCommand({{ ping: 1 }}).ok' 127.0.0.1:27017/test 2>/dev/null | grep -q '^1$'; then
+    break
+  fi
+  sleep 1
+done
+
+export ATLAS_URI="mongodb://127.0.0.1:27017/test"
+export PORT=3001
+export CI=true
+
+cd backend
+../node_modules/.bin/mocha --reporter json --timeout 15000 --exit 2>&1; echo "TEST_DONE_WITH_EXIT: $?"
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
-
 cd /home/{pr.repo}
-if ! git apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply test.patch failed" >&2
-    exit 1
-fi
-git apply --whitespace=nowarn --exclude='package-lock.json' /home/fix.patch
-npm install
-npm test -- --verbose --no-color
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch || {{
+  echo "Warning: combined git apply failed, retrying patches individually with --reject"
+  git apply --reject --whitespace=nowarn /home/test.patch || true
+  git apply --reject --whitespace=nowarn /home/fix.patch || true
+  find . -name '*.rej' -delete
+}}
 
+npm install --no-audit --no-fund --loglevel=error || true
+
+mongod --fork --logpath /var/log/mongodb/mongod.log --dbpath /data/db --bind_ip 127.0.0.1 > /dev/null 2>&1 || true
+for i in $(seq 1 30); do
+  if mongo --quiet --eval 'db.runCommand({{ ping: 1 }}).ok' 127.0.0.1:27017/test 2>/dev/null | grep -q '^1$'; then
+    break
+  fi
+  sleep 1
+done
+
+export ATLAS_URI="mongodb://127.0.0.1:27017/test"
+export PORT=3001
+export CI=true
+
+cd backend
+../node_modules/.bin/mocha --reporter json --timeout 15000 --exit 2>&1; echo "TEST_DONE_WITH_EXIT: $?"
 """.format(pr=self.pr),
             ),
         ]
@@ -197,8 +250,8 @@ npm test -- --verbose --no-color
 """
 
 
-@Instance.register("AnomalyInnovations", "serverless-bundle")
-class ServerlessBundle(Instance):
+@Instance.register("csc302-spring-2020", "proj-FakeBirds")
+class ProjFakeBirds(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -208,53 +261,72 @@ class ServerlessBundle(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Image:
+    def dependency(self) -> Optional[Image]:
         return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        passed_pattern = re.compile(
-            r"^\s*✓\s+(.*?)\s+\(\d+\s*m?s\)\s*$", re.MULTILINE
-        )
-        for match in passed_pattern.finditer(test_log):
-            test_name = match.group(1).strip()
-            if test_name:
-                passed_tests.add(test_name)
+        depth = 0
+        start: Optional[int] = None
+        json_blocks: list[str] = []
+        for i, ch in enumerate(clean_log):
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        json_blocks.append(clean_log[start : i + 1])
+                        start = None
 
-        failed_pattern = re.compile(
-            r"^\s*✕\s+(.*?)\s+\(\d+\s*m?s\)\s*$", re.MULTILINE
-        )
-        for match in failed_pattern.finditer(test_log):
-            test_name = match.group(1).strip()
-            if test_name:
-                failed_tests.add(test_name)
+        for block in json_blocks:
+            try:
+                data = json.loads(block)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
 
-        skipped_pattern = re.compile(r"^\s*○\s+(.*)$", re.MULTILINE)
-        for match in skipped_pattern.finditer(test_log):
-            test_name = match.group(1).strip()
-            if test_name:
-                skipped_tests.add(test_name)
+            for test in data.get("passes", []) or []:
+                title = test.get("fullTitle") or test.get("title") or ""
+                if title:
+                    passed_tests.add(title)
+
+            for test in data.get("failures", []) or []:
+                title = test.get("fullTitle") or test.get("title") or ""
+                if title:
+                    failed_tests.add(title)
+
+            for test in data.get("pending", []) or []:
+                title = test.get("fullTitle") or test.get("title") or ""
+                if title:
+                    skipped_tests.add(title)
+
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

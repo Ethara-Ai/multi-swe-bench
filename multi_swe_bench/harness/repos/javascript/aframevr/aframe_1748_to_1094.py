@@ -7,6 +7,83 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+_CHECK_GIT_CHANGES_SH = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+"""
+
+
+class ImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return "node:18-bullseye"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        return f"""FROM {image_name}
+
+{self.global_env}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \\
+    && apt-get install -y --no-install-recommends \\
+       git ca-certificates firefox-esr xvfb xauth \\
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /home/
+
+{code}
+
+{self.clear_env}
+
+"""
+
+
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -20,8 +97,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "node:18-bullseye"
+    def dependency(self) -> Image | None:
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -33,116 +110,84 @@ class ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        repo_name = self.pr.repo
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
+            File(".", "fix.patch", self.pr.fix_patch),
+            File(".", "test.patch", self.pr.test_patch),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
             File(
                 ".",
                 "prepare.sh",
-                """apt-get update
-###ACTION_DELIMITER###
-apt-get install -y firefox-esr chromium-browser
-###ACTION_DELIMITER###
-apt-get install -y firefox-esr chromium
-###ACTION_DELIMITER###
-npm install
-###ACTION_DELIMITER###
-npm install --legacy-peer-deps
-###ACTION_DELIMITER###
-npm test -- --browsers ChromeHeadless,FirefoxHeadless --single-run
-###ACTION_DELIMITER###
-apt-get install -y xvfb
-###ACTION_DELIMITER###
-xvfb-run npm test -- --browsers Chrome,firefox_latest --single-run
-###ACTION_DELIMITER###
-xvfb-run npm test -- --browsers Chromium,Firefox --single-run --verbose
-###ACTION_DELIMITER###
-echo 'xvfb-run npm test -- --browsers Firefox --single-run --verbose' > /home/aframe/test_commands.sh""",
+                """#!/bin/bash
+set -e
+
+cd /home/{pr.repo}
+git reset --hard
+bash /home/check_git_changes.sh
+git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
+npm install --no-audit --no-fund || npm install --legacy-peer-deps --no-audit --no-fund
+
+""".format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-cd /home/[[REPO_NAME]]
-xvfb-run npm test -- --browsers Firefox --single-run --verbose
+set -e
 
-""".replace("[[REPO_NAME]]", repo_name),
+cd /home/{pr.repo}
+export CI=true
+xvfb-run npm test -- --browsers Firefox --single-run --verbose 2>&1; echo "TEST_DONE_WITH_EXIT: $?"
+""".format(pr=self.pr),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-xvfb-run npm test -- --browsers Firefox --single-run --verbose
+set -e
 
-""".replace("[[REPO_NAME]]", repo_name),
+cd /home/{pr.repo}
+export CI=true
+git apply --whitespace=nowarn /home/test.patch
+xvfb-run npm test -- --browsers Firefox --single-run --verbose 2>&1; echo "TEST_DONE_WITH_EXIT: $?"
+
+""".format(pr=self.pr),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-xvfb-run npm test -- --browsers Firefox --single-run --verbose
+set -e
 
-""".replace("[[REPO_NAME]]", repo_name),
+cd /home/{pr.repo}
+export CI=true
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+xvfb-run npm test -- --browsers Firefox --single-run --verbose 2>&1; echo "TEST_DONE_WITH_EXIT: $?"
+
+""".format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        return f"""FROM {name}:{tag}
 
-# Choose an appropriate base image based on the project's requirements - replace node:18-bullseye with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM node:18-bullseye
+{self.global_env}
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/aframevr/aframe.git /home/aframe
-
-WORKDIR /home/aframe
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+
+RUN bash /home/prepare.sh
+
+{self.clear_env}
+
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("aframevr", "aframe_1748_to_1094")

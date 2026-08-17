@@ -83,7 +83,17 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:10-buster"
+        # node:12-bullseye - reveal.js 2.x era's Gruntfile targets `grunt-contrib-qunit
+        # ~0.2.2`, whose phantomjs 1.9.20 dep has no arm64 binary and whose
+        # install.js aborts on non-x86_64. Rather than pin the whole image to
+        # linux/amd64 (native-arch chromium is available), we replace the grunt
+        # qunit task at runtime with a puppeteer-based runner (see run-qunit.js
+        # File below) that drives the same test/*.html files against the
+        # apt-installed chromium binary. Node 12 stays because grunt 0.4.5 still
+        # loads its Gruntfile cleanly under it. Bullseye stays because its apt
+        # repos are still on deb.debian.org (buster/stretch/jessie moved to
+        # archive.debian.org and the framework's default apt path breaks there).
+        return "node:12-bullseye"
 
     def image_tag(self) -> str:
         return "base"
@@ -114,48 +124,21 @@ class ImageBase(Image):
                 f"    test -d /home/{REPO_DIR}/.git"
             )
         else:
-            fetch = f"COPY {self.pr.repo} /home/{REPO_DIR}"
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        # Hand-written infra block: the `# syntax` directive opts this
-        # Dockerfile out of DockerfileEnhancer entirely (see module docstring),
-        # so nothing below is injected for us and it must stay in sync with the
-        # enhancer's reference format.
-        sections = [
-            DockerfileEnhancer.SYNTAX_DIRECTIVE,
-            f"FROM {base_img}",
-            "ARG TARGETARCH\n" f'ARG REPO_URL="{repo_url}"\n' "ARG BASE_COMMIT",
-            "ENV DEBIAN_FRONTEND=noninteractive \\\n"
-            "    LANG=C.UTF-8 \\\n"
-            "    LC_ALL=C.UTF-8 \\\n"
-            "    TZ=UTC",
-            f'LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\\n'
-            f'      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\\n'
-            f'      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\\n'
-            f'      org.opencontainers.image.authors="https://www.ethara.ai/"',
-        ]
+        return f"""FROM {image_name}
 
-        if self.global_env:
-            sections.append(self.global_env)
+{self.global_env}
 
-        sections.append("WORKDIR /home/")
-        sections.append(_APT_COMMAND)
-        sections.append("RUN npm install -g grunt-cli")
-        sections.append(
-            "ENV PUPPETEER_SKIP_DOWNLOAD=true\n"
-            "ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium\n"
-            "ENV CHROME_BIN=/usr/bin/chromium"
-        )
-        sections.append(_GIT_RESILIENCY)
-        sections.append(fetch)
-        sections.append(f"WORKDIR /home/{REPO_DIR}")
-        sections.append(_LIGHT_HARDENING)
+WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends git chromium ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN npm install -g grunt-cli
 
-        if self.clear_env:
-            sections.append(self.clear_env)
+{code}
 
-        sections.append('CMD ["/bin/bash"]')
+{self.clear_env}
 
-        return "\n\n".join(sections) + "\n"
+"""
 
 
 class ImageDefault(Image):
@@ -216,6 +199,96 @@ exit 0
             ),
             File(
                 ".",
+                "run-qunit.js",
+                """#!/usr/bin/env node
+const puppeteer = require('puppeteer');
+const path = require('path');
+const fs = require('fs');
+
+const TEST_DIR = 'test';
+const PER_FILE_TIMEOUT_MS = 30000;
+const CHROMIUM = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+
+(async () => {
+    const files = fs.readdirSync(TEST_DIR).filter(f => f.endsWith('.html'));
+    if (files.length === 0) {
+        console.log('run-qunit: no test/*.html files found');
+        process.exit(0);
+    }
+
+    let browser;
+    try {
+        browser = await puppeteer.launch({
+            executablePath: CHROMIUM,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+            headless: true,
+        });
+    } catch (e) {
+        console.log('run-qunit: FAILED to launch chromium at ' + CHROMIUM + ': ' + e.message);
+        process.exit(1);
+    }
+
+    let exitCode = 0;
+    for (const file of files) {
+        const relFile = TEST_DIR + '/' + file;
+        const fileUrl = 'file://' + path.resolve(TEST_DIR, file);
+        let result;
+        let page;
+        try {
+            page = await browser.newPage();
+            page.setDefaultTimeout(PER_FILE_TIMEOUT_MS);
+            await page.goto(fileUrl, { waitUntil: 'load', timeout: PER_FILE_TIMEOUT_MS });
+            result = await page.evaluate((timeoutMs) => {
+                return new Promise((resolve) => {
+                    const deadline = Date.now() + timeoutMs - 2000;
+                    (function poll() {
+                        const el = document.getElementById('qunit-testresult');
+                        if (el && el.textContent) {
+                            const m = el.textContent.match(/(\\d+)\\s+(?:assertions?|tests?)\\s+of\\s+(\\d+)\\s+passed,\\s*(\\d+)\\s+failed/);
+                            if (m) {
+                                return resolve({
+                                    passed: parseInt(m[1], 10),
+                                    total: parseInt(m[2], 10),
+                                    failed: parseInt(m[3], 10),
+                                });
+                            }
+                        }
+                        if (Date.now() > deadline) {
+                            return resolve({ error: (typeof QUnit === 'undefined') ? 'QUnit_not_loaded' : 'timeout' });
+                        }
+                        setTimeout(poll, 100);
+                    })();
+                });
+            }, PER_FILE_TIMEOUT_MS);
+        } catch (e) {
+            result = { error: e.message };
+        } finally {
+            if (page) { try { await page.close(); } catch (_) {} }
+        }
+
+        const failed = (result && result.failed) || 0;
+        const total = (result && result.total) || 0;
+        const passed = (result && result.passed) || 0;
+
+        if (result && !result.error && failed === 0 && total > 0) {
+            console.log('Testing ' + relFile + ' ..... OK (' + passed + '/' + total + ')');
+        } else {
+            const reason = (result && result.error) || (failed + ' failed');
+            console.log('Testing ' + relFile + ' ..... FAILED (' + passed + '/' + total + ') [' + reason + ']');
+            exitCode = 1;
+        }
+    }
+
+    try { await browser.close(); } catch (_) {}
+    process.exit(exitCode);
+})().catch((e) => {
+    console.error('run-qunit: uncaught: ' + e.message);
+    process.exit(1);
+});
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 # Build-time only. Pins the working tree to THIS PR's ${{BASE_COMMIT}} -- not a
@@ -231,16 +304,12 @@ test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"
 export PUPPETEER_SKIP_DOWNLOAD=true
 export PUPPETEER_EXECUTABLE_PATH=$(which chromium || which chromium-browser || echo /usr/bin/chromium)
 export CHROMIUM_BIN=$PUPPETEER_EXECUTABLE_PATH
-# PhantomJS 2.1.1 (grunt-contrib-qunit 1.x, what reveal.js v3.x pins) is linked
-# against OpenSSL 1.0. Against a 1.1.1 runtime it reads /etc/ssl/openssl.cnf,
-# fails to dlopen libssl_conf.so for the `ssl_conf` module, and aborts on the
-# FIRST test file -- grunt prints "Testing <file>" but no browser ever starts,
-# so every stage captures ZERO tests. An empty OPENSSL_CONF skips that config.
-export OPENSSL_CONF=/dev/null
 
-npm install || true
+npm install --no-audit --no-fund || true
 
-""".format(repo_dir=REPO_DIR),
+npm install --no-save --no-audit --no-fund --ignore-scripts puppeteer@10.4.0
+
+""".format(pr=self.pr),
             ),
             File(
                 ".",
@@ -252,13 +321,12 @@ cd /home/{pr.repo}
 export PUPPETEER_SKIP_DOWNLOAD=true
 export PUPPETEER_EXECUTABLE_PATH=$(which chromium || which chromium-browser || echo /usr/bin/chromium)
 export CHROMIUM_BIN=$PUPPETEER_EXECUTABLE_PATH
-# PhantomJS 2.1.1 (grunt-contrib-qunit 1.x, what reveal.js v3.x pins) is linked
-# against OpenSSL 1.0. Against a 1.1.1 runtime it reads /etc/ssl/openssl.cnf,
-# fails to dlopen libssl_conf.so for the `ssl_conf` module, and aborts on the
-# FIRST test file -- grunt prints "Testing <file>" but no browser ever starts,
-# so every stage captures ZERO tests. An empty OPENSSL_CONF skips that config.
-export OPENSSL_CONF=/dev/null
-grunt test 2>&1 || true
+# grunt from PATH (base image installs grunt-cli globally). NODE_PATH lets
+# /home/run-qunit.js require('puppeteer') resolve to /home/reveal.js/node_modules/,
+# since Node's module search starts from the SCRIPT's dir (/home/), not CWD.
+export NODE_PATH=/home/reveal.js/node_modules
+grunt jshint 2>&1 || true
+node /home/run-qunit.js 2>&1 || true
 """.format(pr=self.pr),
             ),
             File(
@@ -278,8 +346,15 @@ export CHROMIUM_BIN=$PUPPETEER_EXECUTABLE_PATH
 # so every stage captures ZERO tests. An empty OPENSSL_CONF skips that config.
 export OPENSSL_CONF=/dev/null
 git apply --reject --whitespace=nowarn /home/test.patch || true
-npm install || true
-grunt test 2>&1 || true
+# --ignore-scripts skips node-sass@0.9.x's node-gyp postinstall which hangs indefinitely under emulation.
+timeout 300 npm install --ignore-scripts --no-audit --no-fund 2>&1 || true
+npm install --no-save --no-audit --no-fund --ignore-scripts puppeteer@10.4.0 2>&1 || true
+# grunt from PATH (base image installs grunt-cli globally). NODE_PATH lets
+# /home/run-qunit.js require('puppeteer') resolve to /home/reveal.js/node_modules/,
+# since Node's module search starts from the SCRIPT's dir (/home/), not CWD.
+export NODE_PATH=/home/reveal.js/node_modules
+grunt jshint 2>&1 || true
+node /home/run-qunit.js 2>&1 || true
 
 """.format(pr=self.pr),
             ),
@@ -300,8 +375,15 @@ export CHROMIUM_BIN=$PUPPETEER_EXECUTABLE_PATH
 # so every stage captures ZERO tests. An empty OPENSSL_CONF skips that config.
 export OPENSSL_CONF=/dev/null
 git apply --reject --whitespace=nowarn /home/test.patch /home/fix.patch || true
-npm install || true
-grunt test 2>&1 || true
+# --ignore-scripts skips node-sass@0.9.x's node-gyp postinstall which hangs indefinitely under emulation.
+timeout 300 npm install --ignore-scripts --no-audit --no-fund 2>&1 || true
+npm install --no-save --no-audit --no-fund --ignore-scripts puppeteer@10.4.0 2>&1 || true
+# grunt from PATH (base image installs grunt-cli globally). NODE_PATH lets
+# /home/run-qunit.js require('puppeteer') resolve to /home/reveal.js/node_modules/,
+# since Node's module search starts from the SCRIPT's dir (/home/), not CWD.
+export NODE_PATH=/home/reveal.js/node_modules
+grunt jshint 2>&1 || true
+node /home/run-qunit.js 2>&1 || true
 
 """.format(pr=self.pr),
             ),

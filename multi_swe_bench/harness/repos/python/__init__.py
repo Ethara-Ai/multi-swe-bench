@@ -77,6 +77,7 @@ from multi_swe_bench.harness.repos.python.ethyca import *
 from multi_swe_bench.harness.repos.python.exercism import *
 from multi_swe_bench.harness.repos.python.explosion import *
 from multi_swe_bench.harness.repos.python.F5Networks import *
+from multi_swe_bench.harness.repos.python.facebookincubator import *
 from multi_swe_bench.harness.repos.python.facebookresearch import *
 from multi_swe_bench.harness.repos.python.falconry import *
 from multi_swe_bench.harness.repos.python.fastapi import *
@@ -89,6 +90,7 @@ from multi_swe_bench.harness.repos.python.fractal_analytics_platform import *
 from multi_swe_bench.harness.repos.python.freedomofpress import *
 from multi_swe_bench.harness.repos.python.freqtrade import *
 from multi_swe_bench.harness.repos.python.frictionlessdata import *
+from multi_swe_bench.harness.repos.python.funilrys import *
 from multi_swe_bench.harness.repos.python.galaxyproject import *
 from multi_swe_bench.harness.repos.python.gammapy import *
 from multi_swe_bench.harness.repos.python.GenericMappingTools import *
@@ -226,6 +228,7 @@ from multi_swe_bench.harness.repos.python.pypa import *
 from multi_swe_bench.harness.repos.python.pyscf import *
 from multi_swe_bench.harness.repos.python.pytest_dev import *
 from multi_swe_bench.harness.repos.python.python import *
+from multi_swe_bench.harness.repos.python.python_caldav import *
 from multi_swe_bench.harness.repos.python.python_cmd2 import *
 from multi_swe_bench.harness.repos.python.python_pillow import *
 from multi_swe_bench.harness.repos.python.python_poetry import *

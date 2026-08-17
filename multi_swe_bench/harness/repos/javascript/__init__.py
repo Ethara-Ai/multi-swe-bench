@@ -30,6 +30,7 @@ from multi_swe_bench.harness.repos.javascript.carbon_design_system import *
 from multi_swe_bench.harness.repos.javascript.carbondesignsystem import *
 from multi_swe_bench.harness.repos.javascript.cfpb import *
 from multi_swe_bench.harness.repos.javascript.chaijs import *
+from multi_swe_bench.harness.repos.javascript.chakra_core import *
 from multi_swe_bench.harness.repos.javascript.chalk import *
 from multi_swe_bench.harness.repos.javascript.char0n import *
 from multi_swe_bench.harness.repos.javascript.chartjs import *
@@ -41,6 +42,7 @@ from multi_swe_bench.harness.repos.javascript.commercetools import *
 from multi_swe_bench.harness.repos.javascript.compasjs import *
 from multi_swe_bench.harness.repos.javascript.COVID_19_electronic_health_system import *
 from multi_swe_bench.harness.repos.javascript.CraveFood import *
+from multi_swe_bench.harness.repos.javascript.csc302_spring_2020 import *
 from multi_swe_bench.harness.repos.javascript.cuttle_cards import *
 from multi_swe_bench.harness.repos.javascript.CVEProject import *
 from multi_swe_bench.harness.repos.javascript.cylc import *
@@ -79,10 +81,12 @@ from multi_swe_bench.harness.repos.javascript.Kong import *
 from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
 from multi_swe_bench.harness.repos.javascript.LiskHQ import *
 from multi_swe_bench.harness.repos.javascript.lodash import *
+from multi_swe_bench.harness.repos.javascript.lokus_ai import *
 from multi_swe_bench.harness.repos.javascript.ManifoldScholar import *
 from multi_swe_bench.harness.repos.javascript.markedjs import *
 from multi_swe_bench.harness.repos.javascript.mde import *
 from multi_swe_bench.harness.repos.javascript.mattermost import *
+from multi_swe_bench.harness.repos.javascript.microsoft import *
 from multi_swe_bench.harness.repos.javascript.motdotla import *
 from multi_swe_bench.harness.repos.javascript.mozilla import *
 from multi_swe_bench.harness.repos.javascript.mochajs import *
@@ -120,6 +124,7 @@ from multi_swe_bench.harness.repos.javascript.terser import *
 from multi_swe_bench.harness.repos.javascript.testing_library import *
 from multi_swe_bench.harness.repos.javascript.tj import *
 from multi_swe_bench.harness.repos.javascript.trekhleb import *
+from multi_swe_bench.harness.repos.javascript.tshaddix import *
 from multi_swe_bench.harness.repos.javascript.TryGhost import *
 from multi_swe_bench.harness.repos.javascript.vercel.next_js import *
 from multi_swe_bench.harness.repos.javascript.videojs import *
