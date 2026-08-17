@@ -117,6 +117,7 @@ from multi_swe_bench.harness.repos.typescript.pmndrs import *
 from multi_swe_bench.harness.repos.typescript.prettier import *
 from multi_swe_bench.harness.repos.typescript.prettier_solidity import *
 from multi_swe_bench.harness.repos.typescript.PrismJS import *
+from multi_swe_bench.harness.repos.typescript.public_convenience_ltd import *
 from multi_swe_bench.harness.repos.typescript.puppeteer import *
 from multi_swe_bench.harness.repos.typescript.reacthookform import *
 from multi_swe_bench.harness.repos.typescript.realm import *
