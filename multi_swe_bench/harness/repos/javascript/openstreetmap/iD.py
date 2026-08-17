@@ -6,9 +6,11 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class TelescopeImageBase(Image):
-    """Repo-level base: node + cloned/checked-out source + npm install.
-    Old envagent registry never installed deps (install lived only in the unused prepare.sh)."""
+class IDImageBase(Image):
+    """Repo-level base: node + Chromium (headless, --no-sandbox) + build + npm install.
+    iD's karma runs specs in ChromeHeadless; in a root container Chrome needs --no-sandbox,
+    injected via a CHROME_BIN wrapper. karma-spec-reporter is added so per-test names are
+    emitted (the repo's default 'progress' reporter only prints summaries)."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -23,9 +25,7 @@ class TelescopeImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # telescope @ this era: jest 24.9, node>=10. node:14 (debian, not alpine) for
-        # native-module compatibility. No `sharp` dep at this commit.
-        return "node:14-bullseye"
+        return "node:18-bullseye"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -53,19 +53,26 @@ WORKDIR /home/
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
-# feed-processor.test.js transitively pulls node-canvas (native): needs cairo/pango/jpeg/gif/rsvg
-# dev libs + build toolchain, else `build/Release/canvas.node` is missing at test load.
-RUN apt-get update && apt-get install -y \
-    git build-essential pkg-config python3 \
-    libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git chromium && rm -rf /var/lib/apt/lists/*
+
+# Chrome refuses to run as root without --no-sandbox; wrap the binary so karma's
+# ChromeHeadless launcher picks it up via CHROME_BIN.
+RUN printf '#!/bin/bash\\nexec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage --disable-gpu "$@"\\n' > /usr/local/bin/chrome-headless \\
+    && chmod +x /usr/local/bin/chrome-headless
+ENV CHROME_BIN=/usr/local/bin/chrome-headless
 
 RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
 WORKDIR /home/{self.pr.repo}
 RUN git checkout {self.pr.base.sha}
 RUN npm install --force || npm install --force || true
-RUN npm rebuild canvas || true
+RUN npm install --no-save karma-spec-reporter || true
+# `npm run build` is run-s css+data+js; build:data FAILS (network fetch) and bails the chain
+# so build:js never runs and karma's `dist/iD.js` (global `iD`) is missing. Run each step
+# independently with tolerance so build:js emits dist/iD.js + build:css emits dist/iD.css.
+RUN npm run build:css || true
+RUN npm run build:data || true
+RUN npm run build:js || true
 
 {self.clear_env}
 
@@ -73,7 +80,7 @@ CMD ["/bin/bash"]
 """
 
 
-class TelescopeImageDefault(Image):
+class IDImageDefault(Image):
     """PR-specific image: FROM the repo base, add only patches + run scripts."""
 
     def __init__(self, pr: PullRequest, config: Config):
@@ -89,7 +96,7 @@ class TelescopeImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return TelescopeImageBase(self.pr, self._config)
+        return IDImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -101,11 +108,20 @@ class TelescopeImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        # test.patch ADDS test/feed-processor.test.js. Run jest scoped to it directly
-        # (bypasses the `pretest: npm run lint` hook). MOCK_REDIS=1 => no real redis.
+        # Patch karma.conf to emit per-test output (spec reporter). plugins is explicit so
+        # add the plugin there too. Then run karma headless (single-run) over all specs.
+        patch_conf = (
+            "sed -i \"s/plugins: \\[/plugins: ['karma-spec-reporter',/\" config/karma.conf.js; "
+            "sed -i \"s/reporters: \\[[^]]*\\]/reporters: ['spec']/\" config/karma.conf.js"
+        )
+        # karma tests run against the built bundle dist/iD.js, NOT source — so REBUILD it
+        # after the patches are applied (else fix.patch's source change never reaches the
+        # bundle the browser loads, and the new test fails identically in test & fix stages).
         test_cmd = (
-            "LOG_LEVEL=silent MOCK_REDIS=1 "
-            "npx jest --colors=false test/feed-processor.test.js 2>&1 || true"
+            "npm run build:js || true; "
+            f"{patch_conf}; "
+            "CHROME_BIN=/usr/local/bin/chrome-headless "
+            "npx karma start config/karma.conf.js --single-run 2>&1 || true"
         )
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
@@ -171,40 +187,8 @@ RUN bash /home/prepare.sh
 """
 
 
-def _parse_jest(test_log: str) -> TestResult:
-    """Parse jest default/verbose output: `✓/✔ name`=pass, `✕/✗/×`=fail, `○/-`=skip.
-    Test identity is the title (stable across stages)."""
-    passed: set[str] = set()
-    failed: set[str] = set()
-    skipped: set[str] = set()
-    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-    for raw in clean.split("\n"):
-        line = raw.rstrip()
-        m = re.match(r"^\s*([✓✔])\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", line)
-        if m:
-            passed.add(m.group(2).strip())
-            continue
-        m = re.match(r"^\s*([✕✗×])\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", line)
-        if m:
-            failed.add(m.group(2).strip())
-            continue
-        m = re.match(r"^\s*([○])\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", line)
-        if m:
-            skipped.add(m.group(2).strip())
-    passed -= failed
-    skipped -= failed
-    return TestResult(
-        passed_count=len(passed),
-        failed_count=len(failed),
-        skipped_count=len(skipped),
-        passed_tests=passed,
-        failed_tests=failed,
-        skipped_tests=skipped,
-    )
-
-
-@Instance.register("Seneca-CDOT", "telescope_905_to_345")
-class TELESCOPE_905_TO_345(Instance):
+@Instance.register("openstreetmap", "iD")
+class ID(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -215,7 +199,7 @@ class TELESCOPE_905_TO_345(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return TelescopeImageDefault(self.pr, self._config)
+        return IDImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"
@@ -227,4 +211,26 @@ class TELESCOPE_905_TO_345(Instance):
         return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        return _parse_jest(test_log)
+        # karma-spec-reporter emits `✓ name` / `✗ name` (jest-like). Identity = title.
+        passed: set[str] = set()
+        failed: set[str] = set()
+        skipped: set[str] = set()
+        clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+        for raw in clean.split("\n"):
+            line = raw.rstrip()
+            m = re.match(r"^\s*([✓✔])\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", line)
+            if m:
+                passed.add(m.group(2).strip())
+                continue
+            m = re.match(r"^\s*([✗✕×])\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$", line)
+            if m:
+                failed.add(m.group(2).strip())
+        passed -= failed
+        return TestResult(
+            passed_count=len(passed),
+            failed_count=len(failed),
+            skipped_count=len(skipped),
+            passed_tests=passed,
+            failed_tests=failed,
+            skipped_tests=skipped,
+        )
