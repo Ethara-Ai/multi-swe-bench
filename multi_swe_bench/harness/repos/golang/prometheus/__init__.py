@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.golang.prometheus.blackbox_exporter import *
 from multi_swe_bench.harness.repos.golang.prometheus.prometheus import *
 from multi_swe_bench.harness.repos.golang.prometheus.prometheus_go1_13 import *
 from multi_swe_bench.harness.repos.golang.prometheus.prometheus_go1_14 import *

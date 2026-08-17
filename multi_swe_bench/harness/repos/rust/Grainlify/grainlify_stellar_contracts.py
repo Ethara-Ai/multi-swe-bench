@@ -5,8 +5,33 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# There is no root Cargo.toml at either base commit, so tests must be driven
+# per top-level crate. `soroban/` is excluded on purpose: it targets
+# soroban-sdk 23 and needs the wasm32 target plus the stellar CLI, and no PR in
+# this dataset touches it.
+CRATE_DIRS = ["bounty_escrow", "grainlify-core", "program-escrow"]
 
-class GitoxideImageBase(Image):
+# Some PRs committed `target/` build artifacts, which git records as binary
+# diffs without full index lines and which therefore abort the whole `git
+# apply`. Excluding them keeps the source hunks applicable.
+_APPLY = "git apply --whitespace=nowarn --exclude='*target/*'"
+
+CRATE_MARKER = "=== MSB_CRATE:"
+
+
+def apply_patches(*patches: str) -> str:
+    paths = " ".join(patches)
+    # `cargo test` in prepare.sh generates lock files that are untracked at the
+    # base commit, and git apply refuses to create a file that already exists.
+    # The --3way fallback covers patches whose recorded pre-image blob is not
+    # the one at base.sha (squashed or rebased upstream history).
+    return f"""git checkout -- .
+git clean -fxq -- '*Cargo.lock'
+{_APPLY} {paths} || {_APPLY} --3way {paths}
+"""
+
+
+class GrainlifyStellarContractsImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -23,10 +48,14 @@ class GitoxideImageBase(Image):
         return "rust:latest"
 
     def image_tag(self) -> str:
-        return "base"
+        # Per-PR base tag (not the plain "base" used by single-PR repos):
+        # this repo's PRs span two divergent base.sha values, and the harness
+        # DockerfileEnhancer bakes `git checkout ${BASE_COMMIT}` then prunes all
+        # other refs, so PRs sharing one tag would overwrite each other's commit.
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -36,6 +65,10 @@ class GitoxideImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        # Do NOT add a `# syntax=` directive here, and do NOT rewrite the clone
+        # as `RUN git clone "${REPO_URL}"`: either change makes the harness
+        # DockerfileEnhancer skip this image, dropping the proxy/CA-cert/OCI
+        # hardening and the BASE_COMMIT checkout (the bdk regression).
         if self.config.need_clone:
             code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
@@ -45,9 +78,13 @@ class GitoxideImageBase(Image):
 
 {self.global_env}
 
-ENV GIX_TEST_IGNORE_ARCHIVES=1
-
 RUN apt-get update && apt-get install -y git pkg-config libssl-dev libcurl4-openssl-dev cmake && rm -rf /var/lib/apt/lists/*
+
+# Toolchain pin is load-bearing: `rust:latest` (1.9x) fails to build the
+# pinned `ethnum 1.5.2` (E0512 transmute size mismatch), while 1.81 is too old
+# for the `edition2024` deps of program-escrow/grainlify-core. Only 1.86.0
+# builds every in-scope crate at both base commits.
+RUN rustup toolchain install 1.86.0 --profile minimal --component cargo && rustup default 1.86.0
 
 WORKDIR /home/
 
@@ -58,7 +95,7 @@ WORKDIR /home/
 """
 
 
-class GitoxideImageDefault(Image):
+class GrainlifyStellarContractsImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -72,13 +109,23 @@ class GitoxideImageDefault(Image):
         return self._config
 
     def dependency(self) -> Optional[Image]:
-        return GitoxideImageBase(self.pr, self.config)
+        return GrainlifyStellarContractsImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+    def test_command(self) -> str:
+        # `|| true` is required: without it the first crate whose tests fail
+        # would abort the loop under `set -e` and hide every later crate.
+        return f"""for crate in {" ".join(CRATE_DIRS)}; do
+    [ -f "$crate/Cargo.toml" ] || continue
+    echo "{CRATE_MARKER} $crate ==="
+    (cd "$crate" && cargo test --workspace --no-fail-fast 2>&1) || true
+done
+"""
 
     def files(self) -> list[File]:
         return [
@@ -102,9 +149,8 @@ cd /home/{pr.repo}
 git reset --hard
 git checkout {pr.base.sha}
 
-cargo test --workspace --no-fail-fast || true
-
-""".format(pr=self.pr),
+{test_cmd}
+""".format(pr=self.pr, test_cmd=self.test_command()),
             ),
             File(
                 ".",
@@ -113,9 +159,8 @@ cargo test --workspace --no-fail-fast || true
 set -eo pipefail
 
 cd /home/{pr.repo}
-cargo test --workspace --no-fail-fast 2>&1
-
-""".format(pr=self.pr),
+{test_cmd}
+""".format(pr=self.pr, test_cmd=self.test_command()),
             ),
             File(
                 ".",
@@ -124,10 +169,12 @@ cargo test --workspace --no-fail-fast 2>&1
 set -eo pipefail
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-cargo test --workspace --no-fail-fast 2>&1
-
-""".format(pr=self.pr),
+{apply_cmd}{test_cmd}
+""".format(
+                    pr=self.pr,
+                    apply_cmd=apply_patches("/home/test.patch"),
+                    test_cmd=self.test_command(),
+                ),
             ),
             File(
                 ".",
@@ -136,10 +183,12 @@ cargo test --workspace --no-fail-fast 2>&1
 set -eo pipefail
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-cargo test --workspace --no-fail-fast 2>&1
-
-""".format(pr=self.pr),
+{apply_cmd}{test_cmd}
+""".format(
+                    pr=self.pr,
+                    apply_cmd=apply_patches("/home/test.patch", "/home/fix.patch"),
+                    test_cmd=self.test_command(),
+                ),
             ),
         ]
 
@@ -167,8 +216,8 @@ cargo test --workspace --no-fail-fast 2>&1
 """
 
 
-@Instance.register("GitoxideLabs", "gitoxide")
-class Gitoxide(Instance):
+@Instance.register("Grainlify", "Grainlify-Stellar-Contracts")
+class GrainlifyStellarContracts(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -179,7 +228,7 @@ class Gitoxide(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return GitoxideImageDefault(self.pr, self._config)
+        return GrainlifyStellarContractsImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -209,24 +258,35 @@ class Gitoxide(Instance):
         re_pass_tests = [re.compile(r"test (\S+) \.\.\. ok")]
         re_fail_tests = [re.compile(r"test (\S+) \.\.\. FAILED")]
         re_skip_tests = [re.compile(r"test (\S+) \.\.\. ignored")]
+        re_crate_marker = re.compile(rf"^{re.escape(CRATE_MARKER)} (\S+) ===$")
+
+        crate = ""
 
         for line in clean_log.splitlines():
             line = line.strip()
 
+            marker = re_crate_marker.match(line)
+            if marker:
+                crate = marker.group(1)
+                continue
+
+            def qualify(name: str) -> str:
+                return f"{crate}::{name}" if crate else name
+
             for re_pass in re_pass_tests:
                 match = re_pass.match(line)
                 if match:
-                    passed_tests.add(match.group(1))
+                    passed_tests.add(qualify(match.group(1)))
 
             for re_fail in re_fail_tests:
                 match = re_fail.match(line)
                 if match:
-                    failed_tests.add(match.group(1))
+                    failed_tests.add(qualify(match.group(1)))
 
             for re_skip in re_skip_tests:
                 match = re_skip.match(line)
                 if match:
-                    skipped_tests.add(match.group(1))
+                    skipped_tests.add(qualify(match.group(1)))
 
         # Deduplicate — worst result wins
         passed_tests -= failed_tests

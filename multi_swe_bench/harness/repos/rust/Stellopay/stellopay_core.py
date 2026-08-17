@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class GitoxideImageBase(Image):
+class StellopayCoreImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,9 @@ class GitoxideImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "rust:latest"
+        # Pinned: rust:latest breaks ethnum-1.5.0 (soroban-sdk 22 transitive dep)
+        # with error[E0512]; repo has no rust-toolchain.toml.
+        return "rust:1.85-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -36,6 +38,10 @@ class GitoxideImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        # Base image must stay plain: no `# syntax=` directive and a literal
+        # clone URL (not `"${REPO_URL}"`). Either would disable DockerfileEnhancer,
+        # dropping proxy/CA-cert injection, `git checkout ${BASE_COMMIT}`, and the
+        # history-hardening block. See harness/image.py::DockerfileEnhancer.
         if self.config.need_clone:
             code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
@@ -44,8 +50,6 @@ class GitoxideImageBase(Image):
         return f"""FROM {image_name}
 
 {self.global_env}
-
-ENV GIX_TEST_IGNORE_ARCHIVES=1
 
 RUN apt-get update && apt-get install -y git pkg-config libssl-dev libcurl4-openssl-dev cmake && rm -rf /var/lib/apt/lists/*
 
@@ -58,7 +62,7 @@ WORKDIR /home/
 """
 
 
-class GitoxideImageDefault(Image):
+class StellopayCoreImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -72,7 +76,7 @@ class GitoxideImageDefault(Image):
         return self._config
 
     def dependency(self) -> Optional[Image]:
-        return GitoxideImageBase(self.pr, self.config)
+        return StellopayCoreImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -102,6 +106,8 @@ cd /home/{pr.repo}
 git reset --hard
 git checkout {pr.base.sha}
 
+# The Rust/Soroban workspace lives under onchain/, not the repo root.
+cd /home/{pr.repo}/onchain
 cargo test --workspace --no-fail-fast || true
 
 """.format(pr=self.pr),
@@ -112,7 +118,7 @@ cargo test --workspace --no-fail-fast || true
                 """#!/bin/bash
 set -eo pipefail
 
-cd /home/{pr.repo}
+cd /home/{pr.repo}/onchain
 cargo test --workspace --no-fail-fast 2>&1
 
 """.format(pr=self.pr),
@@ -125,6 +131,7 @@ set -eo pipefail
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
+cd /home/{pr.repo}/onchain
 cargo test --workspace --no-fail-fast 2>&1
 
 """.format(pr=self.pr),
@@ -137,6 +144,7 @@ set -eo pipefail
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+cd /home/{pr.repo}/onchain
 cargo test --workspace --no-fail-fast 2>&1
 
 """.format(pr=self.pr),
@@ -167,8 +175,8 @@ cargo test --workspace --no-fail-fast 2>&1
 """
 
 
-@Instance.register("GitoxideLabs", "gitoxide")
-class Gitoxide(Instance):
+@Instance.register("Stellopay", "stellopay-core")
+class StellopayCore(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -179,7 +187,7 @@ class Gitoxide(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return GitoxideImageDefault(self.pr, self._config)
+        return StellopayCoreImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

@@ -47,10 +47,10 @@ class PermifyImageBase(Image):
         return "golang:1.25-bookworm"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -59,57 +59,32 @@ class PermifyImageBase(Image):
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
-        org = self.pr.org
-        repo = self.pr.repo
 
         if self.config.need_clone:
-            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
-            code = f"COPY {repo} /home/{repo}"
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        # `# syntax` opts this shared base out of the DockerfileEnhancer, which
-        # would otherwise inject `git checkout --detach ${BASE_COMMIT}` +
-        # ref-strip + `git gc --prune` HERE, pruning the shared base to a single
-        # PR's base.sha and breaking every other PR with "reference is not a
-        # tree". The base keeps full history; the strict anti-reward-hack
-        # hardening runs per-PR (see PermifyImageDefault below).
-        return f"""# syntax=docker/dockerfile:1.6
-FROM {image_name}
-
-ARG TARGETARCH
-ARG REPO_URL="https://github.com/{org}/{repo}.git"
-
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC \\
-    GOTOOLCHAIN=auto
-
-LABEL org.opencontainers.image.title="{org}/{repo}" \\
-      org.opencontainers.image.description="{org}/{repo} Docker image" \\
-      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
-      org.opencontainers.image.authors="https://www.ethara.ai/"
+        # No inline `# syntax` directive: its presence is the enhancer's
+        # skip-sentinel (image.py:317), so omitting it lets DockerfileEnhancer
+        # inject the proxy/CA-cert/${{BASE_COMMIT}} fetch + history-scrub. Safe
+        # here because the base tag is per-PR, not shared.
+        return f"""FROM {image_name}
 
 {self.global_env}
 
+ENV GOTOOLCHAIN=auto
+
 WORKDIR /home/
+
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates && \\
-    rm -rf /var/lib/apt/lists/*
+    git ca-certificates build-essential \\
+    && rm -rf /var/lib/apt/lists/*
 
-RUN git config --global --add safe.directory '*'
 {code}
-
-WORKDIR /home/{repo}
-RUN git remote remove origin 2>/dev/null || true; \\
-    git config --local gc.auto 0; \\
-    git config --local fetch.recurseSubmodules false; \\
-    git config --local remote.pushDefault ""
-WORKDIR /home/
 
 {self.clear_env}
 
-CMD ["/bin/bash"]
 """
 
 
@@ -233,17 +208,7 @@ go test -v -count=1 ./...
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
-        # Anti-cheat hardening runs in the PR layer (the shared base keeps full
-        # history so every PR's base.sha is reachable). prepare.sh checks out
-        # this PR's base.sha, then the canonical hardening block detaches at that
-        # literal sha and strips every other ref/reflog so later commits (the
-        # fix) are unreachable from git.
-        hardening = Image._HARDENING_BLOCK.replace(
-            "${BASE_COMMIT}", self.pr.base.sha
-        ).rstrip("\n")
-
-        return f"""# syntax=docker/dockerfile:1.6
-FROM {name}:{tag}
+        return f"""FROM {name}:{tag}
 
 {self.global_env}
 
@@ -251,13 +216,8 @@ FROM {name}:{tag}
 
 {prepare_commands}
 
-WORKDIR /home/{self.pr.repo}
-
-{hardening}
-
 {self.clear_env}
 
-CMD ["/bin/bash"]
 """
 
 

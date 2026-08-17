@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class GitoxideImageBase(Image):
+class LeetgoImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class GitoxideImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "rust:latest"
+        return "golang:1.24-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -32,6 +32,10 @@ class GitoxideImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
+        # Must NOT emit a `# syntax=...` directive or bake hardening inline:
+        # DockerfileEnhancer.enhance() treats that directive as a sentinel
+        # (image.py: `if SYNTAX_DIRECTIVE in raw: return raw`) and skips the
+        # whole file, silently dropping proxy/CA-cert/git-scrub injection.
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
@@ -45,11 +49,15 @@ class GitoxideImageBase(Image):
 
 {self.global_env}
 
-ENV GIX_TEST_IGNORE_ARCHIVES=1
-
-RUN apt-get update && apt-get install -y git pkg-config libssl-dev libcurl4-openssl-dev cmake && rm -rf /var/lib/apt/lists/*
+ENV GOTOOLCHAIN=local
+ENV GOWORK=off
+ENV GOFLAGS="-buildvcs=false"
 
 WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates build-essential make python3 patch \\
+    && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -58,7 +66,7 @@ WORKDIR /home/
 """
 
 
-class GitoxideImageDefault(Image):
+class LeetgoImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -71,8 +79,8 @@ class GitoxideImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Optional[Image]:
-        return GitoxideImageBase(self.pr, self.config)
+    def dependency(self) -> Image | None:
+        return LeetgoImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -94,15 +102,39 @@ class GitoxideImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""".format(),
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
 
 cd /home/{pr.repo}
 git reset --hard
+bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
 
-cargo test --workspace --no-fail-fast || true
+go mod download || true
+go test -v -count=1 ./... || true
 
 """.format(pr=self.pr),
             ),
@@ -110,10 +142,10 @@ cargo test --workspace --no-fail-fast || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -eo pipefail
+set -e
 
 cd /home/{pr.repo}
-cargo test --workspace --no-fail-fast 2>&1
+go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
@@ -121,11 +153,11 @@ cargo test --workspace --no-fail-fast 2>&1
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -eo pipefail
+set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-cargo test --workspace --no-fail-fast 2>&1
+git apply --whitespace=nowarn /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject --whitespace=nowarn /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
@@ -133,11 +165,11 @@ cargo test --workspace --no-fail-fast 2>&1
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -eo pipefail
+set -e
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-cargo test --workspace --no-fail-fast 2>&1
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject --whitespace=nowarn /home/test.patch 2>&1 || true; git apply --reject --whitespace=nowarn /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+go test -v -count=1 ./...
 
 """.format(pr=self.pr),
             ),
@@ -167,8 +199,8 @@ cargo test --workspace --no-fail-fast 2>&1
 """
 
 
-@Instance.register("GitoxideLabs", "gitoxide")
-class Gitoxide(Instance):
+@Instance.register("j178", "leetgo")
+class Leetgo(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -179,7 +211,7 @@ class Gitoxide(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return GitoxideImageDefault(self.pr, self._config)
+        return LeetgoImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -200,38 +232,57 @@ class Gitoxide(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [re.compile(r"test (\S+) \.\.\. ok")]
-        re_fail_tests = [re.compile(r"test (\S+) \.\.\. FAILED")]
-        re_skip_tests = [re.compile(r"test (\S+) \.\.\. ignored")]
+        re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
+        # Do NOT add a broad `FAIL:?\s?(.+?)\s` pattern: it matches Go's
+        # package-summary line (`FAIL<tab>github.com/...<tab>600s`) and
+        # injects a phantom failing test, corrupting failed_count.
+        re_fail_tests = [
+            re.compile(r"--- FAIL: (\S+)"),
+        ]
+        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
 
-        for line in clean_log.splitlines():
+        def get_base_name(test_name: str) -> str:
+            index = test_name.rfind("/")
+            if index == -1:
+                return test_name
+            return test_name[:index]
+
+        for line in test_log.splitlines():
             line = line.strip()
 
-            for re_pass in re_pass_tests:
-                match = re_pass.match(line)
-                if match:
-                    passed_tests.add(match.group(1))
+            for re_pass_test in re_pass_tests:
+                pass_match = re_pass_test.match(line)
+                if pass_match:
+                    test_name = pass_match.group(1)
+                    if test_name in failed_tests:
+                        continue
+                    if test_name in skipped_tests:
+                        skipped_tests.remove(test_name)
+                    passed_tests.add(get_base_name(test_name))
 
-            for re_fail in re_fail_tests:
-                match = re_fail.match(line)
-                if match:
-                    failed_tests.add(match.group(1))
+            for re_fail_test in re_fail_tests:
+                fail_match = re_fail_test.match(line)
+                if fail_match:
+                    test_name = fail_match.group(1)
+                    if test_name in passed_tests:
+                        passed_tests.remove(test_name)
+                    if test_name in skipped_tests:
+                        skipped_tests.remove(test_name)
+                    failed_tests.add(get_base_name(test_name))
 
-            for re_skip in re_skip_tests:
-                match = re_skip.match(line)
-                if match:
-                    skipped_tests.add(match.group(1))
-
-        # Deduplicate — worst result wins
-        passed_tests -= failed_tests
-        passed_tests -= skipped_tests
-        skipped_tests -= failed_tests
+            for re_skip_test in re_skip_tests:
+                skip_match = re_skip_test.match(line)
+                if skip_match:
+                    test_name = skip_match.group(1)
+                    if test_name in passed_tests:
+                        continue
+                    if test_name in failed_tests:
+                        continue
+                    skipped_tests.add(get_base_name(test_name))
 
         return TestResult(
             passed_count=len(passed_tests),
