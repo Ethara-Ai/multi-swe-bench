@@ -73,6 +73,11 @@ class concourseImageBase(Image):
 
         return f"""FROM {image_name}
 
+# Go 1.13+ defaults GOPROXY to proxy.golang.org, but keep it explicit and
+# force module mode so builds are reproducible regardless of GOPATH layout.
+ENV GO111MODULE=on
+ENV GOPROXY=https://proxy.golang.org,direct
+
 {self.global_env}
 
 WORKDIR /home/
@@ -120,6 +125,13 @@ class concourseImageBaseGo12(Image):
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         return f"""FROM {image_name}
+
+# Go 1.12 does NOT support a comma-separated GOPROXY list (that arrived in
+# 1.13), so a single proxy URL is required. Without it, module resolution
+# fails on code.cloudfoundry.org/* vanity imports (no go-import meta tags),
+# which aborts every `go test` run and yields zero tests.
+ENV GO111MODULE=on
+ENV GOPROXY=https://proxy.golang.org
 
 {self.global_env}
 
@@ -220,6 +232,36 @@ class concourseImageDefault(Image):
         else:
             prepare_go = "echo 'Skipping Go tests (Elm-only PR)'"
 
+        if _needs_go(patch_type):
+            # Warm the Go module cache in three passes BEFORE any test compile.
+            # Concourse's 2019-era go.mod (go1.12 base) pins ancient
+            # pseudo-versions -- notably
+            # k8s.io/client-go v2.0.0-alpha.0.0.20171101191150-...+incompatible --
+            # plus code.cloudfoundry.org/* vanity imports. A single proxy pass
+            # cannot load this graph on go1.12 ("error loading module
+            # requirements"), and go1.13+ reject the pseudo-version outright.
+            #   Pass 1 (direct): resolves the VCS-hosted pseudo-versions so the
+            #     module graph can load (go1.12 does not strict-validate them).
+            #   Pass 2 (proxy): loads the full graph and downloads most zips.
+            #     proxy.golang.org 404s the k8s.io/client-go source zip, so
+            #     atc/cmd/atc (which imports k8s.io/client-go/kubernetes) can't
+            #     build -- and a module-download failure aborts the whole
+            #     `go test ./...`, yielding (0,0,0).
+            #   Pass 3 (targeted direct): with the graph now cached, git-fetch
+            #     just k8s.io/client-go's source from GitHub (the one zip the
+            #     proxy can't serve). Verified: after this, `go build ./...`
+            #     compiles cleanly with zero 404s.
+            # Runs unconditionally -- `go mod download` is network I/O only,
+            # fast even under QEMU cross-build emulation -- so both the native
+            # and emulated arch images end up with a warm cache.
+            prepare_mod = """export GO111MODULE=on
+export GOSUMDB=off
+GOPROXY=direct go mod download || true
+GOPROXY=https://proxy.golang.org go mod download || true
+GOPROXY=direct go mod download k8s.io/client-go || true"""
+        else:
+            prepare_mod = ""
+
         if _needs_elm(patch_type):
             prepare_elm = f"""
 cd /home/{repo}/web/elm
@@ -240,6 +282,9 @@ bash /home/check_git_changes.sh
 git checkout {self.pr.base.sha}
 bash /home/check_git_changes.sh
 {elm_install}
+# Resolve/warm the Go module graph (two-pass: direct then proxy). Must run
+# regardless of arch so the emulated image also has a populated module cache.
+{prepare_mod}
 # Skip heavy test compilation when cross-building under QEMU emulation.
 # TARGETPLATFORM is set by Docker buildx; empty when running natively.
 if [ -z "${{TARGETPLATFORM}}" ] || [ "${{TARGETPLATFORM}}" = "$(uname -s | tr '[:upper:]' '[:lower:]')/$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')" ]; then
@@ -252,7 +297,7 @@ fi
 
         run_body = _build_test_command(repo, patch_type)
         run_sh = f"""#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{repo}
 {elm_install}{run_body}
@@ -260,7 +305,7 @@ cd /home/{repo}
 
         test_run_body = _build_test_command(repo, patch_type)
         test_run_sh = f"""#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{repo}
 git apply /home/test.patch
@@ -269,7 +314,7 @@ git apply /home/test.patch
 
         fix_run_body = _build_test_command(repo, patch_type)
         fix_run_sh = f"""#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{repo}
 git apply /home/test.patch /home/fix.patch
@@ -374,6 +419,11 @@ class concourse(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        # Strip ANSI color codes first so regexes match even when Ginkgo emits
+        # colored output (e.g. -ginkgo.noColor=false). Go's own PASS/FAIL/ok
+        # lines are uncolored today, but this hardens against colored logs.
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()

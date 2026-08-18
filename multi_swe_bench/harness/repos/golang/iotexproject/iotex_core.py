@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageBase(Image):
+class IotexCoreImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:20-bookworm"
+        return "golang:1.18"
 
     def image_tag(self) -> str:
         return "base"
@@ -46,7 +46,6 @@ class ImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-RUN apt update && apt install -y git
 
 {code}
 
@@ -55,7 +54,7 @@ RUN apt update && apt install -y git
 """
 
 
-class ImageDefault(Image):
+class IotexCoreImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -68,8 +67,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Optional[Image]:
-        return ImageBase(self.pr, self.config)
+    def dependency(self) -> Image | None:
+        return IotexCoreImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -121,7 +120,8 @@ git reset --hard
 bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
-npm install || true
+
+go test -v -count=1 ./ioctl/newcmd/action/... || true
 
 """.format(pr=self.pr),
             ),
@@ -130,10 +130,10 @@ npm install || true
                 "run.sh",
                 """#!/bin/bash
 set -eo pipefail
-export CI=true
 
 cd /home/{pr.repo}
-npx jest --verbose --no-cache --forceExit
+export CI=true
+go test -v -count=1 ./ioctl/newcmd/action/...
 
 """.format(pr=self.pr),
             ),
@@ -142,11 +142,11 @@ npx jest --verbose --no-cache --forceExit
                 "test-run.sh",
                 """#!/bin/bash
 set -eo pipefail
-export CI=true
 
 cd /home/{pr.repo}
-git apply --exclude package-lock.json --exclude 'test/e2e' --whitespace=nowarn /home/test.patch
-npx jest --verbose --no-cache --forceExit
+export CI=true
+git apply --whitespace=nowarn /home/test.patch
+go test -v -count=1 ./ioctl/newcmd/action/...
 
 """.format(pr=self.pr),
             ),
@@ -155,11 +155,11 @@ npx jest --verbose --no-cache --forceExit
                 "fix-run.sh",
                 """#!/bin/bash
 set -eo pipefail
-export CI=true
 
 cd /home/{pr.repo}
-git apply --exclude package-lock.json --exclude 'test/e2e' --whitespace=nowarn /home/test.patch /home/fix.patch
-npx jest --verbose --no-cache --forceExit
+export CI=true
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+go test -v -count=1 ./ioctl/newcmd/action/...
 
 """.format(pr=self.pr),
             ),
@@ -189,8 +189,8 @@ npx jest --verbose --no-cache --forceExit
 """
 
 
-@Instance.register("metrico", "gigapipe")
-class Gigapipe(Instance):
+@Instance.register("iotexproject", "iotex-core")
+class IotexCore(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -201,7 +201,7 @@ class Gigapipe(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+        return IotexCoreImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -222,93 +222,46 @@ class Gigapipe(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        # Strip ANSI escape codes before matching.
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
 
-        # Jest --verbose output. The tree indents describe() blocks and their
-        # leaf it() tests, e.g.:
-        #   PASS test/transpiler.test.js
-        #     ✓ should transpile log_stream_selector (31 ms)   (2-space indent)
-        #     log_range_aggregation                            (describe header)
-        #       ✓ 1 (8 ms)                                     (4-space indent)
-        #     should transpile new style                       (describe header)
-        #       ✓ 1 (3 ms)
-        # Leaf names like "1" repeat across describe blocks, so we must qualify
-        # each test with its file + describe path to keep names unique across
-        # stages (avoids collisions and cross-stage NONE/FAIL anomalies).
+        re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
+        re_fail_tests = [re.compile(r"--- FAIL: (\S+)")]
+        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
 
-        ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-        clean_log = ansi_re.sub("", test_log)
+        def get_base_name(test_name: str) -> str:
+            index = test_name.rfind("/")
+            if index == -1:
+                return test_name
+            return test_name[:index]
 
-        current_file = ""
-        describe_stack = []  # list of (indent, name)
-        in_error_section = False
+        for line in test_log.splitlines():
+            line = line.strip()
 
-        pass_re = re.compile(r"^\s+[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$")
-        fail_re = re.compile(r"^\s+[✕✗×✘✖]\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$")
-        skip_re = re.compile(r"^\s+○\s+(?:skipped|todo)\s+(.+?)\s*$")
+            for re_pass_test in re_pass_tests:
+                pass_match = re_pass_test.match(line)
+                if pass_match:
+                    passed_tests.add(get_base_name(pass_match.group(1)))
 
-        def full_name(indent, name):
-            while describe_stack and describe_stack[-1][0] >= indent:
-                describe_stack.pop()
-            parts = [current_file] + [d[1] for d in describe_stack] + [name]
-            return " > ".join(parts)
+            for re_fail_test in re_fail_tests:
+                fail_match = re_fail_test.match(line)
+                if fail_match:
+                    failed_tests.add(get_base_name(fail_match.group(1)))
 
-        for line in clean_log.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
+            for re_skip_test in re_skip_tests:
+                skip_match = re_skip_test.match(line)
+                if skip_match:
+                    skipped_tests.add(get_base_name(skip_match.group(1)))
 
-            file_match = re.match(r"^\s*(PASS|FAIL)\s+(\S+)", line)
-            if file_match:
-                current_file = file_match.group(2).strip()
-                describe_stack = []
-                in_error_section = False
-                continue
-
-            # Failure detail blocks start with "●"; skip until the next file header.
-            if stripped.startswith("●"):
-                in_error_section = True
-                continue
-            if in_error_section:
-                continue
-
-            if re.match(
-                r"^(Test Suites:|Tests:|Snapshots:|Time:|Ran all test suites)",
-                stripped,
-            ):
-                continue
-
-            if not current_file:
-                continue
-
-            indent = len(line) - len(line.lstrip())
-
-            pass_match = pass_re.match(line)
-            if pass_match:
-                passed_tests.add(full_name(indent, pass_match.group(1).strip()))
-                continue
-
-            fail_match = fail_re.match(line)
-            if fail_match:
-                failed_tests.add(full_name(indent, fail_match.group(1).strip()))
-                continue
-
-            skip_match = skip_re.match(line)
-            if skip_match:
-                skipped_tests.add(full_name(indent, skip_match.group(1).strip()))
-                continue
-
-            # Any other non-empty indented line is a describe() header.
-            if indent > 0:
-                while describe_stack and describe_stack[-1][0] >= indent:
-                    describe_stack.pop()
-                describe_stack.append((indent, stripped))
-
+        # A test reported both PASS (e.g. a passing subtest) and FAIL (parent)
+        # resolves to FAIL; keep the collections disjoint.
         passed_tests -= failed_tests
-        passed_tests -= skipped_tests
         skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

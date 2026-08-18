@@ -7,18 +7,12 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 class GoZeroImageBase(Image):
-    """ONE shared toolchain base image (golang + build deps). Tag ``:base``.
+    """Shared base image: golang toolchain + the cloned repo. Tag ``:base``.
 
-    The harness BUILDS this once and every PR builds ``FROM`` it. It deliberately
-    does NOT clone the repo and does NOT check out any commit, so a single
-    ``:base`` serves every PR (a built image that checked out a commit would be
-    frozen to it). The per-PR clone + checkout + hardening happen in
-    ``GoZeroImageDefault``.
-
-    ``dependency()`` returns the string ``"golang:latest"`` so the harness builds
-    this image; with NO ``git clone`` line, DockerfileEnhancer adds only the infra
-    ARGs/ENV/LABEL (proxy/cert injection is OFF, removed from image.py) and never
-    hardens/pins the shared base.
+    Follows the canonical golang pattern (see ``gin_gonic/gin.py``): the base
+    image installs the toolchain AND clones the repo into ``/home/<repo>``. Every
+    PR image builds ``FROM`` this ``:base`` and only copies the eval files + runs
+    ``prepare.sh`` (which checks out THIS PR's ``base.sha``).
     """
 
     def __init__(self, pr: PullRequest, config: Config):
@@ -50,8 +44,12 @@ class GoZeroImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        # Toolchain only: NO git clone here, so DockerfileEnhancer adds only its
-        # infra block and never hardens or pins this shared base to a commit.
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        # Toolchain + repo clone live in the shared :base (canonical pattern).
         return """FROM {image_name}
 
 {global_env}
@@ -71,11 +69,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     wget \\
     && rm -rf /var/lib/apt/lists/*
 
+{code}
+
 {clear_env}
 
 """.format(
             image_name=image_name,
             global_env=self.global_env,
+            code=code,
             clear_env=self.clear_env,
         )
 
@@ -122,15 +123,14 @@ class GoZeroImageDefault(Image):
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-# Warm the Go module + build caches so the eval runs don't need network. The repo
-# is already checked out at ${{BASE_COMMIT}} (hardening runs right after this
-# script), so prepare does no git checkout itself. `go test` is allowed to fail
-# (|| true): it only populates caches; the real pass/fail signal comes from
-# run/test-run/fix-run.
+# Check out THIS PR's base commit, then warm the Go module + build caches so the
+# eval runs don't need network. `go test` is allowed to fail (|| true): it only
+# populates caches; the real pass/fail signal comes from run/test-run/fix-run.
 set -e
 
 cd /home/{pr.repo}
-git reset --hard || true
+git reset --hard
+git checkout {pr.base.sha}
 
 go mod download || true
 go test -v -count=1 ./... || true
@@ -178,51 +178,30 @@ go test -v -count=1 ./...
         ]
 
     def dockerfile(self) -> str:
-        base = self.dependency()
-        name = base.image_name()
-        tag = base.image_tag()
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        # Per-PR work on the shared :base: clone, check out THIS PR's ${BASE_COMMIT},
-        # stage scripts/patches, warm caches, then harden. REPO_URL + BASE_COMMIT are
-        # baked as ARG defaults because this chains to a base *Image*, so
-        # DockerfileEnhancer returns this verbatim and supplies neither.
-        return """FROM {name}:{tag}
+        prepare_commands = "RUN bash /home/prepare.sh"
 
-ARG REPO_URL="https://github.com/{org}/{repo}.git"
-ARG BASE_COMMIT="{base_sha}"
+        # Thin per-PR layer (canonical pattern): FROM the shared :base (which
+        # already cloned the repo), copy the 6 eval files, run prepare.sh
+        # (checks out THIS PR's base.sha + warms caches).
+        return f"""FROM {name}:{tag}
 
-{global_env}
-
-RUN git clone "${{REPO_URL}}" /home/{repo}
-
-WORKDIR /home/{repo}
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
+{self.global_env}
 
 {copy_commands}
-RUN bash /home/prepare.sh
 
-{hardening}
+{prepare_commands}
 
-{clear_env}
+{self.clear_env}
 
-CMD ["/bin/bash"]
-""".format(
-            name=name,
-            tag=tag,
-            org=self.pr.org,
-            repo=self.pr.repo,
-            base_sha=self.pr.base.sha,
-            global_env=self.global_env,
-            copy_commands=copy_commands,
-            hardening=Image._HARDENING_BLOCK,
-            clear_env=self.clear_env,
-        )
+"""
 
 
 @Instance.register("zeromicro", "go-zero")

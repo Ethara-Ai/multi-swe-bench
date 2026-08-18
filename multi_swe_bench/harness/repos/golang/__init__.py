@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.golang.cyclonedx import *
 from multi_swe_bench.harness.repos.golang.beego import *
 from multi_swe_bench.harness.repos.golang.gofiber import *
 from multi_swe_bench.harness.repos.golang.caddyserver import *
@@ -8,6 +9,7 @@ from multi_swe_bench.harness.repos.golang.fluxcd import *
 from multi_swe_bench.harness.repos.golang.fatedier import *
 from multi_swe_bench.harness.repos.golang.gin_gonic import *
 from multi_swe_bench.harness.repos.golang.go_gorm import *
+from multi_swe_bench.harness.repos.golang.go_kit import *
 from multi_swe_bench.harness.repos.golang.gohugoio import *
 from multi_swe_bench.harness.repos.golang.grpc import *
 from multi_swe_bench.harness.repos.golang.istio import *
@@ -161,3 +163,5 @@ from multi_swe_bench.harness.repos.golang.charmbracelet import *
 from multi_swe_bench.harness.repos.golang.canonical import *
 from multi_swe_bench.harness.repos.golang.external_dns import *
 from multi_swe_bench.harness.repos.golang.skaffold import *
+
+from multi_swe_bench.harness.repos.golang.iotexproject import *
