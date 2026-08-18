@@ -299,6 +299,7 @@ class CliArgs:
         self._check_log_level()
         self._check_log_to_console()
         self._check_max_workers()
+        self._check_output_tar()
 
         if self.mode == "dataset":
             self._check_repo_dir()
@@ -352,6 +353,14 @@ class CliArgs:
             raise ValueError(f"Invalid output_dir: {self.output_dir}")
         if not self.output_dir.exists():
             self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _check_output_tar(self):
+        if self.output_tar is None:
+            return
+        if isinstance(self.output_tar, str):
+            self.output_tar = Path(self.output_tar)
+        if not isinstance(self.output_tar, Path):
+            raise ValueError(f"Invalid output_tar: {self.output_tar}")
 
     def _check_repo_dir(self):
         if not self.repo_dir:

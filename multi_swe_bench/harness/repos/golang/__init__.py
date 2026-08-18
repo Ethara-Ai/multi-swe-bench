@@ -165,3 +165,10 @@ from multi_swe_bench.harness.repos.golang.external_dns import *
 from multi_swe_bench.harness.repos.golang.skaffold import *
 
 from multi_swe_bench.harness.repos.golang.iotexproject import *
+from multi_swe_bench.harness.repos.golang.ipfs import *
+from multi_swe_bench.harness.repos.golang.pomerium import *
+_importlib.import_module("multi_swe_bench.harness.repos.golang.Warp-net")
+from multi_swe_bench.harness.repos.golang.j178 import *
+from multi_swe_bench.harness.repos.golang.openebs import *
+from multi_swe_bench.harness.repos.golang.microsoft import *
+from multi_swe_bench.harness.repos.golang.vouch import *

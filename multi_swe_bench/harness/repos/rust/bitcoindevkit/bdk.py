@@ -21,13 +21,16 @@ class BdkImageBase(Image):
         return self._config
 
     def dependency(self) -> str | Image:
-        return "rust:1.85"
+        return "rust:1.88"
 
     def image_tag(self) -> str:
-        return "base"
+        # DockerfileEnhancer bakes `git checkout ${BASE_COMMIT}` and prunes all
+        # other refs, so this image is commit-specific. bdk PRs have divergent
+        # base.sha, so a shared "base" tag would make them overwrite each other.
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -42,6 +45,10 @@ class BdkImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
+        # No `# syntax=` directive and a literal clone URL: both are required for
+        # DockerfileEnhancer to run and to rewrite the clone into the pinned
+        # checkout + history-pruning block. See _standardize_repo_fetch, whose
+        # regex skips clones already written as "${REPO_URL}".
         return f"""FROM {image_name}
 
 {self.global_env}

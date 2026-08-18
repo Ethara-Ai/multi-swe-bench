@@ -4,7 +4,7 @@ import re
 import textwrap
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -80,7 +80,7 @@ class Halo2227To7423ImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return "base-jdk17"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -96,27 +96,61 @@ class Halo2227To7423ImageBase(Image):
         repo = self.pr.repo
         org = self.pr.org
 
-        # SHARED base (tag base-jdk17, reused by every era2 PR) — NOT per-PR.
-        # Clone full history ONCE; per-PR ImageDefault.prepare.sh does
-        # `git checkout {base.sha}` then full anti-cheat hardening. Here only LIGHT
-        # hardening (remove remote) so no fetch/pull; no checkout/gc-prune (that
-        # would pin+prune the shared base to one commit, breaking other PRs).
-        # No proxy/cert/MITM. `# syntax` keeps DockerfileEnhancer from rewriting it.
+        # Per-PR base (tag base-pr-<N>). The clone, the pin to ${BASE_COMMIT} and
+        # the history scrub all live HERE, in the base, so the PR layer stays a
+        # thin patch/script drop and no responsibility is implemented twice.
+        #
+        # The proxy ARGs, the ENV passthrough block, the CA symlink farm and the
+        # scrub/assert block are taken from harness.image rather than retyped, so
+        # this file cannot drift from the canonical, security-reviewed text.
+        # `# syntax` keeps DockerfileEnhancer from injecting a second copy.
+        build_args = (
+            "ARG TARGETARCH\n"
+            f'ARG REPO_URL="https://github.com/{org}/{repo}.git"\n'
+            "ARG BASE_COMMIT\n"
+            f"\n{DockerfileEnhancer._PROXY_ARGS}"
+        )
+
+        # Docker layers are additive: a `git gc` in a later layer only writes a
+        # whiteout, it cannot unwrite the 91 MB full-history packfile the clone
+        # put in an earlier layer — that packfile still ships in the image tar and
+        # `git cat-file` on it recovers the merge commit carrying the ground-truth
+        # fix. So the clone RUN detaches and scrubs inline, in the same layer, and
+        # the fat pack never becomes a shipped layer at all. The standalone D13/D14
+        # steps below still run (and still assert) on the already-clean tree; every
+        # command in them is idempotent, so running twice is harmless.
+        clone_and_prescrub = (
+            "# Clone + detach + scrub in ONE layer: Docker layers are additive, so a\n"
+            "# later `git gc` cannot unwrite the full-history packfile an earlier layer\n"
+            "# already shipped. The D13/D14 steps below re-run idempotently and still\n"
+            "# assert, on a tree this layer has already made clean.\n"
+            f'RUN git clone "${{REPO_URL}}" /home/{repo} \\\n'
+            f"    && cd /home/{repo} \\\n"
+            '    && git checkout --detach "${BASE_COMMIT}" \\\n'
+            "    && (git remote remove origin 2>/dev/null || true) \\\n"
+            "    && git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\\n"
+            "        | xargs -r -n1 git update-ref -d \\\n"
+            "    && git reflog expire --expire=now --all \\\n"
+            "    && git reflog expire --expire-unreachable=now --all \\\n"
+            "    && git gc --prune=now --aggressive \\\n"
+            "    && git repack -a -d -l --quiet \\\n"
+            "    && rm -f .git/objects/info/alternates"
+        )
+
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
-ARG TARGETARCH
-ARG REPO_URL="https://github.com/{org}/{repo}.git"
+{build_args}
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    TZ=UTC \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8
+{DockerfileEnhancer._ENV_BLOCK}
+ENV LC_ALL=C.UTF-8
 
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 WORKDIR /home/
 
@@ -142,16 +176,14 @@ RUN NODE_VERSION=22.22.3 \\
     && rm /tmp/node.tar.gz \\
     && corepack enable
 
-RUN git clone "${{REPO_URL}}" /home/{repo}
+{clone_and_prescrub}
 
-# SHARED-base light hardening: full history kept (per-PR layer checks out base.sha);
-# remote removed so the model cannot fetch/pull the fix. NO checkout/gc-prune here.
 WORKDIR /home/{repo}
-RUN git remote remove origin 2>/dev/null || true; \\
-    git config --local fetch.recurseSubmodules false; \\
-    git config --local remote.pushDefault ""
-WORKDIR /home/
 
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{Image._HARDENING_BLOCK}
 CMD ["/bin/bash"]
 """
 
@@ -268,6 +300,21 @@ echo 'org.gradle.parallel=false' >> /root/.gradle/gradle.properties
 echo 'org.gradle.workers.max=2' >> /root/.gradle/gradle.properties
 
 chmod +x gradlew
+
+# The wrapper fetches its distribution with a 10s, zero-retry budget
+# (networkTimeout=10000, retries=0) and dies if the CDN is slower than that.
+# Let it fail once to create the hashed dist dir, then drop the zip in with
+# curl; Install.java skips the download when the local zip already exists.
+_gw_url=$(sed -n 's/^distributionUrl=//p' gradle/wrapper/gradle-wrapper.properties | sed 's/\\\\//g')
+if [ -n "$_gw_url" ]; then
+    timeout 180 ./gradlew --version >/dev/null 2>&1 || true
+    _gw_dir=$(find /root/.gradle/wrapper/dists -mindepth 2 -maxdepth 2 -type d 2>/dev/null | head -1)
+    if [ -n "$_gw_dir" ] && [ ! -f "$_gw_dir/$(basename "$_gw_url")" ]; then
+        curl -fL --retry 5 --retry-all-errors --connect-timeout 120 --max-time 1800 \
+            -o "$_gw_dir/$(basename "$_gw_url")" "$_gw_url" || true
+    fi
+fi
+
 ./gradlew build -x test -x check --console=plain --no-daemon --init-script /home/init.gradle || true
 """.format(pr=self.pr),
             ),
@@ -318,35 +365,10 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
-        # The per-PR image's dependency() returns an Image (the shared base), so
-        # DockerfileEnhancer.enhance() returns this Dockerfile unmodified — it only
-        # injects the HEAD-strip hardening for str-dependency images. prepare.sh has
-        # just `git checkout`ed {base.sha}; without this block the working tree still
-        # carries origin + every branch/tag + the full reflog, letting a model read
-        # the fix via `git log` / `git show <future-sha>` / `git fetch`. Detach at
-        # base.sha and strip all other history so only base.sha + ancestors remain.
-        # Literal sha (not ${BASE_COMMIT}) because this image declares no such ARG.
-        repo = self.pr.repo
-        sha = self.pr.base.sha
-        hardening = (
-            "RUN set -eux; \\\n"
-            f"    cd /home/{repo}; \\\n"
-            f"    git checkout --detach {sha}; \\\n"
-            "    git remote remove origin 2>/dev/null || true; \\\n"
-            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d; \\\n"
-            "    git reflog expire --expire=now --all || true; \\\n"
-            "    git reflog expire --expire-unreachable=now --all || true; \\\n"
-            "    git gc --prune=now --aggressive; \\\n"
-            "    git repack -a -d -l --quiet; \\\n"
-            "    rm -f .git/objects/info/alternates; \\\n"
-            "    git config --local gc.auto 0; \\\n"
-            f'    test "$(git rev-parse HEAD)" = "$(git rev-parse {sha})"; \\\n'
-            '    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\\n'
-            '    test -z "$(git remote)"; \\\n'
-            '    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
-        )
-
-        # No proxy/cert/MITM injection (removed per build-env policy).
+        # The clone, the ${BASE_COMMIT} pin and the history scrub are owned by the
+        # base image (base-pr-<N>) and must not be re-implemented here: repeating
+        # them in this layer would both duplicate a base responsibility and add a
+        # second fat git layer on top of an already-scrubbed tree.
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -354,8 +376,6 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 {copy_commands}
 
 {prepare_commands}
-
-{hardening}
 
 {self.clear_env}
 
@@ -456,6 +476,9 @@ class Halo2227To7423(Instance):
 
 # === bundle number_interval routing (prs_in_bundle dash-joined) ===
 _BUNDLE_NIS_Halo2227To7423 = [
+    # 2343 targets `next`, not release-1.5 like its numeric neighbours in
+    # Halo0To2226; it pins sourceCompatibility 17, so it needs JDK 17 here.
+    '2343',
     '2887-2888-2920-2950-2952-2965-2975-2977',
     '3202-3275-3276-3277-3278-3284-3309-3310-3313-3315-3318-3323',
     '3435-3459-3461-3472-3486-3487-3488',

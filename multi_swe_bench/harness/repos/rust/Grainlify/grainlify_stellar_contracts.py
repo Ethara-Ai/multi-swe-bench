@@ -48,14 +48,22 @@ class GrainlifyStellarContractsImageBase(Image):
         return "rust:latest"
 
     def image_tag(self) -> str:
-        # Per-PR base tag (not the plain "base" used by single-PR repos):
-        # this repo's PRs span two divergent base.sha values, and the harness
-        # DockerfileEnhancer bakes `git checkout ${BASE_COMMIT}` then prunes all
-        # other refs, so PRs sharing one tag would overwrite each other's commit.
-        return f"base-pr-{self.pr.number}"
+        # Keyed on base.sha because BASE_COMMIT is the base image's only
+        # PR-dependent input, so PRs sharing a base commit build identical
+        # images (4 PRs, 2 shas -> 2 builds).
+        #
+        # Do NOT collapse this to a constant "base": images dedupe by
+        # image_full_name() into a set, so one tag keeps one arbitrary Image,
+        # and BASE_COMMIT is read off whichever object survives. Other PRs
+        # would then silently evaluate against the wrong tree. Keying on
+        # base.sha makes every tag pin exactly one commit.
+        return f"base-{self.pr.base.sha[:12]}"
 
     def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        # Constant while image_tag varies: the context is only the Dockerfile
+        # (files() is empty, base images skip copy_source_code), and it is
+        # identical per commit because BASE_COMMIT is a build arg.
+        return "base"
 
     def files(self) -> list[File]:
         return []

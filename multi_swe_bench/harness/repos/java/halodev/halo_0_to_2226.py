@@ -4,7 +4,7 @@ import re
 import textwrap
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -74,7 +74,7 @@ class Halo0To2226ImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return "base-jdk11"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -87,33 +87,59 @@ class Halo0To2226ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # Per-PR base (tag base-pr-<N>). The clone, the pin to ${BASE_COMMIT}
+        # and the history scrub all live HERE, in the base, so the PR layer
+        # stays a thin patch/script drop and no responsibility is duplicated.
+        #
+        # The proxy ARGs, the ENV passthrough block, the CA symlink farm and
+        # the scrub/assert block are taken from harness.image rather than
+        # retyped, so this file cannot drift from the canonical, security-
+        # reviewed text. `# syntax` stops DockerfileEnhancer double-injecting.
+        build_args = (
+            "ARG TARGETARCH\n"
+            f'ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"\n'
+            "ARG BASE_COMMIT\n"
+            f"\n{DockerfileEnhancer._PROXY_ARGS}"
+        )
 
-        # This is a SHARED base (one per era, tag base-jdk11) reused by every PR
-        # in the era. The `# syntax` directive makes DockerfileEnhancer.enhance()
-        # return this Dockerfile unchanged; otherwise it would rewrite the clone
-        # to `git checkout ${BASE_COMMIT}` + hardening + gc-prune, pinning the
-        # shared base to ONE commit and pruning it — breaking every other PR's
-        # `git checkout <base.sha>` in prepare.sh. Per-PR hardening lives in the
-        # Default image instead.
+        # Docker layers are additive: a `git gc` in a later layer only writes a
+        # whiteout, it cannot unwrite the full-history packfile the clone put in
+        # an earlier layer — that pack still ships in the image tar and
+        # `git cat-file` recovers the commit carrying the ground-truth fix. So
+        # the clone RUN detaches and scrubs inline, in the same layer, and the
+        # fat pack never becomes a shipped layer. The standalone D13/D14 steps
+        # below still run and still assert; every command in them is idempotent.
+        clone_and_prescrub = (
+            "# Clone + detach + scrub in ONE layer: Docker layers are additive, so a\n"
+            "# later `git gc` cannot unwrite the full-history packfile an earlier layer\n"
+            "# already shipped. The D13/D14 steps below re-run idempotently and still\n"
+            "# assert, on a tree this layer has already made clean.\n"
+            f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo} \\\n'
+            f"    && cd /home/{self.pr.repo} \\\n"
+            '    && git checkout --detach "${BASE_COMMIT}" \\\n'
+            "    && (git remote remove origin 2>/dev/null || true) \\\n"
+            "    && git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\\n"
+            "        | xargs -r -n1 git update-ref -d \\\n"
+            "    && git reflog expire --expire=now --all \\\n"
+            "    && git reflog expire --expire-unreachable=now --all \\\n"
+            "    && git gc --prune=now --aggressive \\\n"
+            "    && git repack -a -d -l --quiet \\\n"
+            "    && rm -f .git/objects/info/alternates"
+        )
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
-ARG TARGETARCH
-ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+{build_args}
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    TZ=UTC \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8
+{DockerfileEnhancer._ENV_BLOCK}
+ENV LC_ALL=C.UTF-8
 
 LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
       org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 WORKDIR /home/
 
@@ -129,10 +155,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends zulu11-jdk \\
 ENV JAVA_HOME=/usr/lib/jvm/zulu11
 ENV PATH=$JAVA_HOME/bin:$PATH
 
-{code}
+{clone_and_prescrub}
 
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{Image._HARDENING_BLOCK}
 {self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -294,35 +326,10 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
-        # The per-PR image's dependency() returns an Image (the shared base), so
-        # DockerfileEnhancer.enhance() returns this Dockerfile unmodified — it only
-        # injects the HEAD-strip hardening for str-dependency images. prepare.sh has
-        # just `git checkout`ed {base.sha}; without this block the working tree still
-        # carries origin + every branch/tag + the full reflog, letting a model read
-        # the fix via `git log` / `git show <future-sha>` / `git fetch`. Detach at
-        # base.sha and strip all other history so only base.sha + ancestors remain.
-        # Literal sha (not ${BASE_COMMIT}) because this image declares no such ARG.
-        repo = self.pr.repo
-        sha = self.pr.base.sha
-        hardening = (
-            "RUN set -eux; \\\n"
-            f"    cd /home/{repo}; \\\n"
-            f"    git checkout --detach {sha}; \\\n"
-            "    git remote remove origin 2>/dev/null || true; \\\n"
-            "    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d; \\\n"
-            "    git reflog expire --expire=now --all || true; \\\n"
-            "    git reflog expire --expire-unreachable=now --all || true; \\\n"
-            "    git gc --prune=now --aggressive; \\\n"
-            "    git repack -a -d -l --quiet; \\\n"
-            "    rm -f .git/objects/info/alternates; \\\n"
-            "    git config --local gc.auto 0; \\\n"
-            f'    test "$(git rev-parse HEAD)" = "$(git rev-parse {sha})"; \\\n'
-            '    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\\n'
-            '    test -z "$(git remote)"; \\\n'
-            '    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"'
-        )
-
-        # No proxy/cert/MITM injection (removed per build-env policy).
+        # The clone, the ${BASE_COMMIT} pin and the history scrub are owned by
+        # the base image (base-pr-<N>) and must not be re-implemented here:
+        # repeating them would duplicate a base responsibility and stack a second
+        # fat git layer on top of an already-scrubbed tree.
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -330,8 +337,6 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 {copy_commands}
 
 {prepare_commands}
-
-{hardening}
 
 {self.clear_env}
 

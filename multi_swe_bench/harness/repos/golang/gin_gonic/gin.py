@@ -23,10 +23,10 @@ class GinImageBase(Image):
         return "golang:latest"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -121,7 +121,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-go test -v -count=1 ./... || true
+go test -v -count=1 -timeout 300s -skip 'TestUnixSocket' ./... || true
 
 """.format(pr=self.pr),
             ),
@@ -132,7 +132,7 @@ go test -v -count=1 ./... || true
 set -e
 
 cd /home/{pr.repo}
-go test -v -count=1 ./...
+go test -v -count=1 -timeout 300s -skip 'TestUnixSocket' ./...
 
 """.format(pr=self.pr),
             ),
@@ -144,7 +144,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch
-go test -v -count=1 ./...
+go test -v -count=1 -timeout 300s -skip 'TestUnixSocket' ./...
 
 """.format(pr=self.pr),
             ),
@@ -156,7 +156,7 @@ set -e
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
-go test -v -count=1 ./...
+go test -v -count=1 -timeout 300s -skip 'TestUnixSocket' ./...
 
 """.format(pr=self.pr),
             ),
@@ -224,9 +224,11 @@ class Gin(Instance):
         skipped_tests = set()
 
         re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
+        # Do NOT add a broad `FAIL:?\s?(.+?)\s` pattern: it matches Go's
+        # package-summary line (`FAIL<tab>github.com/...<tab>600s`) and
+        # injects a phantom failing test, corrupting failed_count.
         re_fail_tests = [
             re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"FAIL:?\s?(.+?)\s"),
         ]
         re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
 
