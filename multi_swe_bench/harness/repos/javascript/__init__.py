@@ -30,7 +30,6 @@ from multi_swe_bench.harness.repos.javascript.carbon_design_system import *
 from multi_swe_bench.harness.repos.javascript.carbondesignsystem import *
 from multi_swe_bench.harness.repos.javascript.cfpb import *
 from multi_swe_bench.harness.repos.javascript.chaijs import *
-from multi_swe_bench.harness.repos.javascript.chakra_core import *
 from multi_swe_bench.harness.repos.javascript.chalk import *
 from multi_swe_bench.harness.repos.javascript.char0n import *
 from multi_swe_bench.harness.repos.javascript.chartjs import *

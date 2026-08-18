@@ -42,7 +42,7 @@ def _junit_xml_parse(test_log: str) -> TestResult:
     )
 
 
-class HieroImageBase(Image):
+class CloudOsjImageBase(Image):
     """Repo-level base: Maven + JDK. qulice is a Maven multi-module project; the graded tests are
     in the `qulice-checkstyle` module (ChecksTest / CheckstyleValidatorTest / RequiredJavaDocTagTest).
     We build the reactor for that module (-am) and skip qulice's own self-lint so a style nit in the
@@ -61,7 +61,7 @@ class HieroImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "maven:3.9-eclipse-temurin-21"
+        return "maven:3.9-eclipse-temurin-8"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -96,7 +96,7 @@ RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr
 WORKDIR /home/{self.pr.repo}
 RUN git checkout {self.pr.base.sha}
 # pre-warm: resolve deps + compile the checkstyle module reactor (skip self-lint, tests)
-RUN timeout --kill-after=30 1500 mvn -B -pl hedera-base -am install \\
+RUN timeout --kill-after=30 1500 mvn -B -pl dependencies -am install \\
       -DskipTests -Dcheckstyle.skip=true -Dpmd.skip=true -Dspotbugs.skip=true -Denforcer.skip=true -Dlicense.skip=true -Dmaven.javadoc.skip=true \\
       || true
 
@@ -106,7 +106,7 @@ CMD ["/bin/bash"]
 """
 
 
-class HieroImageDefault(Image):
+class CloudOsjImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -120,7 +120,7 @@ class HieroImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return HieroImageBase(self.pr, self._config)
+        return CloudOsjImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -137,8 +137,8 @@ class HieroImageDefault(Image):
         # XML to target/surefire-reports/TEST-*.xml (same format the parser handles).
         test_cmd = (
             "cd /home/{repo}\n"
-            "timeout --kill-after=30 1800 mvn -B -pl hedera-base test "
-            "-Dtest='ProtocolLayerDataCreationTests' "
+            "timeout --kill-after=30 1800 mvn -B -pl dependencies test "
+            "-Dtest='ExclusionFilesTest' "
             "-DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false -Dmaven.test.failure.ignore=true "
             "-Dcheckstyle.skip=true -Dpmd.skip=true -Dspotbugs.skip=true -Denforcer.skip=true -Dlicense.skip=true -Dmaven.javadoc.skip=true "
             "|| true\n"
@@ -192,8 +192,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("OpenElements", "hiero-enterprise-java")
-class HIERO_ENTERPRISE_JAVA(Instance):
+@Instance.register("GoogleCloudPlatform", "cloud-opensource-java")
+class CLOUD_OPENSOURCE_JAVA(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -204,7 +204,7 @@ class HIERO_ENTERPRISE_JAVA(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return HieroImageDefault(self.pr, self._config)
+        return CloudOsjImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"

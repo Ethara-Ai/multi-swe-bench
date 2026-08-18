@@ -42,11 +42,27 @@ def _junit_xml_parse(test_log: str) -> TestResult:
     )
 
 
-class HieroImageBase(Image):
-    """Repo-level base: Maven + JDK. qulice is a Maven multi-module project; the graded tests are
-    in the `qulice-checkstyle` module (ChecksTest / CheckstyleValidatorTest / RequiredJavaDocTagTest).
-    We build the reactor for that module (-am) and skip qulice's own self-lint so a style nit in the
-    codebase doesn't mask the JUnit outcome."""
+# the 11 test classes touched by PR #2343 (the GC feature + framework it builds on)
+_TESTS = [
+    "run.halo.app.content.ContentRequestTest",
+    "run.halo.app.core.extension.SettingTest",
+    "run.halo.app.core.extension.ThemeTest",
+    "run.halo.app.extension.MetadataOperatorTest",
+    "run.halo.app.extension.UnstructuredTest",
+    "run.halo.app.extension.controller.DefaultControllerTest",
+    "run.halo.app.extension.controller.DefaultDelayQueueTest",
+    "run.halo.app.extension.controller.ExtensionWatcherTest",
+    "run.halo.app.extension.gc.GcReconcilerTest",
+    "run.halo.app.extension.gc.GcWatcherTest",
+    "run.halo.app.plugin.YamlPluginFinderTest",
+]
+_TESTS_ARGS = " ".join(f"--tests '{t}'" for t in _TESTS)
+
+
+class HaloImageBase(Image):
+    """Repo-level base: JDK 17 + git + clone. halo is a Spring Boot app (Gradle 7.4, single root
+    module, sourceCompatibility 17). PR #2343 adds an extension garbage collector
+    (run.halo.app.extension.gc.*) tested by GcReconcilerTest/GcWatcherTest."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -61,7 +77,7 @@ class HieroImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "maven:3.9-eclipse-temurin-21"
+        return "eclipse-temurin:17-jdk"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -88,17 +104,18 @@ WORKDIR /home/
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
+ENV GRADLE_OPTS="-Xmx4g -Dfile.encoding=UTF-8 -Dorg.gradle.daemon=false"
+ENV CI=true
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /root/.m2 && echo 'PHNldHRpbmdzPgogIDxtaXJyb3JzPgogICAgPG1pcnJvcj4KICAgICAgPGlkPmdvb2dsZS1jZW50cmFsPC9pZD4KICAgICAgPG5hbWU+R29vZ2xlIE1hdmVuIENlbnRyYWwgbWlycm9yPC9uYW1lPgogICAgICA8dXJsPmh0dHBzOi8vbWF2ZW4tY2VudHJhbC5zdG9yYWdlLWRvd25sb2FkLmdvb2dsZWFwaXMuY29tL21hdmVuMi88L3VybD4KICAgICAgPG1pcnJvck9mPmNlbnRyYWw8L21pcnJvck9mPgogICAgPC9taXJyb3I+CiAgPC9taXJyb3JzPgo8L3NldHRpbmdzPgo=' | base64 -d > /root/.m2/settings.xml
+RUN mkdir -p /root/.gradle && echo 'ZGVmIE1JUlJPUiA9ICdodHRwczovL21hdmVuLWNlbnRyYWwuc3RvcmFnZS1kb3dubG9hZC5nb29nbGVhcGlzLmNvbS9tYXZlbjIvJwpkZWYgaXNUaHJvdHRsZWQgPSB7IHUgLT4gdSAhPSBudWxsICYmICh1LmNvbnRhaW5zKCdyZXBvLm1hdmVuLmFwYWNoZS5vcmcnKSB8fCB1LmNvbnRhaW5zKCdyZXBvMS5tYXZlbi5vcmcnKSkgfQpkZWYgcmV3cml0ZSA9IHsgcmVwb3MgLT4KICAgIHJlcG9zLmFsbCB7IHIgLT4KICAgICAgICB0cnkgeyBpZiAoci5oYXNQcm9wZXJ0eSgndXJsJykgJiYgaXNUaHJvdHRsZWQoci51cmw/LnRvU3RyaW5nKCkpKSByLnVybCA9IHVyaShNSVJST1IpIH0gY2F0Y2ggKGlnbm9yZWQpIHt9CiAgICB9Cn0KZ3JhZGxlLnNldHRpbmdzRXZhbHVhdGVkIHsgcyAtPgogICAgdHJ5IHsgcy5wbHVnaW5NYW5hZ2VtZW50LnJlcG9zaXRvcmllcyB7IGdyYWRsZVBsdWdpblBvcnRhbCgpOyBtYXZlbiB7IHVybCBNSVJST1IgfSB9IH0gY2F0Y2ggKGlnbm9yZWQpIHt9CiAgICB0cnkgeyByZXdyaXRlKHMucGx1Z2luTWFuYWdlbWVudC5yZXBvc2l0b3JpZXMpIH0gY2F0Y2ggKGlnbm9yZWQpIHt9CiAgICB0cnkgeyByZXdyaXRlKHMuZGVwZW5kZW5jeVJlc29sdXRpb25NYW5hZ2VtZW50LnJlcG9zaXRvcmllcykgfSBjYXRjaCAoaWdub3JlZCkge30KICAgIHRyeSB7IHMuZGVwZW5kZW5jeVJlc29sdXRpb25NYW5hZ2VtZW50LnJlcG9zaXRvcmllcyB7IG1hdmVuIHsgdXJsIE1JUlJPUiB9IH0gfSBjYXRjaCAoaWdub3JlZCkge30KfQpncmFkbGUuYWxscHJvamVjdHMgeyBwIC0+CiAgICByZXdyaXRlKHAucmVwb3NpdG9yaWVzKQogICAgdHJ5IHsgcmV3cml0ZShwLmJ1aWxkc2NyaXB0LnJlcG9zaXRvcmllcykgfSBjYXRjaCAoaWdub3JlZCkge30KfQo=' | base64 -d > /root/.gradle/init.gradle
 
 RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
 WORKDIR /home/{self.pr.repo}
 RUN git checkout {self.pr.base.sha}
-# pre-warm: resolve deps + compile the checkstyle module reactor (skip self-lint, tests)
-RUN timeout --kill-after=30 1500 mvn -B -pl hedera-base -am install \\
-      -DskipTests -Dcheckstyle.skip=true -Dpmd.skip=true -Dspotbugs.skip=true -Denforcer.skip=true -Dlicense.skip=true -Dmaven.javadoc.skip=true \\
-      || true
+RUN chmod +x ./gradlew || true
+RUN timeout --kill-after=30 1500 ./gradlew compileTestJava --no-daemon \\
+      -Dorg.gradle.configuration-cache=false -Dorg.gradle.caching=false || true
 
 {self.clear_env}
 
@@ -106,7 +123,7 @@ CMD ["/bin/bash"]
 """
 
 
-class HieroImageDefault(Image):
+class HaloImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -120,7 +137,7 @@ class HieroImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return HieroImageBase(self.pr, self._config)
+        return HaloImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -132,18 +149,13 @@ class HieroImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        # Scope surefire to the 3 touched test classes in qulice-checkstyle. Skip qulice's own
-        # checks so the JUnit outcome (not a style nit) is what's graded. Surefire writes JUnit
-        # XML to target/surefire-reports/TEST-*.xml (same format the parser handles).
         test_cmd = (
             "cd /home/{repo}\n"
-            "timeout --kill-after=30 1800 mvn -B -pl hedera-base test "
-            "-Dtest='ProtocolLayerDataCreationTests' "
-            "-DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false -Dmaven.test.failure.ignore=true "
-            "-Dcheckstyle.skip=true -Dpmd.skip=true -Dspotbugs.skip=true -Denforcer.skip=true -Dlicense.skip=true -Dmaven.javadoc.skip=true "
-            "|| true\n"
+            "timeout --kill-after=30 1800 ./gradlew test " + _TESTS_ARGS + " "
+            "--no-daemon --continue "
+            "-Dorg.gradle.configuration-cache=false -Dorg.gradle.caching=false || true\n"
             "echo '===== BEGIN TEST RESULTS ====='\n"
-            "find /home/{repo} -path '*/target/surefire-reports/TEST-*.xml' -exec cat {{}} \\; 2>/dev/null\n"
+            "find /home/{repo} -path '*/build/test-results/test/TEST-*.xml' -exec cat {{}} \\; 2>/dev/null\n"
             "echo '===== END TEST RESULTS ====='"
         ).format(repo=self.pr.repo)
         apply_test = "git apply --whitespace=nowarn /home/test.patch || git apply --whitespace=nowarn --reject /home/test.patch || true; find . -name '*.rej' -delete 2>/dev/null || true"
@@ -192,8 +204,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("OpenElements", "hiero-enterprise-java")
-class HIERO_ENTERPRISE_JAVA(Instance):
+@Instance.register("halo-dev", "halo")
+class HALO(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -204,7 +216,7 @@ class HIERO_ENTERPRISE_JAVA(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return HieroImageDefault(self.pr, self._config)
+        return HaloImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"

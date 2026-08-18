@@ -61,3 +61,12 @@ from multi_swe_bench.harness.repos.java.agustinanisaf import *
 from multi_swe_bench.harness.repos.java.Visual_Regression_Tracker import *
 from multi_swe_bench.harness.repos.java.processing import *
 from multi_swe_bench.harness.repos.java.Stirling_Tools import *
+from multi_swe_bench.harness.repos.java.TNG import *
+from multi_swe_bench.harness.repos.java.GumTreeDiff import *
+from multi_swe_bench.harness.repos.java.yegor256 import *
+from multi_swe_bench.harness.repos.java.halo_dev import *
+from multi_swe_bench.harness.repos.java.GoogleCloudPlatform import *
+from multi_swe_bench.harness.repos.java.OpenElements import *
+from multi_swe_bench.harness.repos.java.HubSpot import *
+from multi_swe_bench.harness.repos.java.cryostatio import *
+from multi_swe_bench.harness.repos.java.Swati4star import *

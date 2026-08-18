@@ -90,7 +90,6 @@ from multi_swe_bench.harness.repos.python.fractal_analytics_platform import *
 from multi_swe_bench.harness.repos.python.freedomofpress import *
 from multi_swe_bench.harness.repos.python.freqtrade import *
 from multi_swe_bench.harness.repos.python.frictionlessdata import *
-from multi_swe_bench.harness.repos.python.funilrys import *
 from multi_swe_bench.harness.repos.python.galaxyproject import *
 from multi_swe_bench.harness.repos.python.gammapy import *
 from multi_swe_bench.harness.repos.python.GenericMappingTools import *
@@ -228,7 +227,6 @@ from multi_swe_bench.harness.repos.python.pypa import *
 from multi_swe_bench.harness.repos.python.pyscf import *
 from multi_swe_bench.harness.repos.python.pytest_dev import *
 from multi_swe_bench.harness.repos.python.python import *
-from multi_swe_bench.harness.repos.python.python_caldav import *
 from multi_swe_bench.harness.repos.python.python_cmd2 import *
 from multi_swe_bench.harness.repos.python.python_pillow import *
 from multi_swe_bench.harness.repos.python.python_poetry import *
