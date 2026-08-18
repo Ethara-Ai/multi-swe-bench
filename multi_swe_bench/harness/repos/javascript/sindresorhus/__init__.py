@@ -5,3 +5,4 @@ from multi_swe_bench.harness.repos.javascript.sindresorhus.globby import *
 from multi_swe_bench.harness.repos.javascript.sindresorhus.meow import *
 from multi_swe_bench.harness.repos.javascript.sindresorhus.query_string import *
 from multi_swe_bench.harness.repos.javascript.sindresorhus.element_ready import *
+from multi_swe_bench.harness.repos.javascript.sindresorhus.camelcase_keys import *

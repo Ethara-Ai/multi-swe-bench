@@ -195,3 +195,6 @@ from multi_swe_bench.harness.repos.typescript.Eugeny import *
 from multi_swe_bench.harness.repos.typescript.pubkey import *
 from multi_swe_bench.harness.repos.typescript.abi import *
 from multi_swe_bench.harness.repos.typescript.paperclipai import *
+from multi_swe_bench.harness.repos.typescript.codibre import *
+from multi_swe_bench.harness.repos.typescript.memfreeme import *
+from multi_swe_bench.harness.repos.typescript.ForNeVeR import *
