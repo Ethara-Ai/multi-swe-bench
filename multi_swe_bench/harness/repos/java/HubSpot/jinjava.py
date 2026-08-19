@@ -97,7 +97,7 @@ WORKDIR /home/{self.pr.repo}
 RUN git checkout {self.pr.base.sha}
 # pre-warm: resolve deps + compile the checkstyle module reactor (skip self-lint, tests)
 RUN timeout --kill-after=30 1500 mvn -B install \\
-      -DskipTests -Dcheckstyle.skip=true -Dpmd.skip=true -Dspotbugs.skip=true -Denforcer.skip=true -Dlicense.skip=true -Dmaven.javadoc.skip=true -Dbasepom.check.skip-all=true \\
+      -DskipTests -Dcheckstyle.skip=true -Dpmd.skip=true -Dspotbugs.skip=true -Denforcer.skip=true -Dlicense.skip=true -Dmaven.javadoc.skip=true -Dbasepom.check.skip-all=true -Dbasepom.check.skip-prettier=true \\
       || true
 
 {self.clear_env}
@@ -140,7 +140,7 @@ class JinjavaImageDefault(Image):
             "timeout --kill-after=30 1800 mvn -B test "
             "-Dtest='EagerTest,ForTagTest,SetTagTest,NamespaceTest' "
             "-DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false -Dmaven.test.failure.ignore=true "
-            "-Dcheckstyle.skip=true -Dpmd.skip=true -Dspotbugs.skip=true -Denforcer.skip=true -Dlicense.skip=true -Dmaven.javadoc.skip=true -Dbasepom.check.skip-all=true "
+            "-Dcheckstyle.skip=true -Dpmd.skip=true -Dspotbugs.skip=true -Denforcer.skip=true -Dlicense.skip=true -Dmaven.javadoc.skip=true -Dbasepom.check.skip-all=true -Dbasepom.check.skip-prettier=true "
             "|| true\n"
             "echo '===== BEGIN TEST RESULTS ====='\n"
             "find /home/{repo} -path '*/target/surefire-reports/TEST-*.xml' -exec cat {{}} \\; 2>/dev/null\n"

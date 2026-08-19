@@ -60,15 +60,25 @@ ENV CI=true
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates unzip wget && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /root/.gradle && echo '{_INIT_B64}' | base64 -d > /root/.gradle/init.gradle
 
-# Android SDK (cmdline-tools + platform 28 + build-tools 28.0.3)
+# Android SDK (cmdline-tools + platform 28 + build-tools 28.0.3).
+# sdkmanager (from cmdline-tools 9477386) requires JDK 11+, but the project build needs JDK 8
+# (Gradle 5.4.1). Install a JDK 17 alongside and point sdkmanager at it JUST for the SDK setup;
+# the image's default JAVA_HOME stays JDK 8 so Gradle compiles the app correctly.
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
 ENV ANDROID_HOME=/opt/android-sdk
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless && rm -rf /var/lib/apt/lists/* || true
 RUN mkdir -p $ANDROID_SDK_ROOT/cmdline-tools && cd $ANDROID_SDK_ROOT/cmdline-tools \
     && wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O t.zip \
     && unzip -q t.zip && mv cmdline-tools latest && rm t.zip
 ENV PATH="$PATH:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools"
-RUN yes | sdkmanager --licenses >/dev/null 2>&1 || true
-RUN sdkmanager "platform-tools" "platforms;android-28" "build-tools;28.0.3" >/dev/null 2>&1 || true
+# Pre-write the SDK license hashes (robust — avoids the JDK-quirky interactive
+# `sdkmanager --licenses`), then install under JDK17 (cmdline-tools needs JDK11+; the project
+# build stays on JDK8). The `--sdk_root` flag makes sdkmanager honor these license files.
+RUN mkdir -p $ANDROID_SDK_ROOT/licenses \
+    && printf '\\n8933bad161af4178b1185d1a37fbf41ea5269c55\\nd56f5187479451eabf01fb78af6dfcb131a6481e\\n24333f8a63b6825ea9c5514f83c2829b004d1fee\\n' > $ANDROID_SDK_ROOT/licenses/android-sdk-license \
+    && printf '\\n84831b9409646a918e30573bab4c9c91346d8abd\\n504667f4c0de7af1a06de9f4b1727b84351f2910\\n' > $ANDROID_SDK_ROOT/licenses/android-sdk-preview-license
+RUN J17=$(ls -d /usr/lib/jvm/java-17-openjdk* 2>/dev/null | head -1); \
+    env JAVA_HOME="$J17" PATH="$J17/bin:$PATH" sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "platforms;android-28" "build-tools;28.0.3" 2>&1 | tail -2 || true
 
 RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 WORKDIR /home/{self.pr.repo}
