@@ -178,6 +178,7 @@ from multi_swe_bench.harness.repos.python.open_formulieren import *
 from multi_swe_bench.harness.repos.python.open_telemetry import *
 from multi_swe_bench.harness.repos.python.openmc_dev import *
 from multi_swe_bench.harness.repos.python.OpenMDAO import *
+from multi_swe_bench.harness.repos.python.OpenMind import *
 from multi_swe_bench.harness.repos.python.OpenMined import *
 from multi_swe_bench.harness.repos.python.opensafely_core import *
 from multi_swe_bench.harness.repos.python.OpenSlides import *
