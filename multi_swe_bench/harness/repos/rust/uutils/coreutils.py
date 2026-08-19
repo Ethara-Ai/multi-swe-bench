@@ -5,6 +5,20 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# Tests that can never pass inside the grading container because the container
+# runs as root (e.g. `test_chroot` asserts that chroot(2) is *denied*).
+# They are excluded from every stage so the three graded runs stay comparable.
+ENV_BLOCKED_TEST_FILTERS = ("test_chroot",)
+
+CARGO_BASE = "cargo test --features unix"
+
+# One single cargo invocation, never a `&&` chain: a failing test must not be
+# able to abort the command and hide the remaining test binaries' output.
+CARGO_TEST_CMD = (
+    f"{CARGO_BASE} --no-fail-fast -- --test-threads=1 "
+    + " ".join(f"--skip {name}" for name in ENV_BLOCKED_TEST_FILTERS)
+).strip()
+
 
 class CoreutilsImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -23,10 +37,10 @@ class CoreutilsImageBase(Image):
         return "rust:1.88.0"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -46,6 +60,10 @@ class CoreutilsImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates build-essential pkg-config libssl-dev \\
+    && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -76,36 +94,7 @@ class CoreutilsImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    @staticmethod
-    def _extract_test_filters(test_patch: str, fix_patch: str) -> str:
-        filters = set()
-        for patch in [test_patch, fix_patch]:
-            if not patch:
-                continue
-            for line in patch.split("\n"):
-                if line.startswith("diff --git"):
-                    path = line.split(" b/")[-1] if " b/" in line else ""
-                    m = re.search(r"tests/by-util/(test_\w+)", path)
-                    if m:
-                        filters.add(m.group(1))
-                    m = re.search(r"src/uu/(\w+)/", path)
-                    if m:
-                        filters.add(f"test_{m.group(1)}")
-        return " ".join(sorted(filters))
-
     def files(self) -> list[File]:
-        test_filters = self._extract_test_filters(
-            self.pr.test_patch, self.pr.fix_patch
-        )
-        cargo_base = "cargo test --features unix"
-        if test_filters:
-            cargo_test_cmd = " && ".join(
-                f'{cargo_base} "{f}" -- --test-threads=1'
-                for f in test_filters.split()
-            )
-        else:
-            cargo_test_cmd = f"{cargo_base} -- --test-threads=1"
-
         git_apply_opts = "--binary --3way"
 
         return [
@@ -152,46 +141,46 @@ bash /home/check_git_changes.sh
 git checkout {sha}
 bash /home/check_git_changes.sh
 
-{cargo_base} || true
+{cargo_base} --no-run || true
 
-""".format(repo=self.pr.repo, sha=self.pr.base.sha, cargo_base=cargo_base),
+""".format(repo=self.pr.repo, sha=self.pr.base.sha, cargo_base=CARGO_BASE),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{repo}
-{cmd}
+{cmd} 2>&1
 
-""".format(repo=self.pr.repo, cmd=cargo_test_cmd),
+""".format(repo=self.pr.repo, cmd=CARGO_TEST_CMD),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{repo}
-git apply {apply_opts} /home/test.patch || git apply --binary /home/test.patch || git apply /home/test.patch
-touch -c src/uu/*/src/*.rs tests/by-util/*.rs Cargo.toml Cargo.lock 2>/dev/null
-{cmd}
+git apply {apply_opts} /home/test.patch || git apply --binary /home/test.patch || git apply --whitespace=nowarn /home/test.patch
+touch -c src/uu/*/src/*.rs tests/by-util/*.rs Cargo.toml Cargo.lock 2>/dev/null || true
+{cmd} 2>&1
 
-""".format(repo=self.pr.repo, cmd=cargo_test_cmd, apply_opts=git_apply_opts),
+""".format(repo=self.pr.repo, cmd=CARGO_TEST_CMD, apply_opts=git_apply_opts),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{repo}
-git apply {apply_opts} /home/test.patch /home/fix.patch || git apply --binary /home/test.patch /home/fix.patch || git apply /home/test.patch /home/fix.patch
-touch -c src/uu/*/src/*.rs tests/by-util/*.rs Cargo.toml Cargo.lock 2>/dev/null
-{cmd}
+git apply {apply_opts} /home/test.patch /home/fix.patch || git apply --binary /home/test.patch /home/fix.patch || git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+touch -c src/uu/*/src/*.rs tests/by-util/*.rs Cargo.toml Cargo.lock 2>/dev/null || true
+{cmd} 2>&1
 
-""".format(repo=self.pr.repo, cmd=cargo_test_cmd, apply_opts=git_apply_opts),
+""".format(repo=self.pr.repo, cmd=CARGO_TEST_CMD, apply_opts=git_apply_opts),
             ),
         ]
 
@@ -256,9 +245,9 @@ class Coreutils(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [re.compile(r"test (\S+) ... ok")]
-        re_fail_tests = [re.compile(r"test (\S+) ... FAILED")]
-        re_skip_tests = [re.compile(r"test (\S+) ... ignored")]
+        re_pass_tests = [re.compile(r"^test (\S+) \.\.\. ok$")]
+        re_fail_tests = [re.compile(r"^test (\S+) \.\.\. FAILED$")]
+        re_skip_tests = [re.compile(r"^test (\S+) \.\.\. ignored")]
 
         for line in test_log.splitlines():
             line = line.strip()

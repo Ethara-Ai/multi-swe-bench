@@ -5,8 +5,41 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# The graded tests live behind the `db-postgres` cargo feature. At the base commit
+# the Postgres test block in tests/decimal_tests.rs is gated on `feature = "postgres"`,
+# which does not exist in Cargo.toml, so it is dead code; the test patch renames the
+# gate to `db-postgres` and adds the new NaN/Infinity case. Without this feature the
+# target tests are compiled out entirely and the run produces no signal at all.
+CARGO_FEATURES = "db-postgres"
 
-class RusqliteImageBase(Image):
+# Tests excluded from every stage so the three graded runs stay comparable.
+#   * "generated" -> `mod generated` in tests/decimal_tests.rs, a CSV-table-driven suite
+#     backed by the 300+ files under tests/generated/. Upstream's own
+#     `cargo make test-db-postgres` task skips it for the database feature runs too.
+#   * "postgres::driver::test::" -> the lib unit tests in src/postgres/driver.rs open a
+#     TCP connection to a live PostgreSQL server (upstream CI provides a postgres:11.6
+#     service container). Inside the grading container they fail with ConnectionRefused
+#     in all three runs, which would leave fix_patch_result.failed_count non-zero and
+#     break the health invariant. The graded Postgres tests are the byte-level FromSql
+#     cases in tests/decimal_tests.rs, which need no server.
+SKIPPED_TEST_FILTERS = ("generated", "postgres::driver::test::")
+
+# --tests selects the lib unit tests plus the integration test targets and excludes
+# doctests, whose result lines ("test src/lib.rs - Decimal (line 12) ... ok") are not
+# parseable by parse_log() and would otherwise be silently dropped.
+CARGO_BASE = f"cargo test --workspace --tests --features={CARGO_FEATURES}"
+
+# One single cargo invocation, never a `&&` chain: a failing test must not be able to
+# abort the command and hide the remaining test binaries' output. --no-fail-fast is
+# load-bearing here — in the test-patch run the new case FAILS, and without it cargo
+# would stop before running the other test binaries, corrupting the p2p baseline.
+CARGO_TEST_CMD = (
+    f"{CARGO_BASE} --no-fail-fast -- --test-threads=1 "
+    + " ".join(f"--skip {name}" for name in SKIPPED_TEST_FILTERS)
+).strip()
+
+
+class RustDecimalImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,13 +53,13 @@ class RusqliteImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "rust:latest"
+        return "rust:1.88.0"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -47,6 +80,10 @@ class RusqliteImageBase(Image):
 
 WORKDIR /home/
 
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates build-essential pkg-config libssl-dev \\
+    && rm -rf /var/lib/apt/lists/*
+
 {code}
 
 {self.clear_env}
@@ -54,7 +91,7 @@ WORKDIR /home/
 """
 
 
-class RusqliteImageDefault(Image):
+class RustDecimalImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -68,7 +105,7 @@ class RusqliteImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return RusqliteImageBase(self.pr, self.config)
+        return RustDecimalImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -77,6 +114,8 @@ class RusqliteImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        git_apply_opts = "--binary --3way"
+
         return [
             File(
                 ".",
@@ -115,50 +154,52 @@ exit 0
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout {sha}
 bash /home/check_git_changes.sh
 
-cargo test --workspace || true
+{cargo_base} --no-run || true
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, sha=self.pr.base.sha, cargo_base=CARGO_BASE),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
-cd /home/{pr.repo}
-cargo test --workspace
+cd /home/{repo}
+{cmd} 2>&1
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, cmd=CARGO_TEST_CMD),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
-cd /home/{pr.repo}
-git apply /home/test.patch
-cargo test --workspace
+cd /home/{repo}
+git apply {apply_opts} /home/test.patch || git apply --binary /home/test.patch || git apply --whitespace=nowarn /home/test.patch
+touch -c src/*.rs src/postgres/*.rs tests/*.rs Cargo.toml Cargo.lock 2>/dev/null || true
+{cmd} 2>&1
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, cmd=CARGO_TEST_CMD, apply_opts=git_apply_opts),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
-cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
-cargo test --workspace
+cd /home/{repo}
+git apply {apply_opts} /home/test.patch /home/fix.patch || git apply --binary /home/test.patch /home/fix.patch || git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+touch -c src/*.rs src/postgres/*.rs tests/*.rs Cargo.toml Cargo.lock 2>/dev/null || true
+{cmd} 2>&1
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, cmd=CARGO_TEST_CMD, apply_opts=git_apply_opts),
             ),
         ]
 
@@ -186,8 +227,8 @@ cargo test --workspace
 """
 
 
-@Instance.register("rusqlite", "rusqlite")
-class Rusqlite(Instance):
+@Instance.register("paupino", "rust-decimal")
+class RustDecimal(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -198,7 +239,7 @@ class Rusqlite(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return RusqliteImageDefault(self.pr, self._config)
+        return RustDecimalImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -223,9 +264,9 @@ class Rusqlite(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [re.compile(r"test (\S+) ... ok")]
-        re_fail_tests = [re.compile(r"test (\S+) ... FAILED")]
-        re_skip_tests = [re.compile(r"test (\S+) ... ignored")]
+        re_pass_tests = [re.compile(r"^test (\S+) \.\.\. ok$")]
+        re_fail_tests = [re.compile(r"^test (\S+) \.\.\. FAILED$")]
+        re_skip_tests = [re.compile(r"^test (\S+) \.\.\. ignored")]
 
         for line in test_log.splitlines():
             line = line.strip()
