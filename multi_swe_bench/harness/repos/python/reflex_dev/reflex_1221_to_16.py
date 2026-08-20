@@ -110,6 +110,14 @@ FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
@@ -123,11 +131,28 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV TZ=UTC
+ENV http_proxy=${{http_proxy}}
+ENV https_proxy=${{https_proxy}}
+ENV HTTP_PROXY=${{HTTP_PROXY}}
+ENV HTTPS_PROXY=${{HTTPS_PROXY}}
+ENV no_proxy=${{no_proxy}}
+ENV NO_PROXY=${{NO_PROXY}}
+ENV SSL_CERT_FILE=${{CA_CERT_PATH}}
+ENV REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}}
+ENV CURL_CA_BUNDLE=${{CA_CERT_PATH}}
 
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git build-essential curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 RUN git config --global --add safe.directory '*'
 {code}
