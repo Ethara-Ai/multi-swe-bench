@@ -122,7 +122,6 @@ from multi_swe_bench.harness.repos.javascript.swaggerapi import *
 from multi_swe_bench.harness.repos.javascript.terser import *
 from multi_swe_bench.harness.repos.javascript.testing_library import *
 from multi_swe_bench.harness.repos.javascript.tj import *
-from multi_swe_bench.harness.repos.javascript.tjw_lint import *
 from multi_swe_bench.harness.repos.javascript.trekhleb import *
 from multi_swe_bench.harness.repos.javascript.tshaddix import *
 from multi_swe_bench.harness.repos.javascript.TryGhost import *
@@ -145,3 +144,4 @@ from multi_swe_bench.harness.repos.javascript.processing import *
 from multi_swe_bench.harness.repos.javascript.import_js import *
 from multi_swe_bench.harness.repos.javascript.openstreetmap import *
 from multi_swe_bench.harness.repos.javascript.dequelabs import *
+from multi_swe_bench.harness.repos.javascript.yaacov import *
