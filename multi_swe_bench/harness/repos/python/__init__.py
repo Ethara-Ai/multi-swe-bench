@@ -367,3 +367,4 @@ from multi_swe_bench.harness.repos.python.LAAC_LSCP import *
 from multi_swe_bench.harness.repos.python.AlertaDengue import *
 from multi_swe_bench.harness.repos.python.pytition import *
 from multi_swe_bench.harness.repos.python.hummingbot import *
+from multi_swe_bench.harness.repos.python.wtbarnes import *
