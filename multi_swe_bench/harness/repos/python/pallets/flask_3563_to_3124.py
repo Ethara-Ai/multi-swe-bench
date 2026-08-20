@@ -47,43 +47,17 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -F
-###ACTION_DELIMITER###
-pip install pytest greenlet blinker python-dotenv Werkzeug==0.15.5 Jinja2==2.10 itsdangerous==0.24 Click==5.1
-###ACTION_DELIMITER###
-pip install -e .
-###ACTION_DELIMITER###
-echo "pytest --no-header -rA --tb=no -p no:cacheprovider" > /home/flask/test_commands.sh
-###ACTION_DELIMITER###
-bash /home/flask/test_commands.sh
-###ACTION_DELIMITER###
-pip install Jinja2==2.10.1
-###ACTION_DELIMITER###
-bash /home/flask/test_commands.sh
-###ACTION_DELIMITER###
-pip uninstall -y Jinja2 && pip install Jinja2==3.0.0
-###ACTION_DELIMITER###
-bash /home/flask/test_commands.sh
-###ACTION_DELIMITER###
-pip install Werkzeug==0.15.5 MarkupSafe==2.0.1
-###ACTION_DELIMITER###
-pip install --force-reinstall Werkzeug==0.15.5 Jinja2==2.11.3 itsdangerous==0.24 Click==5.1 pytest greenlet blinker python-dotenv MarkupSafe==2.0.1
-###ACTION_DELIMITER###
-bash /home/flask/test_commands.sh
-###ACTION_DELIMITER###
-pip uninstall -y pytest && pip install pytest==6.2.5
-###ACTION_DELIMITER###
-bash /home/flask/test_commands.sh
-###ACTION_DELIMITER###
-pip install pluggy==0.13.1
-###ACTION_DELIMITER###
-bash /home/flask/test_commands.sh
-###ACTION_DELIMITER###
-pip install --force-reinstall Werkzeug==0.15.5 Jinja2==2.11.3 itsdangerous==0.24 Click==5.1 pytest==6.2.5 greenlet blinker python-dotenv MarkupSafe==2.0.1 pluggy==0.13.1
-###ACTION_DELIMITER###
+                """#!/bin/bash
+set -x
+cd /home/flask
 
-###ACTION_DELIMITER###
-bash /home/flask/test_commands.sh --forked""",
+pip install --no-cache-dir -e .
+pip install --no-cache-dir --force-reinstall Werkzeug==0.15.5 Jinja2==2.11.3 \
+    itsdangerous==0.24 Click==5.1 pytest==6.2.5 greenlet blinker \
+    python-dotenv MarkupSafe==2.0.1 pluggy==0.13.1
+
+echo "pytest --no-header -rA --tb=no -p no:cacheprovider" > /home/flask/test_commands.sh
+pytest --version""",
             ),
             File(
                 ".",
@@ -158,6 +132,7 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
 """
         return dockerfile_content.format(pr=self.pr)
 

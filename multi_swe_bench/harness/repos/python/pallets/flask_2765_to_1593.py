@@ -47,34 +47,32 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -F
-###ACTION_DELIMITER###
-pip install -e .
-###ACTION_DELIMITER###
-pip install -q -e examples/tutorial[test]
-###ACTION_DELIMITER###
-pip install -q -e examples/javascript[test]
-###ACTION_DELIMITER###
-pip install -q "pytest>=3" coverage greenlet blinker python-dotenv
-###ACTION_DELIMITER###
-coverage run -p -m pytest tests examples
-###ACTION_DELIMITER###
-pip install -q "Werkzeug==0.14" "Jinja2==2.10" "itsdangerous==0.24" "Click==5.1"
-###ACTION_DELIMITER###
-coverage run -p -m pytest tests examples
-###ACTION_DELIMITER###
-pip install "pytest<4"
-###ACTION_DELIMITER###
-coverage run -p -m pytest tests examples
-###ACTION_DELIMITER###
-echo "coverage run -p -m pytest tests examples" > test_commands.sh""",
+                """#!/bin/bash
+set -x
+cd /home/flask
+
+pip install --no-cache-dir -e .
+pip install --no-cache-dir "pytest>=3" coverage greenlet blinker python-dotenv
+pip install --no-cache-dir "Werkzeug==0.14" "Jinja2==2.10" "itsdangerous==0.24" "Click==5.1"
+pip install --no-cache-dir "pytest<4"
+
+# The test command is `pytest tests examples`, so every example that ships a
+# setup.py must be importable or pytest aborts the whole run during collection.
+# Which examples exist varies across this PR range, so install whatever is there.
+for setup in $(find examples -maxdepth 3 -name setup.py 2>/dev/null); do
+    pip install --no-cache-dir -e "$(dirname "$setup")" || true
+done
+
+echo "coverage run -p -m pytest -rA --tb=no -p no:cacheprovider tests examples" > test_commands.sh
+coverage --version
+pip show pytest || true""",
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
-coverage run -p -m pytest tests examples
+coverage run -p -m pytest -rA --tb=no -p no:cacheprovider tests examples
 
 """.format(pr=self.pr),
             ),
@@ -87,7 +85,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-coverage run -p -m pytest tests examples
+coverage run -p -m pytest -rA --tb=no -p no:cacheprovider tests examples
 
 """.format(pr=self.pr),
             ),
@@ -100,7 +98,7 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1  
 fi
-coverage run -p -m pytest tests examples
+coverage run -p -m pytest -rA --tb=no -p no:cacheprovider tests examples
 
 """.format(pr=self.pr),
             ),
@@ -142,6 +140,7 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
 """
         return dockerfile_content.format(pr=self.pr)
 

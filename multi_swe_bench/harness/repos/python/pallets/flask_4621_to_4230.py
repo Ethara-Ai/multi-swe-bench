@@ -47,35 +47,18 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -F
-###ACTION_DELIMITER###
-ls -F requirements/
-###ACTION_DELIMITER###
-pip install -r requirements/tests.txt
-###ACTION_DELIMITER###
-pip install -e .
-###ACTION_DELIMITER###
-ls -F tests/
-###ACTION_DELIMITER###
-echo "pytest -v -rA --tb=short" > test_commands.sh
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-pip uninstall -y Werkzeug
-###ACTION_DELIMITER###
-pip install Werkzeug==2.2.2
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
-pip uninstall -y click && pip install click==8.0.4
-###ACTION_DELIMITER###
-bash test_commands.sh
-###ACTION_DELIMITER###
+                """#!/bin/bash
+set -x
+cd /home/flask
+
+pip install --no-cache-dir -e .
+pip install --no-cache-dir -r requirements/tests.txt
+pip install --no-cache-dir Werkzeug==2.2.2
+pip install --no-cache-dir click==8.0.4
+pip install --no-cache-dir colorama
+
 echo "pytest -vv" > test_commands.sh
-###ACTION_DELIMITER###
-pip install colorama
-###ACTION_DELIMITER###
-bash test_commands.sh""",
+pip show pytest || true""",
             ),
             File(
                 ".",
@@ -150,6 +133,7 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
 """
         return dockerfile_content.format(pr=self.pr)
 
