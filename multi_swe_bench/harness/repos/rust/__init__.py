@@ -13,6 +13,7 @@ from multi_swe_bench.harness.repos.rust.casey import *
 from multi_swe_bench.harness.repos.rust.clap_rs import *
 from multi_swe_bench.harness.repos.rust.dandavison import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
+from multi_swe_bench.harness.repos.rust.eminence import *
 from multi_swe_bench.harness.repos.rust.fedimint import *
 from multi_swe_bench.harness.repos.rust.fish_shell import *
 from multi_swe_bench.harness.repos.rust.FuelLabs import *
@@ -26,6 +27,7 @@ from multi_swe_bench.harness.repos.rust.iced_rs import *
 from multi_swe_bench.harness.repos.rust.napi_rs import *
 from multi_swe_bench.harness.repos.rust.nushell import *
 from multi_swe_bench.harness.repos.rust.ogham import *
+from multi_swe_bench.harness.repos.rust.paupino import *
 from multi_swe_bench.harness.repos.rust.pola_rs import *
 from multi_swe_bench.harness.repos.rust.PyO3 import *
 from multi_swe_bench.harness.repos.rust.qdrant import *
