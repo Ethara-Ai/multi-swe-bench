@@ -39,9 +39,13 @@ export CI=true
 
 
 class ImageBase(Image):
-    """Repo-level base image: OS deps + source at ${BASE_COMMIT} + installed env
-    + the CHIANTI ASCII database. Built once as `<repo>:base`; the PR image layers
-    only the patches and run scripts on top."""
+    """Per-PR base image: OS deps + source at ${BASE_COMMIT} + installed env
+    + the CHIANTI ASCII database. Tagged `<repo>:base-pr-<N>`; the PR image layers
+    only the patches and run scripts on top.
+
+    The tag carries the PR number because the image bakes in a PR-specific
+    ${BASE_COMMIT}. A shared `<repo>:base` tag would let two PRs with different
+    base commits collide on one name, and the last build would silently win."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -61,10 +65,10 @@ class ImageBase(Image):
         return "python:3.11-slim-bookworm"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -84,13 +88,13 @@ ENV PYTHONUNBUFFERED=1
 ENV MPLBACKEND=Agg
 ENV PIP_PROGRESS_BAR=off
 ENV PIP_NO_COLOR=1
+WORKDIR /home/
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git \\
     build-essential \\
     ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /home/
 RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
 WORKDIR /home/{self.pr.repo}
@@ -155,6 +159,26 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
@@ -163,9 +187,15 @@ set -e
 # been ref-stripped, so the checkout resolves against the detached HEAD object.
 # Dependencies are installed in ImageBase, not here, so a failure below is a real
 # problem and is allowed to abort the build rather than being swallowed by `|| true`.
+# The check_git_changes.sh guards assert the tree is genuinely clean after the reset
+# and again after the checkout -- git reset --hard leaves untracked files behind and
+# neither command fails on a dirty tree, so without them a polluted baseline would
+# reach the graded runs undetected.
 cd /home/{pr.repo}
 git reset --hard
+bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
 """.format(pr=self.pr),
             ),
             File(
