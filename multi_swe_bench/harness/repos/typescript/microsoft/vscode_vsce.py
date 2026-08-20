@@ -68,17 +68,8 @@ from multi_swe_bench.harness.test_result import get_modified_files
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
-# `diff --git a/<old> b/<new>` -- group(2) is the post-image path, present even
-# for created files (where the `--- a/` side is `/dev/null`).
 _DIFF_GIT_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)", re.MULTILINE)
 
-# The marker `_RUN_MOCHA` prints ahead of each per-file Mocha invocation, which
-# is what lets `parse_log` attribute a test to its spec file. Deliberately not
-# anchored to the start of a line: Mocha's JSON reporter emits no trailing
-# newline, so a marker can end up welded to the previous object's closing brace
-# (`}##### MSWEB-SPEC-FILE: ...`). `_RUN_MOCHA` prints a leading newline to
-# avoid that, but an unanchored pattern keeps a log captured by some other
-# route parseable too.
 _SPEC_FILE_MARKER = re.compile(r"#####\s+MSWEB-SPEC-FILE:\s*(\S+)")
 
 
@@ -103,45 +94,6 @@ def _gold_test_exclude_flags(test_patch: str) -> str:
     return " ".join(f"--exclude={shlex.quote(p)}" for p in sorted(paths))
 
 
-# Mocha is invoked through the local binary; `npx` is only a fallback because
-# npm 6's npx would try to fetch mocha from the registry, and the run stage has
-# no network.
-#
-# Each spec file is run in its own Mocha process behind a marker line. Mocha 7's
-# JSON reporter reports only `title` / `fullTitle` -- it does not carry the
-# source file of a test (`file` was added to that reporter later) -- so running
-# the whole glob at once makes it impossible to say which file a test came from.
-# Driving one file per invocation and printing the path first lets `parse_log`
-# stitch the two halves into a `<file>::<test>` identity. The `find` mirrors the
-# `spec: src/test/**/*.ts` glob configured in package.json.
-#
-# `|| true` on the Mocha call: without it `set -e` would abort the loop at the
-# first spec file with a failing test, and the TEST stage -- where a gold test
-# is *expected* to fail -- would silently lose every later file. A runner that
-# fails to launch is still visible: ts-node's compile diagnostics go to stderr,
-# 2>&1 keeps them in the same log, and the absence of any JSON leaves a 0/0/0
-# TestResult that `generate_report` rejects rather than scoring.
-#
-# `--no-package --no-config` is what makes the per-file split real. A positional
-# spec argument is *appended* to the `spec` glob configured in package.json
-# rather than replacing it, so without these flags every invocation re-runs the
-# entire suite and each test is attributed to whichever file happened to be
-# named that round. Suppressing both config sources means `require:
-# ts-node/register` has to be passed explicitly -- it lived in the same
-# package.json block.
-#
-# The marker is printed with a leading newline because Mocha's JSON reporter
-# does not terminate its output with one; without it the next marker lands on
-# the same line as the previous object's closing brace.
-#
-# `--timeout 60000` replaces Mocha's 2s default, which is not a margin this
-# suite can rely on. The seven `version` tests shell out to git and npm: ~230-390ms
-# on native amd64, but 3951-4467ms measured under QEMU arm64 emulation, i.e. all
-# seven fail the default timeout on an emulated or otherwise slow host. That
-# yields a stage with failures the code did not cause -- at the RUN stage it
-# means a non-clean baseline and a rejected instance, which reads as a broken
-# config rather than a slow CPU. The raised limit costs nothing where the suite
-# is fast, since these tests never approach it natively.
 _RUN_MOCHA = """MOCHA=./node_modules/.bin/mocha
 if [ ! -x "$MOCHA" ]; then MOCHA="npx mocha"; fi
 find src/test -name '*.test.ts' | sort | while IFS= read -r spec; do
@@ -150,13 +102,15 @@ find src/test -name '*.test.ts' | sort | while IFS= read -r spec; do
         --require ts-node/register --reporter json --timeout 60000 "$spec" 2>&1 || true
 done"""
 
-# Lockfiles are excluded so a patch that churns them cannot invalidate the
-# node_modules tree baked into the image at build time.
 _APPLY_EXCLUDES = "--exclude package-lock.json --exclude yarn.lock"
 
 
 class VscodeVsceImageBase(Image):
-    """Shared ``:base`` image -- clones the repo on top of Node 14.
+    """Per-PR ``:base-pr-<N>`` image -- clones the repo on top of Node 14.
+
+    Tagged per PR rather than with a bare ``:base``: a single shared tag would
+    be rewritten by every other instance of this repo, silently changing the
+    foundation an already-verified instance was built against.
 
     ``dependency()`` returns a string, so ``DockerfileEnhancer.enhance``
     rewrites the ``git clone`` line below into the standard
@@ -180,10 +134,10 @@ class VscodeVsceImageBase(Image):
         return "node:14-bullseye"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -265,7 +219,12 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -uxo pipefail
+# `-e` is load-bearing, not decoration. Without it the three
+# `check_git_changes.sh` calls below are advisory: a dirty tree or a failed
+# checkout prints its complaint, the script runs on, and the image builds
+# green -- an assertion that cannot fail the build is not an assertion. The
+# commands that are *allowed* to fail carry their own `|| true`.
+set -euxo pipefail
 
 cd /home/{pr.repo}
 git reset --hard
@@ -297,9 +256,11 @@ fi
 # node_modules is gitignored, so the tree must still be pristine here: a dirty
 # tree at this point means an install wrote into a tracked path, and every
 # later `git apply` would then be laid on top of unexplained edits.
+#
+# This is deliberately the last command: no `exit 0` follows it, so the
+# script's exit status *is* this check's status and a dirty tree fails the
+# build. A trailing `exit 0` would mask it again.
 bash /home/check_git_changes.sh
-
-exit 0
 """.format(pr=self.pr),
             ),
             File(
@@ -436,7 +397,6 @@ def parse_mocha_json(test_log: str) -> TestResult:
     failed: set[str] = set()
     skipped: set[str] = set()
 
-    # (spec file or None, text) for each marker-delimited region, in order.
     segments: list[tuple[Optional[str], str]] = []
     cursor = 0
     current: Optional[str] = None
@@ -468,8 +428,6 @@ def parse_mocha_json(test_log: str) -> TestResult:
                         continue
                     sink.add(f"{spec_file}::{title}" if spec_file else title)
 
-    # Mocha lists a retried test in both buckets; a failure is the stronger
-    # signal, so it wins.
     passed -= failed
     passed -= skipped
     skipped -= failed
