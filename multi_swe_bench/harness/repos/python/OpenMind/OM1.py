@@ -23,10 +23,10 @@ class OM1ImageBase(Image):
         return "python:3.10-bookworm"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -54,6 +54,14 @@ CMD ["/bin/bash"]"""
 {self.global_env}
 
 WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git curl ca-certificates build-essential cmake pkg-config \\
+    portaudio19-dev python3-pyaudio \\
+    libgl1 libglib2.0-0 libhidapi-hidraw0 libhidapi-libusb0 \\
+    && rm -rf /var/lib/apt/lists/*
+RUN git config --global --add safe.directory '*'
+RUN pip install --no-cache-dir --upgrade pip uv
 
 {fetch_block}
 """
@@ -112,22 +120,8 @@ exit 0
                 """#!/bin/bash
 set -e
 
-export DEBIAN_FRONTEND=noninteractive
-export LANG=C.UTF-8
 export PIP_ROOT_USER_ACTION=ignore
 export UV_LINK_MODE=copy
-
-# Toolchain lives here, not in the base image, so the base Dockerfile keeps the
-# canonical structure. Build tools for native wheels; portaudio19-dev +
-# python3-pyaudio for pyaudio (mirrors .github/workflows/unitest.yml); libgl1 +
-# libglib2.0-0 for opencv-python; libhidapi-* for hid.
-apt-get update && apt-get install -y --no-install-recommends \\
-    git curl ca-certificates build-essential cmake pkg-config \\
-    portaudio19-dev python3-pyaudio \\
-    libgl1 libglib2.0-0 libhidapi-hidraw0 libhidapi-libusb0
-rm -rf /var/lib/apt/lists/*
-git config --global --add safe.directory '*'
-pip install --no-cache-dir --upgrade pip uv
 
 cd /home/{pr.repo}
 git reset --hard
