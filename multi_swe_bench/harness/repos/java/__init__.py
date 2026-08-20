@@ -70,3 +70,4 @@ from multi_swe_bench.harness.repos.java.OpenElements import *
 from multi_swe_bench.harness.repos.java.HubSpot import *
 from multi_swe_bench.harness.repos.java.cryostatio import *
 from multi_swe_bench.harness.repos.java.Swati4star import *
+from multi_swe_bench.harness.repos.java.hjaremko import *
