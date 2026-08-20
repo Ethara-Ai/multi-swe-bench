@@ -13,7 +13,6 @@ from multi_swe_bench.harness.repos.rust.casey import *
 from multi_swe_bench.harness.repos.rust.clap_rs import *
 from multi_swe_bench.harness.repos.rust.dandavison import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
-from multi_swe_bench.harness.repos.rust.eminence import *
 from multi_swe_bench.harness.repos.rust.fedimint import *
 from multi_swe_bench.harness.repos.rust.fish_shell import *
 from multi_swe_bench.harness.repos.rust.FuelLabs import *
