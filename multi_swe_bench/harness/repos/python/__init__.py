@@ -371,3 +371,4 @@ from multi_swe_bench.harness.repos.python.hummingbot import *
 from multi_swe_bench.harness.repos.python.wtbarnes import *
 from multi_swe_bench.harness.repos.python.tiny_pilot import *
 from multi_swe_bench.harness.repos.python.yt_project import *
+from multi_swe_bench.harness.repos.python.z411 import *
