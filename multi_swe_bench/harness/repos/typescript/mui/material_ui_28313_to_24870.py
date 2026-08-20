@@ -5,7 +5,7 @@ from typing import Generator, Optional, Union
 
 from dataclasses_json import dataclass_json
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -51,17 +51,19 @@ FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
+{DockerfileEnhancer._PROXY_ARGS}
+
 {self.global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC
+{DockerfileEnhancer._ENV_BLOCK}
+ENV LC_ALL=C.UTF-8
 
 LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
       org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 WORKDIR /home/
 
@@ -70,7 +72,7 @@ WORKDIR /home/
 RUN sed -i 's/http:\/\/deb.debian.org/http:\/\/archive.debian.org/g' /etc/apt/sources.list && \
     sed -i 's/http:\/\/security.debian.org/http:\/\/archive.debian.org/g' /etc/apt/sources.list && \
     sed -i '/updates/d' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y --allow-unauthenticated git jq
+    apt-get update && apt-get install -y --allow-unauthenticated ca-certificates git jq
 
 RUN git config --global --add safe.directory '*'
 
