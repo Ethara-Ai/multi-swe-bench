@@ -34,6 +34,7 @@ from multi_swe_bench.harness.repos.java.reactor import *
 from multi_swe_bench.harness.repos.java.resilience4j import *
 from multi_swe_bench.harness.repos.java.smallrye import *
 from multi_swe_bench.harness.repos.java.spotbugs import *
+from multi_swe_bench.harness.repos.java.spring_cloud import *
 from multi_swe_bench.harness.repos.java.springprojects import *
 from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe import *
 from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe_5927_to_5927 import *
