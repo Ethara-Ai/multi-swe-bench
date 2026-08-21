@@ -146,3 +146,4 @@ from multi_swe_bench.harness.repos.javascript.import_js import *
 from multi_swe_bench.harness.repos.javascript.openstreetmap import *
 from multi_swe_bench.harness.repos.javascript.dequelabs import *
 from multi_swe_bench.harness.repos.javascript.yaacov import *
+from multi_swe_bench.harness.repos.javascript.dragosrotaru import *
