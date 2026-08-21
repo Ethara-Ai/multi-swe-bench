@@ -170,11 +170,8 @@ from multi_swe_bench.harness.repos.golang.pomerium import *
 # _importlib.import_module("multi_swe_bench.harness.repos.golang.Warp-net")  # module not present
 from multi_swe_bench.harness.repos.golang.j178 import *
 from multi_swe_bench.harness.repos.golang.openebs import *
-<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.golang.tsuru import *
-=======
 from multi_swe_bench.harness.repos.golang.mock import *
->>>>>>> Stashed changes
 # from multi_swe_bench.harness.repos.golang.microsoft import *  # module not present
 # from multi_swe_bench.harness.repos.golang.vouch import *  # module not present
 from multi_swe_bench.harness.repos.golang.litmuschaos import *
@@ -183,3 +180,4 @@ from multi_swe_bench.harness.repos.golang.noborus import *
 from multi_swe_bench.harness.repos.golang.ozanh import *
 from multi_swe_bench.harness.repos.golang.swaggo import *
 from multi_swe_bench.harness.repos.golang.tsuru import *
+from multi_swe_bench.harness.repos.golang.skupperproject import *
