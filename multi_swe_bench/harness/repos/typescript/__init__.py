@@ -53,6 +53,7 @@ from multi_swe_bench.harness.repos.typescript.decaffeinate import *
 from multi_swe_bench.harness.repos.typescript.decentralized_identity import *
 from multi_swe_bench.harness.repos.typescript.deephaven import *
 from multi_swe_bench.harness.repos.typescript.defenseunicorns import *
+from multi_swe_bench.harness.repos.typescript.dorny import *
 from multi_swe_bench.harness.repos.typescript.drizzle_team import *
 from multi_swe_bench.harness.repos.typescript.DTStack import *
 from multi_swe_bench.harness.repos.typescript.DulLabs import *
