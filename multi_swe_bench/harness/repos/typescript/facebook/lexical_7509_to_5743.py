@@ -9,7 +9,7 @@ Package manager: npm. Tests: jest unit + Playwright e2e.
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -67,18 +67,34 @@ class _NpmNode18ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        return f"""FROM {image_name}
+        org = self.pr.org
+        repo = self.pr.repo
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+{DockerfileEnhancer._PROXY_ARGS}
 
 {self.global_env}
 
+{DockerfileEnhancer._ENV_BLOCK}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
 RUN apt-get update && apt-get install -y \\
     wget gnupg ca-certificates chromium \\
     fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \\
     fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \\
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
+{DockerfileEnhancer._CERT_SYMLINKS}
+
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMIUM_FLAGS="--no-sandbox"
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \\
@@ -148,7 +164,7 @@ export NVM_DIR="$HOME/.nvm"
 cd /home/{pr.repo}
 git reset --hard
 
-npm ci || npm install || true
+[ -d node_modules ] || npm ci || npm install || true
 npx playwright install chromium || true
 """.format(pr=self.pr),
             ),
@@ -161,11 +177,11 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 cd /home/{pr.repo}
 
-npm ci || npm install || true
+[ -d node_modules ] || npm ci || npm install || true
 npx playwright install chromium || true
 npm run build || true
 npm run test-unit || true
-npm run start & npm run test-e2e-chromium -- --retries=5 || true
+CI=true npm run test-e2e-ci-chromium || CI=true npm run test-e2e-ci:chromium || true
 """.format(pr=self.pr),
             ),
             File(
@@ -178,11 +194,11 @@ export NVM_DIR="$HOME/.nvm"
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
 
-npm ci || npm install || true
+[ -d node_modules ] || npm ci || npm install || true
 npx playwright install chromium || true
 npm run build || true
 npm run test-unit || true
-npm run start & npm run test-e2e-chromium -- --retries=5 || true
+CI=true npm run test-e2e-ci-chromium || CI=true npm run test-e2e-ci:chromium || true
 
 """.format(pr=self.pr),
             ),
@@ -196,11 +212,11 @@ export NVM_DIR="$HOME/.nvm"
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
-npm ci || npm install || true
+[ -d node_modules ] || npm ci || npm install || true
 npx playwright install chromium || true
 npm run build || true
 npm run test-unit || true
-npm run start & npm run test-e2e-chromium -- --retries=5 || true
+CI=true npm run test-e2e-ci-chromium || CI=true npm run test-e2e-ci:chromium || true
 
 """.format(pr=self.pr),
             ),
@@ -438,3 +454,16 @@ if not getattr(Instance, "_lexical_route_shim", False):
 
     Instance.create = classmethod(_lex_create)
     Instance._lexical_route_shim = True
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) — PIPELINE §11b ===
+# Explicit registry keys so f"facebook/{number_interval}" in Instance._registry (§11c).
+# One key per delivered bundle; routes to this era class (LexicalNpmNode18).
+_BUNDLE_NIS_LexicalNpmNode18 = [
+    "5829-7258-7626-7636-7637-7638-7641-7642-7643-7644-7647-7654-7655-7656-7657-7659-7660-7661-7662-7664-7666-7667-7669-7670-7671-7672-7683-7684-7686-7697-7705-7713",
+    "5948-5978-6347-6357-6367-6381-6395-6397-6403-6405-6408-6411-6412-6414-6416-6419-6420-6421-6426-6428-6429-6433-6435-6436-6437-6444-6445-6446-6447-6448-6457-6458-6460-6462-6465-6466-6472-6478-6479-6486-6487-6488-6490-6491-6497-6500-6501-6505-6508-6511",
+    "6625-6626-6634-6641-6642-6643-6644-6649-6650-6651-6652-6656-6657-6660-6664-6666-6675-6676-6678-6680-6683-6684-6690-6693-6695-6696-6703-6724-6726",
+    "7294-7448-7477-7486-7488-7498-7499-7502-7504-7506-7508-7516-7520-7522-7525-7533-7534-7536-7538-7539-7549-7550",
+    "7509-7544-7545-7556-7558-7559-7560-7564-7567-7568-7569-7572-7573-7574-7579-7582-7584-7585-7589-7590-7593-7594-7596-7599-7602-7603-7604-7605-7607-7609-7613-7619-7627-7633-7634",
+]
+for _ni in _BUNDLE_NIS_LexicalNpmNode18:
+    Instance.register("facebook", _ni)(LexicalNpmNode18)

@@ -11,7 +11,7 @@ PR #4 has only unit tests (no e2e).
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -75,18 +75,34 @@ class _YarnImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        return f"""FROM {image_name}
+        org = self.pr.org
+        repo = self.pr.repo
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+{DockerfileEnhancer._PROXY_ARGS}
 
 {self.global_env}
 
+{DockerfileEnhancer._ENV_BLOCK}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
 RUN apt-get update && apt-get install -y \\
     wget gnupg ca-certificates chromium \\
     fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \\
     fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \\
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
+{DockerfileEnhancer._CERT_SYMLINKS}
+
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMIUM_FLAGS="--no-sandbox"
 
@@ -440,3 +456,12 @@ if not getattr(Instance, "_lexical_route_shim", False):
 
     Instance.create = classmethod(_lex_create)
     Instance._lexical_route_shim = True
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) — PIPELINE §11b ===
+# Explicit registry keys so f"facebook/{number_interval}" in Instance._registry (§11c).
+# One key per delivered bundle; routes to this era class (LexicalYarn).
+_BUNDLE_NIS_LexicalYarn = [
+    "188-189-190-191-192-193-194-195-196-197-199-200-201-202-203-204-205-206-207-208-209-210-212-213-214-215-216-217-218-220-222-223-225-226-227-228-229-232-233-234-235-236-238-239-240-241-242-244-245-246-247-248-249-251-252-255-256-257-258-259-260-261-262-263-264",
+]
+for _ni in _BUNDLE_NIS_LexicalYarn:
+    Instance.register("facebook", _ni)(LexicalYarn)
