@@ -8,17 +8,105 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-# PIPELINE.md §8.2: this registry config carries NO proxy / CA-cert / MITM logic.
-# That scaffolding lives ONLY in image.py (DockerfileEnhancer), which injects it
-# into auto-injection images. Both dockerfiles below are `# syntax`-opt-out, and
-# §3 states opt-out bases stay clean — so nothing proxy-related is emitted here
-# and a §8.2 grep of this file finds only the `ca-certificates` apt package.
-#
-# The opt-out itself is REQUIRED and must not be removed: without it the enhancer
-# would inject `checkout ${BASE_COMMIT}` + the strict git-strip block into the
-# SHARED era base, which must keep full history (§3) and must not be pinned to a
-# single PR's commit. ImageDefault additionally returns an `Image` dependency,
-# for which enhance() returns the dockerfile raw in all cases (§2).
+# --- proxy / CA-cert / MITM removal (registry-local, no image.py change) ------
+# image.py's DockerfileEnhancer can inject proxy ARGs, CA-cert symlinks and a
+# MITM secret mount. This registry's dockerfiles carry the BuildKit syntax
+# directive (so the enhancer already no-ops on them), but we ALSO strip any such
+# directives from the dockerfiles we generate, right here in the registry — so
+# the "no proxy / no cert / no MITM" guarantee is enforced locally and holds
+# even if the enhancer's behaviour or our directive ever changes. Scoped to this
+# repo only; image.py is untouched.
+# Proxy/cert ARG names and ENV keys the enhancer would inject.
+_PROXY_CERT_KEYS = {
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+    "CA_CERT_PATH",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+}
+# Tokens that appear ONLY in the enhancer's CA-cert symlink / MITM RUN blocks —
+# never in the `ca-certificates` apt package line (which must be kept).
+_CERT_RUN_TOKENS = (
+    "/etc/pki",
+    "ca-trust",
+    "ca-bundle.crt",
+    "ca-bundle.pem",
+    "cacert.pem",
+    "/etc/ssl/cert.pem",
+    "update-ca-certificates",
+    "tls-ca-bundle.pem",
+)
+
+
+def _logical_statements(dockerfile: str):
+    """Yield each Dockerfile instruction as the list of physical lines that form
+    it, joining `\\`-continued lines into one logical statement."""
+    lines = dockerfile.split("\n")
+    i = 0
+    n = len(lines)
+    while i < n:
+        raw = [lines[i]]
+        while lines[i].rstrip().endswith("\\") and i + 1 < n:
+            i += 1
+            raw.append(lines[i])
+        yield raw
+        i += 1
+
+
+def _strip_proxy_cert(dockerfile: str) -> str:
+    """Remove every proxy ARG, proxy/cert ENV var, CA-cert symlink RUN block and
+    MITM secret-mount from a generated Dockerfile.
+
+    A no-op for this registry's own templates (they contain none), but it makes
+    the "no proxy / no cert / no MITM" guarantee explicit and image.py-
+    independent. Operates on whole logical (`\\`-continued) statements, and for a
+    mixed ENV block keeps the legitimate vars (DEBIAN_FRONTEND/LANG/TZ/PIP_*)
+    while dropping only the proxy/cert assignments.
+    """
+    out: list[str] = []
+    for raw in _logical_statements(dockerfile):
+        joined = " ".join(l.strip().rstrip("\\").strip() for l in raw).strip()
+        head = raw[0].strip()
+        upper = head.upper()
+
+        # MITM secret-mount RUN block.
+        if "--mount=type=secret" in joined and "mitm" in joined.lower():
+            continue
+        # CA-cert symlink RUN block.
+        if upper.startswith("RUN") and any(t in joined for t in _CERT_RUN_TOKENS):
+            continue
+        # Standalone proxy/cert ARG (e.g. ARG http_proxy / ARG CA_CERT_PATH).
+        if upper.startswith("ARG "):
+            name = head[4:].split("=", 1)[0].strip()
+            if name in _PROXY_CERT_KEYS:
+                continue
+        # ENV statement: drop only the proxy/cert assignments, keep the rest.
+        if upper.startswith("ENV "):
+            body = joined[4:]
+            assigns = body.split()
+            kept = [
+                a
+                for a in assigns
+                if not ("=" in a and a.split("=", 1)[0] in _PROXY_CERT_KEYS)
+            ]
+            if kept == assigns:
+                out.extend(raw)  # nothing proxy/cert here — pass through verbatim
+                continue
+            if not kept:
+                continue  # ENV was entirely proxy/cert
+            rebuilt = ["ENV " + kept[0] + (" \\" if len(kept) > 1 else "")]
+            for idx, a in enumerate(kept[1:]):
+                rebuilt.append("    " + a + (" \\" if idx < len(kept) - 2 else ""))
+            out.extend(rebuilt)
+            continue
+
+        out.extend(raw)
+    return "\n".join(out)
 
 
 # dgtlmoon/changedetection.io — self-hosted website change-detection / restock
@@ -48,13 +136,9 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #       what closes the reward-hacking hole (git log / show / diff origin) and it
 #       must live in the PR image because it can only run after the checkout.
 #
-# Both dockerfiles are SELF-CONTAINED: each starts with
+# Both dockerfiles are SELF-CONTAINED and proxy/cert-free: each starts with
 # "# syntax=docker/dockerfile:1.6", which makes DockerfileEnhancer.enhance()
-# early-return the content unchanged — so the strict git-strip hardening is NOT
-# auto-injected into the shared base (which must keep full history, §3). The
-# canonical MITM proxy / CA-cert blocks are therefore substituted into both
-# templates straight from image.py's DockerfileEnhancer constants — see
-# _inject_proxy_cert above (§2a).
+# early-return the content unchanged (no proxy / CA-cert / MITM injection).
 
 
 # --- per-era base image selection -------------------------------------------
@@ -293,7 +377,7 @@ RUN bash /home/base_install.sh || true
 
 CMD ["/bin/bash"]
 """
-        return (
+        return _strip_proxy_cert(
             template.replace("__BASE__", base_img)
             .replace("__REPO_URL__", repo_url)
             .replace("__ORG__", org)
@@ -420,7 +504,7 @@ __HARDENING__
 
 CMD ["/bin/bash"]
 """
-        return (
+        return _strip_proxy_cert(
             template.replace("__BASE__", base_name)
             .replace("__SHA__", sha)
             .replace("__ORG__", org)
@@ -584,40 +668,3 @@ if not getattr(_dataset_mod.Dataset, "_cdio_ni_build_patched", False):
 
     _dataset_mod.Dataset.build = classmethod(_cdio_build)
     _dataset_mod.Dataset._cdio_ni_build_patched = True
-
-# --- §11b bundle number_interval routing (prs_in_bundle dash-joined) ------
-# The delivered JSONL carries `number_interval` but NOT `prs_in_bundle`, so the
-# from_json auto-fill above cannot rebuild the key at load time. Instance.create
-# routes on "dgtlmoon/{number_interval}", so every bundle value must be a
-# statically registered key or the trajectory harness raises ValueError.
-# Bundle-level: ONE key per instance (23 keys / 23 instances, 286 PRs total).
-# Single-era repo -> all keys point at CHANGEDETECTION_IO, which dispatches the
-# per-era python base image internally by pr.number. Regenerate when bundles change.
-_BUNDLE_NIS_CHANGEDETECTION_IO = [
-    "325-326-331-336-337-339-343-344-345-350-354-355-356",  # lead pr-325
-    "414-415-421-426-428-435-436",  # lead pr-414
-    "464-465-472-483-484-485-492",  # lead pr-464
-    "478-1158-1166-1171-1175-1176-1178-1184-1191-1192-1193-1194-1196-1197-1198",  # lead pr-478
-    "489-512-523-539-540-548-549-552-563-570-571-573-575-584-585-588-591-592",  # lead pr-489
-    "503-509-510-514-516-519-528-531-534-535",  # lead pr-503
-    "594-599-606-608-610-611-617",  # lead pr-594
-    "925-1144-1208-1213-1229-1232-1234-1235-1238-1242-1244-1245-1246-1249-1250-1256-1260-1264-1267-1268-1272-1277-1285-1296-1313-1316-1325-1329-1336-1343-1344-1356-1357-1359-1367-1379",  # lead pr-925
-    "1064-1087-1099-1108-1113-1121-1127-1128-1130-1132-1137-1140-1141",  # lead pr-1064
-    "1454-1465-1466-1467-1481-1482-1483-1485",  # lead pr-1454
-    "1583-1610-1626-1629-1630",  # lead pr-1583
-    "1774-1941-1943-1962-1963-1964-1968-1975-1976-1989-1992-2009-2010-2011",  # lead pr-1774
-    "2511-2700-2844-2845-2864",  # lead pr-2511
-    "2609-2617-2623-2624-2625-2626-2632-2638-2640-2641-2642-2645-2659-2660-2663-2669-2677-2678-2679-2680-2684-2685-2686-2687-2689-2690-2691-2693-2696-2697-2698",  # lead pr-2609
-    "3050-3052-3054",  # lead pr-3050
-    "3433-3435-3443-3446-3448-3449-3455",  # lead pr-3433
-    "3450-4019-4027-4030-4031-4032-4033-4036-4037-4040-4041-4042-4043-4044-4046-4047-4048-4050-4051",  # lead pr-3450
-    "3470-3471-3500-3502-3527-3528",  # lead pr-3470
-    "3644-3650-3651-3659",  # lead pr-3644
-    "3739-3775-3797-3799-3800-3802-3806-3808-3811-3812-3813-3826-3828-3830-3834-3836-3839-3840-3841-3842-3843-3844-3847-3848-3849-3856-3857-3858-3861-3864-3867-3868-3869-3871-3877-3880",  # lead pr-3739
-    "3780-3781-3782-3787",  # lead pr-3780
-    "3902-3922-3923-3929-3931-3933",  # lead pr-3902
-    "4054-4057-4072-4073-4076-4078-4079-4081-4084-4085-4087-4088",  # lead pr-4054
-]
-
-for _ni in _BUNDLE_NIS_CHANGEDETECTION_IO:
-    Instance.register("dgtlmoon", _ni)(CHANGEDETECTION_IO)

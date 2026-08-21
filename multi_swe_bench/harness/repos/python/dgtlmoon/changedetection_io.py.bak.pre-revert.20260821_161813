@@ -3,22 +3,50 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-# PIPELINE.md §8.2: this registry config carries NO proxy / CA-cert / MITM logic.
-# That scaffolding lives ONLY in image.py (DockerfileEnhancer), which injects it
-# into auto-injection images. Both dockerfiles below are `# syntax`-opt-out, and
-# §3 states opt-out bases stay clean — so nothing proxy-related is emitted here
-# and a §8.2 grep of this file finds only the `ca-certificates` apt package.
+# --- proxy / CA-cert / MITM injection (canonical, sourced from image.py) -----
+# PIPELINE.md §2a / HARD RULE 4 (2026-08-19): MITM proxy + CA-cert injection is
+# APPLIED. The earlier "no proxy / no cert / no MITM" rule is SUPERSEDED, so the
+# registry-local `_strip_proxy_cert()` that used to scrub these directives is
+# gone (backup: changedetection_io.py.bak.pre-mitm.*).
 #
-# The opt-out itself is REQUIRED and must not be removed: without it the enhancer
-# would inject `checkout ${BASE_COMMIT}` + the strict git-strip block into the
-# SHARED era base, which must keep full history (§3) and must not be pinned to a
-# single PR's commit. ImageDefault additionally returns an `Image` dependency,
-# for which enhance() returns the dockerfile raw in all cases (§2).
+# Both dockerfiles here start with "# syntax=docker/dockerfile:1.6", which makes
+# DockerfileEnhancer.enhance() early-return them unchanged — that opt-out is
+# REQUIRED (it keeps the enhancer from injecting the strict git-strip hardening
+# into the shared BASE, which must keep full history per §3). §2a therefore says
+# a `# syntax`-opt-out repo must carry the MITM scaffolding itself.
+#
+# HARD RULE 4 allows ONLY the canonical injection — no rogue / hand-written proxy
+# config. So none of it is re-typed here: the three placeholders below are
+# REFERENCES to image.py's DockerfileEnhancer constants, substituted verbatim in
+# the same order the enhancer emits them (ARGs -> ENV -> LABEL -> cert symlinks,
+# immediately after FROM). If image.py's constants change, these dockerfiles
+# follow automatically.
+#
+#   __PROXY_ARGS__     -> DockerfileEnhancer._PROXY_ARGS    (empty defaults =
+#                         passthrough; pass --build-arg http_proxy=<proxy> to
+#                         actually route the build through a MITM proxy)
+#   __PROXY_ENV__      -> DockerfileEnhancer._ENV_BLOCK     (proxy ENV +
+#                         SSL_CERT_FILE / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE;
+#                         a superset of the DEBIAN_FRONTEND/LANG/TZ block it
+#                         replaces in the base template)
+#   __CERT_SYMLINKS__  -> DockerfileEnhancer._CERT_SYMLINKS (CA bundle symlinked
+#                         to every path tools look for it)
+#
+# `_MITM_MOUNT` stays latent here exactly as it is in image.py (§2a): it is not
+# emitted, and wiring it would additionally require
+# `docker build --secret id=mitm_ca,src=<ca.crt>`.
+def _inject_proxy_cert(dockerfile: str) -> str:
+    """Substitute the canonical image.py MITM proxy / cert blocks into a template."""
+    return (
+        dockerfile.replace("__PROXY_ARGS__", DockerfileEnhancer._PROXY_ARGS)
+        .replace("__PROXY_ENV__", DockerfileEnhancer._ENV_BLOCK)
+        .replace("__CERT_SYMLINKS__", DockerfileEnhancer._CERT_SYMLINKS)
+    )
 
 
 # dgtlmoon/changedetection.io — self-hosted website change-detection / restock
@@ -259,14 +287,16 @@ ARG TARGETARCH
 ARG REPO_URL="__REPO_URL__"
 ARG BASE_COMMIT
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    TZ=UTC
+__PROXY_ARGS__
+
+__PROXY_ENV__
 
 LABEL org.opencontainers.image.title="__ORG__/__REPO__" \\
       org.opencontainers.image.description="__ORG__/__REPO__ base image" \\
       org.opencontainers.image.source="https://github.com/__ORG__/__REPO__" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+__CERT_SYMLINKS__
 
 WORKDIR /home/
 ENV PIP_ROOT_USER_ACTION=ignore
@@ -293,7 +323,7 @@ RUN bash /home/base_install.sh || true
 
 CMD ["/bin/bash"]
 """
-        return (
+        return _inject_proxy_cert(
             template.replace("__BASE__", base_img)
             .replace("__REPO_URL__", repo_url)
             .replace("__ORG__", org)
@@ -394,10 +424,16 @@ FROM __BASE__
 ARG TARGETARCH
 ARG BASE_COMMIT=__SHA__
 
+__PROXY_ARGS__
+
+__PROXY_ENV__
+
 LABEL org.opencontainers.image.title="__ORG__/__REPO__" \\
       org.opencontainers.image.description="__ORG__/__REPO__ Docker image" \\
       org.opencontainers.image.source="https://github.com/__ORG__/__REPO__" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+__CERT_SYMLINKS__
 
 ENV PIP_ROOT_USER_ACTION=ignore
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -420,7 +456,7 @@ __HARDENING__
 
 CMD ["/bin/bash"]
 """
-        return (
+        return _inject_proxy_cert(
             template.replace("__BASE__", base_name)
             .replace("__SHA__", sha)
             .replace("__ORG__", org)
