@@ -75,3 +75,4 @@ from multi_swe_bench.harness.repos.java.hjaremko import *
 from multi_swe_bench.harness.repos.java.Karumi import *
 from multi_swe_bench.harness.repos.java.roc_streaming import *
 from multi_swe_bench.harness.repos.java.lmdbjava import *
+from multi_swe_bench.harness.repos.java.immutables import *

@@ -183,3 +183,4 @@ from multi_swe_bench.harness.repos.golang.swaggo import *
 from multi_swe_bench.harness.repos.golang.tsuru import *
 from multi_swe_bench.harness.repos.golang.skupperproject import *
 from multi_swe_bench.harness.repos.golang.submariner_io import *
+from multi_swe_bench.harness.repos.golang.mvdan import *
