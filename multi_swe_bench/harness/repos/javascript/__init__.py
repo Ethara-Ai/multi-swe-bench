@@ -153,3 +153,4 @@ from multi_swe_bench.harness.repos.javascript.dragosrotaru import *
 =======
 from multi_swe_bench.harness.repos.javascript.francoischalifour import *
 >>>>>>> Stashed changes
+from multi_swe_bench.harness.repos.javascript.gopasspw import *

@@ -76,3 +76,4 @@ from multi_swe_bench.harness.repos.rust.messense import *
 
 import importlib as _importlib
 # _importlib.import_module("multi_swe_bench.harness.repos.rust.InterCooperative-Network")  # module not present
+from multi_swe_bench.harness.repos.rust.Harry_kp import *
