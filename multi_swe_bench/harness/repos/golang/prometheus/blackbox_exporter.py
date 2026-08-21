@@ -16,19 +16,13 @@ _GO_MINOR = "1.24"
 
 
 def _sanitize_patch(patch: str) -> str:
-    """Drop diff sections that ``git apply`` cannot take cleanly.
+    """Drop binary diff sections, which ``git apply`` rejects for lack of a full
+    index line and which would abort the whole apply under ``set -e``.
 
-    Two failure modes (see prometheus.py, same engine), both of which abort the
-    WHOLE ``git apply`` under ``set -e`` so the real source changes never land:
-
-    * Binary hunks (images/fonts) are emitted without a full index line ->
-      ``cannot apply binary patch ... without full index line``. Irrelevant to
-      the Go tests.
-    * ``go.sum`` / ``go.work.sum`` are lock files whose hunks depend on the exact
-      module graph and routinely fail to apply. They are regenerated on demand by
-      ``GOFLAGS=-mod=mod`` in the run scripts, so the patched copy is not needed.
-      This matters HERE specifically: blackbox_exporter PR #1278's fix patch
-      edits go.mod AND go.sum, and applying the go.sum hunk verbatim breaks.
+    Do NOT re-add a ``go.sum`` / ``go.work.sum`` filter here. Stripping the lock
+    file leaves go.mod requiring a module go.sum cannot verify, which forces
+    ``-mod=mod`` to refetch and rewrite it from the network at eval time. Keeping
+    it is what lets the run scripts resolve offline from the warmed module cache.
     """
     if not patch:
         return patch
@@ -37,9 +31,6 @@ def _sanitize_patch(patch: str) -> str:
         if not sec:
             continue
         if "Binary files " in sec or "GIT binary patch" in sec:
-            continue
-        m = re.match(r"diff --git a/\S+ b/(\S+)", sec)
-        if m and m.group(1).rsplit("/", 1)[-1] in ("go.sum", "go.work.sum"):
             continue
         kept.append(sec)
     return "".join(kept)
@@ -179,11 +170,26 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# -mod=mod lets `go test` add any go.sum entries the (later) fix patch will need
-# while warming the module/build cache at image-build time.
+# Image build is the only point where the network is legitimately available, so
+# both module graphs are warmed here; every eval stage then resolves from the cache.
+export GOPROXY=https://proxy.golang.org,direct
 export GOFLAGS=-mod=mod
 [ -f go.work ] && export GOWORK=off  # -mod=mod is invalid in workspace mode
-go test -v -count=1 ./... || true
+
+go mod download -x 2>&1 || true
+go build ./... 2>&1 || true
+
+# The test patch imports github.com/gorilla/websocket, but the requirement for
+# it is added by the FIX patch's go.mod hunk -- at base that module is neither
+# required nor imported, so warming at base alone provably cannot cache it.
+# Apply both patches, pull the post-patch graph, then restore the pristine tree.
+git apply --whitespace=nowarn /home/test.patch 2>&1 || true
+git apply --whitespace=nowarn /home/fix.patch 2>&1 || true
+go mod download all 2>&1 || true
+git checkout -- . 2>&1 || true
+git clean -fd 2>&1 || true
+
+bash /home/check_git_changes.sh
 
 """.format(pr=self.pr),
             ),
@@ -191,12 +197,24 @@ go test -v -count=1 ./... || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
+git checkout -- go.mod go.sum 2>/dev/null || true
+
+# Resolve only from the module cache prepare.sh warmed: no network at eval time.
+# Not GOPROXY=off: the test stage runs against the BASE go.mod, so -mod=mod must
+# look gorilla/websocket up to add it, and "off" blocks lookups even for cached
+# modules -- masking the real type errors behind "[setup failed]".
+export GOPROXY=file://$(go env GOMODCACHE)/cache/download
+export GOSUMDB=off  # already verified against sum.golang.org during prepare.sh
 export GOFLAGS=-mod=mod
 [ -f go.work ] && export GOWORK=off  # -mod=mod is invalid in workspace mode
-go test -v -count=1 ./...
+
+# TestChooseProtocol resolves ipv6.google.com over live DNS, so it fails in any
+# sealed container at BOTH the run and fix stages. The skip must be byte-identical
+# across all three stages; an asymmetric skip would invent a status transition.
+go test -v -count=1 -skip '^TestChooseProtocol$' ./...
 
 """.format(pr=self.pr),
             ),
@@ -204,21 +222,35 @@ go test -v -count=1 ./...
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
-# Resilient apply: plain, then 3-way, then reject-tolerant. Patches are already
-# binary/go.sum-stripped (see _sanitize_patch), so this absorbs residual
-# whitespace/context drift without aborting the stage.
-git apply --whitespace=nowarn /home/test.patch \\
-  || git apply --whitespace=nowarn --3way /home/test.patch \\
-  || git apply --whitespace=nowarn --reject /home/test.patch || true
-# -mod=mod makes `go test` fetch modules and WRITE missing go.sum entries on
-# demand -- the fix patch adds new imports, and `go mod download` alone does NOT
-# backfill go.sum for newly-imported packages.
+# prepare.sh's post-patch warm can leave go.mod/go.sum rewritten; restore the
+# tracked copies so the patch applies against a pristine base tree.
+git checkout -- go.mod go.sum 2>/dev/null || true
+
+export GOPROXY=file://$(go env GOMODCACHE)/cache/download
+export GOSUMDB=off
 export GOFLAGS=-mod=mod
 [ -f go.work ] && export GOWORK=off  # -mod=mod is invalid in workspace mode
-go test -v -count=1 ./...
+
+git apply --whitespace=nowarn /home/test.patch \\
+  || git apply --whitespace=nowarn --3way /home/test.patch \\
+  || git apply --whitespace=nowarn --reject /home/test.patch
+
+# --reject applies what it can and leaves .rej files behind. Continuing from a
+# half-applied tree yields plausible but wrong results, so fail loudly instead.
+if [ -n "$(find . -name '*.rej' -print -quit)" ]; then
+  echo "test-run: patch application left .rej files, aborting" >&2
+  find . -name '*.rej' >&2
+  exit 1
+fi
+
+# config/ and prober/ cannot link here, so Go emits "[build failed]" per package
+# instead of per-test results. Do NOT replay base-commit results to close that
+# gap: those tests never ran under this patch, and report.py already re-credits
+# them as p2p via reclassified_from_target.
+go test -v -count=1 -skip '^TestChooseProtocol$' ./...
 
 """.format(pr=self.pr),
             ),
@@ -226,15 +258,26 @@ go test -v -count=1 ./...
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
+git checkout -- go.mod go.sum 2>/dev/null || true
+
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch \\
   || git apply --whitespace=nowarn --3way /home/test.patch /home/fix.patch \\
-  || git apply --whitespace=nowarn --reject /home/test.patch /home/fix.patch || true
+  || git apply --whitespace=nowarn --reject /home/test.patch /home/fix.patch
+
+if [ -n "$(find . -name '*.rej' -print -quit)" ]; then
+  echo "fix-run: patch application left .rej files, aborting" >&2
+  find . -name '*.rej' >&2
+  exit 1
+fi
+
+export GOPROXY=file://$(go env GOMODCACHE)/cache/download
+export GOSUMDB=off
 export GOFLAGS=-mod=mod
 [ -f go.work ] && export GOWORK=off  # -mod=mod is invalid in workspace mode
-go test -v -count=1 ./...
+go test -v -count=1 -skip '^TestChooseProtocol$' ./...
 
 """.format(pr=self.pr),
             ),
@@ -314,6 +357,15 @@ class BlackboxExporter(Instance):
         re_fail_tests = [re.compile(r"^--- FAIL: (\S+)")]
         re_skip_tests = [re.compile(r"^--- SKIP: (\S+)")]
 
+        # A package that fails to COMPILE emits no `--- FAIL:` lines at all, only
+        #     FAIL	github.com/prometheus/blackbox_exporter/prober [build failed]
+        # so an unrecorded compile knockout is indistinguishable from a clean run
+        # (failed_count == 0). This anchors on the literal TAB `go test` emits, so
+        # unlike the broad pattern above it can never match `--- FAIL: TestFoo`.
+        # Such markers are never creditable: a package summary line cannot reach
+        # PASS, so they stay out of f2p/n2p/p2p and only make the failure visible.
+        re_package_fail = re.compile(r"^FAIL\t(\S+)")
+
         def get_base_name(test_name: str) -> str:
             return test_name
 
@@ -334,6 +386,10 @@ class BlackboxExporter(Instance):
                 skip_match = re_skip_test.match(line)
                 if skip_match:
                     skipped_tests.add(get_base_name(skip_match.group(1)))
+
+            package_fail_match = re_package_fail.match(line)
+            if package_fail_match:
+                failed_tests.add(package_fail_match.group(1))
 
         # `go test` reports subtests separately, and a re-listed name can appear
         # under more than one status. Reconcile with failure winning, then skip,
