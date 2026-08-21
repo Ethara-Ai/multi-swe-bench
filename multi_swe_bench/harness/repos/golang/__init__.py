@@ -174,3 +174,4 @@ from multi_swe_bench.harness.repos.golang.tsuru import *
 # from multi_swe_bench.harness.repos.golang.vouch import *  # module not present
 from multi_swe_bench.harness.repos.golang.litmuschaos import *
 from multi_swe_bench.harness.repos.golang.mock import *
+from multi_swe_bench.harness.repos.golang.noborus import *

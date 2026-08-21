@@ -183,6 +183,7 @@ from multi_swe_bench.harness.repos.python.OpenMind import *
 from multi_swe_bench.harness.repos.python.OpenMined import *
 from multi_swe_bench.harness.repos.python.opensafely_core import *
 from multi_swe_bench.harness.repos.python.OpenSlides import *
+from multi_swe_bench.harness.repos.python.openwisp import *
 from multi_swe_bench.harness.repos.python.optuna import *
 from multi_swe_bench.harness.repos.python.OSInside import *
 from multi_swe_bench.harness.repos.python.Ouranosinc import *
