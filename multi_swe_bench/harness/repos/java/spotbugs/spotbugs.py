@@ -23,10 +23,10 @@ class SpotbugsImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -146,6 +146,14 @@ allprojects {{
     repositories {{
         maven {{ url 'https://maven.aliyun.com/repository/public/' }}
         maven {{ url 'https://maven.aliyun.com/repository/google/' }}
+    }}
+
+    tasks.withType(Test).configureEach {{
+        testLogging {{
+            events "passed", "failed", "skipped"
+            exceptionFormat "full"
+            showStandardStreams false
+        }}
     }}
 }}
 EOF
