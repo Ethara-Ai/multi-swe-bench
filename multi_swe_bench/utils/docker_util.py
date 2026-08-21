@@ -142,6 +142,8 @@ def _get_container_builder() -> str | None:
             ["docker", "buildx", "ls"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         for line in result.stdout.splitlines():
             if "docker-container" in line:
@@ -172,6 +174,8 @@ def _run_buildx(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
         for line in process.stdout:
