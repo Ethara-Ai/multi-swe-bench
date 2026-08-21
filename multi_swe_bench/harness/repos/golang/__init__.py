@@ -176,3 +176,4 @@ from multi_swe_bench.harness.repos.golang.litmuschaos import *
 from multi_swe_bench.harness.repos.golang.mock import *
 from multi_swe_bench.harness.repos.golang.noborus import *
 from multi_swe_bench.harness.repos.golang.ozanh import *
+from multi_swe_bench.harness.repos.golang.swaggo import *
