@@ -130,6 +130,7 @@ from multi_swe_bench.harness.repos.typescript.refinedev import *
 from multi_swe_bench.harness.repos.typescript.remix_run import *
 from multi_swe_bench.harness.repos.typescript.remotion_dev import *
 from multi_swe_bench.harness.repos.typescript.renovatebot import *
+from multi_swe_bench.harness.repos.typescript.responsively_org import *
 from multi_swe_bench.harness.repos.typescript.rjsfteam import *
 from multi_swe_bench.harness.repos.typescript.RocketChat import *
 from multi_swe_bench.harness.repos.typescript.RooCodeInc import *
