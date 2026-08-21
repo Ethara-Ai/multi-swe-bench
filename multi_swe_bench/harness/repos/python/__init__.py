@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.python.aaronspring import *
 from multi_swe_bench.harness.repos.python.aeon_toolkit import *
 from multi_swe_bench.harness.repos.python.aesara_devs import *
 from multi_swe_bench.harness.repos.python.agno_agi import *
