@@ -116,6 +116,7 @@ from multi_swe_bench.harness.repos.python.HypothesisWorks import *
 from multi_swe_bench.harness.repos.python.ibis_project import *
 from multi_swe_bench.harness.repos.python.idaholab import *
 from multi_swe_bench.harness.repos.python.intel import *
+from multi_swe_bench.harness.repos.python.ipfs_shipyard import *
 from multi_swe_bench.harness.repos.python.ipython import *
 from multi_swe_bench.harness.repos.python.isi_vista import *
 from multi_swe_bench.harness.repos.python.jackdewinter import *
