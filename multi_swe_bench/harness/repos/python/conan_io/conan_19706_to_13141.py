@@ -331,3 +331,73 @@ _BUNDLE_NIS_CONAN_19706_TO_13141 = [
 
 for _ni in _BUNDLE_NIS_CONAN_19706_TO_13141:
     Instance.register("conan-io", _ni)(CONAN_19706_TO_13141)
+
+
+# ---------------------------------------------------------------------------
+# conan-io/conan number_interval routing -- REGISTRY-SCOPED shim.
+#
+# Placed at the end of this era file (imported last by the package __init__.py)
+# so it can install a patched Instance.create classmethod that resolves targets
+# via `cls._registry` at CALL time. By then every conan era class is registered,
+# so the shim sees the full registry regardless of where it sits.
+#
+# Why it's needed: conan is registered ONLY under number_interval keys
+# (e.g. `conan-io/13141-...-19706` and the per-bundle dash-lists). There is NO
+# plain `conan-io/conan` registration. In `gen_report --mode dataset`, report
+# tasks are collected BEFORE the raw dataset is loaded, so each task's
+# number_interval is empty and Instance.create is called with the plain
+# `conan-io/conan` key, which is unregistered -> every report fails.
+#
+# The fallback dispatches on the PR NUMBER: it finds the registered conan era
+# class whose bundle interval has this PR as its primary (first) element -- the
+# exact class that owns the instance -- and routes to it. Other repos are
+# unaffected: the fallback re-raises for any non-conan org/repo.
+# ---------------------------------------------------------------------------
+from multi_swe_bench.harness.instance import Instance as _ConanInstance  # noqa: E402
+
+_CONAN_ORG = "conan-io"
+_CONAN_REPO = "conan"
+
+
+def _conan_build_number_routing(registry: dict):
+    """Map PR number -> era class from the live registry.
+
+    ``primary`` maps a bundle's first (target) PR to its class -- the precise,
+    conflict-free routing. ``contains`` maps every PR listed in any bundle as a
+    fallback for non-primary numbers; on the rare cross-era duplicate the first
+    registration wins (primary routing already covers all real instances).
+    """
+    primary: dict[int, object] = {}
+    contains: dict[int, object] = {}
+    for key, cls in registry.items():
+        if not key.startswith(f"{_CONAN_ORG}/"):
+            continue
+        interval = key.split("/", 1)[1]
+        parts = [p for p in interval.split("-") if p.isdigit()]
+        if not parts:
+            continue
+        primary.setdefault(int(parts[0]), cls)
+        for p in parts:
+            contains.setdefault(int(p), cls)
+    return primary, contains
+
+
+if not getattr(_ConanInstance, "_conan_route_shim", False):
+    _conan_orig_create = _ConanInstance.create.__func__
+
+    def _conan_create(cls, pr, config, *args, **kwargs):
+        try:
+            return _conan_orig_create(cls, pr, config, *args, **kwargs)
+        except ValueError:
+            if (
+                getattr(pr, "org", "") == _CONAN_ORG
+                and getattr(pr, "repo", "") == _CONAN_REPO
+            ):
+                primary, contains = _conan_build_number_routing(cls._registry)
+                target = primary.get(pr.number) or contains.get(pr.number)
+                if target is not None:
+                    return target(pr, config, *args, **kwargs)
+            raise
+
+    _ConanInstance.create = classmethod(_conan_create)
+    _ConanInstance._conan_route_shim = True
