@@ -378,3 +378,4 @@ from multi_swe_bench.harness.repos.python.yt_project import *
 from multi_swe_bench.harness.repos.python.z411 import *
 from multi_swe_bench.harness.repos.python.smartcrop import *
 from multi_swe_bench.harness.repos.python.wpilibsuite import *
+from multi_swe_bench.harness.repos.python.treeandsea import *
