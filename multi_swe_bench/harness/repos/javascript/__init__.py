@@ -113,6 +113,7 @@ from multi_swe_bench.harness.repos.javascript.Real_Dev_Squad import *
 from multi_swe_bench.harness.repos.javascript.rollup import *
 from multi_swe_bench.harness.repos.javascript.SchemaStore import *
 from multi_swe_bench.harness.repos.javascript.scratchfoundation import *
+from multi_swe_bench.harness.repos.javascript.screwdriver_cd import *
 from multi_swe_bench.harness.repos.javascript.Semantic_Org import *
 from multi_swe_bench.harness.repos.javascript.Seneca_CDOT import *
 from multi_swe_bench.harness.repos.javascript.serverless import *
