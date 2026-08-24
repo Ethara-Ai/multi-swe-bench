@@ -83,6 +83,7 @@ from multi_swe_bench.harness.repos.javascript.knex import *
 from multi_swe_bench.harness.repos.javascript.koajs import *
 from multi_swe_bench.harness.repos.javascript.Kong import *
 from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
+from multi_swe_bench.harness.repos.javascript.leapdao import *
 from multi_swe_bench.harness.repos.javascript.LiskHQ import *
 from multi_swe_bench.harness.repos.javascript.lodash import *
 from multi_swe_bench.harness.repos.javascript.lokus_ai import *
