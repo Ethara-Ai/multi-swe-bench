@@ -18,6 +18,7 @@ from multi_swe_bench.harness.repos.rust.dtolnay import *
 from multi_swe_bench.harness.repos.rust.fedimint import *
 from multi_swe_bench.harness.repos.rust.fjall_rs import *
 from multi_swe_bench.harness.repos.rust.fish_shell import *
+from multi_swe_bench.harness.repos.rust.fornwall import *
 from multi_swe_bench.harness.repos.rust.FuelLabs import *
 from multi_swe_bench.harness.repos.rust.geiger_rs import *
 from multi_swe_bench.harness.repos.rust.GitoxideLabs import *
