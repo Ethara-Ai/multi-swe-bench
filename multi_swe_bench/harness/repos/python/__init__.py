@@ -382,3 +382,4 @@ from multi_swe_bench.harness.repos.python.smartcrop import *
 from multi_swe_bench.harness.repos.python.wpilibsuite import *
 from multi_swe_bench.harness.repos.python.treeandsea import *
 from multi_swe_bench.harness.repos.python.LukeCarrier import *
+from multi_swe_bench.harness.repos.python.lyz_code import *
