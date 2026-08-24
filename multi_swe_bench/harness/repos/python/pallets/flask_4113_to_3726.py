@@ -47,22 +47,27 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """#!/bin/bash
-set -x
-cd /home/flask
-
-pip install --no-cache-dir -e .
-pip install --no-cache-dir -r requirements/tests.txt
-pip install --no-cache-dir "Werkzeug==2.0.0"
-
-# setup.py in the examples uses the legacy metadata path; new setuptools calls
-# packaging.canonicalize_version(strip_trailing_zero=...), added in packaging 24.
-pip install --no-cache-dir -U "packaging>=24.0"
-pip install --no-cache-dir -e examples/tutorial
-pip install --no-cache-dir -e examples/javascript
-
+                """ls -F
+###ACTION_DELIMITER###
+ls -F requirements/
+###ACTION_DELIMITER###
+pip install -r requirements/tests.txt
+###ACTION_DELIMITER###
+pip install -e .
+###ACTION_DELIMITER###
 echo "pytest -v --tb=short tests examples" > test_commands.sh
-pip show pytest || true""",
+###ACTION_DELIMITER###
+bash test_commands.sh
+###ACTION_DELIMITER###
+pip install "Werkzeug==2.0.0"
+###ACTION_DELIMITER###
+bash test_commands.sh
+###ACTION_DELIMITER###
+pip install -e examples/tutorial
+###ACTION_DELIMITER###
+pip install -e examples/javascript
+###ACTION_DELIMITER###
+bash test_commands.sh""",
             ),
             File(
                 ".",
@@ -137,7 +142,6 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
-RUN bash /home/prepare.sh
 """
         return dockerfile_content.format(pr=self.pr)
 

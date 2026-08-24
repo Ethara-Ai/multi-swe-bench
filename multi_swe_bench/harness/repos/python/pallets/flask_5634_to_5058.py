@@ -47,15 +47,15 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """#!/bin/bash
-set -x
-cd /home/flask
-
-pip install --no-cache-dir -e .
-pip install --no-cache-dir -r requirements/tests.txt
-
-echo 'pytest --no-header -rA --tb=no -p no:cacheprovider' > test_commands.sh
-pytest --version""",
+                """ls -F
+###ACTION_DELIMITER###
+pip install -e .
+###ACTION_DELIMITER###
+pip install -r requirements/tests.txt
+###ACTION_DELIMITER###
+pytest --no-header -rA --tb=no -p no:cacheprovider
+###ACTION_DELIMITER###
+echo 'pytest --no-header -rA --tb=no -p no:cacheprovider' > test_commands.sh""",
             ),
             File(
                 ".",
@@ -130,7 +130,6 @@ RUN git checkout {pr.base.sha}
 """
         dockerfile_content += f"""
 {copy_commands}
-RUN bash /home/prepare.sh
 """
         return dockerfile_content.format(pr=self.pr)
 
