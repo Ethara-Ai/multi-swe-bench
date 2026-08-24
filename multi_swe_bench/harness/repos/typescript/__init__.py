@@ -54,6 +54,7 @@ from multi_swe_bench.harness.repos.typescript.deephaven import *
 from multi_swe_bench.harness.repos.typescript.defenseunicorns import *
 from multi_swe_bench.harness.repos.typescript.drizzle_team import *
 from multi_swe_bench.harness.repos.typescript.DTStack import *
+from multi_swe_bench.harness.repos.typescript.DulLabs import *
 from multi_swe_bench.harness.repos.typescript.eclipse_theia import *
 from multi_swe_bench.harness.repos.typescript.Effect_TS import *
 from multi_swe_bench.harness.repos.typescript.electron import *
