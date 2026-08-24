@@ -6,6 +6,7 @@ from multi_swe_bench.harness.repos.rust.atuinsh import *
 from multi_swe_bench.harness.repos.rust.bee_san import *
 from multi_swe_bench.harness.repos.rust.bevyengine import *
 from multi_swe_bench.harness.repos.rust.bitcoindevkit import *
+from multi_swe_bench.harness.repos.rust.blopker import *
 from multi_swe_bench.harness.repos.rust.boa_dev import *
 from multi_swe_bench.harness.repos.rust.BurntSushi import *
 from multi_swe_bench.harness.repos.rust.bytecodealliance import *
