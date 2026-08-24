@@ -198,6 +198,7 @@ from multi_swe_bench.harness.repos.python.pasqal_io import *
 from multi_swe_bench.harness.repos.python.pdm_project import *
 from multi_swe_bench.harness.repos.python.PennLINC import *
 from multi_swe_bench.harness.repos.python.PennyLaneAI import *
+from multi_swe_bench.harness.repos.python.permitio import *
 from multi_swe_bench.harness.repos.python.pgmpy import *
 from multi_swe_bench.harness.repos.python.pints_team import *
 from multi_swe_bench.harness.repos.python.pipecat_ai import *

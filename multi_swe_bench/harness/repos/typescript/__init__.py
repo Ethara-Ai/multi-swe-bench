@@ -201,4 +201,5 @@ from multi_swe_bench.harness.repos.typescript.codibre import *
 from multi_swe_bench.harness.repos.typescript.memfreeme import *
 from multi_swe_bench.harness.repos.typescript.ForNeVeR import *
 from multi_swe_bench.harness.repos.typescript.zowe import *
+from multi_swe_bench.harness.repos.typescript.neos import *
 from multi_swe_bench.harness.repos.typescript.the_guild_org import *
