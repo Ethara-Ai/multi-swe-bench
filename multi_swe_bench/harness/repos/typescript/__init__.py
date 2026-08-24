@@ -45,6 +45,7 @@ from multi_swe_bench.harness.repos.typescript.colinhacks import *
 from multi_swe_bench.harness.repos.typescript.comixed import *
 from multi_swe_bench.harness.repos.typescript.CommunitySolidServer import *
 from multi_swe_bench.harness.repos.typescript.cypress_io import *
+from multi_swe_bench.harness.repos.typescript.danger import *
 from multi_swe_bench.harness.repos.typescript.DanielXMoore import *
 from multi_swe_bench.harness.repos.typescript.darkreader import *
 from multi_swe_bench.harness.repos.typescript.daytonaio import *
