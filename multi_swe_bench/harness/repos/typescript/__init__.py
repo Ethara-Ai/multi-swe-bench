@@ -98,6 +98,7 @@ from multi_swe_bench.harness.repos.typescript.mattermost_community import *
 from multi_swe_bench.harness.repos.typescript.mermaid_js import *
 from multi_swe_bench.harness.repos.typescript.MetaMask import *
 from multi_swe_bench.harness.repos.typescript.microsoft import *
+from multi_swe_bench.harness.repos.typescript.modernweb_dev import *
 from multi_swe_bench.harness.repos.typescript.mswjs import *
 from multi_swe_bench.harness.repos.typescript.MTES_MCT import *
 from multi_swe_bench.harness.repos.typescript.mui import *
