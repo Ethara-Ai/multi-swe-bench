@@ -26,6 +26,7 @@ from multi_swe_bench.harness.repos.rust.golemcloud import *
 from multi_swe_bench.harness.repos.rust.graphite_editor import *
 from multi_swe_bench.harness.repos.rust.GyulyVGC import *
 from multi_swe_bench.harness.repos.rust.helix_editor import *
+from multi_swe_bench.harness.repos.rust.lldap import *
 from multi_swe_bench.harness.repos.rust.hyperium import *
 from multi_swe_bench.harness.repos.rust.iced_rs import *
 from multi_swe_bench.harness.repos.rust.JelteF import *
@@ -80,4 +81,3 @@ from multi_swe_bench.harness.repos.rust.messense import *
 
 import importlib as _importlib
 # _importlib.import_module("multi_swe_bench.harness.repos.rust.InterCooperative-Network")  # module not present
-from multi_swe_bench.harness.repos.rust.Harry_kp import *
