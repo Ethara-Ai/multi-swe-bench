@@ -55,6 +55,7 @@ from multi_swe_bench.harness.repos.javascript.DevExpress import *
 from multi_swe_bench.harness.repos.javascript.dinerojs import *
 from multi_swe_bench.harness.repos.javascript.downshift_js import *
 from multi_swe_bench.harness.repos.javascript.emotion_js import *
+from multi_swe_bench.harness.repos.javascript.enzymejs import *
 from multi_swe_bench.harness.repos.javascript.eslint import *
 from multi_swe_bench.harness.repos.javascript.exercism import *
 from multi_swe_bench.harness.repos.javascript.expressjs import *
