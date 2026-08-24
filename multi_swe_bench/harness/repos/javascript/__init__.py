@@ -101,7 +101,6 @@ from multi_swe_bench.harness.repos.javascript.nextcloud import *
 from multi_swe_bench.harness.repos.javascript.nock import *
 from multi_swe_bench.harness.repos.javascript.openlayers import *
 from multi_swe_bench.harness.repos.javascript.postcss import *
-
 # from multi_swe_bench.harness.repos.javascript.preactjs import *  # missing module
 from multi_swe_bench.harness.repos.javascript.prettier import *
 from multi_swe_bench.harness.repos.javascript.PrismJS import *
@@ -154,5 +153,6 @@ from multi_swe_bench.harness.repos.javascript.yaacov import *
 from multi_swe_bench.harness.repos.javascript.dragosrotaru import *
 from multi_swe_bench.harness.repos.javascript.francoischalifour import *
 from multi_swe_bench.harness.repos.javascript.gopasspw import *
-# from multi_swe_bench.harness.repos.javascript.bids_standard import *
+from multi_swe_bench.harness.repos.javascript.bids_standard import *
 from multi_swe_bench.harness.repos.javascript.pmowrer import *
+from multi_swe_bench.harness.repos.javascript.istanbuljs import *
