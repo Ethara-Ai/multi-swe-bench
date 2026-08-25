@@ -156,6 +156,7 @@ from multi_swe_bench.harness.repos.javascript.francoischalifour import *
 from multi_swe_bench.harness.repos.javascript.gopasspw import *
 from multi_swe_bench.harness.repos.javascript.bids_standard import *
 from multi_swe_bench.harness.repos.javascript.pmowrer import *
+from multi_swe_bench.harness.repos.javascript.eugeneware import *
 from multi_swe_bench.harness.repos.javascript.istanbuljs import *
 from multi_swe_bench.harness.repos.javascript.XhmikosR import *
 from multi_swe_bench.harness.repos.javascript.holladayian import *

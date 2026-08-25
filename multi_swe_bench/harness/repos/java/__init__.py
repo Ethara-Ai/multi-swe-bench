@@ -76,8 +76,7 @@ from multi_swe_bench.harness.repos.java.Karumi import *
 from multi_swe_bench.harness.repos.java.roc_streaming import *
 from multi_swe_bench.harness.repos.java.lmdbjava import *
 from multi_swe_bench.harness.repos.java.dropwizard import *
-# BROKEN UPSTREAM: imported but the module was never committed (missing folder).
-# from multi_swe_bench.harness.repos.java.hash_checker import *
+from multi_swe_bench.harness.repos.java.hash_checker import *
 from multi_swe_bench.harness.repos.java.immutables import *
 from multi_swe_bench.harness.repos.java.grpc_ecosystem import *
 from multi_swe_bench.harness.repos.java.thingsboard import *
