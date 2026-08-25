@@ -369,6 +369,8 @@ from multi_swe_bench.harness.repos.python.mealie_recipes import *
 from multi_swe_bench.harness.repos.python.TheAlgorithms import *
 from multi_swe_bench.harness.repos.python.khoj_ai import *
 from multi_swe_bench.harness.repos.python.sktime import *
+from multi_swe_bench.harness.repos.python.arvindsis11 import *
+from multi_swe_bench.harness.repos.python.pwr_solaar import *
 from multi_swe_bench.harness.repos.python.feldroy import *
 from multi_swe_bench.harness.repos.python.nils_braun import *
 from multi_swe_bench.harness.repos.python.dribdat import *

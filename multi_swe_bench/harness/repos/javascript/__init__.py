@@ -149,6 +149,7 @@ from multi_swe_bench.harness.repos.javascript.gatsbyjs import *
 from multi_swe_bench.harness.repos.javascript.Mintplex_Labs import *
 from multi_swe_bench.harness.repos.javascript.yarnpkg import *
 from multi_swe_bench.harness.repos.javascript.processing import *
+from multi_swe_bench.harness.repos.javascript.ndelvalle import *
 from multi_swe_bench.harness.repos.javascript.import_js import *
 from multi_swe_bench.harness.repos.javascript.openstreetmap import *
 from multi_swe_bench.harness.repos.javascript.dequelabs import *
