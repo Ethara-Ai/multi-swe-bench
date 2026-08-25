@@ -286,6 +286,7 @@ from multi_swe_bench.harness.repos.python.stac_utils import *
 from multi_swe_bench.harness.repos.python.statsmodels import *
 from multi_swe_bench.harness.repos.python.stfc import *
 from multi_swe_bench.harness.repos.python.streamlit import *
+from multi_swe_bench.harness.repos.python.suitenumerique import *
 from multi_swe_bench.harness.repos.python.sul_dlss import *
 from multi_swe_bench.harness.repos.python.sunpy import *
 from multi_swe_bench.harness.repos.python.SwissDataScienceCenter import *

@@ -110,6 +110,7 @@ from multi_swe_bench.harness.repos.javascript.prettier import *
 from multi_swe_bench.harness.repos.javascript.PrismJS import *
 from multi_swe_bench.harness.repos.javascript.ProcessMaker import *
 from multi_swe_bench.harness.repos.javascript.ProjectMirador import *
+from multi_swe_bench.harness.repos.javascript.ProxeusApp import *
 from multi_swe_bench.harness.repos.javascript.quartodev import *
 from multi_swe_bench.harness.repos.javascript.RaspberryPiFoundation import *
 from multi_swe_bench.harness.repos.javascript.Real_Dev_Squad import *
