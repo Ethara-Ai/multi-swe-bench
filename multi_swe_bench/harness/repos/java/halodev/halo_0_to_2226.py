@@ -131,32 +131,8 @@ FROM {image_name}
 
 {build_args}
 
-<<<<<<< Updated upstream
 {DockerfileEnhancer._ENV_BLOCK}
 ENV LC_ALL=C.UTF-8
-=======
-ARG http_proxy=""
-ARG https_proxy=""
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG no_proxy="localhost,127.0.0.1,::1"
-ARG NO_PROXY="localhost,127.0.0.1,::1"
-ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
-
-ENV DEBIAN_FRONTEND=noninteractive \\
-    TZ=UTC \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    http_proxy=${{http_proxy}} \\
-    https_proxy=${{https_proxy}} \\
-    HTTP_PROXY=${{HTTP_PROXY}} \\
-    HTTPS_PROXY=${{HTTPS_PROXY}} \\
-    no_proxy=${{no_proxy}} \\
-    NO_PROXY=${{NO_PROXY}} \\
-    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
-    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
->>>>>>> Stashed changes
 
 LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
       org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
