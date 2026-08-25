@@ -1,10 +1,11 @@
 """mswjs/msw registry — two-level build with explicit hardening.
 
 Base images (ImageBaseNode18/22/20) install the toolchain (node + APT packages +
-corepack).  Per-PR images (ImageDefault) depend on the appropriate base, then
-clone the repo, check out the base commit, run prepare.sh, and apply the
-hardening block with the commit hash hardcoded directly in the generated
-Dockerfile.
+corepack) and carry the shared `git clone "${REPO_URL}"` plus the light base
+hardening required by PIPELINE.md 3.  Per-PR images (ImageDefault) inherit that
+clone, COPY the patches and scripts, run prepare.sh (which resets and checks out
+the PR's base commit), then apply the strict hardening block with the commit hash
+hardcoded directly in the generated Dockerfile (PIPELINE.md 4).
 
 Because ImageDefault.dependency() returns an Image (not a str), DockerfileEnhancer
 bails and does NOT inject infra ARGs or hardening.  Both are handled manually:
@@ -24,7 +25,7 @@ import re
 from types import SimpleNamespace
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -112,14 +113,17 @@ ARG TARGETARCH
 ARG REPO_URL="https://github.com/mswjs/msw.git"
 ARG BASE_COMMIT
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    TZ=UTC
+{proxy_args}
+
+{env_block}
+ENV LC_ALL=C.UTF-8
 
 LABEL org.opencontainers.image.title="mswjs/msw" \\
       org.opencontainers.image.description="mswjs/msw Docker image" \\
       org.opencontainers.image.source="https://github.com/mswjs/msw" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{cert_symlinks}
 
 WORKDIR /home/
 
@@ -128,6 +132,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 CMD ["/bin/bash"]
 """
@@ -167,7 +179,17 @@ class _ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        return _BASE_DOCKERFILE_TEMPLATE.format(node_version=self._node_version)
+        # MITM proxy/cert scaffolding is pulled straight from image.py so the
+        # rendered Dockerfile matches the canonical constants verbatim
+        # (PIPELINE.md 2a / 8.1).  This repo opts out of DockerfileEnhancer
+        # (# syntax directive), so the block is applied here by hand.
+        return _BASE_DOCKERFILE_TEMPLATE.format(
+            node_version=self._node_version,
+            repo=self.pr.repo,
+            proxy_args=DockerfileEnhancer._PROXY_ARGS,
+            env_block=DockerfileEnhancer._ENV_BLOCK,
+            cert_symlinks=DockerfileEnhancer._CERT_SYMLINKS,
+        )
 
 
 class ImageBaseNode18(_ImageBase):
@@ -264,6 +286,7 @@ class ImageDefault(Image):
         return (
             "COPY fix.patch /home/fix.patch\n"
             "COPY test.patch /home/test.patch\n"
+            "COPY check_git_changes.sh /home/check_git_changes.sh\n"
             "COPY prepare.sh /home/prepare.sh\n"
             "COPY run.sh /home/run.sh\n"
             "COPY test-run.sh /home/test-run.sh\n"
@@ -289,16 +312,14 @@ class ImageDefault(Image):
             "",
             f"FROM {base_full}",
             "",
-            f'RUN git clone "https://github.com/{org}/{repo}.git" /home/{repo}',
-            "",
-            f"WORKDIR /home/{repo}",
-            "",
-            "RUN git reset --hard",
-            f"RUN git checkout {commit}",
+            self.global_env,
             "",
             extra,
             "",
+            f"WORKDIR /home/{repo}",
+            "",
             hardening,
+            self.clear_env,
             'CMD ["/bin/bash"]',
             "",
         ])
@@ -317,7 +338,8 @@ class ImageDefault(Image):
             "set -e\n"
             "\n"
             f"cd /home/{repo}\n"
-            "git reset --hard || true\n"
+            "git reset --hard\n"
+            f"git checkout {self.pr.base.sha}\n"
             f"{pm_setup}\n"
             f"{install_cmd}\n"
             f"{build_line}"
@@ -357,9 +379,28 @@ class ImageDefault(Image):
             f"{runner_block}"
         )
 
+        check_git_changes = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            "\n"
+            'if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then\n'
+            '  echo "check_git_changes: Not inside a git repository"\n'
+            "  exit 1\n"
+            "fi\n"
+            "\n"
+            'if [[ -n $(git status --porcelain) ]]; then\n'
+            '  echo "check_git_changes: Uncommitted changes"\n'
+            "  exit 1\n"
+            "fi\n"
+            "\n"
+            'echo "check_git_changes: No uncommitted changes"\n'
+            "exit 0\n"
+        )
+
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", check_git_changes),
             File(".", "prepare.sh", prepare),
             File(".", "run.sh", run),
             File(".", "test-run.sh", test_run),
@@ -482,48 +523,30 @@ _BUNDLE_INTERVALS = [
     "121-124",
     "141-143",
     "163-166-167-168",
-    "172-173-174",
     "179-182-183",
-    "186-187",
     "194-195",
-    "196-197",
     "198-201-204",
-    "403-417-430-432-438-439-441-445",
     "467-471",
-    "493-502-531-538-541-542-543-550-551-554-564-565-567-568",
-    "688-693-699-703-706-707-709-722-725-726-727-733-746-747",
-    "720-735-740-756-760-763-769-770-775-781-784-786-787",
     "774-843",
-    "826-828",
     "835-836-837-839-840",
-    "982-1026-1028-1037-1044",
     "1029-1050-1057-1061-1062-1063-1064",
     "1096-1098",
     "1155-1157-1159-1160-1161",
     "1257-1265",
-    "1288-1301-1303-1309",
-    "1316-1320",
     "1323-1369-1375",
     "1443-1815-1855-1857-1858-1861-1862",
     "1824-1825-1833",
-    "1837-1838-1839-1842-1844-1845-1846",
     "1850-1853",
-    "1871-1876-1883-1885",
     "1957-1961",
     "1979-1993-1995-1997-1998-1999",
     "1988-1990",
     "1996-2000-2004-2020-2021-2031",
     "2002-2008",
-    "2011-2335",
-    "2018-2212-2578",
-    "2033-2102-2103",
     "2093-2094",
     "2108-2206",
     "2135-2144",
-    "2140-2187-2227-2231-2243",
     "2349-2350",
     "2353-2354",
-    "2513-2675",
     "2677-2679",
 ]
 for _interval in _BUNDLE_INTERVALS:
