@@ -394,3 +394,4 @@ from multi_swe_bench.harness.repos.python.lyz_code import *
 from multi_swe_bench.harness.repos.python.MozillaSecurity import *
 from multi_swe_bench.harness.repos.python.tokusumi import *
 from multi_swe_bench.harness.repos.python.Tencent.CodeAnalysis import *
+from multi_swe_bench.harness.repos.python.rustedpy import *
