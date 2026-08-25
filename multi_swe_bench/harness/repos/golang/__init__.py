@@ -189,3 +189,4 @@ from multi_swe_bench.harness.repos.golang.liquidmetal_dev import *
 from multi_swe_bench.harness.repos.golang.bazelbuild import *
 from multi_swe_bench.harness.repos.golang.kubereboot import *
 from multi_swe_bench.harness.repos.golang.mozilla_services import *
+from multi_swe_bench.harness.repos.golang.jenkins_zh import *

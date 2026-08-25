@@ -113,6 +113,7 @@ from multi_swe_bench.harness.repos.typescript.NomicFoundation import *
 from multi_swe_bench.harness.repos.typescript.Northeastern_Electric_Racing import *
 from multi_swe_bench.harness.repos.typescript.nuxt import *
 from multi_swe_bench.harness.repos.typescript.obsidian_tasks_group import *
+from multi_swe_bench.harness.repos.typescript.obsidianmd import *
 from multi_swe_bench.harness.repos.typescript.onaio import *
 from multi_swe_bench.harness.repos.typescript.ONEARMY import *
 from multi_swe_bench.harness.repos.typescript.palantir import *
