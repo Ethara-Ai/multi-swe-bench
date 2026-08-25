@@ -6,6 +6,7 @@ from multi_swe_bench.harness.repos.java.alibaba_canal import *
 from multi_swe_bench.harness.repos.java.apache import *
 from multi_swe_bench.harness.repos.java.bazelbuild import *
 from multi_swe_bench.harness.repos.java.binarywang import *
+from multi_swe_bench.harness.repos.java.cambridge_cares import *
 from multi_swe_bench.harness.repos.java.checkstyle import *
 from multi_swe_bench.harness.repos.java.eclipsevertx import *
 from multi_swe_bench.harness.repos.java.elastic import *
