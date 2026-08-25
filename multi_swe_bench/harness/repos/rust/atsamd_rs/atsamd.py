@@ -1,12 +1,67 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class GlobbyImageBase(Image):
+_BSP = "feather_m4"
+_RUST_TARGET = "thumbv7em-none-eabihf"
+
+_CHECK_GIT_CHANGES_SH = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+"""
+
+_BUILD_EXAMPLES_SH = """#!/bin/bash
+set -uo pipefail
+
+export CARGO_TERM_COLOR=never
+export CARGO_NET_RETRY=5
+export RUST_BACKTRACE=1
+export CI=true
+
+cd boards/__BSP__ || exit 1
+rc=0
+
+for src in examples/*.rs; do
+    [ -e "$src" ] || continue
+    name=$(basename "$src" .rs)
+    log=$(mktemp)
+
+    if cargo build --all-features --example "$name" > "$log" 2>&1; then
+        echo "test boards/__BSP__/$src ... ok"
+    else
+        rc=1
+        echo "### harness: example '$name' failed to build ###"
+        grep -E "^error" -A 12 "$log" | head -n 200
+        echo "### harness: tail of build log for '$name' ###"
+        tail -n 40 "$log"
+        echo "test boards/__BSP__/$src ... FAILED"
+    fi
+
+    rm -f "$log"
+done
+
+exit $rc
+""".replace("__BSP__", _BSP)
+
+
+class AtsamdImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -19,8 +74,8 @@ class GlobbyImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:20-bookworm"
+    def dependency(self) -> str | Image:
+        return "rust:1.90"
 
     def image_tag(self) -> str:
         return f"base-pr-{self.pr.number}"
@@ -41,13 +96,13 @@ class GlobbyImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""\
-FROM {image_name}
+        return f"""FROM {image_name}
 
 {self.global_env}
 
 WORKDIR /home/
-ENV LC_ALL=C.UTF-8
+
+RUN rustup target add {_RUST_TARGET}
 
 {code}
 
@@ -56,7 +111,7 @@ ENV LC_ALL=C.UTF-8
 """
 
 
-class GlobbyImageDefault(Image):
+class AtsamdImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -70,7 +125,7 @@ class GlobbyImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return GlobbyImageBase(self.pr, self._config)
+        return AtsamdImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -93,29 +148,17 @@ class GlobbyImageDefault(Image):
             File(
                 ".",
                 "check_git_changes.sh",
-                """\
-#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-""",
+                _CHECK_GIT_CHANGES_SH,
+            ),
+            File(
+                ".",
+                "build-examples.sh",
+                _BUILD_EXAMPLES_SH,
             ),
             File(
                 ".",
                 "prepare.sh",
-                """\
-#!/bin/bash
+                """#!/bin/bash
 set -e
 
 cd /home/{pr.repo}
@@ -124,85 +167,97 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# The three sed shims below intentionally modify tracked files, so the
-# clean-tree assertions must stay ABOVE them. They are compatibility fixes
-# for globby PRs whose base commit predates 20bb8ae / 52d02bb; they are
-# no-ops on newer base commits. Do not remove.
+bash /home/build-examples.sh || true
 
-# Fix self-reference: master branch was renamed to main
-sed -i 's|sindresorhus/globby#master|sindresorhus/globby#main|g' package.json
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+bash /home/build-examples.sh || true
+git apply -R --whitespace=nowarn /home/fix.patch /home/test.patch
+bash /home/check_git_changes.sh
 
-# Fix fs.writeFileSync(element) missing data arg (required in Node 14+)
-find . -name "*.js" -path "*/test*" -exec sed -i 's/fs\\.writeFileSync(element)/fs.writeFileSync(element, "")/g' {{}} +
-find . -name "*.js" -path "*/test*" -exec sed -i 's/fs\\.writeFileSync(path\\.join(__dirname, tmp, element))/fs.writeFileSync(path.join(__dirname, tmp, element), "")/g' {{}} +
+bash /home/build-examples.sh || true
+bash /home/check_git_changes.sh
 
-rm -rf node_modules
-npm install || true
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
-                """\
-#!/bin/bash
+                """#!/bin/bash
 set -eo pipefail
-export CI=true
 
 cd /home/{pr.repo}
-npx ava --tap --concurrency=1 2>&1
+bash /home/build-examples.sh
+
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "test-run.sh",
-                """\
-#!/bin/bash
+                """#!/bin/bash
 set -eo pipefail
-export CI=true
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --binary /home/test.patch
-npx ava --tap --concurrency=1 2>&1
+if ! git apply --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply test.patch failed" >&2
+    exit 1
+fi
+bash /home/build-examples.sh
+
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "fix-run.sh",
-                """\
-#!/bin/bash
+                """#!/bin/bash
 set -eo pipefail
-export CI=true
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --binary /home/test.patch /home/fix.patch
-npx ava --tap --concurrency=1 2>&1
+if ! git apply --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply test.patch failed" >&2
+    exit 1
+fi
+if ! git apply --whitespace=nowarn /home/fix.patch; then
+    echo "Error: git apply fix.patch failed" >&2
+    exit 1
+fi
+bash /home/build-examples.sh
+
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
-        dep = self.dependency()
-        return f"""\
-FROM {dep.image_name()}:{dep.image_tag()}
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
+
+        prepare_commands = "RUN bash /home/prepare.sh"
+
+        return f"""FROM {name}:{tag}
 
 {self.global_env}
 
-COPY fix.patch /home/fix.patch
-COPY test.patch /home/test.patch
-COPY check_git_changes.sh /home/check_git_changes.sh
-COPY prepare.sh /home/prepare.sh
-COPY run.sh /home/run.sh
-COPY test-run.sh /home/test-run.sh
-COPY fix-run.sh /home/fix-run.sh
-RUN bash /home/prepare.sh
+{copy_commands}
+
+{prepare_commands}
 
 {self.clear_env}
 
 """
 
 
-@Instance.register("sindresorhus", "globby")
-class Globby(Instance):
+_RE_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_RE_TEST_LINE = re.compile(
+    r"^test\s+(?P<name>\S+)\s+\.\.\.\s+(?P<status>ok|FAILED|ignored)\b"
+)
+
+
+@Instance.register("atsamd-rs", "atsamd")
+class Atsamd(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -213,21 +268,24 @@ class Globby(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return GlobbyImageDefault(self.pr, self._config)
+        return AtsamdImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
+
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
+
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
+
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
@@ -235,54 +293,25 @@ class Globby(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Strip ANSI colour codes before matching. AVA's TAP reporter emits
-        # none today, but a reporter/TTY change would otherwise silently break
-        # every pattern below.
-        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+        for raw in test_log.splitlines():
+            line = _RE_ANSI.sub("", raw).strip()
 
-        test_pattern = re.compile(r"^(ok|not ok) (\d+) - (.*?)$")
-        lines = test_log.split("\n")
-        tap_started = False
-
-        for line in lines:
-            line = line.strip()
-
-            if line.startswith("TAP version 13"):
-                tap_started = True
+            m = _RE_TEST_LINE.match(line)
+            if not m:
                 continue
 
-            if not tap_started:
-                continue
+            name = m.group("name")
+            status = m.group("status")
 
-            if line.startswith("1.."):
-                break
+            if status == "ok":
+                passed_tests.add(name)
+            elif status == "FAILED":
+                failed_tests.add(name)
+            else:
+                skipped_tests.add(name)
 
-            if not line.startswith(("ok", "not ok")):
-                continue
-
-            if "# SKIP" in line:
-                skip_match = re.match(r"^(ok|not ok) (\d+) - (.*?)(?:\s+# SKIP.*)$", line)
-                if skip_match:
-                    _, _, test_name = skip_match.groups()
-                    skipped_tests.add(test_name.strip())
-                continue
-
-            match = test_pattern.match(line)
-            if match:
-                status, _, test_name = match.groups()
-                test_name = test_name.strip()
-
-                if status == "ok":
-                    passed_tests.add(test_name)
-                elif status == "not ok":
-                    failed_tests.add(test_name)
-
-        # TestResult.__post_init__ raises ValueError if these sets intersect,
-        # which would abort the whole build. A test reported both ok and not ok
-        # (retry, duplicate title) resolves to failed.
         passed_tests -= failed_tests
-        passed_tests -= skipped_tests
-        skipped_tests -= failed_tests
+        skipped_tests -= failed_tests | passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
