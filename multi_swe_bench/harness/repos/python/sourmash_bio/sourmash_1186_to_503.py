@@ -1,10 +1,71 @@
 import re
-import json
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+class ImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return "python:3.7-slim"
+
+    def image_tag(self) -> str:
+        return f"base-pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"base-pr-{self.pr.number}"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        return f"""FROM {image_name}
+
+{self.global_env}
+
+WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends git bash build-essential curl ca-certificates pkg-config && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/usr/local/rustup \\
+    CARGO_HOME=/usr/local/cargo \\
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path --default-toolchain 1.98.0
+
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=3.3.0
+
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+RUN pip install --upgrade "pip<24" "setuptools<60" wheel && \
+    pip install -e "/home/{self.pr.repo}[test]" && \
+    pip install "screed==1.0.5"
+
+CMD ["/bin/bash"]
+
+{self.clear_env}
+
+"""
 
 
 class ImageDefault(Image):
@@ -20,11 +81,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.9-slim"
-
-    def image_prefix(self) -> str:
-        return "envagent"
+    def dependency(self) -> Optional[Image]:
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -34,6 +92,13 @@ class ImageDefault(Image):
 
     def files(self) -> list[File]:
         repo_name = self.pr.repo
+        base_sha = self.pr.base.sha
+
+        def render(content: str) -> str:
+            return content.replace("[[REPO_NAME]]", repo_name).replace(
+                "[[BASE_SHA]]", base_sha
+            )
+
         return [
             File(
                 ".",
@@ -47,112 +112,114 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
-                """ls -l
-###ACTION_DELIMITER###
-pip install -r requirements.txt
-###ACTION_DELIMITER###
-pip install -e .[test]
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y build-essential
-###ACTION_DELIMITER###
-pip install -e .[test]
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y cargo
-###ACTION_DELIMITER###
-pip install -e .[test]
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y curl
-###ACTION_DELIMITER###
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-###ACTION_DELIMITER###
-source $HOME/.cargo/env
-###ACTION_DELIMITER###
-pip install -e .[test]
-###ACTION_DELIMITER###
-echo 'pytest -v -rA --tb=no -p no:cacheprovider' > test_commands.sh
-###ACTION_DELIMITER###
-cat test_commands.sh""",
+                render(
+                    """#!/bin/bash
+set -e
+
+cd /home/[[REPO_NAME]]
+git reset --hard
+# No -x: target/ and sourmash/_lowlevel* are gitignored build output produced
+# by the editable install in the base image, and rebuilding costs minutes.
+git clean -fd
+bash /home/check_git_changes.sh
+git checkout [[BASE_SHA]]
+bash /home/check_git_changes.sh
+
+pip install -e "/home/[[REPO_NAME]][test]"
+# screed>=1.1 requires Python 3.8+ (importlib.metadata); pin it after the
+# editable install so it wins over the loose screed>=0.9 requirement.
+pip install "screed==1.0.5"
+
+"""
+                ),
             ),
             File(
                 ".",
                 "run.sh",
-                """#!/bin/bash
+                render(
+                    """#!/bin/bash
 cd /home/[[REPO_NAME]]
 pytest -v -rA --tb=no -p no:cacheprovider
 
-""".replace("[[REPO_NAME]]", repo_name),
+"""
+                ),
             ),
             File(
                 ".",
                 "test-run.sh",
-                """#!/bin/bash
+                render(
+                    """#!/bin/bash
 cd /home/[[REPO_NAME]]
 if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
 pytest -v -rA --tb=no -p no:cacheprovider
 
-""".replace("[[REPO_NAME]]", repo_name),
+"""
+                ),
             ),
             File(
                 ".",
                 "fix-run.sh",
-                """#!/bin/bash
+                render(
+                    """#!/bin/bash
 cd /home/[[REPO_NAME]]
-if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+if ! git -C /home/[[REPO_NAME]] apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
 pytest -v -rA --tb=no -p no:cacheprovider
 
-""".replace("[[REPO_NAME]]", repo_name),
+"""
+                ),
             ),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        return f"""FROM {name}:{tag}
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
+{self.global_env}
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/sourmash-bio/sourmash.git /home/sourmash
-
-WORKDIR /home/sourmash
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
+
+{self.clear_env}
+
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
+@Instance.register("sourmash-bio", "sourmash")
 @Instance.register("sourmash-bio", "sourmash_1186_to_503")
 class SOURMASH_1186_TO_503(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
@@ -186,13 +253,10 @@ class SOURMASH_1186_TO_503(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
-        import re
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
 
-        # Use regex to find test lines
         pattern = re.compile(
             r"^\s*([^\s]+)\s+(PASSED|FAILED|SKIPPED|OK)\s+\[\s*\d+%\s*\]",
             re.MULTILINE | re.IGNORECASE,
@@ -207,11 +271,6 @@ class SOURMASH_1186_TO_503(Instance):
                 failed_tests.add(test_name)
             elif status_upper == "SKIPPED":
                 skipped_tests.add(test_name)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
 
         return TestResult(
             passed_count=len(passed_tests),
