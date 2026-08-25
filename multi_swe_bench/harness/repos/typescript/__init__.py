@@ -77,6 +77,7 @@ from multi_swe_bench.harness.repos.typescript.heylinda import *
 from multi_swe_bench.harness.repos.typescript.hilleer import *
 from multi_swe_bench.harness.repos.typescript.highcharts import *
 from multi_swe_bench.harness.repos.typescript.honojs import *
+from multi_swe_bench.harness.repos.typescript.ice_lab import *
 from multi_swe_bench.harness.repos.typescript.HospitalRun import *
 from multi_swe_bench.harness.repos.typescript.HoudiniGraphql import *
 from multi_swe_bench.harness.repos.typescript.IgniteUI import *
