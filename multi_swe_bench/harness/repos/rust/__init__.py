@@ -78,6 +78,5 @@ from multi_swe_bench.harness.repos.rust.Grainlify import *
 from multi_swe_bench.harness.repos.rust.ankitects import *
 from multi_swe_bench.harness.repos.rust.apache import *
 from multi_swe_bench.harness.repos.rust.messense import *
-
+from multi_swe_bench.harness.repos.rust.rpgp import *
 import importlib as _importlib
-# _importlib.import_module("multi_swe_bench.harness.repos.rust.InterCooperative-Network")  # module not present
