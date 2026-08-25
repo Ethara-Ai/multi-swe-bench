@@ -81,5 +81,4 @@ from multi_swe_bench.harness.repos.rust.apache import *
 from multi_swe_bench.harness.repos.rust.messense import *
 from multi_swe_bench.harness.repos.rust.rpgp import *
 from multi_swe_bench.harness.repos.rust.atsamd_rs import *
-import importlib as _importlib
 from multi_swe_bench.harness.repos.rust.Harry_kp import *

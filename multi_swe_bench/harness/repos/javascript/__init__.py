@@ -125,6 +125,7 @@ from multi_swe_bench.harness.repos.javascript.serverless import *
 from multi_swe_bench.harness.repos.javascript.serverless_operations import *
 from multi_swe_bench.harness.repos.javascript.sindresorhus import *
 from multi_swe_bench.harness.repos.javascript.sinonjs import *
+from multi_swe_bench.harness.repos.javascript.sjbarag import *
 from multi_swe_bench.harness.repos.javascript.stdlib_js import *
 from multi_swe_bench.harness.repos.javascript.style_dictionary import *
 from multi_swe_bench.harness.repos.javascript.stylelint import *
