@@ -385,6 +385,8 @@ from multi_swe_bench.harness.repos.python.smartcrop import *
 from multi_swe_bench.harness.repos.python.wpilibsuite import *
 from multi_swe_bench.harness.repos.python.treeandsea import *
 from multi_swe_bench.harness.repos.python.LukeCarrier import *
+from multi_swe_bench.harness.repos.python.wattcoin_org import *
+from multi_swe_bench.harness.repos.python.panoptes import *
 from multi_swe_bench.harness.repos.python.lyz_code import *
 from multi_swe_bench.harness.repos.python.MozillaSecurity import *
 from multi_swe_bench.harness.repos.python.tokusumi import *
