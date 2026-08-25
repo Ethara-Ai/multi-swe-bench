@@ -19,6 +19,7 @@ from multi_swe_bench.harness.repos.python.aws_cloudformation import *
 from multi_swe_bench.harness.repos.python.bcgov import *
 from multi_swe_bench.harness.repos.python.beetbox import *
 from multi_swe_bench.harness.repos.python.beeware import *
+from multi_swe_bench.harness.repos.python.BGmi import *
 from multi_swe_bench.harness.repos.python.bigchaindb import *
 from multi_swe_bench.harness.repos.python.biopython import *
 from multi_swe_bench.harness.repos.python.browser_use import *
@@ -35,6 +36,7 @@ from multi_swe_bench.harness.repos.python.cekit import *
 from multi_swe_bench.harness.repos.python.celery import *
 from multi_swe_bench.harness.repos.python.certbot import *
 from multi_swe_bench.harness.repos.python.chainer import *
+from multi_swe_bench.harness.repos.python.ClawBio import *
 from multi_swe_bench.harness.repos.python.Clinical_Genomics import *
 from multi_swe_bench.harness.repos.python.cloud_custodian import *
 from multi_swe_bench.harness.repos.python.cobbler import *
@@ -99,6 +101,7 @@ from multi_swe_bench.harness.repos.python.getmoto import *
 from multi_swe_bench.harness.repos.python.getsentry import *
 from multi_swe_bench.harness.repos.python.giampaolo import *
 from multi_swe_bench.harness.repos.python.github import *
+from multi_swe_bench.harness.repos.python.globus import *
 from multi_swe_bench.harness.repos.python.google import *
 from multi_swe_bench.harness.repos.python.googleapis import *
 from multi_swe_bench.harness.repos.python.great_expectations import *
@@ -198,6 +201,7 @@ from multi_swe_bench.harness.repos.python.pasqal_io import *
 from multi_swe_bench.harness.repos.python.pdm_project import *
 from multi_swe_bench.harness.repos.python.PennLINC import *
 from multi_swe_bench.harness.repos.python.PennyLaneAI import *
+from multi_swe_bench.harness.repos.python.permitio import *
 from multi_swe_bench.harness.repos.python.pgmpy import *
 from multi_swe_bench.harness.repos.python.pints_team import *
 from multi_swe_bench.harness.repos.python.pipecat_ai import *
@@ -381,3 +385,9 @@ from multi_swe_bench.harness.repos.python.smartcrop import *
 from multi_swe_bench.harness.repos.python.wpilibsuite import *
 from multi_swe_bench.harness.repos.python.treeandsea import *
 from multi_swe_bench.harness.repos.python.LukeCarrier import *
+from multi_swe_bench.harness.repos.python.wattcoin_org import *
+from multi_swe_bench.harness.repos.python.panoptes import *
+from multi_swe_bench.harness.repos.python.lyz_code import *
+from multi_swe_bench.harness.repos.python.MozillaSecurity import *
+from multi_swe_bench.harness.repos.python.tokusumi import *
+from multi_swe_bench.harness.repos.python.Tencent.CodeAnalysis import *

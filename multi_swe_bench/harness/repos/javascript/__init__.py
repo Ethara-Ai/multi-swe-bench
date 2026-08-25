@@ -76,6 +76,7 @@ from multi_swe_bench.harness.repos.javascript.highlightjs import *
 from multi_swe_bench.harness.repos.javascript.honeybadger_io import *
 from multi_swe_bench.harness.repos.javascript.iamkun import *
 from multi_swe_bench.harness.repos.javascript.IgniteUI import *
+from multi_swe_bench.harness.repos.javascript.jshint import *
 from multi_swe_bench.harness.repos.javascript.json_editor import *
 from multi_swe_bench.harness.repos.javascript.jsx_eslint import *
 from multi_swe_bench.harness.repos.javascript.KaTeX import *
@@ -83,6 +84,8 @@ from multi_swe_bench.harness.repos.javascript.knex import *
 from multi_swe_bench.harness.repos.javascript.koajs import *
 from multi_swe_bench.harness.repos.javascript.Kong import *
 from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
+from multi_swe_bench.harness.repos.javascript.LiberatedPixelCup import *
+from multi_swe_bench.harness.repos.javascript.leapdao import *
 from multi_swe_bench.harness.repos.javascript.LiskHQ import *
 from multi_swe_bench.harness.repos.javascript.lodash import *
 from multi_swe_bench.harness.repos.javascript.lokus_ai import *
@@ -101,7 +104,6 @@ from multi_swe_bench.harness.repos.javascript.nextcloud import *
 from multi_swe_bench.harness.repos.javascript.nock import *
 from multi_swe_bench.harness.repos.javascript.openlayers import *
 from multi_swe_bench.harness.repos.javascript.postcss import *
-
 # from multi_swe_bench.harness.repos.javascript.preactjs import *  # missing module
 from multi_swe_bench.harness.repos.javascript.prettier import *
 from multi_swe_bench.harness.repos.javascript.PrismJS import *
@@ -113,6 +115,7 @@ from multi_swe_bench.harness.repos.javascript.Real_Dev_Squad import *
 from multi_swe_bench.harness.repos.javascript.rollup import *
 from multi_swe_bench.harness.repos.javascript.SchemaStore import *
 from multi_swe_bench.harness.repos.javascript.scratchfoundation import *
+from multi_swe_bench.harness.repos.javascript.screwdriver_cd import *
 from multi_swe_bench.harness.repos.javascript.Semantic_Org import *
 from multi_swe_bench.harness.repos.javascript.Seneca_CDOT import *
 from multi_swe_bench.harness.repos.javascript.serverless import *
@@ -153,5 +156,9 @@ from multi_swe_bench.harness.repos.javascript.yaacov import *
 from multi_swe_bench.harness.repos.javascript.dragosrotaru import *
 from multi_swe_bench.harness.repos.javascript.francoischalifour import *
 from multi_swe_bench.harness.repos.javascript.gopasspw import *
-# from multi_swe_bench.harness.repos.javascript.bids_standard import *
+from multi_swe_bench.harness.repos.javascript.bids_standard import *
 from multi_swe_bench.harness.repos.javascript.pmowrer import *
+from multi_swe_bench.harness.repos.javascript.eugeneware import *
+from multi_swe_bench.harness.repos.javascript.istanbuljs import *
+from multi_swe_bench.harness.repos.javascript.XhmikosR import *
+from multi_swe_bench.harness.repos.javascript.holladayian import *

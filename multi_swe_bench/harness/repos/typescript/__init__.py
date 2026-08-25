@@ -45,6 +45,7 @@ from multi_swe_bench.harness.repos.typescript.colinhacks import *
 from multi_swe_bench.harness.repos.typescript.comixed import *
 from multi_swe_bench.harness.repos.typescript.CommunitySolidServer import *
 from multi_swe_bench.harness.repos.typescript.cypress_io import *
+from multi_swe_bench.harness.repos.typescript.danger import *
 from multi_swe_bench.harness.repos.typescript.DanielXMoore import *
 from multi_swe_bench.harness.repos.typescript.darkreader import *
 from multi_swe_bench.harness.repos.typescript.daytonaio import *
@@ -52,8 +53,10 @@ from multi_swe_bench.harness.repos.typescript.decaffeinate import *
 from multi_swe_bench.harness.repos.typescript.decentralized_identity import *
 from multi_swe_bench.harness.repos.typescript.deephaven import *
 from multi_swe_bench.harness.repos.typescript.defenseunicorns import *
+from multi_swe_bench.harness.repos.typescript.dorny import *
 from multi_swe_bench.harness.repos.typescript.drizzle_team import *
 from multi_swe_bench.harness.repos.typescript.DTStack import *
+from multi_swe_bench.harness.repos.typescript.DulLabs import *
 from multi_swe_bench.harness.repos.typescript.eclipse_theia import *
 from multi_swe_bench.harness.repos.typescript.Effect_TS import *
 from multi_swe_bench.harness.repos.typescript.electron import *
@@ -71,6 +74,7 @@ from multi_swe_bench.harness.repos.typescript.grafana import *
 from multi_swe_bench.harness.repos.typescript.Hacker0x01 import *
 from multi_swe_bench.harness.repos.typescript.hasadna import *
 from multi_swe_bench.harness.repos.typescript.heylinda import *
+from multi_swe_bench.harness.repos.typescript.hilleer import *
 from multi_swe_bench.harness.repos.typescript.highcharts import *
 from multi_swe_bench.harness.repos.typescript.honojs import *
 from multi_swe_bench.harness.repos.typescript.HospitalRun import *
@@ -95,7 +99,8 @@ from multi_swe_bench.harness.repos.typescript.mattermost_community import *
 from multi_swe_bench.harness.repos.typescript.mermaid_js import *
 from multi_swe_bench.harness.repos.typescript.MetaMask import *
 from multi_swe_bench.harness.repos.typescript.microsoft import *
-from multi_swe_bench.harness.repos.typescript.mswjs import *
+from multi_swe_bench.harness.repos.typescript.modernweb_dev import *
+from multi_swe_bench.harness.repos.typescript.mswjs.data import *
 from multi_swe_bench.harness.repos.typescript.MTES_MCT import *
 from multi_swe_bench.harness.repos.typescript.mui import *
 from multi_swe_bench.harness.repos.typescript.nbfontana import *
@@ -201,4 +206,6 @@ from multi_swe_bench.harness.repos.typescript.codibre import *
 from multi_swe_bench.harness.repos.typescript.memfreeme import *
 from multi_swe_bench.harness.repos.typescript.ForNeVeR import *
 from multi_swe_bench.harness.repos.typescript.zowe import *
+from multi_swe_bench.harness.repos.typescript.neos import *
 from multi_swe_bench.harness.repos.typescript.the_guild_org import *
+from multi_swe_bench.harness.repos.typescript.aurelia import *

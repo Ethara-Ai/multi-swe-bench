@@ -16,7 +16,9 @@ from multi_swe_bench.harness.repos.rust.cocogitto import *
 from multi_swe_bench.harness.repos.rust.dandavison import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
 from multi_swe_bench.harness.repos.rust.fedimint import *
+from multi_swe_bench.harness.repos.rust.fjall_rs import *
 from multi_swe_bench.harness.repos.rust.fish_shell import *
+from multi_swe_bench.harness.repos.rust.fornwall import *
 from multi_swe_bench.harness.repos.rust.FuelLabs import *
 from multi_swe_bench.harness.repos.rust.geiger_rs import *
 from multi_swe_bench.harness.repos.rust.GitoxideLabs import *
@@ -24,8 +26,10 @@ from multi_swe_bench.harness.repos.rust.golemcloud import *
 from multi_swe_bench.harness.repos.rust.graphite_editor import *
 from multi_swe_bench.harness.repos.rust.GyulyVGC import *
 from multi_swe_bench.harness.repos.rust.helix_editor import *
+from multi_swe_bench.harness.repos.rust.lldap import *
 from multi_swe_bench.harness.repos.rust.hyperium import *
 from multi_swe_bench.harness.repos.rust.iced_rs import *
+from multi_swe_bench.harness.repos.rust.JelteF import *
 from multi_swe_bench.harness.repos.rust.napi_rs import *
 from multi_swe_bench.harness.repos.rust.nushell import *
 from multi_swe_bench.harness.repos.rust.ogham import *
@@ -74,7 +78,5 @@ from multi_swe_bench.harness.repos.rust.Grainlify import *
 from multi_swe_bench.harness.repos.rust.ankitects import *
 from multi_swe_bench.harness.repos.rust.apache import *
 from multi_swe_bench.harness.repos.rust.messense import *
-
+from multi_swe_bench.harness.repos.rust.rpgp import *
 import importlib as _importlib
-# _importlib.import_module("multi_swe_bench.harness.repos.rust.InterCooperative-Network")  # module not present
-from multi_swe_bench.harness.repos.rust.Harry_kp import *
