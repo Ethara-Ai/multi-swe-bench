@@ -63,6 +63,7 @@ from multi_swe_bench.harness.repos.javascript.facebook import *
 from multi_swe_bench.harness.repos.javascript.fastify import *
 from multi_swe_bench.harness.repos.javascript.FlowFuse import *
 from multi_swe_bench.harness.repos.javascript.gchq import *
+from multi_swe_bench.harness.repos.javascript.github import *
 from multi_swe_bench.harness.repos.javascript.google import *
 from multi_swe_bench.harness.repos.javascript.GoogleChrome import *
 from multi_swe_bench.harness.repos.javascript.grommet import *

@@ -30,6 +30,7 @@ from multi_swe_bench.harness.repos.rust.lldap import *
 from multi_swe_bench.harness.repos.rust.hyperium import *
 from multi_swe_bench.harness.repos.rust.iced_rs import *
 from multi_swe_bench.harness.repos.rust.JelteF import *
+from multi_swe_bench.harness.repos.rust.keylime import *
 from multi_swe_bench.harness.repos.rust.napi_rs import *
 from multi_swe_bench.harness.repos.rust.nushell import *
 from multi_swe_bench.harness.repos.rust.ogham import *
