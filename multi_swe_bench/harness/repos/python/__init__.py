@@ -11,6 +11,7 @@ from multi_swe_bench.harness.repos.python.All_Hands_AI import *
 from multi_swe_bench.harness.repos.python.allenai import *
 from multi_swe_bench.harness.repos.python.alteryx import *
 from multi_swe_bench.harness.repos.python.amaranth_lang import *
+from multi_swe_bench.harness.repos.python.apache import *
 from multi_swe_bench.harness.repos.python.arrow_py import *
 from multi_swe_bench.harness.repos.python.asdf_format import *
 from multi_swe_bench.harness.repos.python.astropy import *
