@@ -12,3 +12,4 @@ from multi_swe_bench.harness.repos.golang.prometheus.prometheus_go1_23 import *
 from multi_swe_bench.harness.repos.golang.prometheus.prometheus_go1_24 import *
 from multi_swe_bench.harness.repos.golang.prometheus.prometheus_go1_25 import *
 from multi_swe_bench.harness.repos.golang.prometheus.statsd_exporter import *
+from multi_swe_bench.harness.repos.golang.prometheus.alertmanager import *

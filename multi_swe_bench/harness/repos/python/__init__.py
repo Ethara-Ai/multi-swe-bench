@@ -44,6 +44,7 @@ from multi_swe_bench.harness.repos.python.cloud_custodian import *
 from multi_swe_bench.harness.repos.python.cobbler import *
 from multi_swe_bench.harness.repos.python.codalab import *
 from multi_swe_bench.harness.repos.python.cogent3 import *
+from multi_swe_bench.harness.repos.python.cogeotiff import *
 from multi_swe_bench.harness.repos.python.commaai import *
 from multi_swe_bench.harness.repos.python.conan_io import *
 from multi_swe_bench.harness.repos.python.conda import *
