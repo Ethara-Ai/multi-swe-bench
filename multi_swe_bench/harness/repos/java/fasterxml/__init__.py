@@ -11,3 +11,4 @@ from multi_swe_bench.harness.repos.java.fasterxml.jackson_databind_3140_to_1708 
 from multi_swe_bench.harness.repos.java.fasterxml.jackson_databind_5620_to_4693 import *
 from multi_swe_bench.harness.repos.java.fasterxml.jackson_databind_5483_to_5175 import *
 from multi_swe_bench.harness.repos.java.fasterxml.jackson_databind_5714_to_1113 import *
+from multi_swe_bench.harness.repos.java.fasterxml.jackson_modules_java8 import *
