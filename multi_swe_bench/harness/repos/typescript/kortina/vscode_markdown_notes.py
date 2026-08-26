@@ -1,12 +1,17 @@
 import re
 from typing import Optional, Union
+
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
 class VscodeMarkdownNotesImageBase(Image):
-    """Base image for kortina/vscode-markdown-notes - clones the repo."""
+    """Repo-level base: Node 18 + git. kortina/vscode-markdown-notes is a VS Code extension
+    written in TypeScript and tested with jest. package.json pins no `engines.node`, so the
+    constraint comes from the toolchain: jest 26 / ts-jest 26 / typescript 3.8. Node 18 is the
+    newest LTS those still run under, and it is a maintained Debian base (D10 ships git and
+    ca-certificates)."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -24,10 +29,10 @@ class VscodeMarkdownNotesImageBase(Image):
         return "node:18"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -42,16 +47,23 @@ class VscodeMarkdownNotesImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
+
         return f"""FROM {image_name}
 
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
 
 {code}
+
+{copy_commands}
 
 {self.clear_env}
 
@@ -59,8 +71,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 
 
 class VscodeMarkdownNotesImageDefault(Image):
-    """Per-PR image for kortina/vscode-markdown-notes - checks out commit, installs deps, compiles."""
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -128,29 +138,49 @@ git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
 npm ci || npm install || true
+
+# Warm the compile + jest caches at build time, where the network is available.
+npx tsc -p ./ || true
+npx jest --runInBand --forceExit --ci || true
+
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
-cd /home/{pr.repo}
+set -eo pipefail
+export CI=true
 
-npx tsc -p ./ 2>/dev/null || true
-npx jest --verbose 2>&1 || true
+cd /home/{pr.repo}
+# jest.config.js sets testMatch to <rootDir>/out/test/jest/**/*.test.js, so jest runs the
+# COMPILED output and tsc must run first. `|| true` belongs on tsc and only on tsc:
+# tsconfig.json does not set noEmitOnError, so tsc still writes out/**/*.js when it reports
+# type errors. That is load-bearing at the test stage -- the gold tests call
+# NoteWorkspace.cleanPipedWikiLink, which the fix patch introduces, so tsc type-errors there
+# but still emits, and the tests execute and fail at runtime on an undefined method. That is
+# the FAIL the f2p transition needs. Aborting on the type error instead would collect zero
+# tests and silently downgrade the instance to n2p.
+npx tsc -p ./ || true
+# --runInBand: jest's worker pool deadlocks under emulation and on memory-capped Docker VMs,
+# and docker_util.run has no timeout, so a deadlock hangs the harness forever (R14).
+# No `|| true` on this line -- the exit code is irrelevant but a runner that fails to START
+# must not be masked into an empty log.
+npx jest --runInBand --forceExit --ci --verbose
+
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
-cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude package-lock.json /home/test.patch
+set -eo pipefail
+export CI=true
 
-npx tsc -p ./ 2>/dev/null || true
-npx jest --verbose 2>&1 || true
+cd /home/{pr.repo}
+git apply --whitespace=nowarn /home/test.patch
+npx tsc -p ./ || true
+npx jest --runInBand --forceExit --ci --verbose
 
 """.format(pr=self.pr),
             ),
@@ -158,12 +188,13 @@ npx jest --verbose 2>&1 || true
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
-cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude package-lock.json /home/test.patch /home/fix.patch
+set -eo pipefail
+export CI=true
 
-npx tsc -p ./ 2>/dev/null || true
-npx jest --verbose 2>&1 || true
+cd /home/{pr.repo}
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+npx tsc -p ./ || true
+npx jest --runInBand --forceExit --ci --verbose
 
 """.format(pr=self.pr),
             ),
@@ -195,8 +226,6 @@ npx jest --verbose 2>&1 || true
 
 @Instance.register("kortina", "vscode-markdown-notes")
 class VscodeMarkdownNotes(Instance):
-    """Instance handler for kortina/vscode-markdown-notes - runs Jest tests and parses output."""
-
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -212,111 +241,67 @@ class VscodeMarkdownNotes(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
+
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
+
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
+
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+        clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        current_suite = None
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        # Suite-level patterns (PASS/FAIL <file>)
-        re_pass_suite = re.compile(r"^PASS\s+(\S+)(\s+\(.+\))?$")
-        re_fail_suite = re.compile(r"^FAIL\s+(\S+)(\s+\(.+\))?$")
+        re_suite = re.compile(r"^(PASS|FAIL)\s+(\S+)")
+        re_pass = re.compile(r"^\s*[✓✔]\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?\s*$")
+        re_fail = re.compile(r"^\s*[✕×✗✘✖]\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?\s*$")
+        re_skip = re.compile(r"^\s*○\s+skipped\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?\s*$")
 
-        # Individual test patterns (✓/✕ <test name>)
-        re_pass_test = re.compile(
-            r"^\s*[✔✓]\s+(.*?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$"
-        )
-        re_fail_test = re.compile(
-            r"^\s*[×✕✗✘✖]\s+(.*?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$"
-        )
+        suite = ""
 
-        # Skipped test pattern (○ skipped <test name>)
-        re_skipped_test = re.compile(
-            r"^\s*○\s+(?:skipped\s+)?(.*?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$"
-        )
-
-        # Describe block pattern (non-test line with only text, no ✓/✕/○ prefix)
-        # Used to track current describe block for prefixing test names
-        re_describe = re.compile(r"^  (\S.+)$")
-
-        current_describe = None
-
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        for line in test_log.splitlines():
-            line = ansi_escape.sub("", line)
-            stripped = line.strip()
-            if not stripped:
+        for line in clean_log.split("\n"):
+            suite_match = re_suite.match(line.strip())
+            if suite_match:
+                # jest reports the COMPILED path (out/test/jest/extension.test.js) because
+                # jest.config.js matches <rootDir>/out. report.py's _test_name_matches_files
+                # compares against the patch's repo-relative source path, so re-root the
+                # compiled path back onto src/ and restore the .ts extension (R20). Done
+                # identically in all three stages, so names stay stable across them (R3).
+                path = suite_match.group(2)
+                if path.startswith("out/"):
+                    path = "src/" + path[len("out/") :]
+                if path.endswith(".js"):
+                    path = path[: -len(".js")] + ".ts"
+                suite = path
+                # The suite line is not a test -- never record it as one.
                 continue
 
-            pass_suite = re_pass_suite.match(stripped)
-            if pass_suite:
-                current_suite = pass_suite.group(1)
-                passed_tests.add(current_suite)
-                current_describe = None
-                continue
+            for regex, bucket in (
+                (re_pass, passed_tests),
+                (re_fail, failed_tests),
+                (re_skip, skipped_tests),
+            ):
+                match = regex.match(line)
+                if match:
+                    name = match.group(1).strip()
+                    bucket.add(f"{suite} > {name}" if suite else name)
+                    break
 
-            fail_suite = re_fail_suite.match(stripped)
-            if fail_suite:
-                current_suite = fail_suite.group(1)
-                failed_tests.add(current_suite)
-                current_describe = None
-                continue
-
-            # Check for describe block header (exactly 2-space indent, no test marker)
-            # Jest output format:
-            #   PASS/FAIL out/test/jest/extension.test.js
-            #     ✓ foo                          <- top-level test (4-space indent)
-            #     NoteWorkspace.slug             <- describe block (4-space indent)
-            #       ✓ slugifyMethod              <- test in describe (6-space indent)
-            if current_suite and re.match(r"^    \S", line) and not re.match(r"^    [✓✔✕×✗✘✖○]", line):
-                current_describe = stripped
-                continue
-
-            pass_test = re_pass_test.match(stripped)
-            if pass_test:
-                test_name = pass_test.group(1).strip()
-                if current_describe:
-                    test_name = f"{current_describe}:{test_name}"
-                if current_suite:
-                    test_name = f"{current_suite}:{test_name}"
-                if test_name not in failed_tests:
-                    passed_tests.add(test_name)
-                continue
-
-            fail_test = re_fail_test.match(stripped)
-            if fail_test:
-                test_name = fail_test.group(1).strip()
-                if current_describe:
-                    test_name = f"{current_describe}:{test_name}"
-                if current_suite:
-                    test_name = f"{current_suite}:{test_name}"
-                failed_tests.add(test_name)
-                if test_name in passed_tests:
-                    passed_tests.remove(test_name)
-                continue
-
-            skipped_test = re_skipped_test.match(stripped)
-            if skipped_test:
-                test_name = skipped_test.group(1).strip()
-                if current_describe:
-                    test_name = f"{current_describe}:{test_name}"
-                if current_suite:
-                    test_name = f"{current_suite}:{test_name}"
-                skipped_tests.add(test_name)
-                continue
+        # R2 -- the sets must be disjoint or TestResult raises. Failure wins.
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
