@@ -85,6 +85,7 @@ from multi_swe_bench.harness.repos.typescript.Ignitus import *
 from multi_swe_bench.harness.repos.typescript.immutable_js import *
 from multi_swe_bench.harness.repos.typescript.italia import *
 from multi_swe_bench.harness.repos.typescript.jestjs import *
+from multi_swe_bench.harness.repos.typescript.juice_shop import *
 from multi_swe_bench.harness.repos.typescript.JoshuaKGoldberg import *
 from multi_swe_bench.harness.repos.typescript.Joystream import *
 from multi_swe_bench.harness.repos.typescript.keyshade_xyz import *

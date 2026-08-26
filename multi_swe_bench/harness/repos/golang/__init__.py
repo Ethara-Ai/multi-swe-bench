@@ -193,3 +193,4 @@ from multi_swe_bench.harness.repos.golang.kubereboot import *
 from multi_swe_bench.harness.repos.golang.mozilla_services import *
 from multi_swe_bench.harness.repos.golang.jenkins_zh import *
 from multi_swe_bench.harness.repos.golang.mehdihadeli import *
+from multi_swe_bench.harness.repos.golang.opendatahub_io import *
