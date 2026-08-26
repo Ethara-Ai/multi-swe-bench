@@ -193,6 +193,8 @@ from multi_swe_bench.harness.repos.golang.kubereboot import *
 from multi_swe_bench.harness.repos.golang.mozilla_services import *
 from multi_swe_bench.harness.repos.golang.jenkins_zh import *
 from multi_swe_bench.harness.repos.golang.mehdihadeli import *
+import importlib as _importlib
+_importlib.import_module("multi_swe_bench.harness.repos.golang.0xrelogic")
 from multi_swe_bench.harness.repos.golang.opendatahub_io import *
 from multi_swe_bench.harness.repos.golang.aarondl import *
 from multi_swe_bench.harness.repos.golang.kubestone import *
