@@ -22,11 +22,22 @@ class WebDriverIOJestImageBase(Image):
     def dependency(self) -> Union[str, "Image"]:
         return "node:18"
 
+    # QC P1: the base tag MUST be per-PR, not a constant shared across the era.
+    #
+    # This previously returned "base-jest" for every PR in 5279-10978. That is not a
+    # naming preference -- the base image scrubs git history down to the ancestry of a
+    # single BASE_COMMIT, so a shared base bakes in whichever PR happened to build
+    # first. Any later PR reusing it runs `git checkout <its own sha>` against a history
+    # that no longer contains that object and dies in prepare.sh with
+    # `fatal: unable to read tree`.
+    #
+    # Cost of the fix, stated plainly: one ~2.5 GB base image per PR instead of one per
+    # era. That is the trade-off DOCKERFILE_FORMAT.md documents and accepts.
     def image_tag(self) -> str:
-        return "base-jest"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base-jest"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -130,17 +141,28 @@ npm install --legacy-peer-deps || npm install --force || true
 npm install rimraf --legacy-peer-deps --no-save || true
 npx lerna bootstrap --no-ci --force-local || true
 
+# QC P5: `rm -f package-lock.json` above deletes a TRACKED file, and npm rewrites
+# others, so the worktree is left dirty AFTER the clean-tree asserts have already
+# passed. node_modules/ is gitignored and survives, so restoring tracked files keeps
+# the installed dependencies while returning the tree to exactly BASE_COMMIT -- the
+# state every `git apply` in the three run scripts expects. Without this, a patch that
+# touches package-lock.json fails with "patch does not apply" and the whole stage is
+# lost. The assert below turns a dirty tree into a loud build failure instead.
+git checkout -- .
+bash /home/check_git_changes.sh
+
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 npm run build || true
-npx jest --no-coverage --verbose || true
+npx jest --no-coverage --verbose
 
 """.format(pr=self.pr),
             ),
@@ -148,12 +170,13 @@ npx jest --no-coverage --verbose || true
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn /home/test.patch
 npm run build || true
-npx jest --no-coverage --verbose || true
+npx jest --no-coverage --verbose
 
 """.format(pr=self.pr),
             ),
@@ -161,12 +184,13 @@ npx jest --no-coverage --verbose || true
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 npm run build || true
-npx jest --no-coverage --verbose || true
+npx jest --no-coverage --verbose
 
 """.format(pr=self.pr),
             ),
@@ -229,65 +253,93 @@ class WebDriverIOJest(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+        """Parse Jest verbose output into per-test results.
 
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        cleaned_log = ansi_escape.sub("", test_log)
+        Three defects fixed here after a real-log audit of PR 6000:
 
-        passed_res = [
-            re.compile(r"^PASS:?\s+(.+?)(?:\s+\(\d+(\.\d+)?s\))?$"),
-            re.compile(r"^\s*[✓✔]\s+(.+)$"),
-        ]
+        4B (was corrupting the dataset). Jest appends a duration to each test
+        line -- "should do X (2 ms)". The previous regex captured the whole
+        remainder of the line, so the SAME test appeared under a DIFFERENT name
+        in each stage whenever its timing shifted by a millisecond. Measured on
+        the real logs: run had 630 passing names, fix had 647, and only 240
+        matched. 390 tests silently fell out of the cross-stage comparison, and
+        p2p came back as 333 instead of ~630. The report still said valid=True,
+        which is precisely why this is dangerous. Timing is now stripped.
 
-        failed_res = [
-            re.compile(r"^FAIL:?\s+(.+?)(?:\s+\(\d+(\.\d+)?s\))?$"),
-            re.compile(r"^\s*[×✕✗]\s+(.+)$"),
-        ]
+        4A. The old patterns fed BOTH the file-level "PASS <path>" headers and
+        the per-test "v <name>" lines into one set -- 89 file paths mixed with
+        558 test names. Worse, a bare test name has no file context, so two
+        identically-named tests in different packages of this monorepo would
+        collide. Test ids are now qualified as "<file>::<test name>", and suite
+        headers are used only to establish that context, never recorded as
+        results themselves.
 
-        skipped_res = [
-            re.compile(r"^\s*[○⊘]\s+skipped\s+(.+)$"),
-            re.compile(r"^SKIP:?\s?(.+?)\s"),
-        ]
+        4C. The ANSI pattern only matched SGR sequences (ending in "m"). Any
+        other CSI escape survived into the captured name. Widened to the full
+        [a-zA-Z] terminator set.
+        """
+        # 4C: strip ALL CSI escapes, not just colour (SGR) ones.
+        cleaned_log = re.sub(r"\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        ignore_res = [
-            re.compile(r"^Test Suites:"),
-            re.compile(r"^Tests:"),
-            re.compile(r"^Snapshots:"),
-            re.compile(r"^Time:"),
-            re.compile(r"^Ran all"),
-        ]
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        for line in cleaned_log.splitlines():
-            line = line.strip()
+        # Jest suite header: "PASS packages/foo/tests/bar.test.js (1.2 s)".
+        re_suite = re.compile(r"^(PASS|FAIL)\s+(\S+\.[jt]sx?)")
+        # Per-test line. The glyph set covers Jest's unicode and ASCII fallbacks.
+        re_test = re.compile(r"^([✓✔×✕✗○⊘10x])\s+(.+)$")
+        # 4B: Jest's trailing duration -- "(2 ms)", "(1.5 s)". Must not reach the id.
+        re_timing = re.compile(r"\s*\(\d+(?:\.\d+)?\s*m?s\)\s*$")
+
+        PASS_GLYPHS = "✓✔"
+        FAIL_GLYPHS = "×✕✗"
+        SKIP_GLYPHS = "○⊘"
+
+        def record(status: str, test_id: str) -> None:
+            if status == "PASS":
+                if test_id in failed_tests:
+                    return
+                skipped_tests.discard(test_id)
+                passed_tests.add(test_id)
+            elif status == "FAIL":
+                passed_tests.discard(test_id)
+                skipped_tests.discard(test_id)
+                failed_tests.add(test_id)
+            elif status == "SKIP":
+                if test_id not in passed_tests and test_id not in failed_tests:
+                    skipped_tests.add(test_id)
+
+        current_suite = None
+        for raw_line in cleaned_log.splitlines():
+            line = raw_line.strip()
             if not line:
                 continue
 
-            skip = False
-            for ignore_re in ignore_res:
-                if ignore_re.match(line):
-                    skip = True
-                    break
-            if skip:
+            m = re_suite.match(line)
+            if m:
+                # Context only. A suite header is not a test result (4A).
+                current_suite = m.group(2)
                 continue
 
-            for passed_re in passed_res:
-                m = passed_re.match(line)
-                if m and m.group(1) not in failed_tests:
-                    passed_tests.add(m.group(1))
+            m = re_test.match(line)
+            if not m:
+                continue
 
-            for failed_re in failed_res:
-                m = failed_re.match(line)
-                if m:
-                    failed_tests.add(m.group(1))
-                    if m.group(1) in passed_tests:
-                        passed_tests.remove(m.group(1))
+            glyph, name = m.group(1), re_timing.sub("", m.group(2)).strip()
+            if name.startswith("skipped "):
+                name = name[len("skipped "):].strip()
+            if not name:
+                continue
 
-            for skipped_re in skipped_res:
-                m = skipped_re.match(line)
-                if m:
-                    skipped_tests.add(m.group(1))
+            test_id = f"{current_suite}::{name}" if current_suite else name
+
+            if glyph in PASS_GLYPHS:
+                record("PASS", test_id)
+            elif glyph in FAIL_GLYPHS:
+                record("FAIL", test_id)
+            elif glyph in SKIP_GLYPHS:
+                record("SKIP", test_id)
 
         return TestResult(
             passed_count=len(passed_tests),

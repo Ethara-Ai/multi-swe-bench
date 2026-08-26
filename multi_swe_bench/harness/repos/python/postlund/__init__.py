@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.python.postlund.pyatv_1327_to_926 import *
 from multi_swe_bench.harness.repos.python.postlund.pyatv_925_to_880 import *
 from multi_swe_bench.harness.repos.python.postlund.pyatv_880_to_862 import *
 from multi_swe_bench.harness.repos.python.postlund.pyatv_498_to_486 import *
