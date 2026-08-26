@@ -23,10 +23,17 @@ class ImageBase(Image):
         return "node:20"
 
     def image_tag(self) -> str:
-        return "base"
+        # Tagged `base-pr-<number>` rather than a shared `base`. DockerfileEnhancer
+        # bakes one BASE_COMMIT into this image AND scrubs every other ref
+        # (`test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"`),
+        # so a shared tag keeps whichever PR built it first and the next PR's
+        # `git checkout <its own sha>` in prepare.sh dies on a missing object.
+        # Also what the Dockerfile QC contract requires the PR layer to inherit.
+        # Costs one base image per PR instead of one per repo; deliberate.
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -90,6 +97,58 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "msb-reporter.js",
+                r"""'use strict';
+// Mocha reporter that emits one stable, file-qualified id per test.
+//
+// Mocha's spec reporter prints only suite/test titles, so ids built from it carry
+// no file path and collide across files. Mocha 6's own json reporter drops the
+// `file` field entirely (verified: its test objects expose only title, fullTitle,
+// duration, currentRetry, err). The Runnable DOES carry `.file`, so a custom
+// reporter is the only way to reach it in one run.
+//
+// Emitted shape matches the pytest-style node id used across this repo, e.g.
+//   test/priorityQueue.js::priorityQueue::pushAsync
+// Levels come from titlePath() joined with '::' rather than fullTitle(), which
+// space-joins them ambiguously.
+//
+// Results are buffered and flushed between markers at EVENT_RUN_END so that test
+// stdout (this suite prints 'foo', 'drain', ...) cannot interleave with them.
+const Mocha = require('mocha');
+const path = require('path');
+const {
+  EVENT_TEST_PASS,
+  EVENT_TEST_FAIL,
+  EVENT_TEST_PENDING,
+  EVENT_RUN_END,
+} = Mocha.Runner.constants;
+
+module.exports = function MsbReporter(runner) {
+  const root = process.cwd();
+  const lines = [];
+  const record = (test, status) => {
+    let id;
+    try {
+      id = test.titlePath().join('::');
+    } catch (e) {
+      id = test.fullTitle();
+    }
+    const file = test.file ? path.relative(root, test.file) : '';
+    lines.push(status + '\t' + (file ? file + '::' + id : id));
+  };
+  runner.on(EVENT_TEST_PASS, (t) => record(t, 'PASS'));
+  runner.on(EVENT_TEST_FAIL, (t) => record(t, 'FAIL'));
+  runner.on(EVENT_TEST_PENDING, (t) => record(t, 'SKIP'));
+  runner.once(EVENT_RUN_END, () => {
+    process.stdout.write('\n===== BEGIN MSB TEST RESULTS =====\n');
+    for (const line of lines) process.stdout.write('MSB_TEST\t' + line + '\n');
+    process.stdout.write('===== END MSB TEST RESULTS =====\n');
+  });
+};
+""",
+            ),
+            File(
+                ".",
                 "check_git_changes.sh",
                 """#!/bin/bash
 set -e
@@ -121,8 +180,23 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-npm ci || true
-npm install eslint --save-dev
+# Install deps WITHOUT touching the tracked manifests.
+#
+# `npm ci` cannot be used: at this base commit package.json and package-lock.json
+# are out of sync, so it aborts with EUSAGE and installs nothing. That is why the
+# original script leaned on `npm install eslint --save-dev` to populate
+# node_modules -- which worked, but rewrote package.json + package-lock.json AFTER
+# the clean-tree assertion, shipped a dirty worktree, and forced the run scripts to
+# paper over it with `git apply --exclude package.json`.
+#
+# `--no-save` keeps package.json untouched and `--no-package-lock` keeps the
+# lockfile untouched, so the full dependency tree installs and the worktree stays
+# byte-identical to the base commit. Verified: 777 packages, mocha present,
+# `git status --porcelain` empty, suite runs 679 passing.
+npm install --no-save --no-package-lock || true
+
+# The clean-tree assert must be the LAST thing that runs, or it proves nothing.
+bash /home/check_git_changes.sh
 """.format(pr=self.pr),
             ),
             File(
@@ -132,8 +206,18 @@ npm install eslint --save-dev
 set -e
 
 cd /home/{pr.repo}
-npm test -- --verbose  
-
+cp /home/msb-reporter.js /home/{pr.repo}/msb-reporter.js
+# mocha 6 refuses an absolute --reporter path ("Unknown \"reporter\""); it resolves
+# custom reporters via require() from cwd, so the file must sit in the repo and be
+# named relatively. It is untracked, so it does not disturb `git apply`.
+#
+# `npm run mocha-node-test` (mocha) is used instead of `npm test`, which is
+# `npm run lint && npm run mocha-node-test`. Under `set -e` an eslint failure would
+# abort before mocha ran and the stage would score as zero tests -- a lint nit must
+# never be able to mask the test outcome. `|| true` keeps a non-zero mocha exit
+# (expected at the test stage) from killing the script; the verdict is read from the
+# MSB_TEST lines, not the exit code.
+npm run mocha-node-test -- --reporter ./msb-reporter.js || true
 """.format(pr=self.pr),
             ),
             File(
@@ -143,9 +227,19 @@ npm test -- --verbose
 set -e
 
 cd /home/{pr.repo}
-git apply  --exclude package.json --whitespace=nowarn /home/test.patch
-npm test -- --verbose  
-
+git apply --whitespace=nowarn /home/test.patch
+cp /home/msb-reporter.js /home/{pr.repo}/msb-reporter.js
+# mocha 6 refuses an absolute --reporter path ("Unknown \"reporter\""); it resolves
+# custom reporters via require() from cwd, so the file must sit in the repo and be
+# named relatively. It is untracked, so it does not disturb `git apply`.
+#
+# `npm run mocha-node-test` (mocha) is used instead of `npm test`, which is
+# `npm run lint && npm run mocha-node-test`. Under `set -e` an eslint failure would
+# abort before mocha ran and the stage would score as zero tests -- a lint nit must
+# never be able to mask the test outcome. `|| true` keeps a non-zero mocha exit
+# (expected at the test stage) from killing the script; the verdict is read from the
+# MSB_TEST lines, not the exit code.
+npm run mocha-node-test -- --reporter ./msb-reporter.js || true
 """.format(pr=self.pr),
             ),
             File(
@@ -155,10 +249,19 @@ npm test -- --verbose
 set -e
 
 cd /home/{pr.repo}
-git apply  --exclude package.json --whitespace=nowarn /home/test.patch /home/fix.patch
-npm test -- --verbose 
-
-
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+cp /home/msb-reporter.js /home/{pr.repo}/msb-reporter.js
+# mocha 6 refuses an absolute --reporter path ("Unknown \"reporter\""); it resolves
+# custom reporters via require() from cwd, so the file must sit in the repo and be
+# named relatively. It is untracked, so it does not disturb `git apply`.
+#
+# `npm run mocha-node-test` (mocha) is used instead of `npm test`, which is
+# `npm run lint && npm run mocha-node-test`. Under `set -e` an eslint failure would
+# abort before mocha ran and the stage would score as zero tests -- a lint nit must
+# never be able to mask the test outcome. `|| true` keeps a non-zero mocha exit
+# (expected at the test stage) from killing the script; the verdict is read from the
+# MSB_TEST lines, not the exit code.
+npm run mocha-node-test -- --reporter ./msb-reporter.js || true
 """.format(pr=self.pr),
             ),
         ]
@@ -359,6 +462,37 @@ class Async(Instance):
         failed_tests = set()
         skipped_tests = set()
 
+        # Preferred path: the msb-reporter emits one `MSB_TEST\t<STATUS>\t<id>` line
+        # per test, where <id> is the pytest-style node id `file::suite::test`. It is
+        # exact (mocha hands us the verdict directly), immune to this suite's console
+        # output, and carries the file path that the spec reporter never prints.
+        #
+        # The block below is kept as a fallback so logs captured before the reporter
+        # existed -- and the <=1234 image, which still runs the plain spec reporter --
+        # continue to parse.
+        msb_re = re.compile(r"^MSB_TEST\t(PASS|FAIL|SKIP)\t(.+)$", re.MULTILINE)
+        msb_matches = msb_re.findall(test_log)
+        if msb_matches:
+            for status, name in msb_matches:
+                name = name.strip()
+                if status == "PASS":
+                    passed_tests.add(name)
+                elif status == "FAIL":
+                    failed_tests.add(name)
+                else:
+                    skipped_tests.add(name)
+            passed_tests -= failed_tests
+            skipped_tests -= failed_tests
+            skipped_tests -= passed_tests
+            return TestResult(
+                passed_count=len(passed_tests),
+                failed_count=len(failed_tests),
+                skipped_count=len(skipped_tests),
+                passed_tests=passed_tests,
+                failed_tests=failed_tests,
+                skipped_tests=skipped_tests,
+            )
+
         if self.pr.number <= 1142:
             # 小于等于1142的PR，加上以下逻辑
             pass_pattern1 = re.compile(r"^✔\s+(.+)$", re.MULTILINE)
@@ -371,20 +505,35 @@ class Async(Instance):
                 test_name = match.group(1).strip()
                 failed_tests.add(f"test-async.js:{test_name}")
 
-        # Split the log into lines and process each line
-        lines = test_log.splitlines()
+        # Mocha's spec reporter is parsed structurally: 2-space indent per nesting
+        # level, tests marked "✓" (pass), "N)" (fail) or "-" (pending).
+        #
+        # ANSI is stripped defensively. Mocha disables colour on a non-TTY, so the
+        # captured logs are currently clean, but a stage run under a TTY would
+        # otherwise silently stop matching every marker and report zero tests.
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+        lines = ansi_escape.sub("", test_log).splitlines()
 
         # Keep track of the nesting level structure
         current_path = []
         indentation_to_level = {}
 
+        # Everything after "N failing" is mocha's failure REPORT, not the run. It
+        # repeats each failure as a multi-line suite/test/error block, and parsing it
+        # as if it were live output invents failed entries from suite headers -- that
+        # is what turned this repo's 4 real failures into 6. Stop at the summary.
+        re_summary = re.compile(r"^\s*\d+\s+(passing|failing|pending)\b")
+
         for line in lines:
+            if re_summary.match(line):
+                break
+
             # Match test lines - including both group headers and test cases
             # Group 1: indentation spaces
-            # Group 2: optional status indicator (✔ or number+))
+            # Group 2: optional status indicator (✓, number+) or -)
             # Group 3: test name (without timing info)
             match = re.match(
-                r"^(\s*)(?:(✓|[0-9]+\))\s+)?(.*?)(?:\s+\([0-9]+ms\))?$", line
+                r"^(\s*)(?:(✓|[0-9]+\)|-)\s+)?(.*?)(?:\s+\([0-9]+m?s\))?$", line
             )
 
             if not match or not match.group(3).strip():
@@ -393,6 +542,16 @@ class Async(Instance):
             spaces, status, name = match.groups()
             name = name.strip()
             indent = len(spaces)
+
+            # A line with no status marker is only a suite header if it sits where
+            # mocha puts one: indented at least two spaces, on the 2-space grid. This
+            # repo's own tests print to stdout (test/consoleFunctions.js emits 'foo'
+            # and foo at column 0), and treating those as root suites prefixed every
+            # subsequent test with "foo:" -- corrupting names, colliding two of them
+            # in the result set, and making the f2p comparison depend on where console
+            # output happened to land.
+            if not status and (indent < 2 or indent % 2 != 0 or "\t" in spaces):
+                continue
 
             # Determine the level in the hierarchy based on indentation
             # First time we see this indentation, assign it a level
@@ -424,8 +583,15 @@ class Async(Instance):
                 full_path = ":".join(current_path)
                 if status == "✓":
                     passed_tests.add(full_path)
+                elif status == "-":
+                    skipped_tests.add(full_path)
                 elif status.endswith(")"):
                     failed_tests.add(full_path)
+
+        # The three sets MUST be disjoint or TestResult raises. Failure wins.
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
