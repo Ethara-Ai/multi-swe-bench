@@ -168,3 +168,4 @@ from multi_swe_bench.harness.repos.javascript.istanbuljs import *
 from multi_swe_bench.harness.repos.javascript.XhmikosR import *
 from multi_swe_bench.harness.repos.javascript.holladayian import *
 from multi_swe_bench.harness.repos.javascript.JKHeadley import *
+from multi_swe_bench.harness.repos.javascript.mindsers import *
