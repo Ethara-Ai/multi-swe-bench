@@ -47,17 +47,37 @@ class ImageBase(Image):
         return """# syntax=docker/dockerfile:1.6
 FROM python:3.9-bookworm
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/mealie-recipes/mealie.git"
 
-RUN apt-get update && apt-get install -y --no-install-recommends git build-essential patch libxml2-dev libxslt1-dev libsasl2-dev libldap2-dev libssl-dev
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC
+
+LABEL org.opencontainers.image.title="mealie-recipes/mealie" \\
+      org.opencontainers.image.description="mealie-recipes/mealie Docker image" \\
+      org.opencontainers.image.source="https://github.com/mealie-recipes/mealie" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git build-essential patch libxml2-dev libxslt1-dev libsasl2-dev libldap2-dev libssl-dev ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
 
 RUN printf 'setuptools<58\\nlxml<5\\nCython<3\\n' > /cons.txt
 RUN PIP_CONSTRAINT=/cons.txt pip install --upgrade "pip<24" "setuptools<58" wheel
 RUN pip install "poetry<1.6"
 
+RUN git clone "${REPO_URL}" /home/mealie
+
+WORKDIR /home/mealie
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
 WORKDIR /home/
-RUN git clone https://github.com/mealie-recipes/mealie.git /home/mealie
+
+CMD ["/bin/bash"]
 """
 
 
