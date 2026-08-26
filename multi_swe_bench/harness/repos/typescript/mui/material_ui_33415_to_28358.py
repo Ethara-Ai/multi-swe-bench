@@ -166,11 +166,26 @@ yarn run test:unit --reporter json  --exit
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set +e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.pdf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.eot' --exclude='yarn.lock' --exclude='package-lock.json' --exclude='pnpm-lock.yaml' /home/test.patch
-yarn run test:unit --reporter json  --exit
+
+# Test-stage collection-abort fix: the test patch adds test files whose SOURCE
+# only lands with the fix patch, so mocha dies at load time (MODULE_NOT_FOUND)
+# and the whole suite reports ZERO tests -- leaving every p2p unverified.
+# Run the pre-existing suite with those new files excluded, then run each new
+# file on its own so its (expected) failure is still recorded. parse_log uses
+# JSONDecoder.raw_decode in a loop, so multiple JSON blobs parse correctly.
+# git apply leaves new files UNTRACKED, so `git diff HEAD` cannot see them --
+# use the porcelain untracked ('?? ') list instead.
+NEW_TESTS=$(git status --porcelain -uall | awk '/^\?\? /{print $2}' | grep -E '\.test\.(js|tsx)$' | tr '\n' ' ')
+EXCLUDES=""
+for f in $NEW_TESTS; do EXCLUDES="$EXCLUDES --exclude $f"; done
+
+NODE_ENV=test npx mocha 'packages/**/*.test.js' 'docs/**/*.test.js' 'scripts/**/*.test.js' --exclude '**/node_modules/**' $EXCLUDES --reporter json --exit || true
+for f in $NEW_TESTS; do NODE_ENV=test npx mocha "$f" --reporter json --exit || true; done
+exit 0
 
 """.format(pr=self.pr),
             ),
