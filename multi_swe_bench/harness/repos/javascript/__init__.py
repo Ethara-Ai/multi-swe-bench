@@ -172,3 +172,4 @@ from multi_swe_bench.harness.repos.javascript.JKHeadley import *
 from multi_swe_bench.harness.repos.javascript.mindsers import *
 from multi_swe_bench.harness.repos.javascript.dwyl import *
 from multi_swe_bench.harness.repos.javascript.WordPress import *
+from multi_swe_bench.harness.repos.javascript.vaadin import *
