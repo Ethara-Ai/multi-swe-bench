@@ -17,7 +17,8 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #   * registers "scrapy/scrapy" and dispatches by an explicit lead-PR -> era map
 #     (built by assigning each PR to the NARROWEST era range containing it),
 #   * registers every dash-joined bundle number_interval for delivery routing,
-#   * uses one shared base image per era instead of a full clone+install per PR,
+#   * keeps the per-era toolchain but tags the base image per PR (the base now
+#     checks out ${BASE_COMMIT} and scrubs history, so it cannot be shared),
 #   * follows the PIPELINE.md reference format (syntax opt-out so the enhancer
 #     injects no proxy/CA scaffolding, ARG TARGETARCH/REPO_URL, TZ, ethara LABEL,
 #     canonical hardening pinned to the literal base.sha, CMD),
@@ -35,6 +36,20 @@ from multi_swe_bench.harness.pull_request import PullRequest
 _ERA_OF_PR = {
     2215: "scrapy_2655_to_2215",
     2510: "scrapy_2655_to_2215",
+    # pr-2400 is NOT a 2655_to_2215 record despite its lead number falling in
+    # that range. It was OPENED in 2016 but not merged until 2020-05-27, and
+    # base.sha 6f3e3411 is the 2020-05-20 commit (merge of PR #4587) carrying
+    # scrapy/VERSION 2.1.0 -- a codebase four years newer than its era-mates.
+    # Concretely, that era's pip step guards on `requirements-py3.txt`, which
+    # does not exist at this commit (the file moved to tests/requirements-py3.txt
+    # long before), so scrapy's own dependencies would never install. The base
+    # commit sits inside the 4406..4686 window by date, so it takes that era's
+    # toolchain: python:3.8-slim (setup.py declares python_requires='>=3.5' and
+    # classifies through 3.8), Twisted 20.3.0 (the contemporary March-2020
+    # release), and pytest-twisted, which supplies what this commit's
+    # `pytest.ini` asks for with `twisted = 1`.
+    # Same wrong-era-by-lead-number issue as pr-3426 and pr-6769 below.
+    2400: "scrapy_4686_to_4406",
     2639: "scrapy_2655_to_2215",
     2655: "scrapy_2655_to_2215",
     2918: "scrapy_5328_to_2918",
@@ -70,8 +85,17 @@ _ERA_OF_PR = {
     7212: "scrapy_7395_to_6912",
 }
 
+# NOTE: deliberately NO `python3-dev`. Every era here runs an official
+# `python:<X.Y>-slim` image, so the interpreter pip builds against is
+# /usr/local/bin/pythonX.Y with its headers already shipped at
+# /usr/local/include/pythonX.Y. Debian's python3-dev supplies headers for the
+# DISTRO python (3.11 on bookworm) instead, which nothing here ever uses, and it
+# drags in python3.11 + libpython3.11-stdlib (~53 MB) plus a second interpreter
+# on PATH as /usr/bin/python3 - a trap for any script that calls `python3`
+# rather than `python`. The C-extension builds (lxml, cryptography, cffi) need
+# build-essential and the -dev libs below, all of which are listed explicitly.
 _APT_FULL = (
-    "build-essential python3-dev libssl-dev libffi-dev "
+    "build-essential libssl-dev libffi-dev "
     "libxml2-dev libxslt1-dev zlib1g-dev"
 )
 _APT_LIBS = "build-essential libssl-dev libxml2-dev libxslt1-dev zlib1g-dev"
@@ -503,10 +527,21 @@ class ImageBase(Image):
         return _ERA_SPEC[self.era]["base_os"]
 
     def image_tag(self) -> str:
-        return f"base-{self.era}"
+        # Per-PR, NOT the era: the enhancer pins this layer to ${BASE_COMMIT}
+        # with `git checkout` and then runs the history scrub, which deletes
+        # every ref and prunes everything not reachable from that one commit.
+        # Image dedup is keyed on image_full_name(), so a shared `base-<era>`
+        # tag would build that once and hand it to every other PR in the era --
+        # whose own base.sha was pruned out of the object store, making
+        # prepare.sh's `git checkout <sha>` fail with "reference is not a tree".
+        # The era still selects the toolchain via _ERA_SPEC; only the tag is
+        # per-PR. Cost is small: the apt layer is byte-identical across PRs in
+        # an era so buildx reuses it, and the pip install lives in prepare.sh
+        # (the PR layer), which was always per-PR anyway.
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return f"base-{self.era}"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -517,29 +552,34 @@ class ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        # Written with the literal URL, NOT "${REPO_URL}":
+        # DockerfileEnhancer._standardize_repo_fetch matches a hardcoded clone
+        # and rewrites it into clone + WORKDIR + `git reset --hard` +
+        # `git checkout ${BASE_COMMIT}` + the integrity-assert block + CMD. Its
+        # pattern carries a negative lookahead on "${REPO_URL}", so a clone
+        # pre-written that way is skipped and the checkout/hardening never
+        # appear in the base at all.
         if self.config.need_clone:
-            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""# syntax=docker/dockerfile:1.6
-FROM {image_name}
-
-ARG TARGETARCH
-ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
-
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC \\
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+        # No `# syntax=` directive, proxy ARGs, ENV block, OCI label, cert
+        # symlinks or history-scrub here: DockerfileEnhancer.enhance() injects
+        # all of them, and it returns the file UNTOUCHED if a syntax directive
+        # is already present. Hand-rolling the header is what previously cost
+        # this base `ARG BASE_COMMIT`, the proxy/CA scaffolding and the
+        # integrity-assert block, and pushed the history scrub down into the PR
+        # layer. The clone stays LAST because the enhancer expands exactly that
+        # line into clone + WORKDIR + reset + checkout + hardening + CMD.
+        #
+        # The apt step has to stay: `python:*-slim` ships neither git nor the
+        # build toolchain, and lxml/cryptography need the -dev headers. That is
+        # the one instruction the reference base Dockerfile omits, because its
+        # node base image already provides git.
+        return f"""FROM {image_name}
 
 {self.global_env}
-
-LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
-      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
-      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
-      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 WORKDIR /home/
 
@@ -547,17 +587,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     git ca-certificates {spec['apt']} \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
-
-WORKDIR /home/{self.pr.repo}
-RUN git remote remove origin 2>/dev/null || true; \\
-    git config --local fetch.recurseSubmodules false; \\
-    git config --local remote.pushDefault ""
-WORKDIR /home/
-
 {self.clear_env}
 
-CMD ["/bin/bash"]
+{code}
 """
 
 
@@ -626,10 +658,12 @@ class ImageDefault(Image):
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        # Canonical hardening from image.py, pinned to this PR's literal base.sha
-        # (the PR image has an Image-typed dependency, so the enhancer returns raw).
-        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
-
+        # No hardening block here any more. It used to be re-implemented in this
+        # layer because the hand-rolled base opted out of the enhancer and so
+        # never ran the checkout/scrub itself. The base now does it, pinned to
+        # ${BASE_COMMIT}, which leaves this layer as the reference PR Dockerfile
+        # shape: FROM the base, COPY the patches and scripts, run prepare.sh
+        # once. CMD is inherited from the base.
         return f"""FROM {name}:{tag}
 
 {self.global_env}
@@ -638,13 +672,7 @@ class ImageDefault(Image):
 
 RUN bash /home/prepare.sh
 
-WORKDIR /home/{self.pr.repo}
-
-{hardening}
-
 {self.clear_env}
-
-CMD ["/bin/bash"]
 """
 
 
