@@ -22,13 +22,13 @@ class webpackCliImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:16"
+        return "node:14"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -48,18 +48,6 @@ class webpackCliImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-
-RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
-    sed -i '/buster-updates/d' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y --no-install-recommends build-essential python3 && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \\
-    export NVM_DIR="$HOME/.nvm" && \\
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
 {code}
 
@@ -95,74 +83,42 @@ class webpackCliImageDefault(Image):
         return self.pr.number <= 1196
 
     def files(self) -> list[File]:
+        # The graded test command. It MUST be byte-identical across run.sh,
+        # test-run.sh and fix-run.sh — only the patch application differs — so
+        # the fail-to-pass signal can only come from the fix patch (P7).
+        #
+        # FORCE_COLOR=1 is load-bearing for test/help/help-single-arg.test.js.
+        # That test snapshots the CLI help output through `jest-serializer-ansi`,
+        # whose `test()` predicate is `hasAnsi(value)` — the serializer only
+        # engages when the captured stdout actually carries ANSI codes. The
+        # committed snapshot was authored on a colorized terminal, so it stores
+        # the serializer's quote-wrapped form. Under a piped (non-TTY) stdout
+        # chalk disables color, the serializer never fires, and jest compares the
+        # raw string against the wrapped snapshot — the two differ only in that
+        # wrapper, which is why jest reports the contradictory
+        # "- Snapshot - 0 / + Received + 0".
+        #
+        # Level 1 specifically: it is strong enough for chalk to emit ANSI (so the
+        # serializer engages), but still lets the explicit `--color=false` CLI arg
+        # win in the sibling "respects --color flag as false" test in the same
+        # file. FORCE_COLOR=3 overrides that flag and breaks that test instead.
+        test_command = (
+            "FORCE_COLOR=1 npx jest --coverage=false --reporters=default || true"
+        )
+
         if self._is_era1():
-            prepare_script = """#!/bin/bash
-set -e
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-nvm install 14 || true
-nvm use 14 || true
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-npm install
+            # ERA 1: PR #1196 only — npm + package-lock.json + lerna bootstrap.
+            install_commands = """npm install
 npx lerna@3 bootstrap
-npx tsc
-""".format(pr=self.pr)
-
-            run_script = """#!/bin/bash
-set -e
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-nvm install 14 || true
-nvm use 14 || true
-
-cd /home/{pr.repo}
-npx jest --reporters=default || true
-""".format(pr=self.pr)
-
-            test_run_script = """#!/bin/bash
-set -e
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-nvm install 14 || true
-nvm use 14 || true
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-npm install
-npx lerna@3 bootstrap
-npx tsc
-npx jest --reporters=default || true
-""".format(pr=self.pr)
-
-            fix_run_script = """#!/bin/bash
-set -e
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-nvm install 14 || true
-nvm use 14 || true
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-npm install
-npx lerna@3 bootstrap
-npx tsc
-npx jest --reporters=default || true
-""".format(pr=self.pr)
-
+npx tsc"""
         else:
-            # ERA 2: PRs #1276–#2381 — yarn + yarn.lock + lerna bootstrap
-            prepare_script = """#!/bin/bash
+            # ERA 2: PRs #1276–#2381 — yarn + yarn.lock + lerna bootstrap.
+            install_commands = """yarn install --ignore-engines --network-timeout 600000 || yarn install --ignore-engines --network-timeout 600000
+npx lerna@3 bootstrap
+yarn build"""
+
+        prepare_script = """#!/bin/bash
 set -e
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-nvm install 14 || true
-nvm use 14 || true
 
 cd /home/{pr.repo}
 git reset --hard
@@ -170,51 +126,41 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-yarn install --ignore-engines --network-timeout 600000 || yarn install --ignore-engines --network-timeout 600000
-npx lerna@3 bootstrap
-yarn build
-""".format(pr=self.pr)
+{install_commands}
+""".format(pr=self.pr, install_commands=install_commands)
 
-            run_script = """#!/bin/bash
+        run_script = """#!/bin/bash
 set -e
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-nvm install 14 || true
-nvm use 14 || true
 
 cd /home/{pr.repo}
-npx jest --reporters=default || true
-""".format(pr=self.pr)
+{test_command}
+""".format(pr=self.pr, test_command=test_command)
 
-            test_run_script = """#!/bin/bash
+        test_run_script = """#!/bin/bash
 set -e
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-nvm install 14 || true
-nvm use 14 || true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-yarn install --ignore-engines --network-timeout 600000 || yarn install --ignore-engines --network-timeout 600000
-npx lerna@3 bootstrap
-yarn build
-npx jest --reporters=default || true
-""".format(pr=self.pr)
+{install_commands}
+{test_command}
+""".format(
+            pr=self.pr,
+            install_commands=install_commands,
+            test_command=test_command,
+        )
 
-            fix_run_script = """#!/bin/bash
+        fix_run_script = """#!/bin/bash
 set -e
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-nvm install 14 || true
-nvm use 14 || true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-yarn install --ignore-engines --network-timeout 600000 || yarn install --ignore-engines --network-timeout 600000
-npx lerna@3 bootstrap
-yarn build
-npx jest --reporters=default || true
-""".format(pr=self.pr)
+{install_commands}
+{test_command}
+""".format(
+            pr=self.pr,
+            install_commands=install_commands,
+            test_command=test_command,
+        )
 
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
