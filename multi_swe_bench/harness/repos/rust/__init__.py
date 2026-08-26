@@ -34,6 +34,7 @@ from multi_swe_bench.harness.repos.rust.keylime import *
 from multi_swe_bench.harness.repos.rust.napi_rs import *
 from multi_swe_bench.harness.repos.rust.nushell import *
 from multi_swe_bench.harness.repos.rust.ogham import *
+from multi_swe_bench.harness.repos.rust.osohq import *
 from multi_swe_bench.harness.repos.rust.paupino import *
 from multi_swe_bench.harness.repos.rust.pola_rs import *
 from multi_swe_bench.harness.repos.rust.PyO3 import *
