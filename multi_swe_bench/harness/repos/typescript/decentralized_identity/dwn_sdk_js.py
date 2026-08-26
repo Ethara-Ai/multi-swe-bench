@@ -1,18 +1,71 @@
 """decentralized-identity/dwn-sdk-js harness config — Mocha + Chai, npm, TypeScript compiled to ESM."""
 
 import re
-from typing import Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# Single source of truth for the test invocation so run.sh / test-run.sh /
+# fix-run.sh can never drift apart (a drift would make the f2p comparison
+# meaningless because the three stages would execute different test sets).
+#
+# Mirrors the repo's own `test:node:ci` script:
+#     npm run compile-validators && tsc && c8 mocha "dist/esm/tests/**/*.spec.js"
+# with two additions:
+#   * `--reporter spec`  -> pins the reporter parse_log() is written against,
+#                           independent of any .mocharc / env reporter override.
+#   * `--timeout 60000`  -> mocha's 2s default is not survivable under Docker
+#                           (and far less under arm64 emulation) for a suite
+#                           that does real key generation and LevelDB I/O.
+#                           A too-short timeout produces nondeterministic
+#                           failures that corrupt cross-stage status diffs.
+TEST_CMD = 'npx c8 mocha --reporter spec --timeout 60000 "dist/esm/tests/**/*.spec.js" 2>&1'
+
+# Build steps shared by all three run scripts.
+#
+# `npx tsc` is guarded with `|| true` because the test-only stage compiles the
+# new tests against *unfixed* sources: with tsconfig `strict: true` the added
+# `dataSize` filter is a type error until fix.patch lands. tsc still emits JS
+# (tsconfig.json does not set `noEmitOnError`), so the suite is runnable — but
+# an unguarded non-zero exit under `set -e` would kill the script before mocha
+# ever starts, leaving an empty log and a 0/0/0 TestResult.
+#
+# The guard is deliberately limited to the compile step. `compile-validators`
+# and the mocha command itself stay unguarded so a genuinely broken environment
+# fails loudly instead of silently producing an empty report.
+BUILD_STEPS = """\
+npm run compile-validators
+npx tsc || true"""
+
+RUN_SCRIPT_TEMPLATE = """\
+#!/bin/bash
+set -eo pipefail
+export CI=true
+export NODE_OPTIONS="--max-old-space-size=4096"
+
+cd /home/{repo}
+{patch_step}{build_steps}
+
+{test_cmd}
+"""
+
+
+def _run_script(repo: str, patch_step: str = "") -> str:
+    """Render one of the three run scripts with an identical test command."""
+    return RUN_SCRIPT_TEMPLATE.format(
+        repo=repo,
+        patch_step=f"{patch_step}\n" if patch_step else "",
+        build_steps=BUILD_STEPS,
+        test_cmd=TEST_CMD,
+    )
+
 
 class DwnSdkJsImageBase(Image):
     """Base Docker image: node:18-bookworm with the repo cloned.
 
-    dwn-sdk-js requires Node >= 18 and uses native crypto / level DB
-    which need build-essential for native addons.
+    dwn-sdk-js declares `engines.node: ">= 18"`; build-essential/python3 are
+    required by the native addons pulled in through level / abstract-level.
     """
 
     def __init__(self, pr: PullRequest, config: Config):
@@ -27,14 +80,14 @@ class DwnSdkJsImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
+    def dependency(self) -> str | Image:
         return "node:18-bookworm"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -58,12 +111,8 @@ class DwnSdkJsImageBase(Image):
 
 WORKDIR /home/
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y \\
-    git \\
-    curl \\
-    build-essential \\
-    python3 \\
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates build-essential python3 \\
     && rm -rf /var/lib/apt/lists/*
 
 {code}
@@ -76,12 +125,12 @@ RUN apt-get update && apt-get install -y \\
 class DwnSdkJsImageDefault(Image):
     """PR-specific Docker layer: patches, prepare, and run scripts.
 
-    The project compiles TypeScript to dist/esm/ before running mocha tests
-    against the compiled JS.  The test pipeline is:
+    The project compiles TypeScript to dist/esm/ before running mocha against
+    the compiled JS.  The pipeline in every stage is:
 
         npm run compile-validators  (generate JSON-schema validators)
         tsc                         (compile TS -> dist/esm/)
-        c8 mocha "dist/esm/tests/**/*.spec.js"  (run tests with coverage)
+        c8 mocha "dist/esm/tests/**/*.spec.js"
     """
 
     def __init__(self, pr: PullRequest, config: Config):
@@ -141,84 +190,49 @@ exit 0
             File(
                 ".",
                 "prepare.sh",
-                """\
+                f"""\
 #!/bin/bash
 set -e
 
-cd /home/{repo}
+cd /home/{self.pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {base_sha}
+git checkout {self.pr.base.sha}
 bash /home/check_git_changes.sh
 
-# Install dependencies
-npm ci || npm install
+# Install dependencies. `|| true` is required: native addons (level /
+# abstract-level) can fail to build on arm64 and that is not fatal for the
+# JS-only test path.
+npm ci || npm install || true
 
-# Build only what tests need (compile validators + TypeScript compilation).
-# Skip the full "npm run build" which also runs esbuild for CJS/browser bundles —
-# esbuild's native Go binary crashes under QEMU cross-arch emulation.
+# Build only what tests need (validators + TypeScript compilation).
+# Deliberately skip the full "npm run build", which also runs esbuild for the
+# CJS/browser bundles - esbuild's native Go binary crashes under QEMU
+# cross-arch emulation.
 npm run compile-validators
 npx tsc
-""".format(
-                    repo=self.pr.repo,
-                    base_sha=self.pr.base.sha,
-                ),
+""",
             ),
             File(
                 ".",
                 "run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-export CI=true
-export NODE_OPTIONS="--max-old-space-size=4096"
-
-cd /home/{repo}
-
-# Run mocha tests on the compiled output (uses test:node:ci which skips coverage badge check)
-npx c8 mocha "dist/esm/tests/**/*.spec.js" 2>&1
-""".format(repo=self.pr.repo),
+                _run_script(self.pr.repo),
             ),
             File(
                 ".",
                 "test-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-export CI=true
-export NODE_OPTIONS="--max-old-space-size=4096"
-
-cd /home/{repo}
-git apply --whitespace=nowarn /home/test.patch
-
-# Rebuild after applying test patch (tests are compiled TS -> JS)
-npm run compile-validators
-npx tsc
-
-npx c8 mocha "dist/esm/tests/**/*.spec.js" 2>&1
-""".format(repo=self.pr.repo),
+                _run_script(
+                    self.pr.repo,
+                    "git apply --whitespace=nowarn /home/test.patch",
+                ),
             ),
             File(
                 ".",
                 "fix-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-export CI=true
-export NODE_OPTIONS="--max-old-space-size=4096"
-
-cd /home/{repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
-# Reinstall dependencies in case patches changed package.json/package-lock.json
-npm ci || npm install
-
-# Rebuild after applying both patches (source + test changes need recompilation)
-npm run compile-validators
-npx tsc
-
-npx c8 mocha "dist/esm/tests/**/*.spec.js" 2>&1
-""".format(repo=self.pr.repo),
+                _run_script(
+                    self.pr.repo,
+                    "git apply --whitespace=nowarn /home/test.patch /home/fix.patch",
+                ),
             ),
         ]
 
@@ -244,6 +258,29 @@ npx c8 mocha "dist/esm/tests/**/*.spec.js" 2>&1
 {self.clear_env}
 
 """
+
+
+# --- Mocha spec-reporter parsing ------------------------------------------
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+# Trailing duration mocha appends to slow tests, e.g. "... (234ms)" / "(2s)".
+# Must be stripped: the value differs between stages, and a test whose name
+# carries its own runtime is a *different* name in every stage.
+_DURATION_RE = re.compile(r"\s*\(\d+(?:\.\d+)?\s*(?:ms|s|m)\)\s*$")
+
+# Applied to the de-indented line; indentation is tracked separately.
+_PASS_RE = re.compile(r"^[\u2713\u2714\u221a]\s+(.*\S)\s*$")
+_FAIL_RE = re.compile(r"^\d+\)\s+(.*\S)\s*$")
+_PENDING_RE = re.compile(r"^-\s+(.*\S)\s*$")
+_SUMMARY_RE = re.compile(r"^\d+\s+(?:passing|failing|pending)\b")
+
+# Lines that must never be mistaken for a describe() header.
+_NOISE_RE = re.compile(
+    r"^(?:at\s|npm\s|>\s|\+\s|\||-{3,}|={3,}|Error\b|\w*Error:|\d+%)"
+)
+
+_MAX_SUITE_DEPTH = 12
 
 
 @Instance.register("decentralized-identity", "dwn-sdk-js")
@@ -278,109 +315,110 @@ class DECENTRALIZED_IDENTITY_DWN_SDK_JS(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        """Parse Mocha spec/dot reporter output into pass/fail/skip sets.
+        """Parse Mocha spec-reporter output into suite-qualified test sets.
 
-        Mocha spec reporter output looks like:
+        The spec reporter indents two spaces per nesting level and prints a
+        test two levels deeper than its describe() header::
 
-            ProtocolsConfigure
-              action rules
-                ✓ rejects definitions with invalid of (234ms)
-                ✗ should fail on bad input
-                  AssertionError: expected ...
-                - should be skipped (pending)
+            RecordsQueryHandler.handle()
+              filters
+                ✓ should be able to query by dataSize (234ms)
+                1) should reject an invalid range
+                - pending case
 
             7 passing (4s)
             1 failing
-            1 pending
 
-        In non-TTY / Docker environments the checkmark may appear as
-        different unicode glyphs.  The indented structure groups tests
-        under describe() blocks.
+            1) RecordsQueryHandler.handle()
+                 should reject an invalid range:
+               AssertionError: ...
+
+        Two properties are essential and both come from the indentation:
+
+        * **Uniqueness** — the bare it() text is not unique in this repo
+          (the same titles run under several suites), so every name is
+          qualified with its full describe() path: ``a > b > test``.
+        * **Cross-stage stability** — failures are taken from the *inline*
+          ``N) title`` lines emitted during the run, where the suite stack is
+          known, and NOT from the epilogue failure list, whose header line
+          carries only the top-level suite title. Using the epilogue would
+          make the same test appear under one name when it fails and another
+          when it passes, which is exactly the NONE→FAIL anomaly that
+          invalidates a Report.
+
+        Everything after the ``N passing`` / ``N failing`` summary is ignored
+        so the epilogue and the c8 coverage table cannot inject fake names.
         """
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Strip ANSI escape codes
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-        clean_log = ansi_escape.sub("", test_log)
+        clean_log = _ANSI_RE.sub("", test_log)
 
-        # Track describe() nesting for fully-qualified test names.
-        # Mocha indents 2 spaces per nesting level.  Describe headers are
-        # lines that are indented but don't start with a test marker.
-        context_stack: list[str] = []
+        # (indent, title) for the currently open describe() blocks.
+        suite_stack: list[tuple[int, str]] = []
+        in_epilogue = False
+        # The validation specs repeat one it() title at root level, where no
+        # describe() path can separate the copies; merged into a set, a fix
+        # flipping only the second copy would show no transition at all.
+        # The occurrence index is stage-stable: mocha walks files in glob order
+        # and tests in definition order.
+        occurrences: dict[str, int] = {}
 
-        # Mocha test result markers (spec reporter)
-        # Passed: ✓ or ✔ followed by test name, optional (Nms) duration
-        re_pass = re.compile(
-            r"^(\s+)[✓✔]\s+(.+?)(?:\s+\(\d+m?s\))?\s*$"
-        )
-        # Failed: N) test name  (mocha lists failures with a number prefix)
-        # But in spec reporter, failed tests show as the test name without a
-        # checkmark, followed by indented error output.  The reliable pattern
-        # is the numbered failure list at the bottom:
-        #   1) Suite > test name
-        # We also catch inline failures shown during spec output.
-        re_fail_numbered = re.compile(
-            r"^\s+(\d+)\)\s+(.+?)\s*$"
-        )
-        # Skipped/pending: - test name (Mocha uses a dash for pending tests)
-        re_skip = re.compile(
-            r"^(\s+)-\s+(.+?)(?:\s+\(\d+m?s\))?\s*$"
-        )
+        def qualify(indent: int, title: str) -> str:
+            while suite_stack and suite_stack[-1][0] >= indent:
+                suite_stack.pop()
+            name = " > ".join([t for _, t in suite_stack] + [title])
+            seen = occurrences.get(name, 0) + 1
+            occurrences[name] = seen
+            return name if seen == 1 else f"{name} #{seen}"
 
-        # Summary line patterns (for validation, not primary parsing)
-        re_summary_passing = re.compile(r"^\s*(\d+)\s+passing\b")
-        re_summary_failing = re.compile(r"^\s*(\d+)\s+failing\b")
-        re_summary_pending = re.compile(r"^\s*(\d+)\s+pending\b")
-
-        # Track whether we're in the numbered failure list section
-        in_failure_list = False
-        failure_list_tests: set[str] = set()
-
-        for line in clean_log.splitlines():
-            # Detect start of Mocha's numbered failure list
-            # (appears after "N failing" summary or as numbered items)
-            m = re_summary_failing.match(line)
-            if m:
-                in_failure_list = True
+        for raw_line in clean_log.splitlines():
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if not stripped:
                 continue
 
-            # Passed test
-            m = re_pass.match(line)
-            if m:
-                indent = m.group(1)
-                test_name = m.group(2).strip()
-                passed_tests.add(test_name)
-                in_failure_list = False
+            # The summary marks the end of live test output. Anything after it
+            # (failure details, coverage table) is not a test result line.
+            if _SUMMARY_RE.match(stripped):
+                in_epilogue = True
+                continue
+            if in_epilogue:
                 continue
 
-            # Skipped/pending test
-            m = re_skip.match(line)
+            indent = len(line) - len(line.lstrip())
+
+            m = _PASS_RE.match(stripped)
             if m:
-                test_name = m.group(2).strip()
-                skipped_tests.add(test_name)
-                in_failure_list = False
+                passed_tests.add(qualify(indent, _DURATION_RE.sub("", m.group(1))))
                 continue
 
-            # Numbered failure (from the failure detail list at bottom)
-            m = re_fail_numbered.match(line)
+            m = _FAIL_RE.match(stripped)
             if m:
-                test_name = m.group(2).strip()
-                # Strip leading describe context if present (e.g., "Suite > test")
-                # but keep full name for uniqueness
-                failure_list_tests.add(test_name)
+                failed_tests.add(qualify(indent, _DURATION_RE.sub("", m.group(1))))
                 continue
 
-        # Merge failure list into failed_tests.  The numbered failure list
-        # contains the most reliable failure data.
-        failed_tests.update(failure_list_tests)
+            m = _PENDING_RE.match(stripped)
+            if m:
+                skipped_tests.add(qualify(indent, _DURATION_RE.sub("", m.group(1))))
+                continue
 
-        # Also check: any test that appears in failure list should NOT be
-        # in passed (mocha sometimes shows the test line before the error)
+            # Anything else that is indented like a spec-reporter suite header
+            # opens a new describe() scope. Top-level describes start at column
+            # 2, so column-0 output (stray console logs, npm chatter) can never
+            # clobber the stack.
+            if indent >= 2 and indent % 2 == 0 and not _NOISE_RE.match(stripped):
+                title = _DURATION_RE.sub("", stripped)
+                while suite_stack and suite_stack[-1][0] >= indent:
+                    suite_stack.pop()
+                if len(suite_stack) < _MAX_SUITE_DEPTH:
+                    suite_stack.append((indent, title))
+
+        # TestResult invariants: the three sets must be pairwise disjoint.
         passed_tests -= failed_tests
-        passed_tests -= skipped_tests
         skipped_tests -= failed_tests
+        passed_tests -= skipped_tests
 
         return TestResult(
             passed_count=len(passed_tests),
