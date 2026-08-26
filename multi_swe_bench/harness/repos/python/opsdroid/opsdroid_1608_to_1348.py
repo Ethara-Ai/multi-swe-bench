@@ -6,10 +6,20 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-TEST_CMD = "python -m pytest -rA --tb=no -p no:cacheprovider tests/ --timeout=30 --continue-on-collection-errors"
+TEST_CMD = "python -m pytest -rA --tb=no -p no:cacheprovider opsdroid tests --timeout=30 --continue-on-collection-errors"
 
 
-class ImageDefault(Image):
+class ImageBase(Image):
+    """Heavy, self-contained environment image (``base-pr-<N>``).
+
+    Owns the runtime, the apt toolchain, the clone, the ``BASE_COMMIT`` pin and
+    the git-history scrub. Inherits ``Image.dockerfile()`` so the canonical
+    section order is produced by the harness itself -- ``DockerfileEnhancer``
+    then injects the syntax directive, build/proxy ARGs, ENV block, OCI labels
+    and the CA-cert symlink farm directly after ``FROM``, ahead of every
+    network ``RUN``.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -26,7 +36,52 @@ class ImageDefault(Image):
         return "python:3.8-bookworm"
 
     def image_prefix(self) -> str:
-        return "envagent"
+        return "mswebench"
+
+    def image_tag(self) -> str:
+        return f"base-pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"base-pr-{self.pr.number}"
+
+    def files(self) -> list[File]:
+        return []
+
+    def extra_packages(self) -> list[str]:
+        # The inherited default set (ca-certificates, curl, build-essential,
+        # git, gnupg, make, python3, sudo, wget) already covers this stack:
+        # git for the clone, ca-certificates for TLS through the proxy, and
+        # build-essential for the C extensions in the 2020-era dependency set.
+        return []
+
+
+class ImageDefault(Image):
+    """Thin PR layer (``pr-<N>``) built on top of :class:`ImageBase`.
+
+    Stages the two patches, the integrity guard, ``prepare.sh`` and the three
+    graded run-scripts, then runs ``prepare.sh`` exactly once. It deliberately
+    does not clone, apt-install or scrub -- those guarantees are inherited.
+    ``DockerfileEnhancer.enhance()`` returns this Dockerfile untouched because
+    ``dependency()`` yields an ``Image`` rather than a string.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return ImageBase(self.pr, self._config)
+
+    def image_prefix(self) -> str:
+        return "mswebench"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -48,30 +103,58 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -eo pipefail
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo "check_git_changes: not inside a git repository" >&2
+    exit 1
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "check_git_changes: working tree is not clean" >&2
+    git status --porcelain >&2
+    exit 1
+fi
+
+echo "check_git_changes: working tree is clean"
+
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
-                f"""ls -F
-###ACTION_DELIMITER###
-pip install "jinja2<3.1"
-###ACTION_DELIMITER###
-pip install -r requirements.txt
-###ACTION_DELIMITER###
+                f"""#!/bin/bash
+set -eo pipefail
+
+cd /home/{self.pr.repo}
+
+git reset --hard
+bash /home/check_git_changes.sh
+
+git checkout {self.pr.base.sha}
+bash /home/check_git_changes.sh
+
+# Warm the environment. Every install is `|| true`: a native wheel that fails
+# to build on one architecture must not abort the image build.
+pip install --upgrade pip || true
+pip install "jinja2<3.1" || true
+pip install -r requirements.txt || true
 grep -v deadlinks requirements_test.txt > /tmp/test_reqs.txt && pip install -r /tmp/test_reqs.txt || true
-###ACTION_DELIMITER###
-pip install pytest pytest-timeout pytest-asyncio asynctest
-###ACTION_DELIMITER###
-pip install -e .
-###ACTION_DELIMITER###
-{TEST_CMD}
-###ACTION_DELIMITER###
-echo '{TEST_CMD}' > test_commands.sh""",
+pip install pytest pytest-timeout pytest-asyncio asynctest || true
+pip install -e . || true
+
+""",
             ),
             File(
                 ".",
                 "run.sh",
                 f"""#!/bin/bash
-set -o pipefail
+set -eo pipefail
+export CI=true
 cd /home/{self.pr.repo}
-{TEST_CMD} || true
+{TEST_CMD}
 
 """,
             ),
@@ -79,15 +162,16 @@ cd /home/{self.pr.repo}
                 ".",
                 "test-run.sh",
                 f"""#!/bin/bash
-set -o pipefail
+set -eo pipefail
+export CI=true
 cd /home/{self.pr.repo}
 if ! git -C /home/{self.pr.repo} apply --whitespace=nowarn /home/test.patch; then
     if ! git -C /home/{self.pr.repo} apply --whitespace=nowarn --3way /home/test.patch; then
-        echo "Error: git apply failed" >&2
+        echo "Error: git apply failed for test.patch" >&2
         exit 1
     fi
 fi
-{TEST_CMD} || true
+{TEST_CMD}
 
 """,
             ),
@@ -95,64 +179,37 @@ fi
                 ".",
                 "fix-run.sh",
                 f"""#!/bin/bash
-set -o pipefail
+set -eo pipefail
+export CI=true
 cd /home/{self.pr.repo}
-if ! git -C /home/{self.pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    git -C /home/{self.pr.repo} apply --whitespace=nowarn /home/test.patch || true
+if ! git -C /home/{self.pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+    if ! git -C /home/{self.pr.repo} apply --whitespace=nowarn --3way /home/test.patch; then
+        echo "Error: git apply failed for test.patch" >&2
+        exit 1
+    fi
     if ! git -C /home/{self.pr.repo} apply --whitespace=nowarn --3way /home/fix.patch; then
-        echo "Error: git apply failed" >&2
+        echo "Error: git apply failed for fix.patch" >&2
         exit 1
     fi
 fi
-{TEST_CMD} || true
+{TEST_CMD}
 
 """,
             ),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-FROM python:3.8-bookworm
+        return f"""FROM {image.image_full_name()}
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y git
-
-RUN if [ ! -f /bin/bash ]; then \
-        if command -v apk >/dev/null 2>&1; then \
-            apk add --no-cache bash; \
-        elif command -v apt-get >/dev/null 2>&1; then \
-            apt-get update && apt-get install -y bash; \
-        elif command -v yum >/dev/null 2>&1; then \
-            yum install -y bash; \
-        else \
-            exit 1; \
-        fi \
-    fi
-
-WORKDIR /home/
-RUN git clone https://github.com/opsdroid/opsdroid.git /home/opsdroid
-
-WORKDIR /home/opsdroid
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-
-RUN pip install --upgrade pip
-RUN pip install "jinja2<3.1"
-RUN pip install -r requirements.txt
-RUN grep -v deadlinks requirements_test.txt > /tmp/test_reqs.txt && \
-    pip install -r /tmp/test_reqs.txt || true
-RUN pip install pytest pytest-timeout pytest-asyncio asynctest
-RUN pip install -e .
-"""
-        dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("opsdroid", "opsdroid_1608_to_1348")
@@ -188,7 +245,7 @@ class OPSDROID_1608_TO_1348(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        log = re.sub(r'\x1b\[[0-9;]*m', '', log)
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
