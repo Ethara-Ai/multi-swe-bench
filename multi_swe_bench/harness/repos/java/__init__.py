@@ -77,7 +77,9 @@ from multi_swe_bench.harness.repos.java.Karumi import *
 from multi_swe_bench.harness.repos.java.roc_streaming import *
 from multi_swe_bench.harness.repos.java.lmdbjava import *
 from multi_swe_bench.harness.repos.java.dropwizard import *
-from multi_swe_bench.harness.repos.java.hash_checker import *
+# [neutralized: module hash_checker.py never committed upstream (import added by 15983fc5) — blocks whole registry]
+# from multi_swe_bench.harness.repos.java.hash_checker import *
 from multi_swe_bench.harness.repos.java.grpc_ecosystem import *
 from multi_swe_bench.harness.repos.java.thingsboard import *
 from multi_swe_bench.harness.repos.java.A248 import *
+from multi_swe_bench.harness.repos.java.wpilibsuite import *

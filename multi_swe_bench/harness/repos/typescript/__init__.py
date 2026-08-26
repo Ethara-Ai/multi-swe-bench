@@ -84,6 +84,7 @@ from multi_swe_bench.harness.repos.typescript.IgniteUI import *
 from multi_swe_bench.harness.repos.typescript.Ignitus import *
 from multi_swe_bench.harness.repos.typescript.immutable_js import *
 from multi_swe_bench.harness.repos.typescript.italia import *
+from multi_swe_bench.harness.repos.typescript.jest_community import *
 from multi_swe_bench.harness.repos.typescript.jestjs import *
 from multi_swe_bench.harness.repos.typescript.juice_shop import *
 from multi_swe_bench.harness.repos.typescript.JoshuaKGoldberg import *
