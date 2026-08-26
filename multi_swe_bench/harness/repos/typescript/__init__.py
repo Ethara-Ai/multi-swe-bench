@@ -212,3 +212,4 @@ from multi_swe_bench.harness.repos.typescript.neos import *
 from multi_swe_bench.harness.repos.typescript.the_guild_org import *
 from multi_swe_bench.harness.repos.typescript.aurelia import *
 from multi_swe_bench.harness.repos.typescript.epiphone import *
+from multi_swe_bench.harness.repos.typescript.Semro import *
