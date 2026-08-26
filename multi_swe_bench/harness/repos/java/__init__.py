@@ -80,3 +80,4 @@ from multi_swe_bench.harness.repos.java.dropwizard import *
 from multi_swe_bench.harness.repos.java.hash_checker import *
 from multi_swe_bench.harness.repos.java.grpc_ecosystem import *
 from multi_swe_bench.harness.repos.java.thingsboard import *
+from multi_swe_bench.harness.repos.java.A248 import *
