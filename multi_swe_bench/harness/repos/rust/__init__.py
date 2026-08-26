@@ -37,6 +37,7 @@ from multi_swe_bench.harness.repos.rust.ogham import *
 from multi_swe_bench.harness.repos.rust.osohq import *
 from multi_swe_bench.harness.repos.rust.paupino import *
 from multi_swe_bench.harness.repos.rust.pola_rs import *
+from multi_swe_bench.harness.repos.rust.projectfluent import *
 from multi_swe_bench.harness.repos.rust.PyO3 import *
 from multi_swe_bench.harness.repos.rust.qdrant import *
 from multi_swe_bench.harness.repos.rust.ratatui import *
