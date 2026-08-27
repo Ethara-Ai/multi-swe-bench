@@ -20,13 +20,13 @@ class GiselleImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:24"
+        return "node:22.14.0"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -47,9 +47,7 @@ class GiselleImageBase(Image):
 
 WORKDIR /home/
 
-RUN apt update && apt install -y git
-RUN npm install -g pnpm
-RUN npm install -g bun
+RUN npm install -g pnpm@10.0.0
 
 {code}
 
@@ -125,12 +123,7 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-if [ -f "bun.lockb" ] && command -v bun &> /dev/null; then
-    bun install || true
-else
-    pnpm install || true
-    pnpm build || true
-fi
+pnpm install --no-frozen-lockfile || true
 
 """.format(pr=self.pr),
             ),
@@ -141,11 +134,8 @@ fi
 
 export CI=true
 cd /home/{pr.repo}
-if [ -f "bun.lockb" ] && command -v bun &> /dev/null; then
-    bun test || true
-else
-    pnpm exec turbo test --continue || true
-fi
+pnpm install --no-frozen-lockfile || true
+pnpm exec vitest run --reporter=verbose || true
 
 """.format(pr=self.pr),
             ),
@@ -157,13 +147,8 @@ fi
 export CI=true
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch || (git checkout . && git clean -fd && git apply --exclude pnpm-lock.yaml --exclude bun.lockb --whitespace=nowarn /home/test.patch)
-if [ -f "bun.lockb" ] && command -v bun &> /dev/null; then
-    bun install || true
-    bun test || true
-else
-    pnpm install --no-frozen-lockfile || true
-    pnpm exec turbo test --continue || true
-fi
+pnpm install --no-frozen-lockfile || true
+pnpm exec vitest run --reporter=verbose || true
 
 """.format(pr=self.pr),
             ),
@@ -175,14 +160,8 @@ fi
 export CI=true
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch || (git checkout . && git clean -fd && git apply --exclude pnpm-lock.yaml --exclude bun.lockb --whitespace=nowarn /home/test.patch /home/fix.patch)
-if [ -f "bun.lockb" ] && command -v bun &> /dev/null; then
-    bun install || true
-    bun test || true
-else
-    pnpm install --no-frozen-lockfile || true
-    pnpm build || true
-    pnpm exec turbo test --continue || true
-fi
+pnpm install --no-frozen-lockfile || true
+pnpm exec vitest run --reporter=verbose || true
 
 """.format(pr=self.pr),
             ),
@@ -249,31 +228,44 @@ class Giselle(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        ansi_escape = re.compile(r"(?:\x1b)?\[[0-9;]*m")
-        turbo_prefix = re.compile(r"^[^:]+:[^:]+:\s*")
-        re_pass_test = re.compile(r"^(?:✓|\(pass\)) (.+?)(?:\s+\(.*?\))?\s*(?:\[?[\d.]+\s*(?:ms|s|m)\]?)?\s*$")
-        re_fail_test = re.compile(r"^(?:[×✗]|\(fail\)) (.+?)(?:\s+\(.*?\))?\s*(?:\[?[\d.]+\s*(?:ms|s|m)\]?)?\s*$")
-        re_skip_test = re.compile(r"^(?:»|\(skip\)) (.+?)(?:\s+\(.*?\))?\s*(?:\[?[\d.]+\s*(?:ms|s|m)\]?)?\s*$")
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        # Trailing per-test duration printed by the vitest reporter, e.g. " 405ms".
+        re_duration = re.compile(r"\s+\d+(?:\.\d+)?\s*(?:ms|s)$")
+        # vitest --reporter=verbose emits one line per test:
+        #   "<marker> <file> > <suite> > <test name>"
+        # The test id is normalized to "<file>::<suite>::<test name>", so every
+        # level of the test tree is separated the same way (pytest convention).
+        re_test = re.compile(
+            r"^(?P<marker>[✓×✗↓»])\s+"
+            r"(?P<file>\S.*?\.(?:test|spec)\.[cm]?[jt]sx?)"
+            r"(?:\s+>\s+(?P<name>.+))?$"
+        )
 
         for line in test_log.splitlines():
-            line = ansi_escape.sub("", line)
-            line = turbo_prefix.sub("", line).strip()
+            line = ansi_escape.sub("", line).strip()
             if not line:
                 continue
 
-            pass_test_match = re_pass_test.match(line)
-            if pass_test_match:
-                test = pass_test_match.group(1)
+            line = re_duration.sub("", line)
+
+            match = re_test.match(line)
+            if not match:
+                continue
+
+            test = match.group("file")
+            name = match.group("name")
+            if name:
+                suite_path = "::".join(
+                    part.strip() for part in name.split(">") if part.strip()
+                )
+                test = f"{test}::{suite_path}"
+
+            marker = match.group("marker")
+            if marker == "✓":
                 passed_tests.add(test)
-
-            fail_test_match = re_fail_test.match(line)
-            if fail_test_match:
-                test = fail_test_match.group(1)
+            elif marker in ("×", "✗"):
                 failed_tests.add(test)
-
-            skip_test_match = re_skip_test.match(line)
-            if skip_test_match:
-                test = skip_test_match.group(1)
+            else:
                 skipped_tests.add(test)
 
         return TestResult(
