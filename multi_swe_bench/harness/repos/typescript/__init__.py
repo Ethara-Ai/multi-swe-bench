@@ -187,6 +187,7 @@ from multi_swe_bench.harness.repos.typescript.TypeScriptToLua import *
 from multi_swe_bench.harness.repos.typescript.TypeStrong import *
 from multi_swe_bench.harness.repos.typescript.urql_graphql import *
 from multi_swe_bench.harness.repos.typescript.vega import *
+from multi_swe_bench.harness.repos.typescript.verdaccio import *
 from multi_swe_bench.harness.repos.typescript.vendure_ecommerce import *
 from multi_swe_bench.harness.repos.typescript.VKCOM import *
 from multi_swe_bench.harness.repos.typescript.vuejs import *
