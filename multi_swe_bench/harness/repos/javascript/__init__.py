@@ -78,6 +78,7 @@ from multi_swe_bench.harness.repos.javascript.highlightjs import *
 from multi_swe_bench.harness.repos.javascript.honeybadger_io import *
 from multi_swe_bench.harness.repos.javascript.iamkun import *
 from multi_swe_bench.harness.repos.javascript.IgniteUI import *
+from multi_swe_bench.harness.repos.javascript.ing_bank import *
 from multi_swe_bench.harness.repos.javascript.jshint import *
 from multi_swe_bench.harness.repos.javascript.json_editor import *
 from multi_swe_bench.harness.repos.javascript.jsx_eslint import *
