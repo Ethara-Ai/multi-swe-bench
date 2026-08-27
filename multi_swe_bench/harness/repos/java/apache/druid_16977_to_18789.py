@@ -7,6 +7,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 from multi_swe_bench.harness.repos.java.apache.druid_0_to_16976 import (
     _build_pl_flag,
+    _build_test_flag,
 )
 
 
@@ -27,10 +28,17 @@ class DruidJdk11ImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        return "base-jdk11"
+        # Per-PR, NOT a shared per-JDK tag. The injected hardening block in the
+        # rendered base Dockerfile detaches at one ${BASE_COMMIT}, deletes every
+        # other ref and gc-prunes unreachable objects, then asserts
+        # rev-list --all == rev-list HEAD. A tag shared across an era would
+        # therefore be permanently pinned to whichever PR built it FIRST, and a
+        # second PR reusing it would find its own base commit already pruned --
+        # its prepare.sh checkout would fail, or silently test the wrong tree.
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base-jdk11"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
@@ -49,8 +57,11 @@ class DruidJdk11ImageBase(Image):
 
 {self.global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
+# DEBIAN_FRONTEND and LANG are deliberately NOT set here. DockerfileEnhancer._ENV_BLOCK
+# already sets both (plus TZ and the proxy/CA vars) earlier in every rendered Dockerfile,
+# so repeating them produced a literal duplicate that this project Dockerfile QC flags.
+# LC_ALL is KEPT: the enhancer does not supply it and the JVM needs it for locale-stable
+# test output.
 ENV LC_ALL=C.UTF-8
 WORKDIR /home/
 RUN apt-get update && apt-get install -y git openjdk-11-jdk maven
@@ -89,12 +100,17 @@ class DruidJdk11ImageDefault(Image):
 
     def files(self) -> list[File]:
         pl_flag = _build_pl_flag(self.pr)
+        # Scope surefire to the test classes this PR touches (see _build_test_flag).
+        # Applied IDENTICALLY to prepare/run/test-run/fix-run so the three graded
+        # stages stay comparable and only the applied patch differs between them.
+        test_flag = _build_test_flag(self.pr)
+        suffix = " ".join(x for x in (pl_flag, test_flag) if x)
         # prepare.sh uses "clean" to do a full build during Docker image creation
-        mvn_prepare_base = "mvn clean test -fn -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false"
-        mvn_prepare_cmd = f"{mvn_prepare_base} {pl_flag}" if pl_flag else mvn_prepare_base
+        mvn_prepare_base = "mvn clean test -fn -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false"
+        mvn_prepare_cmd = f"{mvn_prepare_base} {suffix}" if suffix else mvn_prepare_base
         # run/test-run/fix-run scripts reuse pre-built artifacts — no "clean"
-        mvn_run_base = "mvn test -o -fn -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false"
-        mvn_run_cmd = f"{mvn_run_base} {pl_flag}" if pl_flag else mvn_run_base
+        mvn_run_base = "mvn test -o -fn -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false"
+        mvn_run_cmd = f"{mvn_run_base} {suffix}" if suffix else mvn_run_base
         return [
             File(
                 ".",
@@ -150,6 +166,15 @@ set -e
 
 cd /home/{repo}
 {mvn_cmd} || true
+
+# Dump surefire XML reports to stdout. Surefire console output only reports
+# per-CLASS summaries, but this PR adds new @Test METHODS to test classes that
+# already exist, so at class granularity the class passes both before and after
+# the fix -> classified p2p, and the new methods are invisible (f2p/n2p empty).
+# The XML reports are surefire own authoritative per-method record; emitting
+# them lets parse_log classify each test method individually. Same line in all
+# three graded scripts, so the stages stay comparable.
+find . -path '*/target/surefire-reports/TEST-*.xml' -exec cat {{}} \\; 2>/dev/null || true
 """.format(repo=self.pr.repo, mvn_cmd=mvn_run_cmd),
             ),
             File(
@@ -162,6 +187,9 @@ cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch
 {mvn_cmd} || true
 
+# Dump surefire XML reports to stdout -- see run.sh for why (method granularity).
+find . -path '*/target/surefire-reports/TEST-*.xml' -exec cat {{}} \\; 2>/dev/null || true
+
 """.format(repo=self.pr.repo, mvn_cmd=mvn_run_cmd),
             ),
             File(
@@ -173,6 +201,9 @@ set -e
 cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 {mvn_cmd} || true
+
+# Dump surefire XML reports to stdout -- see run.sh for why (method granularity).
+find . -path '*/target/surefire-reports/TEST-*.xml' -exec cat {{}} \\; 2>/dev/null || true
 
 """.format(repo=self.pr.repo, mvn_cmd=mvn_run_cmd),
             ),
@@ -296,17 +327,73 @@ class DruidJdk11(Instance):
 
         test_log = remove_ansi_escape_sequences(test_log)
 
+        # --- Preferred path: surefire XML (METHOD granularity) ---
+        # The graded scripts cat target/surefire-reports/TEST-*.xml to stdout.
+        # Console output is per-CLASS only, which cannot represent a PR that adds
+        # new @Test METHODS to a test class that already exists: the class passes
+        # both before and after the fix, so it lands in p2p and f2p/n2p come out
+        # EMPTY (validator Rule 4 failure). Parsing the XML gives one entry per
+        # test method, so a method that only exists after fix.patch is correctly
+        # classified. Falls back to the console parser below when no XML is
+        # present (e.g. the build failed before surefire ran).
+        re_case = re.compile(r"<testcase\b([^>]*?)(/>|>(.*?)</testcase>)", re.S)
+        re_attr = re.compile(r'(\w+)="([^"]*)"')
+        saw_xml = False
+        for m in re_case.finditer(test_log):
+            attrs = dict(re_attr.findall(m.group(1)))
+            cls = attrs.get("classname", "")
+            meth = attrs.get("name", "")
+            if not meth:
+                continue
+            saw_xml = True
+            name = f"{cls}.{meth}" if cls else meth
+            body = m.group(3) or ""
+            if "<failure" in body or "<error" in body:
+                passed_tests.discard(name)
+                skipped_tests.discard(name)
+                failed_tests.add(name)
+            elif "<skipped" in body:
+                if name not in passed_tests and name not in failed_tests:
+                    skipped_tests.add(name)
+            else:
+                if name not in failed_tests:
+                    skipped_tests.discard(name)
+                    passed_tests.add(name)
+
+        if saw_xml:
+            return TestResult(
+                passed_count=len(passed_tests),
+                failed_count=len(failed_tests),
+                skipped_count=len(skipped_tests),
+                passed_tests=passed_tests,
+                failed_tests=failed_tests,
+                skipped_tests=skipped_tests,
+            )
+
+
         # Surefire 3.x: "[INFO] Tests run: 5, ... Time elapsed: 1.23 s -- in com.foo.BarTest"
         # Surefire 2.x: "Tests run: 5, ... Time elapsed: 0.203 sec" (no class name suffix)
         # Use "Running <class>" line to capture test name, then match "Tests run:" line below.
+        #
+        # The skip-zone between "Running X" and its "Tests run:" line must stop at
+        # the next "Running Y" line AND at Maven's "Results:" aggregate-summary
+        # header -- otherwise a class whose own fork crashes (OOM, JVM died) before
+        # printing its per-class "Tests run:" line gets silently paired with a
+        # LATER, unrelated "Tests run:" line (the next class's, or the whole
+        # build's final aggregate), which falsely reports a crashed class as
+        # passed. Verified: without the two extra negative lookaheads, a
+        # class that OOMs right after "Running BetaTest" with no other test
+        # classes following it gets matched against the trailing aggregate
+        # "Tests run: 3, Failures: 0, ..." and reported PASSED even though it
+        # never actually ran.
         re_pass_tests = [
             re.compile(
-                r"Running\s+(.+?)\s*\n(?:(?!.*Tests run:).*\n)*.*?Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)"
+                r"Running\s+(.+?)\s*\n(?:(?!.*Tests run:)(?!.*Running\s)(?!.*Results:).*\n)*.*?Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)"
             )
         ]
         re_fail_tests = [
             re.compile(
-                r"Running\s+(.+?)\s*\n(?:(?!.*Tests run:).*\n)*.*?Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+).*<<<\s*FAILURE!"
+                r"Running\s+(.+?)\s*\n(?:(?!.*Tests run:)(?!.*Running\s)(?!.*Results:).*\n)*.*?Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+).*<<<\s*FAILURE!"
             )
         ]
 
