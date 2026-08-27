@@ -127,6 +127,7 @@ from multi_swe_bench.harness.repos.typescript.ParabolInc import *
 from multi_swe_bench.harness.repos.typescript.payloadcms import *
 from multi_swe_bench.harness.repos.typescript.photoview import *
 from multi_swe_bench.harness.repos.typescript.pmndrs import *
+from multi_swe_bench.harness.repos.typescript.pnpm import *
 from multi_swe_bench.harness.repos.typescript.prettier import *
 from multi_swe_bench.harness.repos.typescript.prettier_solidity import *
 from multi_swe_bench.harness.repos.typescript.PrismJS import *
