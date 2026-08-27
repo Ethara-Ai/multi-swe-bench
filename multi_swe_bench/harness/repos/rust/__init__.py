@@ -87,3 +87,4 @@ from multi_swe_bench.harness.repos.rust.atsamd_rs import *
 from multi_swe_bench.harness.repos.rust.Harry_kp import *
 from multi_swe_bench.harness.repos.rust.gendx import *
 from multi_swe_bench.harness.repos.rust.sunjay import *
+from multi_swe_bench.harness.repos.rust.quickwit_oss import *
