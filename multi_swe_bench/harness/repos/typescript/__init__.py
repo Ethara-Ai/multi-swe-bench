@@ -91,6 +91,7 @@ from multi_swe_bench.harness.repos.typescript.JoshuaKGoldberg import *
 from multi_swe_bench.harness.repos.typescript.Joystream import *
 from multi_swe_bench.harness.repos.typescript.keyshade_xyz import *
 from multi_swe_bench.harness.repos.typescript.Kong import *
+from multi_swe_bench.harness.repos.typescript.kite_org import *
 from multi_swe_bench.harness.repos.typescript.kortina import *
 from multi_swe_bench.harness.repos.typescript.latticexyz import *
 from multi_swe_bench.harness.repos.typescript.laurent22 import *
@@ -219,5 +220,3 @@ from multi_swe_bench.harness.repos.typescript.aurelia import *
 from multi_swe_bench.harness.repos.typescript.epiphone import *
 from multi_swe_bench.harness.repos.typescript.CherryHQ import *
 from multi_swe_bench.harness.repos.typescript.Semro import *
-from multi_swe_bench.harness.repos.typescript.codeBelt import *
-from multi_swe_bench.harness.repos.typescript.stx_labs import *
