@@ -400,6 +400,5 @@ from multi_swe_bench.harness.repos.python.tokusumi import *
 from multi_swe_bench.harness.repos.python.Tencent.CodeAnalysis import *
 from multi_swe_bench.harness.repos.python.rustedpy import *
 from multi_swe_bench.harness.repos.python.Zarad1993 import *
-from multi_swe_bench.harness.repos.python.meilisearch import *
 from multi_swe_bench.harness.repos.python.rgerganov import *
 from multi_swe_bench.harness.repos.python.siddhantgoel.streaming_form_data import *
