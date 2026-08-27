@@ -24,6 +24,7 @@ from multi_swe_bench.harness.repos.rust.geiger_rs import *
 from multi_swe_bench.harness.repos.rust.GitoxideLabs import *
 from multi_swe_bench.harness.repos.rust.golemcloud import *
 from multi_swe_bench.harness.repos.rust.graphite_editor import *
+from multi_swe_bench.harness.repos.rust.graphql_rust import *
 from multi_swe_bench.harness.repos.rust.GyulyVGC import *
 from multi_swe_bench.harness.repos.rust.helix_editor import *
 from multi_swe_bench.harness.repos.rust.lldap import *
