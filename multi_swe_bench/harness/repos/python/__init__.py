@@ -107,6 +107,7 @@ from multi_swe_bench.harness.repos.python.github import *
 from multi_swe_bench.harness.repos.python.globus import *
 from multi_swe_bench.harness.repos.python.google import *
 from multi_swe_bench.harness.repos.python.googleapis import *
+from multi_swe_bench.harness.repos.python.graphql_python import *
 from multi_swe_bench.harness.repos.python.great_expectations import *
 from multi_swe_bench.harness.repos.python.griptape_ai import *
 from multi_swe_bench.harness.repos.python.gwastro import *
