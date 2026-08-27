@@ -4,7 +4,7 @@ import json as _json
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -238,6 +238,8 @@ ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 ARG BASE_COMMIT
 
+{DockerfileEnhancer._PROXY_ARGS}
+
 ENV DEBIAN_FRONTEND=noninteractive \\
     TZ=UTC \\
     LANG=C.UTF-8 \\
@@ -245,10 +247,14 @@ ENV DEBIAN_FRONTEND=noninteractive \\
     GOTOOLCHAIN={gotoolchain} \\
     GOFLAGS="-buildvcs=false -mod=mod"
 
+{DockerfileEnhancer._ENV_BLOCK}
+
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 WORKDIR /home/
 
