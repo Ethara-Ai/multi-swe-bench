@@ -223,3 +223,4 @@ from multi_swe_bench.harness.repos.typescript.CherryHQ import *
 from multi_swe_bench.harness.repos.typescript.Semro import *
 from multi_swe_bench.harness.repos.typescript.will_stone import *
 
+from multi_swe_bench.harness.repos.typescript.tiagosiebler import *
