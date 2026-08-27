@@ -403,3 +403,5 @@ from multi_swe_bench.harness.repos.python.rustedpy import *
 from multi_swe_bench.harness.repos.python.Zarad1993 import *
 from multi_swe_bench.harness.repos.python.rgerganov import *
 from multi_swe_bench.harness.repos.python.siddhantgoel.streaming_form_data import *
+from multi_swe_bench.harness.repos.python.ResonantGeoData import *
+from multi_swe_bench.harness.repos.python.novaweb_mobi import *
