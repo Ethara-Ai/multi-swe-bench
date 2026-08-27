@@ -98,6 +98,7 @@ from multi_swe_bench.harness.repos.typescript.laurent22 import *
 from multi_swe_bench.harness.repos.typescript.League_of_Foundry_Developers import *
 from multi_swe_bench.harness.repos.typescript.livestorejs import *
 from multi_swe_bench.harness.repos.typescript.lukasoppermann import *
+from multi_swe_bench.harness.repos.typescript.lukeautry import *
 from multi_swe_bench.harness.repos.typescript.markedjs import *
 from multi_swe_bench.harness.repos.typescript.mastra_ai import *
 from multi_swe_bench.harness.repos.typescript.mattermost_community import *
