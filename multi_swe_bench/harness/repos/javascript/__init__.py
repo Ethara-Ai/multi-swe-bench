@@ -67,6 +67,7 @@ from multi_swe_bench.harness.repos.javascript.gchq import *
 from multi_swe_bench.harness.repos.javascript.github import *
 from multi_swe_bench.harness.repos.javascript.google import *
 from multi_swe_bench.harness.repos.javascript.GoogleChrome import *
+from multi_swe_bench.harness.repos.javascript.GoogleChrome.lighthouse import *
 from multi_swe_bench.harness.repos.javascript.grommet import *
 from multi_swe_bench.harness.repos.javascript.gsd_build import *
 from multi_swe_bench.harness.repos.javascript.gulpjs import *

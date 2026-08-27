@@ -1,12 +1,12 @@
 import re
 from typing import Optional, Union
-import textwrap
+
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class lighthouseImageBase(Image):
+class KorniaRsImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,7 +20,7 @@ class lighthouseImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:18"
+        return "rust:1.98-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -47,14 +47,29 @@ class lighthouseImageBase(Image):
 
 WORKDIR /home/
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
-ENV PUPPETEER_SKIP_DOWNLOAD=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH=/usr/local/cargo/bin:$PATH
 
-RUN apt-get update \
-    && apt-get install -y build-essential pkg-config python3 git \
-        --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    build-essential \\
+    ca-certificates \\
+    cmake \\
+    curl \\
+    git \\
+    libgstreamer1.0-dev \\
+    libgstreamer-plugins-base1.0-dev \\
+    libunwind-dev \\
+    nasm \\
+    pkg-config \\
+    python3 \\
+    python3-dev \\
+    python3-pip \\
+    python3-venv \\
     && rm -rf /var/lib/apt/lists/*
 
 {code}
@@ -64,7 +79,7 @@ RUN apt-get update \
 """
 
 
-class lighthouseImageDefault(Image):
+class KorniaRsImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -78,7 +93,7 @@ class lighthouseImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return lighthouseImageBase(self.pr, self._config)
+        return KorniaRsImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -133,22 +148,29 @@ git checkout {pr.base.sha}
 git for-each-ref --format='%(refname)' refs/mswb | xargs -r -n1 git update-ref -d
 bash /home/check_git_changes.sh
 
-yarn install --frozen-lockfile --network-timeout 1000000 || true
-yarn build-report || true
+python3 -m venv .venv
+.venv/bin/python -m pip install --no-cache-dir --upgrade pip || true
+.venv/bin/python -m pip install --no-cache-dir -r kornia-py/requirements-dev.txt || true
+.venv/bin/python -m pip install --no-cache-dir "maturin[patchelf]==1.5.1" || true
+source /home/{pr.repo}/.venv/bin/activate && maturin develop -m kornia-py/Cargo.toml || true
+source /home/{pr.repo}/.venv/bin/activate && python -m pytest kornia-py/tests --collect-only -q -p no:cacheprovider || true
+
 """.format(pr=self.pr),
             ),
-             File(
+            File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 set -e
 
 cd /home/{pr.repo}
+source /home/{pr.repo}/.venv/bin/activate
+maturin develop -m kornia-py/Cargo.toml
+python -m pytest kornia-py/tests -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors
 
-yarn mocha core/test/audits/layout-shift-elements-test.js core/test/computed/metrics/cumulative-layout-shift-test.js core/test/gather/gatherers/trace-elements-test.js core/test/lib/rect-helpers-test.js
 """.format(pr=self.pr),
             ),
-             File(
+            File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
@@ -156,11 +178,13 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
+source /home/{pr.repo}/.venv/bin/activate
+maturin develop -m kornia-py/Cargo.toml
+python -m pytest kornia-py/tests -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors
 
-yarn mocha core/test/audits/layout-shift-elements-test.js core/test/computed/metrics/cumulative-layout-shift-test.js core/test/gather/gatherers/trace-elements-test.js core/test/lib/rect-helpers-test.js
 """.format(pr=self.pr),
             ),
-             File(
+            File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
@@ -168,8 +192,10 @@ set -e
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+source /home/{pr.repo}/.venv/bin/activate
+maturin develop -m kornia-py/Cargo.toml
+python -m pytest kornia-py/tests -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors
 
-yarn mocha core/test/audits/layout-shift-elements-test.js core/test/computed/metrics/cumulative-layout-shift-test.js core/test/gather/gatherers/trace-elements-test.js core/test/lib/rect-helpers-test.js
 """.format(pr=self.pr),
             ),
         ]
@@ -184,57 +210,22 @@ yarn mocha core/test/audits/layout-shift-elements-test.js core/test/computed/met
             copy_commands += f"COPY {file.name} /home/\n"
 
         prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
 
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p $HOME && \\
-                        touch $HOME/.npmrc && \\
-                        echo "proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "https-proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "strict-ssl=false" >> $HOME/.npmrc
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f $HOME/.npmrc
-                """
-                )
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
-{proxy_setup}
-
 {copy_commands}
 
 {prepare_commands}
-
-{proxy_cleanup}
 
 {self.clear_env}
 
 """
 
 
-@Instance.register("GoogleChrome", "lighthouse")
-class lighthouse(Instance):
+@Instance.register("kornia", "kornia-rs")
+class KorniaRs(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -245,7 +236,7 @@ class lighthouse(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return lighthouseImageDefault(self.pr, self._config)
+        return KorniaRsImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -270,53 +261,48 @@ class lighthouse(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        # Mocha "spec" reporter, 2 spaces per nesting level. Suites are bare
-        # indented lines; results are "<indent>✔ title", "<indent>N) title" and
-        # "<indent>- title". Titles are joined with " > " so that leaf names that
-        # repeat across files stay distinct. The tree is bounded by the
-        # "running N test files" banner and the "N passing" epilogue; outside
-        # that range the runner emits node warnings and failure detail.
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        passed_re = re.compile(r"^[✔✓]\s+(.*)$")
-        failed_re = re.compile(r"^\d+\)\s+(.*)$")
-        skipped_re = re.compile(r"^-\s+(.*)$")
-        timing_re = re.compile(r"\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\)$")
-        epilogue_re = re.compile(r"^\d+ (?:passing|pending|failing)\b")
-        banner_re = re.compile(r"^running \d+ test files$")
+        # pytest -v --no-header -rA emits each test twice:
+        #   kornia-py/tests/test_io.py::test_decompress PASSED        [ 44%]
+        #   PASSED kornia-py/tests/test_io.py::test_decompress
+        # Both shapes are matched so a truncated log still parses.
+        re_pass = [
+            re.compile(r"^(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)\s+PASSED"),
+            re.compile(r"^PASSED\s+(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)"),
+            re.compile(r"^(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)\s+XPASS"),
+            re.compile(r"^XPASS\s+(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)"),
+        ]
+        re_fail = [
+            re.compile(r"^(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)\s+FAILED"),
+            re.compile(r"^FAILED\s+(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)"),
+            re.compile(r"^(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)\s+ERROR"),
+            re.compile(r"^ERROR\s+(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)"),
+        ]
+        re_skip = [
+            re.compile(r"^(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)\s+SKIPPED"),
+            re.compile(r"^SKIPPED\s+(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)"),
+            re.compile(r"^(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)\s+XFAIL"),
+            re.compile(r"^XFAIL\s+(kornia-py/tests/[^\s:]+(?:::[^\s:]+)+)"),
+        ]
 
-        suite_stack: list[tuple[int, str]] = []
-        in_tree = False
-
-        for raw_line in test_log.splitlines():
-            raw_line = ansi_escape.sub("", raw_line).rstrip()
-            stripped = raw_line.strip()
-
-            if not in_tree:
-                in_tree = bool(banner_re.match(stripped))
+        for line in test_log.splitlines():
+            line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+            if not line:
                 continue
 
-            if epilogue_re.match(stripped):
-                break
-            if not stripped:
-                continue
-
-            indent = len(raw_line) - len(raw_line.lstrip())
-
-            for regex, bucket in (
-                (passed_re, passed_tests),
-                (failed_re, failed_tests),
-                (skipped_re, skipped_tests),
-            ):
-                match = regex.match(stripped)
+            for re_p in re_pass:
+                match = re_p.match(line)
                 if match:
-                    title = timing_re.sub("", match.group(1)).strip()
-                    prefix = [t for i, t in suite_stack if i < indent]
-                    bucket.add(" > ".join(prefix + [title]))
-                    break
-            else:
-                while suite_stack and suite_stack[-1][0] >= indent:
-                    suite_stack.pop()
-                suite_stack.append((indent, stripped))
+                    passed_tests.add(match.group(1))
+
+            for re_f in re_fail:
+                match = re_f.match(line)
+                if match:
+                    failed_tests.add(match.group(1))
+
+            for re_s in re_skip:
+                match = re_s.match(line)
+                if match:
+                    skipped_tests.add(match.group(1))
 
         # R2: the three sets must be disjoint. Failure wins.
         passed_tests -= failed_tests
