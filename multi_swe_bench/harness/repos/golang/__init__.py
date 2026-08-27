@@ -203,3 +203,4 @@ from multi_swe_bench.harness.repos.golang.ergochat import *
 from multi_swe_bench.harness.repos.golang.llir import *
 from multi_swe_bench.harness.repos.golang.livepeer import *
 from multi_swe_bench.harness.repos.golang.GoogleContainerTools import *
+from multi_swe_bench.harness.repos.golang.ko_build import *
