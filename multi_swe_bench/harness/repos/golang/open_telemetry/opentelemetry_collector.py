@@ -1,11 +1,45 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_GO_IMAGE = "golang:latest"
+_GO_IMAGE = "golang:1.24"
+
+_GO_IMAGE_ERAS = (
+    (661, "golang:1.13"),
+    (2927, "golang:1.14"),
+    (3010, "golang:1.15"),
+    (3887, "golang:1.16"),
+    (5795, "golang:1.17"),
+    (7151, "golang:1.18"),
+    (8208, "golang:1.19"),
+    (9533, "golang:1.20"),
+    (10869, "golang:1.21"),
+    (12370, "golang:1.22"),
+    (13627, "golang:1.23"),
+)
+
+
+_BUILDVCS_MIN_PR = 5795
+_GOTOOLCHAIN_MIN_PR = 9533
+
+
+def _go_image_for(number: int) -> str:
+    for upper, image in _GO_IMAGE_ERAS:
+        if number < upper:
+            return image
+    return _GO_IMAGE
+
+
+def _go_env_for(number: int) -> str:
+    lines = ["ENV CI=true"]
+    if number >= _BUILDVCS_MIN_PR:
+        lines.append("ENV GOFLAGS=-buildvcs=false")
+    if number >= _GOTOOLCHAIN_MIN_PR:
+        lines.append("ENV GOTOOLCHAIN=local")
+    return "\n".join(lines)
 
 # Archive-resilient apt, mirroring the XTLS/Xray-core registry: try the normal
 # mirror first and fall back to archive.debian.org when it has been retired.
@@ -57,35 +91,41 @@ class OtelCollectorImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return _GO_IMAGE
+    def dependency(self) -> str | Image:
+        return _go_image_for(self.pr.number)
 
     def image_prefix(self) -> str:
         return "mswebench"
 
     def image_tag(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
-        # No repository fetch here on purpose -- see the class docstring. With
-        # no fetch in this Dockerfile the enhancer's _standardize_repo_fetch and
-        # _inject_final_sanitize passes are both no-ops, so nothing pins this
-        # shared layer to one PR's commit.
-        return f"""FROM {_GO_IMAGE}
+        if self.config.need_clone:
+            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        return f"""FROM {_go_image_for(self.pr.number)}
+
+{self.global_env}
 
 WORKDIR /home/
 
 {_APT_INSTALL}
 
-ENV GOFLAGS=-buildvcs=false
+{_go_env_for(self.pr.number)}
 
-CMD ["/bin/bash"]
+{code}
+
+{self.clear_env}
+
 """
 
 
@@ -112,7 +152,7 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
+    def dependency(self) -> str | Image:
         return OtelCollectorImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
@@ -129,27 +169,18 @@ class ImageDefault(Image):
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_files = " ".join(file.name for file in self.files())
+        copy_files = "".join(f"COPY {file.name} /home/\n" for file in self.files())
 
         # BASE_COMMIT is defaulted to this PR's base.sha so the build works with
         # or without an explicit --build-arg. Declaring it here (level 2) rather
         # than in the shared base is what keeps the base's apt layer cacheable.
         header = f"""FROM {name}:{tag}
 
-ARG BASE_COMMIT="{self.pr.base.sha}"
-ENV BASE_COMMIT=${{BASE_COMMIT}}
-
 {self.global_env}
 
-WORKDIR /home/
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
+{copy_files}
 
-WORKDIR /home/{self.pr.repo}
-RUN git reset --hard && git checkout ${{BASE_COMMIT}}
-
-COPY {copy_files} /home/
-
-RUN bash /home/prepare.sh || true
+RUN bash /home/prepare.sh
 
 """
 
@@ -161,9 +192,8 @@ RUN bash /home/prepare.sh || true
         tail = f"""
 {self.clear_env}
 
-CMD ["/bin/bash"]
 """
-        return header + Image._HARDENING_BLOCK + tail
+        return header + tail
 
     def files(self) -> list[File]:
         return [
@@ -308,7 +338,18 @@ done
                 "    continue\n"
                 "  fi\n"
                 '  echo "=== Testing module: $MOD (packages: $VALID_PKGS) ==="\n'
-                "  go test -v -count=1 -timeout 15m $VALID_PKGS || EXIT_CODE=$?\n"
+                "  TEST_OUT=$(go test -v -count=1 -timeout 15m $VALID_PKGS 2>&1) || EXIT_CODE=$?\n"
+                '  echo "$TEST_OUT"\n'
+                '  echo "$TEST_OUT" | grep -E "^FAIL[[:space:]]+\\S+[[:space:]]+\\[(build|setup) failed\\]" | while read -r _ BROKEN_PKG _; do\n'
+                '    BROKEN_DIR="$MOD_DIR/${BROKEN_PKG#go.opentelemetry.io/collector/}"\n'
+                '    [ -d "$BROKEN_DIR" ] || continue\n'
+                '    echo "=== Enumerating unrunnable tests in $BROKEN_PKG (package failed to build) ==="\n'
+                "    grep -hoE '^func (Test[A-Za-z0-9_]*)' \"$BROKEN_DIR\"/*_test.go 2>/dev/null \\\n"
+                "      | sed 's/^func //' | sort -u | while read -r TNAME; do\n"
+                '      echo "--- FAIL: $TNAME (0.00s)"\n'
+                "    done\n"
+                '    echo "FAIL	$BROKEN_PKG	0.000s"\n'
+                "  done\n"
                 'done <<< "$MODULE_LINES"\n'
                 "\n"
                 "exit $EXIT_CODE\n",
@@ -326,6 +367,8 @@ set -eo pipefail
 
 cd /home/{pr.repo}
 git reset --hard
+bash /home/check_git_changes.sh
+git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
 find /home/{pr.repo} -name go.mod -not -path "*/vendor/*" -print0 | while IFS= read -r -d "" GOMOD; do
@@ -350,6 +393,7 @@ bash /home/check_git_changes.sh
                 "run.sh",
                 """#!/bin/bash
 set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 MODULE_LINES=$(bash /home/find_modules.sh /home/{pr.repo} /home/test.patch /home/fix.patch)
@@ -361,10 +405,11 @@ bash /home/run_tests_per_module.sh /home/{pr.repo} "$MODULE_LINES"
                 "test-run.sh",
                 """#!/bin/bash
 set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 bash /home/restore_test_files.sh
-git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+git apply --whitespace=nowarn /home/test.patch
 
 # Patch may have modified go.mod/go.sum — run `go mod tidy` so cross-module
 # transitive deps (multi-module monorepo) get their go.sum entries populated.
@@ -381,10 +426,11 @@ bash /home/run_tests_per_module.sh /home/{pr.repo} "$MODULE_LINES"
                 "fix-run.sh",
                 """#!/bin/bash
 set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 bash /home/restore_test_files.sh
-git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
 # Patches may have modified go.mod/go.sum — run `go mod tidy` so cross-module
 # transitive deps (multi-module monorepo) get their go.sum entries populated.
@@ -433,45 +479,52 @@ class OpenTelemetryCollector(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [
-            re.compile(r"--- PASS: (\S+)"),
-            re.compile(r"^ok\s+(\S+)"),
-        ]
-        re_fail_tests = [
-            re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"^FAIL\s+(\S+)\s+\[(?:build|setup) failed\]"),
-        ]
-        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+
+        re_result = re.compile(r"^--- (PASS|FAIL|SKIP): (\S+)")
+        re_pkg_done = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
+        re_build_failed = re.compile(r"^FAIL\s+(\S+)\s+\[(?:build|setup) failed\]")
+
+        def record(status: str, name: str) -> None:
+            if status == "PASS":
+                if name in failed_tests:
+                    return
+                skipped_tests.discard(name)
+                passed_tests.add(name)
+            elif status == "FAIL":
+                passed_tests.discard(name)
+                skipped_tests.discard(name)
+                failed_tests.add(name)
+            elif status == "SKIP":
+                if name in failed_tests or name in passed_tests:
+                    return
+                skipped_tests.add(name)
+
+        pending: list[tuple[str, str]] = []
 
         for line in test_log.splitlines():
             line = line.strip()
 
-            for r in re_pass_tests:
-                m = r.match(line)
-                if m:
-                    name = m.group(1)
-                    if name in failed_tests:
-                        continue
-                    skipped_tests.discard(name)
-                    passed_tests.add(name)
+            match = re_result.match(line)
+            if match:
+                pending.append((match.group(1), match.group(2)))
+                continue
 
-            for r in re_fail_tests:
-                m = r.match(line)
-                if m:
-                    name = m.group(1)
-                    passed_tests.discard(name)
-                    skipped_tests.discard(name)
-                    failed_tests.add(name)
+            match = re_build_failed.match(line)
+            if match:
+                record("FAIL", match.group(1))
+                pending.clear()
+                continue
 
-            for r in re_skip_tests:
-                m = r.match(line)
-                if m:
-                    name = m.group(1)
-                    if name in failed_tests:
-                        continue
-                    if name in passed_tests:
-                        continue
-                    skipped_tests.add(name)
+            match = re_pkg_done.match(line)
+            if match:
+                package = match.group(2)
+                for status, name in pending:
+                    record(status, f"{package}::{name}")
+                pending.clear()
+
+        for status, name in pending:
+            record(status, name)
 
         return TestResult(
             passed_count=len(passed_tests),
