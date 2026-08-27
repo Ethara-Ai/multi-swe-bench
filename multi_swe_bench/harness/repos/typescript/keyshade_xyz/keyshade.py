@@ -1,14 +1,150 @@
+"""Repo config for keyshade-xyz/keyshade (TypeScript / pnpm + turbo monorepo).
+
+PR #370 is contained entirely in ``packages/api-client``. The test patch moves
+two spec files onto the ``@api-client/*`` import alias; the fix patch adds the
+mapping for it (``jest.config.ts`` moduleNameMapper, ``tsconfig.json`` and
+``packages/tsconfig/base.json`` paths) alongside the new controllers. So in the
+test stage both spec files die at module resolution -- *Test suite failed to
+run* -- and Jest prints no per-test markers for them. ``parse_log`` therefore
+also emits one entry per suite file, which is what carries the
+``!PASS -> PASS`` transition ``Report.check()`` rule 3 requires.
+
+Names are repo-root-relative because ``Report._touched_by_test_patch`` matches
+them against repo-root-relative patch paths, while Jest prints paths relative
+to ``rootDir``. The run scripts announce the package and ``parse_log`` prefixes
+it back on.
+
+Only ``packages/api-client`` is run. ``apps/api``'s e2e suite cannot contribute
+to the f2p signal -- the fix patch does not touch it -- but any of its hundreds
+of shared-database tests flaking PASS->FAIL between the test and fix stages
+would trip rule 2 and void the instance.
+"""
+
 import re
-import textwrap
-from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_PACKAGE_DIR = "packages/api-client"
+
+# Shared verbatim by run.sh / test-run.sh / fix-run.sh, so the only difference
+# between the graded stages is which patch was applied before it runs.
+_TEST_BODY = """\
+export CI=true
+export NODE_ENV=e2e
+export DATABASE_URL="postgresql://prisma:prisma@localhost:5432/tests"
+export REDIS_URL="redis://localhost:6379"
+export JWT_SECRET="secret"
+export BACKEND_URL="http://localhost:4200"
+export NODE_OPTIONS="--max-old-space-size=4096"
+
+# `|| true` on the daemon starts only; the readiness probes below are the real
+# assertions and are not forgiving.
+pg_ctlcluster 15 main start || true
+for _ in $(seq 1 60); do
+    pg_isready -h 127.0.0.1 -p 5432 > /dev/null 2>&1 && break
+    sleep 1
+done
+pg_isready -h 127.0.0.1 -p 5432
+
+redis-server --daemonize yes --save '' --appendonly no || true
+for _ in $(seq 1 30); do
+    redis-cli ping > /dev/null 2>&1 && break
+    sleep 1
+done
+redis-cli ping
+
+su postgres -c "psql -tAc \\"SELECT 1 FROM pg_roles WHERE rolname='prisma'\\"" \\
+    | grep -q 1 \\
+    || su postgres -c "psql -c \\"CREATE USER prisma WITH PASSWORD 'prisma' SUPERUSER;\\""
+
+# Rebuilt every stage: without it the fix stage would inherit the rows the test
+# stage left behind and the comparison would be between two databases rather
+# than between two patch sets.
+su postgres -c "psql -c 'DROP DATABASE IF EXISTS tests;'"
+su postgres -c "psql -c 'CREATE DATABASE tests OWNER prisma;'"
+
+# Project-local prisma, never `pnpm dlx prisma`: the repo pins 5.13.0 and dlx
+# would fetch the current major against a 5.x schema.
+cd /home/{repo}/apps/api
+./node_modules/.bin/prisma migrate deploy --schema=src/prisma/schema.prisma
+
+# packages/api-client is an HTTP client; every spec needs a live backend.
+rm -f /tmp/api.log
+node dist/main > /tmp/api.log 2>&1 &
+API_PID=$!
+
+API_UP=0
+for _ in $(seq 1 180); do
+    if curl -sf http://localhost:4200/api/health > /dev/null 2>&1; then
+        API_UP=1
+        break
+    fi
+    kill -0 "$API_PID" 2>/dev/null || break
+    sleep 1
+done
+
+if [ "$API_UP" -ne 1 ]; then
+    echo "FATAL: API server never answered /api/health on :4200"
+    tail -n 200 /tmp/api.log || true
+    kill "$API_PID" 2>/dev/null || true
+    exit 1
+fi
+
+# Run from inside the package, the same code path as `pnpm run --filter=
+# api-client test`. This is what makes the fix patch's edit to jest.config.ts
+# the config actually in force; a hand-written config would discard the very
+# change under test.
+cd /home/{repo}/{package_dir}
+echo "===== PACKAGE: {package_dir} ====="
+
+# Displaces tests/config/{{setup,teardown}}.ts, which shell out to
+# `docker compose` and call `process.exit(0)`.
+set +e
+pnpm exec jest \\
+    --runInBand \\
+    --ci \\
+    --verbose \\
+    --forceExit \\
+    --globalSetup /home/noop-global.cjs \\
+    --globalTeardown /home/noop-global.cjs \\
+    > /tmp/jest.out 2>&1
+JEST_RC=$?
+set -e
+
+kill "$API_PID" 2>/dev/null || true
+wait "$API_PID" 2>/dev/null || true
+
+cat /tmp/jest.out
+echo "jest exit code: ${{JEST_RC}}"
+
+# A non-zero JEST_RC is the honest outcome of a stage with failing tests and
+# must not abort it -- the harness grades from the log text. A runner that
+# never started is a different thing, and prints no summary line; failing here
+# turns that into a loud stage failure instead of a silent 0/0/0.
+grep -qE '^(Test Suites|Tests):' /tmp/jest.out
+"""
+
 
 class keyshadeImageBase(Image):
-    """Base image: node 20 + pnpm + postgresql 15 + redis."""
+    """node:20-bookworm plus Postgres 15, Redis and pnpm 9.2.0.
+
+    The clone is a compound ``RUN`` and therefore keeps its literal URL:
+    ``DockerfileEnhancer._standardize_repo_fetch`` anchors on end-of-line and
+    skips it, so ``${REPO_URL}`` is not substituted here. That is deliberate.
+    Base commit ``2b54421b`` is reachable from **no branch** -- keyshade
+    squash-merges, so the pre-merge history line is gone from ``develop`` and a
+    plain clone cannot check it out (measured 2026-08-27: ``git cat-file -t``
+    fails on a fresh clone, and ``git for-each-ref --contains`` finds it only
+    under ``refs/pull/*/head``). The enhancer's standardised block clones and
+    immediately runs ``git checkout ${BASE_COMMIT}`` with no opportunity to
+    fetch PR refs in between, so the fetch has to live in the clone itself.
+    ``_inject_final_sanitize`` still appends the hardening block before ``CMD``,
+    and that block deletes every ref before asserting
+    ``rev-list --all == rev-list HEAD``, so the extra PR refs do not survive
+    into the image.
+    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -22,8 +158,10 @@ class keyshadeImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:20"
+    def dependency(self) -> str | Image:
+        # bookworm, not alpine: the Prisma engines are glibc binaries. Debian 12
+        # is also what makes the /etc/postgresql/15 path below correct.
+        return "node:20-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -40,10 +178,15 @@ class keyshadeImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
+            # This PR's head ref first (cheap); fall back to every PR head only
+            # if the base commit is still absent.
             code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo} && "
-                f"cd /home/{self.pr.repo} && "
-                f"git fetch origin '+refs/pull/*/head:refs/remotes/origin/pr/*/head' '+refs/pull/*/merge:refs/remotes/origin/pr/*/merge'"
+                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo} && \\\n"
+                f"    cd /home/{self.pr.repo} && \\\n"
+                f"    git fetch --no-tags origin "
+                f"'+refs/pull/{self.pr.number}/head:refs/remotes/origin/pr/{self.pr.number}/head' && \\\n"
+                f"    (git cat-file -e ${{BASE_COMMIT}} 2>/dev/null || \\\n"
+                f"     git fetch --no-tags origin '+refs/pull/*/head:refs/remotes/origin/pr/*/head')"
             )
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
@@ -53,18 +196,21 @@ class keyshadeImageBase(Image):
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git postgresql postgresql-client redis-server curl \\
+    ca-certificates curl git postgresql postgresql-client \\
+    redis-server redis-tools \\
     && rm -rf /var/lib/apt/lists/*
 
-# Configure PostgreSQL for trust auth (no password needed)
+# The suite reaches Postgres over 127.0.0.1 as `prisma`; peer/scram both break that.
 RUN sed -i 's/peer/trust/g' /etc/postgresql/15/main/pg_hba.conf && \\
-    sed -i 's/scram-sha-256/trust/g' /etc/postgresql/15/main/pg_hba.conf
+    sed -i 's/scram-sha-256/trust/g' /etc/postgresql/15/main/pg_hba.conf && \\
+    sed -i 's/md5/trust/g' /etc/postgresql/15/main/pg_hba.conf
 
-RUN npm install -g pnpm
+# The repo's own `packageManager` field. Unpinned, this installs the current
+# major against a lockfileVersion 9.0 lockfile.
+RUN npm install -g pnpm@9.2.0
+
 {code}
 
 WORKDIR /home/{self.pr.repo}
@@ -79,7 +225,7 @@ CMD ["/bin/bash"]
 
 
 class keyshadeImageDefault(Image):
-    """PR-specific image: checkout base, install deps, build all packages."""
+    """Per-PR image: checkout base, install the workspace, compile apps/api."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -103,11 +249,21 @@ class keyshadeImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        apply_opts = '--whitespace=nowarn --exclude="pnpm-lock.yaml"'
+        body = _TEST_BODY.format(repo=self.pr.repo, package_dir=_PACKAGE_DIR)
 
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(
+                ".",
+                "noop-global.cjs",
+                """\
+// .cjs, not .js: jest.config.ts maps '^.+\\.[tj]s$' through ts-jest and the
+// repo's tsconfig has no allowJs, so a .js hook would be handed to ts-jest and
+// throw.
+module.exports = async () => {};
+""",
+            ),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -135,115 +291,30 @@ exit 0
                 """\
 #!/bin/bash
 set -e
+
 cd /home/{repo}
 git reset --hard
+git clean -fdx
 bash /home/check_git_changes.sh
 git checkout {base_sha}
 bash /home/check_git_changes.sh
 
+# `|| true` only here: a native-module compile failure must not abort the
+# build. Nothing that runs tests uses it.
 pnpm install --frozen-lockfile || pnpm install || true
-""".format(
-                    repo=self.pr.repo,
-                    base_sha=self.pr.base.sha,
-                ),
-            ),
-            File(
-                ".",
-                "start_services.sh",
-                """\
-#!/bin/bash
-# Start PostgreSQL and Redis, create test database, deploy migrations.
-# Sourced by run/test-run/fix-run scripts.
 
-set -e
-
-export DATABASE_URL="postgresql://prisma:prisma@localhost:5432/tests"
-export REDIS_URL="redis://localhost:6379"
-export JWT_SECRET="secret"
-export NODE_ENV="e2e"
-export NODE_OPTIONS="--max-old-space-size=4096"
-
-# Start PostgreSQL
-pg_ctlcluster 15 main start || true
-sleep 1
-
-# Create user and database matching docker-compose-test.yml
-su - postgres -c "psql -c \\"CREATE USER prisma WITH PASSWORD 'prisma' SUPERUSER;\\"" 2>/dev/null || true
-su - postgres -c "psql -c \\"CREATE DATABASE tests OWNER prisma;\\"" 2>/dev/null || true
-
-# Start Redis
-redis-server --daemonize yes || true
-
+# Compiled once, at build time: the fix patch does not touch apps/api, so a
+# per-stage rebuild could only introduce differences between stages. dist and
+# node_modules are gitignored, so this leaves the tree clean for the git apply
+# in test-run.sh / fix-run.sh. Not `|| true` -- a broken build fails the image
+# here rather than three times as "API server never answered".
+cd /home/{repo}/apps/api
+./node_modules/.bin/prisma generate --schema=src/prisma/schema.prisma
 cd /home/{repo}
+pnpm exec turbo run build --filter=api
 
-# Use project-local prisma (apps/api/node_modules/.bin/prisma) — npx/pnpm dlx download latest Prisma 7 which breaks old schemas
-PRISMA_BIN="./apps/api/node_modules/.bin/prisma"
-if [ ! -f "$PRISMA_BIN" ]; then
-  PRISMA_BIN="$(find /home/{repo}/node_modules -name prisma -path '*/node_modules/.bin/prisma' -print -quit 2>/dev/null)"
-fi
-export PRISMA_BIN
-$PRISMA_BIN generate --schema=apps/api/src/prisma/schema.prisma || true
-DATABASE_URL="$DATABASE_URL" $PRISMA_BIN migrate deploy --schema=apps/api/src/prisma/schema.prisma || true
-""".format(repo=self.pr.repo),
-            ),
-            File(
-                ".",
-                "run_tests.sh",
-                """\
-#!/bin/bash
-# Run targeted tests for all testable packages.
-# PostgreSQL, Redis, and migrations must already be running (via start_services.sh).
-
-set -e
-cd /home/{repo}
-
-export DATABASE_URL="postgresql://prisma:prisma@localhost:5432/tests"
-export REDIS_URL="redis://localhost:6379"
-export JWT_SECRET="secret"
-export NODE_ENV="e2e"
-export BACKEND_URL="http://localhost:4200"
-
-echo "===== Building all packages ====="
-pnpm run build || true
-
-echo "===== Running secret-scan tests ====="
-pnpm run --filter @keyshade/secret-scan test || true
-
-echo "===== Running schema tests ====="
-pnpm run --filter @keyshade/schema test || true
-
-echo "===== Running API e2e tests ====="
-# Run e2e tests directly with jest (skip e2e:prepare which uses docker compose)
-cd apps/api
-npx jest --runInBand --config=jest.e2e-config.ts --forceExit || true
-cd /home/{repo}
-
-echo "===== Resetting database for api-client tests ====="
-su - postgres -c "psql -c 'DROP DATABASE IF EXISTS tests;'" 2>/dev/null || true
-su - postgres -c "psql -c 'CREATE DATABASE tests OWNER prisma;'" 2>/dev/null || true
-DATABASE_URL="$DATABASE_URL" $PRISMA_BIN migrate deploy --schema=apps/api/src/prisma/schema.prisma || true
-
-echo "===== Starting API server for api-client tests ====="
-cd apps/api
-node dist/main &
-API_PID=$!
-cd /home/{repo}
-
-for i in $(seq 1 30); do
-  if curl -s http://localhost:4200/api/health > /dev/null 2>&1; then
-    echo "API server ready after ${{i}}s"
-    break
-  fi
-  sleep 1
-done
-
-echo "===== Running api-client tests ====="
-cd packages/api-client
-BACKEND_URL="http://localhost:4200" npx jest --runInBand --globalSetup= --globalTeardown= || true
-cd /home/{repo}
-
-kill $API_PID 2>/dev/null || true
-""".format(repo=self.pr.repo),
+bash /home/check_git_changes.sh
+""".format(repo=self.pr.repo, base_sha=self.pr.base.sha),
             ),
             File(
                 ".",
@@ -252,9 +323,9 @@ kill $API_PID 2>/dev/null || true
 #!/bin/bash
 set -eo pipefail
 
-source /home/start_services.sh
-bash /home/run_tests.sh
-""",
+cd /home/{repo}
+""".format(repo=self.pr.repo)
+                + body,
             ),
             File(
                 ".",
@@ -264,17 +335,12 @@ bash /home/run_tests.sh
 set -eo pipefail
 
 cd /home/{repo}
-git apply {apply_opts} /home/test.patch || \
-  (git reset --hard && git apply {apply_opts} --3way /home/test.patch) || true
-
-pnpm install --frozen-lockfile || pnpm install || true
-
-source /home/start_services.sh
-bash /home/run_tests.sh
-""".format(
-                    repo=self.pr.repo,
-                    apply_opts=apply_opts,
-                ),
+if ! git apply --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply of test.patch failed" >&2
+    exit 1
+fi
+""".format(repo=self.pr.repo)
+                + body,
             ),
             File(
                 ".",
@@ -284,17 +350,12 @@ bash /home/run_tests.sh
 set -eo pipefail
 
 cd /home/{repo}
-git apply {apply_opts} /home/test.patch /home/fix.patch || \
-  (git reset --hard && git apply {apply_opts} --3way /home/test.patch /home/fix.patch) || true
-
-pnpm install --frozen-lockfile || pnpm install || true
-
-source /home/start_services.sh
-bash /home/run_tests.sh
-""".format(
-                    repo=self.pr.repo,
-                    apply_opts=apply_opts,
-                ),
+if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+    echo "Error: git apply of test.patch + fix.patch failed" >&2
+    exit 1
+fi
+""".format(repo=self.pr.repo)
+                + body,
             ),
         ]
 
@@ -307,59 +368,145 @@ bash /home/run_tests.sh
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        proxy_setup = ""
-        proxy_cleanup = ""
-
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p $HOME && \\
-                        touch $HOME/.npmrc && \\
-                        echo "proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "https-proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "strict-ssl=false" >> $HOME/.npmrc
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f $HOME/.npmrc
-                """
-                )
-
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
-{proxy_setup}
-
 {copy_commands}
 
 RUN bash /home/prepare.sh
-
-{proxy_cleanup}
 
 {self.clear_env}
 
 """
 
 
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+_PKG_MARKER = re.compile(r"^=+\s*PACKAGE:\s*(\S+)\s*=+$")
+# `PASS api tests/project.spec.ts (7.4 s)` / `FAIL api tests/project.spec.ts`.
+# The `api` between the status and the path is jest.config.ts's
+# `displayName`, which the default reporter always renders; the non-greedy
+# `(?:\S+\s+)*?` skips it (and any future displayName) without swallowing the
+# path itself.
+_SUITE_LINE = re.compile(
+    r"^\s*(PASS|FAIL)\s+(?:\S+\s+)*?(\S+\.[cm]?[tj]sx?)(?:\s+\(.*\))?\s*$"
+)
+# Jest's verbose tree; indentation is the only thing carrying describe nesting.
+_PASS_LINE = re.compile(r"^(\s+)[✓✔√]\s+(.+?)\s*$")
+_FAIL_LINE = re.compile(r"^(\s+)[✕✗×]\s+(.+?)\s*$")
+_SKIP_LINE = re.compile(r"^(\s+)[○◌◯✎]\s+(?:skipped|todo)?\s*(.+?)\s*$")
+# The failure epilogue repeats `Suite > test` names in a different shape and
+# would corrupt the indentation stack if parsed as tree lines.
+_DETAIL_LINE = re.compile(r"^\s*●")
+# Jest's console relay and stack frames, which would otherwise be pushed onto
+# the stack as describe headers.
+_NOISE_LINE = re.compile(r"^\s*(?:console\.\w+|at\s)")
+_SUMMARY_LINE = re.compile(r"^\s*(?:Test Suites|Tests|Snapshots|Time|Ran all)\b")
+# Durations vary run to run; an unstripped one makes the same test a different
+# name in each stage, which surfaces as the anomaly rule 4 rejects.
+_DURATION = re.compile(r"\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\)\s*$")
+
+
+def parse_jest_verbose_log(log: str) -> TestResult:
+    """Parse ``jest --verbose`` output into repo-root-relative test names.
+
+    Emits one entry per suite file, named by its path -- the only signal
+    available when a file fails to compile -- and one per test, named
+    ``<path> > <describe...> > <test>``.
+    """
+    passed_tests: set[str] = set()
+    failed_tests: set[str] = set()
+    skipped_tests: set[str] = set()
+
+    prefix = ""
+    current_file: str | None = None
+    stack: list[tuple[int, str]] = []
+    in_detail = False
+
+    def path_for(indent: int, leaf: str) -> str:
+        parts = [current_file] if current_file else []
+        parts.extend(name for width, name in stack if width < indent)
+        parts.append(leaf)
+        return " > ".join(parts)
+
+    for raw in log.splitlines():
+        line = ANSI_ESCAPE.sub("", raw).rstrip()
+
+        m = _PKG_MARKER.match(line)
+        if m:
+            prefix = m.group(1).rstrip("/") + "/"
+            current_file, stack, in_detail = None, [], False
+            continue
+
+        m = _SUITE_LINE.match(line)
+        if m:
+            status, path = m.group(1), prefix + m.group(2)
+            current_file, stack, in_detail = path, [], False
+            if status == "PASS":
+                passed_tests.add(path)
+            else:
+                failed_tests.add(path)
+                passed_tests.discard(path)
+            continue
+
+        if _SUMMARY_LINE.match(line):
+            current_file, stack, in_detail = None, [], False
+            continue
+
+        if _DETAIL_LINE.match(line):
+            in_detail = True
+            continue
+
+        if _NOISE_LINE.match(line):
+            current_file, stack, in_detail = None, [], False
+            continue
+
+        if in_detail or current_file is None or not line.strip():
+            continue
+
+        m = _PASS_LINE.match(line)
+        if m:
+            passed_tests.add(path_for(len(m.group(1)), _DURATION.sub("", m.group(2))))
+            continue
+
+        m = _FAIL_LINE.match(line)
+        if m:
+            failed_tests.add(path_for(len(m.group(1)), _DURATION.sub("", m.group(2))))
+            continue
+
+        m = _SKIP_LINE.match(line)
+        if m:
+            skipped_tests.add(path_for(len(m.group(1)), _DURATION.sub("", m.group(2))))
+            continue
+
+        # Anything else still inside a suite block is a describe header.
+        indent = len(line) - len(line.lstrip())
+        if indent >= 2:
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            stack.append((indent, line.strip()))
+
+    # TestResult.__post_init__ rejects overlapping sets.
+    passed_tests -= failed_tests
+    passed_tests -= skipped_tests
+    skipped_tests -= failed_tests
+
+    return TestResult(
+        passed_count=len(passed_tests),
+        failed_count=len(failed_tests),
+        skipped_count=len(skipped_tests),
+        passed_tests=passed_tests,
+        failed_tests=failed_tests,
+        skipped_tests=skipped_tests,
+    )
+
+
 @Instance.register("keyshade-xyz", "keyshade")
 class Keyshade(Instance):
-    """keyshade-xyz/keyshade: pnpm + turbo monorepo, Jest tests (e2e + unit)."""
+    """Registered on the bare ``org/repo`` key: the raw dataset carries neither
+    ``tag`` nor ``number_interval``, which is what ``Instance.create`` resolves on.
+    """
 
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -370,7 +517,7 @@ class Keyshade(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image | None:
         return keyshadeImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -388,99 +535,5 @@ class Keyshade(Instance):
             return fix_patch_run_cmd
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
-
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-
-        re_suite_pass = re.compile(r"^\s*PASS\s+(.+?)(?:\s+\(\d+[\.\d]*\s*m?s\))?\s*$")
-        re_suite_fail = re.compile(r"^\s*FAIL\s+(.+?)(?:\s+\(\d+[\.\d]*\s*m?s\))?\s*$")
-
-        re_pass = re.compile(r"^\s*[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$")
-        re_fail = re.compile(r"^\s*[✕✗×]\s+(.+?)(?:\s+\(\d+\s*m?s\))?\s*$")
-        re_skip = re.compile(
-            r"^\s*[○◌]\s+(?:skipped\s+)?(.+?)(?:\s+\(\d+\s*m?s\))?\s*$"
-        )
-
-        re_summary = re.compile(
-            r"Tests:\s+"
-            r"(?:(\d+)\s+passed)?"
-            r"(?:,?\s*(\d+)\s+failed)?"
-            r"(?:,?\s*(\d+)\s+skipped)?"
-            r"(?:,?\s*(\d+)\s+todo)?"
-            r"(?:,?\s*(\d+)\s+total)?"
-        )
-
-        current_suite = ""
-        total_summary_passed = 0
-        total_summary_failed = 0
-        total_summary_skipped = 0
-
-        for line in test_log.splitlines():
-            clean = ansi_escape.sub("", line)
-
-            m = re_suite_pass.match(clean)
-            if m:
-                suite_path = m.group(1).strip()
-                if suite_path.endswith((".ts", ".js", ".tsx", ".jsx")):
-                    current_suite = suite_path
-                    passed_tests.add(f"SUITE:{suite_path}")
-                continue
-
-            m = re_suite_fail.match(clean)
-            if m:
-                suite_path = m.group(1).strip()
-                if suite_path.endswith((".ts", ".js", ".tsx", ".jsx")):
-                    current_suite = suite_path
-                    failed_tests.add(f"SUITE:{suite_path}")
-                    passed_tests.discard(f"SUITE:{suite_path}")
-                continue
-
-            m = re_summary.search(clean)
-            if m and m.group(5):
-                total_summary_passed += int(m.group(1) or 0)
-                total_summary_failed += int(m.group(2) or 0)
-                total_summary_skipped += int(m.group(3) or 0)
-                continue
-
-            m = re_pass.match(clean)
-            if m:
-                test_name = m.group(1).strip()
-                if "Prisma Client" in test_name or "Generated" in test_name:
-                    continue
-                if current_suite:
-                    test_name = f"{current_suite} > {test_name}"
-                passed_tests.add(test_name)
-                continue
-
-            m = re_fail.match(clean)
-            if m:
-                test_name = m.group(1).strip()
-                if current_suite:
-                    test_name = f"{current_suite} > {test_name}"
-                failed_tests.add(test_name)
-                passed_tests.discard(test_name)
-                continue
-
-            m = re_skip.match(clean)
-            if m:
-                test_name = m.group(1).strip()
-                if current_suite:
-                    test_name = f"{current_suite} > {test_name}"
-                skipped_tests.add(test_name)
-                continue
-
-        passed_tests -= failed_tests
-        passed_tests -= skipped_tests
-        skipped_tests -= failed_tests
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+    def parse_log(self, log: str) -> TestResult:
+        return parse_jest_verbose_log(log)
