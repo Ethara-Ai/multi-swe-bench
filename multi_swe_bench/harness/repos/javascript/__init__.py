@@ -176,5 +176,6 @@ from multi_swe_bench.harness.repos.javascript.mindsers import *
 from multi_swe_bench.harness.repos.javascript.WordPress import *
 from multi_swe_bench.harness.repos.javascript.vaadin import *
 from multi_swe_bench.harness.repos.javascript.moleculerjs import *
+from multi_swe_bench.harness.repos.javascript.siimon import *
 from multi_swe_bench.harness.repos.javascript.mac_s_g import *
 from multi_swe_bench.harness.repos.javascript.medic import *

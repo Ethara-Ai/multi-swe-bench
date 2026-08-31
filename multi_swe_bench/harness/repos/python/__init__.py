@@ -18,6 +18,7 @@ from multi_swe_bench.harness.repos.python.astropy import *
 from multi_swe_bench.harness.repos.python.aws import *
 from multi_swe_bench.harness.repos.python.aws_cloudformation import *
 from multi_swe_bench.harness.repos.python.bcgov import *
+from multi_swe_bench.harness.repos.python.bcollazo import *
 from multi_swe_bench.harness.repos.python.beetbox import *
 from multi_swe_bench.harness.repos.python.beeware import *
 from multi_swe_bench.harness.repos.python.BGmi import *

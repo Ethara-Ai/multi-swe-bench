@@ -212,7 +212,7 @@ if command -v forc >/dev/null 2>&1; then
     fi
 fi
 
-cargo test --workspace
+cargo test --workspace --no-fail-fast
 
 """.format(pr=self.pr),
             ),
@@ -238,7 +238,7 @@ if command -v forc >/dev/null 2>&1; then
     fi
 fi
 
-cargo test --workspace
+cargo test --workspace --no-fail-fast
 
 """.format(pr=self.pr),
             ),
@@ -264,7 +264,7 @@ if command -v forc >/dev/null 2>&1; then
     fi
 fi
 
-cargo test --workspace
+cargo test --workspace --no-fail-fast
 
 """.format(pr=self.pr),
             ),
