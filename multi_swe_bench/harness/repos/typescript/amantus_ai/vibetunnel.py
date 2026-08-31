@@ -1,11 +1,4 @@
-"""amantus-ai/vibetunnel config.
-
-Monorepo: web/ subdir has Node.js server + web UI (pnpm, vitest).
-PR #1 base has no web/ dir (Rust-only era) — tests added via patch.
-"""
-
 import re
-from typing import Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -25,7 +18,7 @@ class VibetunnelImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
+    def dependency(self) -> str | Image:
         return "node:22-bookworm"
 
     def image_tag(self) -> str:
@@ -79,7 +72,7 @@ class VibetunnelImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, Image]:
+    def dependency(self) -> str | Image:
         return VibetunnelImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
@@ -94,24 +87,70 @@ class VibetunnelImageDefault(Image):
             File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""".format(),
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """\
 #!/bin/bash
 set -e
 
-cd /home/{repo}
-git reset --hard
-git checkout {base_sha}
+export PUPPETEER_SKIP_DOWNLOAD=true
 
-# web/ may not exist at earliest commits (Rust-only era)
-if [ -d web ]; then
-    cd web
-    pnpm install --frozen-lockfile || pnpm install || true
-    if [ -d node-pty ]; then
-        cd node-pty && npm install && npm run build && cd ..
+step() {{
+    label="$1"; shift
+    echo "===== prepare: ${{label}} ====="
+    if ! "$@"; then
+        echo "prepare: FAILED at '${{label}}' -- aborting the image build." >&2
+        exit 1
     fi
-fi
-""".format(repo=self.pr.repo, base_sha=self.pr.base.sha),
+}}
+
+fetch_base() {{
+    git cat-file -e {base_sha} 2>/dev/null \\
+        || git fetch --quiet https://github.com/{org}/{repo}.git {base_sha}
+}}
+
+install_web() {{
+    pnpm install --frozen-lockfile || pnpm install
+}}
+
+build_node_pty() {{
+    cd node-pty && npm install && npm run build && cd ..
+}}
+
+cd /home/{repo}
+
+step "reset worktree" git reset --hard
+step "verify clean tree after reset" bash /home/check_git_changes.sh
+step "fetch base commit {base_sha}" fetch_base
+step "checkout {base_sha}" git checkout {base_sha}
+step "verify clean tree after checkout" bash /home/check_git_changes.sh
+step "locate web directory" test -d web
+
+cd web
+
+step "pnpm install" install_web
+step "build node-pty" build_node_pty
+""".format(org=self.pr.org, repo=self.pr.repo, base_sha=self.pr.base.sha),
             ),
             File(
                 ".",
@@ -120,16 +159,8 @@ fi
 #!/bin/bash
 set -eo pipefail
 
-cd /home/{repo}
-
-if [ ! -d web ]; then
-    echo "No web/ directory — skipping tests"
-    exit 0
-fi
-
-cd web
-pnpm install --frozen-lockfile || pnpm install || true
-npx vitest run --reporter=verbose
+cd /home/{repo}/web
+CI=true npx vitest run --reporter=verbose --no-file-parallelism
 """.format(repo=self.pr.repo),
             ),
             File(
@@ -142,17 +173,8 @@ set -eo pipefail
 cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch
 
-if [ ! -d web ]; then
-    echo "No web/ directory — skipping tests"
-    exit 0
-fi
-
 cd web
-pnpm install --frozen-lockfile || pnpm install || true
-if [ -d node-pty ]; then
-    cd node-pty && npm install && npm run build && cd ..
-fi
-npx vitest run --reporter=verbose
+CI=true npx vitest run --reporter=verbose --no-file-parallelism
 """.format(repo=self.pr.repo),
             ),
             File(
@@ -165,17 +187,8 @@ set -eo pipefail
 cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
-if [ ! -d web ]; then
-    echo "No web/ directory — skipping tests"
-    exit 0
-fi
-
 cd web
-pnpm install --frozen-lockfile || pnpm install || true
-if [ -d node-pty ]; then
-    cd node-pty && npm install && npm run build && cd ..
-fi
-npx vitest run --reporter=verbose
+CI=true npx vitest run --reporter=verbose --no-file-parallelism
 """.format(repo=self.pr.repo),
             ),
         ]
@@ -238,21 +251,40 @@ class VIBETUNNEL(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+        clean_log = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]|\x00", "", test_log)
 
-        # vitest verbose output: ✓ <test name> or ✔ <test name>
-        re_pass = re.compile(r"^\s*[✓✔]\s+(.+?)(?:\s+\(\d+[^)]*\))?(?:\s+\d+m?s)?$", re.MULTILINE)
-        re_fail = re.compile(r"^\s*[×✗✘]\s+(.+?)(?:\s+\(\d+[^)]*\))?(?:\s+\d+m?s)?$", re.MULTILINE)
-        re_skip = re.compile(r"^\s*↓\s+(.+?)(?:\s+\[skipped\])?$", re.MULTILINE)
+        spec_re = r"\S+\.(?:test|spec)\.[cm]?[jt]sx?"
+        duration_re = r"(?:\s+\d+(?:\.\d+)?\s*(?:ms|s))?"
+        case_re = re.compile(
+            rf"^\s*(?P<marker>[✓✔√×✕✖✗✘↓○])\s+"
+            rf"(?P<name>{spec_re}\s+>\s+.*?)"
+            rf"{duration_re}\s*$",
+            re.MULTILINE,
+        )
+        fail_case_re = re.compile(
+            rf"^\s*FAIL\s+(?P<name>{spec_re}\s+>\s+.+?)\s*$", re.MULTILINE
+        )
 
-        for m in re_pass.finditer(clean_log):
-            passed_tests.add(m.group(1).strip())
-        for m in re_fail.finditer(clean_log):
-            failed_tests.add(m.group(1).strip())
-        for m in re_skip.finditer(clean_log):
-            skipped_tests.add(m.group(1).strip())
+        pass_markers = {"✓", "✔", "√"}
+        fail_markers = {"×", "✕", "✖", "✗", "✘"}
+        skip_markers = {"↓", "○"}
+
+        for m in case_re.finditer(clean_log):
+            marker = m.group("marker")
+            name = m.group("name").strip()
+            if marker in pass_markers:
+                passed_tests.add(name)
+            elif marker in fail_markers:
+                failed_tests.add(name)
+            elif marker in skip_markers:
+                skipped_tests.add(name)
+
+        for m in fail_case_re.finditer(clean_log):
+            failed_tests.add(m.group("name").strip())
 
         passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
