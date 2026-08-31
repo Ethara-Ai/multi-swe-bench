@@ -141,7 +141,7 @@ go test -v -count=1 -mod=vendor ./... || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
 go test -v -count=1 -mod=vendor ./...
@@ -152,10 +152,10 @@ go test -v -count=1 -mod=vendor ./...
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
-git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+git apply --whitespace=nowarn /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --whitespace=nowarn --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
 go test -v -count=1 -mod=vendor ./...
 
 """.format(pr=self.pr),
@@ -164,10 +164,10 @@ go test -v -count=1 -mod=vendor ./...
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --whitespace=nowarn --reject /home/test.patch 2>&1 || true; git apply --whitespace=nowarn --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
 go test -v -count=1 -mod=vendor ./...
 
 """.format(pr=self.pr),
@@ -199,6 +199,7 @@ go test -v -count=1 -mod=vendor ./...
 
 
 def _parse_go_test_log(test_log: str) -> TestResult:
+    test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
     passed_tests: set[str] = set()
     failed_tests: set[str] = set()
     skipped_tests: set[str] = set()

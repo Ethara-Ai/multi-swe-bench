@@ -93,6 +93,7 @@ from multi_swe_bench.harness.repos.python.fecgov import *
 from multi_swe_bench.harness.repos.python.fetchai import *
 from multi_swe_bench.harness.repos.python.fonttools import *
 from multi_swe_bench.harness.repos.python.fractal_analytics_platform import *
+from multi_swe_bench.harness.repos.python.frgfm import *
 from multi_swe_bench.harness.repos.python.freedomofpress import *
 from multi_swe_bench.harness.repos.python.freqtrade import *
 from multi_swe_bench.harness.repos.python.frictionlessdata import *

@@ -201,7 +201,8 @@ from multi_swe_bench.harness.repos.golang.opendatahub_io import *
 from multi_swe_bench.harness.repos.golang.aarondl import *
 from multi_swe_bench.harness.repos.golang.kubestone import *
 from multi_swe_bench.harness.repos.golang.ergochat import *
-# from multi_swe_bench.harness.repos.golang.llir import *
+# [neutralized: module golang/llir does not exist (registration pushed without the package) — blocks whole golang registry]
+# # from multi_swe_bench.harness.repos.golang.llir import *
 from multi_swe_bench.harness.repos.golang.livepeer import *
 from multi_swe_bench.harness.repos.golang.GoogleContainerTools import *
 from multi_swe_bench.harness.repos.golang.ko_build import *
