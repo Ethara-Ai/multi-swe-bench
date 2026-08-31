@@ -5,6 +5,7 @@ from multi_swe_bench.harness.repos.python.agno_agi import *
 from multi_swe_bench.harness.repos.python.AgnostiqHQ import *
 from multi_swe_bench.harness.repos.python.agronholm import *
 from multi_swe_bench.harness.repos.python.aiidateam import *
+from multi_swe_bench.harness.repos.python.aimhubio import *
 from multi_swe_bench.harness.repos.python.aio_libs import *
 from multi_swe_bench.harness.repos.python.airbytehq import *
 from multi_swe_bench.harness.repos.python.All_Hands_AI import *
