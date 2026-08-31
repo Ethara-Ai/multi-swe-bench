@@ -226,3 +226,6 @@ from multi_swe_bench.harness.repos.typescript.Semro import *
 from multi_swe_bench.harness.repos.typescript.will_stone import *
 
 from multi_swe_bench.harness.repos.typescript.tiagosiebler import *
+
+from multi_swe_bench.harness.repos.typescript.zwave_js import *
+from multi_swe_bench.harness.repos.typescript.wei import *
