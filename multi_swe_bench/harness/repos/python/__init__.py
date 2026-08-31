@@ -407,3 +407,4 @@ from multi_swe_bench.harness.repos.python.ResonantGeoData import *
 from multi_swe_bench.harness.repos.python.novaweb_mobi import *
 from multi_swe_bench.harness.repos.python.histolab import *
 from multi_swe_bench.harness.repos.python.kornia_rs import *
+from multi_swe_bench.harness.repos.python.speechbrain import *
