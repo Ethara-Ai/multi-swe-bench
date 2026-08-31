@@ -47,8 +47,11 @@ if not getattr(_pull_request.PullRequest, "_lg_number_interval_patched", False):
                 and raw.get("prs_in_bundle")
             ):
                 # Stash only — do NOT set pr.number_interval (routing key).
+                # Dash-joined EXPLICIT bundle list -- never a range like "146-157",
+                # which would wrongly imply every PR in between is included.
+                # [146, 147, 150, 155, 157] -> "146-147-150-155-157"
                 pr._lg_number_interval = "-".join(
-                    str(p) for p in raw["prs_in_bundle"]
+                    str(p).strip() for p in raw["prs_in_bundle"] if str(p).strip()
                 )
         except Exception:
             pass
@@ -69,8 +72,14 @@ if not getattr(_pull_request.PullRequest, "_lg_number_interval_patched", False):
         def _lg_build(cls, pr, report):
             ds = _lg_orig_build(cls, pr, report)
             ni = getattr(pr, "_lg_number_interval", "")
-            if ni:
-                ds.number_interval = ni
+            if not ni:
+                # No usable prs_in_bundle on the raw record (absent, empty, or not
+                # a langchain-ai/langgraph row). Keep whatever the loader carried;
+                # otherwise fall back to the bare PR number, so the output row is
+                # NEVER empty -- SOP 11a ("single-PR instance -> just the number")
+                # and 11c ("every record non-empty number_interval").
+                ni = (ds.number_interval or "").strip() or str(pr.number)
+            ds.number_interval = ni
             return ds
 
         _Dataset.build = classmethod(_lg_build)
@@ -231,12 +240,28 @@ FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 ARG BASE_COMMIT
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 {self.global_env}
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
-    TZ=UTC
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
 
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} base image" \\
@@ -262,6 +287,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     wget \\
     libpq-dev \\
     && rm -rf /var/lib/apt/lists/*
+
+# Canonical MITM cert symlinks (verbatim from image.py _CERT_SYMLINKS).
+# This base is a `# syntax` opt-out so the enhancer never injects them;
+# SOP 2a directs adding them by hand. Placed AFTER the apt-get above so
+# /etc/ssl/certs/ca-certificates.crt already exists when they are made.
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 RUN pip install --no-cache-dir uv
 
@@ -626,3 +663,33 @@ class Langgraph(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# SOP 11b: the JSONL and this registry ship together; the trajectory team's
+# harness resolves Instance.create() -> f"{org}/{number_interval}", so every
+# dash-joined bundle value in the delivered JSONL must be a routing key here.
+# Bundle-level (one key per instance); single-era repo -> all point at Langgraph.
+# Data-derived: REGENERATE when the delivered bundle set changes.
+_BUNDLE_NIS_Langgraph = [
+    "1342-1905-2149-2435-2541-2782-2825-2826-2827-2828-2830-2834-2839-2843-2845-2846-2847-2848-2849-2850-2857-2860-2861-2865-2880-2881-2885-2888-2894-2899-2901-2902-2903-2910-2913-2914-2922-2923-2925-2926-2933-2948-2949-2951-2956-2958-2959-2960-2971-2973-2974-2976-2977-2978-2982-2984-2986-2987-2988-2989-2990-2993-2994-2995-3001-3002-3008",
+    "2006-3982-4096-4828-4926-4953-4970-5033-5034-5035-5044-5045-5047-5049-5051-5052-5055-5057-5058-5059-5060-5066-5067-5079-5080-5081-5082-5083-5093-5095-5098",
+    "2044-3126-3134-3157-3228-3229-3233-3238-3239-3241-3242-3243-3244-3248-3251-3253-3254-3255-3256-3263-3264-3268-3269-3270-3272-3274-3280-3282-3288-3290-3292-3293-3295-3297-3305-3306-3307-3308-3311-3312-3313-3315-3318-3321-3337-3338-3340-3341-3342",
+    "2071-2378-2430-2468-2502-2517-2544-2552-2580-2589-2590-2592-2593-2594-2596-2598-2600-2601-2602-2611-2612-2613-2614-2615-2616-2617-2619-2620-2621-2622-2623-2624-2625-2626-2627-2628-2629-2630-2631-2632-2633-2634-2635-2636-2637-2638-2639-2640-2641-2642-2643-2646-2649-2651-2652-2653-2655-2656-2658-2659-2660-2661-2667-2669-2670-2673-2675-2679-2682-2683-2684-2685-2686-2688-2689-2691-2692-2693-2694-2695-2696-2697-2699-2705-2720-2721-2722-2724-2725-2726-2727-2728-2735-2736-2738-2739-2742-2743-2744-2750-2752-2754-2757-2761-2762",
+    "2393-2400-2410",
+    "2494-2520-2534-2535-2536-2540-2543-2545-2546-2547-2548-2553-2554-2558-2560-2561-2562-2564-2565-2566-2567",
+    "2516-3559-3704-3725-3727-3728-3739-3740-3741-3742-3743-3745-3760-3761-3762-3763-3765-3766-3767-3773-3775-3777-3780-3781-3782-3786-3790",
+    "2700-2702-2703-2704-2706-2707-2708-2709-2710-2711-2714-2715-2716-2717-2718",
+    "3510-3516-3517-3521-3524-3525-3526-3527-3528-3533-3534-3536-3539-3540-3541-3542-3551-3553-3558-3560-3565-3568-3571-3573-3577-3578-3579-3580-3582-3583-3585-3589-3591-3596-3597-3598-3600-3601-3602-3603-3606-3607-3609-3610-3611-3620-3621-3622-3623-3624-3626-3632",
+    "3572-3588-3719-3737-3751-3823-3843-3846-3850-3852-3854-3856-3857-3859-3871-3872-3878-3879-3880-3881-3882-3883-3886-3888-3889-3890-3891-3893-3894-3896-3900-3901-3902-3905-3907-3908-3910-3912-3916-3918-3919-3922-3923-3924-3925-3926-3931-3932-3935-3944-3945-3947-3948-3949-3955-3959-3960-3962-3976-3977",
+    "4117-4122-4124",
+    "5243-5252-5295-5324-5325-5340-5341-5405-5424-5432-5481-5489-5518-5520-5529-5535-5543-5546-5559-5561-5562-5566-5569-5571-5575-5577-5580-5581-5584-5593-5597-5600-5601-5603-5605-5606-5607-5608-5611-5619-5621-5622-5635-5640",
+    "6961-6991-6992-7004-7044-7069-7070-7071-7073-7074-7075-7076-7092-7095",
+    "7038-7072-7096-7100-7102-7103-7106-7108-7115-7116-7118-7120-7122-7131-7132-7134-7135-7140-7148-7151",
+    "7233-7274-7394-7519-7573-7574-7582-7586-7594-7596-7599-7610-7623-7625-7627-7631-7635-7637-7639-7640-7643-7645-7646-7647-7648-7650-7657-7659-7660-7662-7663-7664-7665-7666-7667-7668-7670-7671-7673-7674-7675-7677-7678-7679-7680-7681-7682-7696-7697-7698-7699-7701-7702-7704-7705-7706-7710-7712-7713-7728-7732-7734",
+    "7383-7392-7429-7444-7448-7449-7450-7451-7453-7454-7456-7457-7458-7459-7468-7472-7474-7475-7476-7477-7498-7502-7503-7504-7505-7506-7507-7508-7511-7517-7518-7520-7521-7522-7523-7524-7525-7526-7527-7528-7529-7530-7531",
+    "7438-7773-7775",
+]
+
+for _ni in _BUNDLE_NIS_Langgraph:
+    Instance.register("langchain-ai", _ni)(Langgraph)
