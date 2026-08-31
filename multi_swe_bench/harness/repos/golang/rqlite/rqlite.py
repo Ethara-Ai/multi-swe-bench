@@ -1,7 +1,7 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -89,6 +89,8 @@ FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
+{DockerfileEnhancer._PROXY_ARGS}
+
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
@@ -105,6 +107,11 @@ ENV GOTOOLCHAIN=auto
 ENV GOFLAGS=-mod=mod
 # rqlite imports cgo SQLite (mattn/go-sqlite3).
 ENV CGO_ENABLED=1
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+{DockerfileEnhancer._CERT_SYMLINKS}
+
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\

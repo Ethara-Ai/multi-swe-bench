@@ -1,7 +1,7 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -163,7 +163,9 @@ class GvisorImageBase(Image):
     def dockerfile(self) -> str:
         # Shared base for every gvisor PR (built once, tag "base"). The `# syntax`
         # directive opts out of DockerfileEnhancer so this hand-written layout is
-        # used verbatim: clone FULL history + light harden only. The strict
+        # used verbatim: clone FULL history + light harden + canonical MITM
+        # (proxy ARGs/ENV + cert symlinks, hand-added from image.py constants per
+        # PIPELINE.md §2a since opt-out bases are not auto-injected). The strict
         # anti-reward-hack strip runs in the PR layer at each PR's literal base.sha.
         image_name = self.dependency()
         if isinstance(image_name, Image):
@@ -182,15 +184,17 @@ FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+ENV LC_ALL=C.UTF-8
 
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 WORKDIR /home/
 
