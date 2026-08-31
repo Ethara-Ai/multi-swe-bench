@@ -1,7 +1,7 @@
 import json as _json
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -180,14 +180,30 @@ class TfsecImageBase(Image):
 
         # This Dockerfile is emitted verbatim (the leading `# syntax` directive
         # makes DockerfileEnhancer.enhance() early-return), so the enhancer's
-        # infrastructure block is NOT applied here. We hand-write only the
-        # ARGs/ENV/LABEL we want and DELIBERATELY OMIT the enhancer's proxy and
-        # certificate injection: no proxy build-args (http_proxy/https_proxy/
-        # no_proxy & their upper-case forms), no proxy/SSL ENVs (SSL_CERT_FILE/
-        # REQUESTS_CA_BUNDLE/CURL_CA_BUNDLE/CA_CERT_PATH), no CA-cert symlink
-        # block, and no MITM secret mount. The plain `ca-certificates` apt
-        # package below is unrelated — it is the standard CA bundle required for
-        # HTTPS `git clone` and `go mod download`, not injected proxy/cert config.
+        # infrastructure block is NOT applied here. The canonical MITM
+        # proxy/cert scaffolding is therefore RE-ADDED BY HAND below, in the
+        # enhancer's own order (ARGs -> ENV -> LABEL -> cert symlinks), and is
+        # sourced DIRECTLY from the DockerfileEnhancer constants rather than
+        # retyped -- so the emitted text matches `image.py` verbatim and cannot
+        # drift out of sync with it (PIPELINE.md 2a/8).
+        #
+        # Nothing rogue is added: no hardcoded proxy IP, no GIT_SSL_NO_VERIFY,
+        # no sslVerify=false, no --insecure, no `update-ca-certificates` beyond
+        # the injected symlinks. `_MITM_MOUNT` stays LATENT here exactly as it
+        # is in image.py (never injected); wiring it would also require
+        # `docker build --secret id=mitm_ca,src=<ca.crt>`.
+        #
+        # The proxy ARGs keep their EMPTY defaults (= passthrough) unless a
+        # build passes `--build-arg http_proxy=...`; build_dataset.py only ever
+        # passes REPO_URL/BASE_COMMIT, so under the normal pipeline this is
+        # scaffolding + CA trust, not an active interception.
+        #
+        # The Go-specific ENV (CGO_ENABLED/GOTOOLCHAIN/GOFLAGS) is kept in its
+        # own ENV so the canonical block stays byte-identical to image.py; the
+        # canonical block already supplies DEBIAN_FRONTEND/LANG/TZ with exactly
+        # the values this base used before. The plain `ca-certificates` apt
+        # package below is unrelated and pre-existing -- it is the standard CA
+        # bundle required for HTTPS `git clone` and `go mod download`.
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
@@ -195,10 +211,11 @@ ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 ARG BASE_COMMIT
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    TZ=UTC \\
-    LANG=C.UTF-8 \\
-    CGO_ENABLED=0 \\
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+ENV CGO_ENABLED=0 \\
     GOTOOLCHAIN=auto \\
     GOFLAGS="-buildvcs=false -mod=mod"
 
@@ -206,6 +223,8 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 WORKDIR /home/
 
@@ -393,7 +412,27 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
         '; \\
     fi"""
 
+        # Canonical MITM proxy/cert scaffolding, re-added by hand for the same
+        # reason as in TfsecImageBase: this image's dependency() returns an
+        # Image, so DockerfileEnhancer.enhance() early-returns and injects
+        # nothing. Emitted from the enhancer constants (verbatim, no drift) and
+        # placed right after FROM so prepare.sh's `go mod download` runs with
+        # the proxy/CA env in scope. ENV would otherwise be inherited from the
+        # base, but the enhancer re-emits this block on every image it touches,
+        # so mirroring it here keeps per-PR Dockerfiles auditable on their own
+        # (PIPELINE.md 8 greps `workdir/.../images/*/Dockerfile`).
+        #
+        # NOTE: no build args are passed for an Image-typed dependency
+        # (build_dataset.py:623), so these ARGs always take their empty
+        # defaults here -- i.e. passthrough, and a non-empty proxy baked into
+        # the base would be reset to empty at this layer.
         return f"""FROM {name}:{tag}
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 {self.global_env}
 
@@ -437,3 +476,60 @@ class TFSEC(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         return parse_go_test_log(log)
+
+
+# ---------------------------------------------------------------------------
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+#
+# PIPELINE.md 11b: the JSONL and the registry ship together, and the trajectory
+# team's harness routes via Instance.create() -> "{org}/{number_interval}".
+# Every dash-joined bundle value must therefore be a registered key or the run
+# dies with `ValueError: Instance 'aquasecurity/<ni>' is not registered.`
+#
+# BUNDLE-level, not PR-level: exactly ONE key per instance (19 keys for the 19
+# bundles in aquasecurity__tfsec_usable19.jsonl), each the FULL dash-joined
+# list -- never a "1466-1474"-style range, which would wrongly imply every PR
+# in between. Values verified byte-identical (set AND order) against
+# `prs_in_bundle` in the source aquasecurity__tfsec_lht_final.jsonl.
+#
+# tfsec is SINGLE-ERA (one shared golang:1.23 base, one class), so all bundle
+# keys point at TFSEC. The original "aquasecurity/tfsec" registration above is
+# kept as-is. Nothing else is touched: no image.py, no base format, no
+# dockerfiles, no run scripts.
+#
+# Data-derived -> REGENERATE this list whenever the bundles change.
+# ---------------------------------------------------------------------------
+_BUNDLE_NIS_TFSEC = [
+    "1466-1474",
+    "1441-1442-1443-1444",
+    "1438-1468-1500-1503-1504-1505-1506-1507-1508",
+    "1368-1408-1426-1427-1428-1430",
+    "1106-1108-1114-1115-1116-1131-1133",
+    "1080-1085-1091-1093",
+    "1034-1039-1041-1045-1058-1059-1063-1064-1065-1068-1070-1074-1075-1077-1078",
+    "1026-1027-1028-1030-1031-1032-1033-1036-1042-1046-1053",
+    "992-993-995-996",
+    "982-983-984-985",
+    "922-924-925-926-927-928-929-930-931-932-933-934-935-936-937",
+    "866-1094-1095-1100-1101-1103-1105-1109",
+    "770-1012-1013",
+    "1081-1083-1089",
+    "997-998-999-1001-1002-1004",
+    "978-979-980-981",
+    "912-913-914-916-918",
+    "967-968-969-970",
+    "947-948-949-950-951-953-954-955-956",
+]
+
+for _ni in _BUNDLE_NIS_TFSEC:
+    # Instance.register() overwrites silently (harness/instance.py), so a key
+    # already bound to a DIFFERENT class would mis-route without a word. The
+    # org is shared with trivy, whose own bundle keys live under
+    # "aquasecurity/..." too -- fail loud rather than clobber one.
+    _existing = Instance._registry.get(f"aquasecurity/{_ni}")
+    if _existing is not None and _existing is not TFSEC:
+        raise RuntimeError(
+            f"tfsec bundle key 'aquasecurity/{_ni}' already registered to "
+            f"{_existing.__name__}; refusing to overwrite."
+        )
+    Instance.register("aquasecurity", _ni)(TFSEC)
