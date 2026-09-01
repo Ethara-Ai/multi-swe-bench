@@ -1,7 +1,7 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -68,16 +68,26 @@ class ImageBase(Image):
         # base.sha and breaking every other PR in the era with
         # "reference is not a tree". The base keeps full history; the strict
         # anti-reward-hack hardening runs per-PR (see ImageDefault).
+        # PIPELINE.md 2a/8.1: this repo is `# syntax`-opt-out (the enhancer would
+        # prune the shared base to one PR's sha), so the canonical MITM block is
+        # referenced from image.py by hand. Referencing - not copying - keeps
+        # image.py the single source of truth (8.2) and guarantees the generated
+        # Dockerfile matches its constants verbatim.
+        mitm_args = DockerfileEnhancer._PROXY_ARGS
+        mitm_env = DockerfileEnhancer._ENV_BLOCK
+        mitm_certs = DockerfileEnhancer._CERT_SYMLINKS
+
         return f"""# syntax=docker/dockerfile:1.6
 FROM {self.dependency()}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC \\
+{mitm_args}
+
+{mitm_env}
+
+ENV LC_ALL=C.UTF-8 \\
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
@@ -93,6 +103,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     build-essential gcc g++ python3-dev \\
     linux-libc-dev rclone \\
     && rm -rf /var/lib/apt/lists/*
+
+{mitm_certs}
 
 # uv pinned (not `latest`): the resolver version decides the dependency set, so
 # an unpinned uv makes rebuilds non-reproducible.
@@ -215,8 +227,21 @@ uv run pytest -v
             "${BASE_COMMIT}", self.pr.base.sha
         ).rstrip("\n")
 
+        # PIPELINE.md 2a/8.1: this repo is `# syntax`-opt-out (the enhancer would
+        # prune the shared base to one PR's sha), so the canonical MITM block is
+        # referenced from image.py by hand. Referencing - not copying - keeps
+        # image.py the single source of truth (8.2) and guarantees the generated
+        # Dockerfile matches its constants verbatim.
+        mitm_args = DockerfileEnhancer._PROXY_ARGS
+        mitm_env = DockerfileEnhancer._ENV_BLOCK
+        mitm_certs = DockerfileEnhancer._CERT_SYMLINKS
+
         return f"""# syntax=docker/dockerfile:1.6
 FROM {dep.image_name()}:{dep.image_tag()}
+
+{mitm_args}
+
+{mitm_env}
 {self.global_env}
 COPY fix.patch /home/fix.patch
 COPY test.patch /home/test.patch
@@ -322,46 +347,36 @@ class OPENAI_AGENTS_PYTHON_99999_TO_2460(Instance):
 # resolve to this class (PIPELINE §11/§11c). Trimmed to the RESOLVED set
 # (delivery-time subset); the era key above still routes the build dataset.
 _BUNDLE_NIS_OPENAI_ERA2 = [
-    "2472-2507-2508-2509-2510-2512",  # pr-2472 (6 PRs)
-    "2481-2482-2483-2484-2485-2486-2496-2497-2498-2499-2500-2501-2502",  # pr-2481 (13 PRs)
-    "2521-2522",  # pr-2521 (2 PRs)
-    "2526-2527-2529-2530-2532",  # pr-2526 (5 PRs)
-    "2538-2539-2547-2548-2549-2552-2553",  # pr-2538 (7 PRs)
-    "2555-2556-2559-2560-2561-2563-2564-2565-2566-2567-2568-2569-2570-2571-2572-2575-2576",  # pr-2555 (17 PRs)
-    "2578-2579-2581-2582-2584-2585",  # pr-2578 (6 PRs)
-    "2587-2589-2591-2592-2593-2595-2596-2597-2598-2600-2605",  # pr-2587 (11 PRs)
-    "2594-2606-2608-2609-2610-2611-2612-2613-2614-2615-2616-2619-2620-2621-2623-2626-2627-2632-2634-2635-2639",  # pr-2594 (21 PRs)
-    "2622-2629-2640-2641-2642",  # pr-2622 (5 PRs)
-    "2651-2653",  # pr-2651 (2 PRs)
-    "2654-2850-2883-2885-2899-2900-2901-2902-2903-2904-2910-2918-2920-2925-2930-2931-2935",  # pr-2654 (17 PRs)
-    "2655-2656-2660-2662",  # pr-2655 (4 PRs)
-    "2663-2665-2666-2667",  # pr-2663 (4 PRs)
-    "2668-2674-2681-2682-2684",  # pr-2668 (5 PRs)
-    "2670-2700-2708-2710-2718-2719-2721-2724-2725-2726-2728-2730-2731-2737-2738-2743-2751-2757-2758",  # pr-2670 (19 PRs)
-    "2676-2691-2694-2696-2697-2703-2704-2705",  # pr-2676 (8 PRs)
-    "2687-2688-2747-2877-2891-2892-2893-2894-2895-2896",  # pr-2687 (10 PRs)
-    "2706-2744-2759-2761-2762-2763-2765-2768-2769-2770",  # pr-2706 (10 PRs)
-    "2709-2711-2713-2714-2716",  # pr-2709 (5 PRs)
-    "2715-2771-2772-2773-2774-2781-2782-2786-2787-2791",  # pr-2715 (10 PRs)
-    "2792-2793-2795-2799-2800-2801",  # pr-2792 (6 PRs)
-    "2813-2814-2815",  # pr-2813 (3 PRs)
-    "2818-2819-2820-2821-2822-2827-2828-2843-2844",  # pr-2818 (9 PRs)
-    "2845-2847-2851-2853-2854-2860-2861-2864",  # pr-2845 (8 PRs)
-    "2948-2950-2953-2956-2963-2965-2974-2975-2978-2979-2980",  # pr-2948 (11 PRs)
-    "2972-3026-3027-3028-3031-3038-3039",  # pr-2972 (7 PRs)
-    "2976-2981-2982-2984-2985-2986-2987-2988-2989-2996",  # pr-2976 (10 PRs)
-    "2998-2999-3000-3005-3006-3007",  # pr-2998 (6 PRs)
-    "3013-3014-3015-3016-3021-3022-3023",  # pr-3013 (7 PRs)
-    "3019-3094-3132-3147-3150-3151-3152-3154-3157-3160-3161-3162",  # pr-3019 (12 PRs)
-    "3047-3048-3049-3050",  # pr-3047 (4 PRs)
-    "3053-3057-3059-3060-3061-3062-3063",  # pr-3053 (7 PRs)
-    "3058-3064-3071-3072-3073-3075-3078-3080-3082-3083",  # pr-3058 (10 PRs)
-    "3076-3077-3081-3084-3085-3088-3090-3092-3095-3097-3098-3099-3100-3101-3102-3107-3111-3114-3118-3127-3128",  # pr-3076 (21 PRs)
-    "3117-3148-3153-3163-3164-3165-3166-3167-3172-3173-3175-3176-3179",  # pr-3117 (13 PRs)
-    "3129-3131-3134-3135-3136-3140-3141-3149",  # pr-3129 (8 PRs)
-    "3177-3185-3190-3191",  # pr-3177 (4 PRs)
-    "3187-3188-3193-3194-3199-3201-3202-3205-3207-3210-3211-3213-3214-3215-3216-3217-3223-3224-3227-3229-3230-3234-3237-3243-3245-3247-3248-3249-3253-3254-3261-3272-3276-3278-3279-3281-3283-3285-3287-3289-3290-3292-3293-3294-3295-3296-3297-3298-3299-3303-3305-3307-3309-3314-3316-3318-3320-3326-3328-3331-3339-3340-3341-3342-3343",  # pr-3187 (65 PRs)
-    "3311-3312-3350-3351-3352-3355-3360-3362-3366-3368-3370-3371",  # pr-3311 (12 PRs)
+    "2472-2507-2508-2509-2510-2512",
+    "2481-2482-2483-2484-2485-2486-2496-2497-2498-2499-2500-2501-2502",
+    "2526-2527-2529-2530-2532",
+    "2538-2539-2547-2548-2549-2552-2553",
+    "2555-2556-2559-2560-2561-2563-2564-2565-2566-2567-2568-2569-2570-2571-2572-2575-2576",
+    "2578-2579-2581-2582-2584-2585",
+    "2587-2589-2591-2592-2593-2595-2596-2597-2598-2600-2605",
+    "2594-2606-2608-2609-2610-2611-2612-2613-2614-2615-2616-2619-2620-2621-2623-2626-2627-2632-2634-2635-2639",
+    "2651-2653",
+    "2654-2850-2883-2885-2899-2900-2901-2902-2903-2904-2910-2918-2920-2925-2930-2931-2935",
+    "2655-2656-2660-2662",
+    "2663-2665-2666-2667",
+    "2668-2674-2681-2682-2684",
+    "2670-2700-2708-2710-2718-2719-2721-2724-2725-2726-2728-2730-2731-2737-2738-2743-2751-2757-2758",
+    "2676-2691-2694-2696-2697-2703-2704-2705",
+    "2687-2688-2747-2877-2891-2892-2893-2894-2895-2896",
+    "2706-2744-2759-2761-2762-2763-2765-2768-2769-2770",
+    "2709-2711-2713-2714-2716",
+    "2715-2771-2772-2773-2774-2781-2782-2786-2787-2791",
+    "2813-2814-2815",
+    "2818-2819-2820-2821-2822-2827-2828-2843-2844",
+    "2948-2950-2953-2956-2963-2965-2974-2975-2978-2979-2980",
+    "2972-3026-3027-3028-3031-3038-3039",
+    "2976-2981-2982-2984-2985-2986-2987-2988-2989-2996",
+    "2998-2999-3000-3005-3006-3007",
+    "3076-3077-3081-3084-3085-3088-3090-3092-3095-3097-3098-3099-3100-3101-3102-3107-3111-3114-3118-3127-3128",
+    "3117-3148-3153-3163-3164-3165-3166-3167-3172-3173-3175-3176-3179",
+    "3129-3131-3134-3135-3136-3140-3141-3149",
+    "3177-3185-3190-3191",
+    "3311-3312-3350-3351-3352-3355-3360-3362-3366-3368-3370-3371",
 ]
 
 for _ni in _BUNDLE_NIS_OPENAI_ERA2:
