@@ -300,40 +300,60 @@ class HospitalRunFrontend2349To1736(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        passed_res = [
-            re.compile(r"^PASS:?\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*s\))?$"),
-            re.compile(r"^\s*[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$"),
-        ]
+        # ANSI first: jest colourises the ✓/✕ markers and the PASS/FAIL words,
+        # and a stray escape makes every anchor below miss.
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        failed_res = [
-            re.compile(r"^FAIL:?\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*s\))?$"),
-            re.compile(r"^\s*[✕×✗]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$"),
-        ]
+        # Test ids are qualified with the SUITE FILE, not the bare `it()` text.
+        #
+        # Jest prints the file once (`PASS <file>`) and then indents each test
+        # under it, so the bare text is NOT unique. Measured on this repo's own
+        # output at PR 1815: 219 pass/fail lines collapse to 181 distinct names
+        # — 38 tests (17%) silently merged, e.g.
+        #     x5  should render a label
+        #     x5  should render the proper value
+        #     x5  should call the change handler on change
+        # each recurring across different component suites. Beyond losing p2p
+        # entries, a name that passes in one file and fails in another merges
+        # into a single id that the `passed -= failed` rule then records as
+        # FAILED — a wrong verdict for the test that actually passed.
+        suite_re = re.compile(r"^(PASS|FAIL):?\s+(\S+\.[jt]sx?)\b")
+        case_re = re.compile(
+            r"^\s+(?P<mark>[✓✔✕×✗○])\s+(?:skipped\s+)?(?P<name>.+?)"
+            r"(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?\s*$"
+        )
 
-        skipped_res = [
-            re.compile(r"^\s*○\s+skipped\s+(.+)$"),
-        ]
-
+        current_file = ""
         for line in test_log.splitlines():
-            for passed_re in passed_res:
-                m = passed_re.match(line)
-                if m and m.group(1) not in failed_tests:
-                    passed_tests.add(m.group(1))
+            sm = suite_re.match(line)
+            if sm:
+                current_file = sm.group(2)
+                # A suite that fails to even load (missing module, transform
+                # error) prints FAIL with no per-test lines under it. Record the
+                # FILE so the stage still carries that signal instead of going
+                # silently empty.
+                if sm.group(1) == "FAIL":
+                    failed_tests.add(current_file)
+                continue
 
-            for failed_re in failed_res:
-                m = failed_re.match(line)
-                if m:
-                    failed_tests.add(m.group(1))
-                    if m.group(1) in passed_tests:
-                        passed_tests.remove(m.group(1))
+            cm = case_re.match(line)
+            if not cm:
+                continue
+            name = cm.group("name").strip()
+            tid = f"{current_file} > {name}" if current_file else name
+            mark = cm.group("mark")
+            if mark in "✓✔":
+                passed_tests.add(tid)
+            elif mark in "✕×✗":
+                failed_tests.add(tid)
+            else:
+                skipped_tests.add(tid)
 
-            for skipped_re in skipped_res:
-                m = skipped_re.match(line)
-                if m and m.group(1) not in passed_tests and m.group(1) not in failed_tests:
-                    skipped_tests.add(m.group(1))
-
-        skipped_tests -= passed_tests
+        # TestResult.__post_init__ enforces disjoint sets. Failure wins over a
+        # retry that later passed, then skip.
+        passed_tests -= failed_tests
         skipped_tests -= failed_tests
+        passed_tests -= skipped_tests
 
         return TestResult(
             passed_count=len(passed_tests),

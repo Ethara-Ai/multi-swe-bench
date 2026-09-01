@@ -197,26 +197,44 @@ class COVALENT_951_TO_817(Instance):
         skipped_tests = set()  # Tests that were skipped
         import re
 
-        # Extract test names and statuses using regex
-        # Pattern for passed tests: matches "::test_name PASSED"
-        passed_pattern = re.compile(r"::(.+?)\s+PASSED")
-        passed_tests.update(passed_pattern.findall(log))
-        # Pattern for failed tests: matches "::test_name FAILED"
-        failed_pattern_status = re.compile(r"tests/.*::(.+?)\s+FAILED")
-        failed_tests.update(failed_pattern_status.findall(log))
-        # Pattern for failed tests: matches pytest failure separators like "____ test_name ____"
-        failed_pattern_sep = re.compile(
-            r"^\s*_{20,}\s+(test_.+?|.+?::.+?)\s+_{20,}\s*$", re.MULTILINE
+        # ANSI first: pytest colourises status words, and a stray escape makes
+        # every anchor below miss.
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
+
+        # IDs keep the FILE PATH, not just the name after "::".
+        #
+        # The bare-name form was a real collision, observed in this repo's own
+        # output at PR 902:
+        #     tests/covalent_dispatcher_tests/_cli/service_test.py::test_cluster_status_cli PASSED
+        #     tests/functional_tests/dask_cluster_cli_test.py::test_cluster_status_cli      SKIPPED
+        # Two distinct tests in two files collapsed to one id, landing in both
+        # passed_tests and skipped_tests, and TestResult.__post_init__ rejects
+        # overlapping sets — so parse_log raised ValueError and the instance
+        # died. Capturing "<file>::<test>" makes the id unique per test.
+        status_re = re.compile(
+            r"^(?P<id>\S+\.py::\S+?)\s+(?P<status>PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS)\b",
+            re.MULTILINE,
         )
-        failed_tests.update(failed_pattern_sep.findall(log))
-        # Pattern for skipped tests: matches "::test_name SKIPPED"
-        skipped_pattern = re.compile(r"::(.+?)\s+SKIPPED")
-        skipped_tests.update(skipped_pattern.findall(log))
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+        for m in status_re.finditer(log):
+            tid, status = m.group("id"), m.group("status")
+            if status in ("PASSED", "XPASS"):
+                passed_tests.add(tid)
+            elif status in ("FAILED", "ERROR"):
+                failed_tests.add(tid)
+            else:  # SKIPPED, XFAIL
+                skipped_tests.add(tid)
+
+        # Summary lines ("FAILED <id> - reason") catch anything the per-line
+        # status form missed, e.g. a test whose failure is only reported in the
+        # short summary.
+        for m in re.finditer(r"^(?:FAILED|ERROR)\s+(\S+\.py::\S+)", log, re.MULTILINE):
+            failed_tests.add(m.group(1).rstrip(":"))
+
+        # TestResult.__post_init__ enforces disjoint sets. Failure wins over a
+        # retry that later passed, then skip.
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        passed_tests -= skipped_tests
 
         return TestResult(
             passed_count=len(passed_tests),
