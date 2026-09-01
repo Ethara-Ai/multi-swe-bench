@@ -9,6 +9,26 @@ from multi_swe_bench.harness.pull_request import PullRequest
 #  Shared shell scripts and Go stubs used by both ImageEarlyPRs / ImageLatePRs
 # --------------------------------------------------------------------------- #
 
+# Started by all three graded scripts, identically. The base image seeds the cluster
+# but leaves it STOPPED, because a server started in one Dockerfile RUN layer does not
+# survive into the next.
+#
+# Tolerant throughout: if Postgres is somehow missing the stage still runs the other
+# packages rather than dying, and the absent db results show up plainly in the report.
+_PG_START = """
+# ---------- start PostgreSQL (db package tests) ----------
+PGBIN=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -1)
+if [ -n "$PGBIN" ] && [ -d /var/lib/postgresql/testdb ]; then
+    su postgres -c "$PGBIN/pg_ctl -D /var/lib/postgresql/testdb -o '-p 5532' -w -t 60 start" >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        su postgres -c "$PGBIN/pg_isready -p 5532" >/dev/null 2>&1 && break
+        sleep 2
+    done
+fi
+# ---------- end PostgreSQL ----------
+"""
+
+
 _RUN_SH = """#!/bin/bash
 
 cd /home/{pr.repo}
@@ -22,6 +42,7 @@ elif [ -f /home/db_stubs_mock.go ] && [ -f db/db_stubs_mock.go.bak ]; then
   cp db/db_stubs_mock.go.bak db/db_stubs_mock.go 2>/dev/null || true
 fi
 
+""" + _PG_START + """
 exit_code=0
 # Use find to enumerate packages robustly (go list may fail if any package has errors)
 for pkg_dir in $(find . -name '*_test.go' -exec dirname {{}} \\; | sort -u); do
@@ -50,6 +71,7 @@ elif [ -f db/db_stubs_mock.go.bak ] && [ ! -f db/db_stubs_mock.go ]; then
   cp db/db_stubs_mock.go.bak db/db_stubs_mock.go 2>/dev/null || true
 fi
 
+""" + _PG_START + """
 exit_code=0
 for pkg_dir in $(find . -name '*_test.go' -exec dirname {{}} \\; | sort -u); do
     pkg=$(cd "$pkg_dir" && go list -tags mock . 2>/dev/null)
@@ -77,6 +99,7 @@ elif [ -f db/db_stubs_mock.go.bak ] && [ ! -f db/db_stubs_mock.go ]; then
   cp db/db_stubs_mock.go.bak db/db_stubs_mock.go 2>/dev/null || true
 fi
 
+""" + _PG_START + """
 exit_code=0
 for pkg_dir in $(find . -name '*_test.go' -exec dirname {{}} \\; | sort -u); do
     pkg=$(cd "$pkg_dir" && go list -tags mock . 2>/dev/null)
@@ -238,6 +261,35 @@ class SphinxTribesImageBase(Image):
 WORKDIR /home/
 
 {code}
+
+# Warm the Go module cache in the BASE layer, and provide the PostgreSQL server the
+# db package's tests need.
+#
+# PLACEMENT: DockerfileEnhancer injects its own WORKDIR + `git reset --hard` +
+# `git checkout ${{BASE_COMMIT}}` + history scrub + CMD immediately AFTER the clone
+# line above, so everything below lands after all of that. The tree is therefore
+# already at BASE_COMMIT here and no explicit checkout is needed - but it does mean
+# these steps run post-scrub, so they must leave the work tree pristine.
+RUN cd /home/{self.pr.repo}     && (go mod download || true)     && (git checkout -- . 2>/dev/null || true)     || true
+
+# db/test_config.go hardcodes postgres://test_user:test_password@localhost:5532/test_db
+# and db/tickets_test.go - the file this PR adds - calls InitTestDB() then
+# TestDB.CreateOrEditPerson/Workspace/Feature/Ticket. Those are real inserts with no
+# mock path. Without a server the package panics in InitTestDB with
+# "dial tcp [::1]:5532: connect: connection refused", the whole db package is lost,
+# and TestGetTicketsByPhase - the test this PR exists to add - never runs.
+#
+# The project provisions this with docker/testdb-docker-compose.yml (postgres:14-alpine
+# published on host port 5532) and its CI runs `docker compose ... up -d` before
+# `go test ./...`. Docker-in-docker is unavailable inside a build image, so an
+# equivalent server is installed here and started by the graded scripts.
+#
+# -A trust so no password handshake is needed; the DSN still sends one and Postgres
+# accepts it. The cluster is seeded at build time and left STOPPED - a server started
+# in one RUN layer does not survive into the next.
+RUN apt-get update     && apt-get install -y --no-install-recommends postgresql postgresql-contrib     && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux;     PGBIN=$(ls -d /usr/lib/postgresql/*/bin | head -1);     mkdir -p /var/lib/postgresql/testdb /var/run/postgresql;     chown -R postgres:postgres /var/lib/postgresql/testdb /var/run/postgresql;     su postgres -c "$PGBIN/initdb -A trust -D /var/lib/postgresql/testdb";     su postgres -c "$PGBIN/pg_ctl -D /var/lib/postgresql/testdb -o '-p 5532' -w start";     su postgres -c "$PGBIN/createuser -p 5532 -s test_user";     su postgres -c "$PGBIN/createdb -p 5532 -O test_user test_db";     su postgres -c "$PGBIN/pg_ctl -D /var/lib/postgresql/testdb -w stop"
 
 {self.clear_env}
 

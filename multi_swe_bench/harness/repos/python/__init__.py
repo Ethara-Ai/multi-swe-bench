@@ -413,3 +413,4 @@ from multi_swe_bench.harness.repos.python.kornia_rs import *
 from multi_swe_bench.harness.repos.python.speechbrain import *
 from multi_swe_bench.harness.repos.python.CycloneDX import *
 from multi_swe_bench.harness.repos.python.benthayer import *
+from multi_swe_bench.harness.repos.python.jbsparrow import *
