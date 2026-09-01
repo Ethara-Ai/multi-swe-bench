@@ -209,3 +209,5 @@ from multi_swe_bench.harness.repos.golang.ko_build import *
 from multi_swe_bench.harness.repos.golang.go_hep import *
 from multi_swe_bench.harness.repos.golang.allegro import *
 from multi_swe_bench.harness.repos.golang.dominikbraun import *
+
+from multi_swe_bench.harness.repos.golang.kubeflow import *
