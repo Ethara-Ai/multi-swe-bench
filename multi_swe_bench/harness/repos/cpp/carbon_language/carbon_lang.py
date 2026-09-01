@@ -7,6 +7,95 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# ---------------------------------------------------------------------------
+# Emit `number_interval` on the OUTPUT (resolved jsonl) rows for
+# carbon-language/carbon-lang.
+#
+# Every record is a BUNDLE of PRs. The required value is the dash-JOINED
+# EXPLICIT list of the bundled PR numbers -- never a "start-end" range:
+#
+#     prs_in_bundle: [146, 147, 150, 155, 157]
+#     number_interval: "146-147-150-155-157"      (NOT "146-157")
+#
+# A range would claim every PR in between, which is wrong: these bundles are
+# sparse (e.g. "5545-6694" bundles exactly two PRs 1,149 apart, and
+# "6518-6667-6701-6726-6741-6745-6762-6764" skips hundreds of intervening
+# numbers). A two-PR bundle therefore renders as "A-B" legitimately -- that is
+# explicit membership, not a range.
+#
+# SOURCE IS `prs_in_bundle` ONLY -- deliberately NOT `resolved_issues`.
+# Unlike the nanopb dump, carbon-lang's `resolved_issues` mixes the bundled PRs
+# with LINKED issues that are not part of the bundle (18 of the 28 curated
+# records carry such extras, e.g. issue #6717 / #6280). Deriving the interval
+# from it would inject non-bundled numbers and produce a key that matches no
+# registered bundle. When `prs_in_bundle` is absent we emit nothing rather than
+# guess wrong.
+#
+# Why patch Dataset.build rather than set pr.number_interval at load time:
+# `number_interval` is also the ROUTING key -- Instance.create (instance.py:41)
+# builds the registry name as f"{org}/{number_interval}" whenever it is
+# non-empty. Stamping the value in Dataset.build lands it on the OUTPUT only,
+# so routing keeps using whatever the raw record supplied: a dash-joined bundle
+# (all are registered in _BUNDLE_NIS_CarbonLang below) or, when the field is
+# empty, the plain "carbon-language/carbon-lang" key registered on CarbonLang.
+# Both paths resolve, so a re-dump without `number_interval` still routes.
+# ---------------------------------------------------------------------------
+from multi_swe_bench.harness.dataset import Dataset as _Dataset
+
+_CARBON_ORG = "carbon-language"
+_CARBON_REPO = "carbon-lang"
+
+
+def _carbon_bundle_numbers(pr) -> list[int]:
+    """The PR numbers bundled into this record, ascending and de-duplicated."""
+    numbers: list[int] = []
+    seen: set[int] = set()
+    for entry in getattr(pr, "prs_in_bundle", None) or []:
+        if isinstance(entry, dict):
+            entry = entry.get("number")
+        if entry is None:
+            continue
+        try:
+            number = int(entry)
+        except (TypeError, ValueError):
+            continue
+        if number not in seen:
+            seen.add(number)
+            numbers.append(number)
+    # Sorted so the value is deterministic regardless of raw ordering; the
+    # registered _BUNDLE_NIS_CarbonLang keys are all ascending, so a sorted join
+    # reproduces them exactly.
+    return sorted(numbers)
+
+
+def carbon_number_interval(pr) -> str:
+    """Dash-joined explicit bundle list, e.g. "146-147-150-155-157"."""
+    return "-".join(str(number) for number in _carbon_bundle_numbers(pr))
+
+
+# NOTE: Dataset subclasses PullRequest, so a plain getattr() flag check would
+# see a flag inherited from another registry's patch and wrongly skip this one;
+# check the class's OWN __dict__. Chaining is safe in either import order --
+# each registry's wrapper is scoped to its own org/repo and delegates onward.
+if not _Dataset.__dict__.get("_carbon_build_patched", False):
+    _carbon_orig_build = _Dataset.build.__func__
+
+    def _carbon_build(cls, pr, report):
+        ds = _carbon_orig_build(cls, pr, report)
+        # Never clobber a value the raw dump already supplied (it is
+        # routing-relevant); only fill an empty one.
+        if (
+            pr.org == _CARBON_ORG
+            and pr.repo == _CARBON_REPO
+            and not ds.number_interval
+        ):
+            ds.number_interval = carbon_number_interval(pr)
+        return ds
+
+    _Dataset.build = classmethod(_carbon_build)
+    _Dataset._carbon_build_patched = True
+
+
 
 class CarbonLangImageBase(Image):
     """Shared base for carbon-language/carbon-lang (single-era). Installs the
@@ -58,15 +147,40 @@ FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
     LC_ALL=C.UTF-8 \\
-    TZ=UTC
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
 
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 {self.global_env}
 
@@ -168,13 +282,36 @@ class CarbonLangImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""".format(),
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set +e
 
 cd /home/{pr.repo}
 git reset --hard
+bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
 """.format(pr=self.pr),
             ),
             File(
@@ -411,6 +548,24 @@ run_carbon_tests /home/{pr.repo} || true
         return f"""# syntax=docker/dockerfile:1.6
 FROM {name}:{tag}
 
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
 {self.global_env}
 
 {copy_commands}
@@ -527,9 +682,12 @@ class CarbonLang(Instance):
         )
 
 
-# --- §11b bundle keys: every dash-joined prs_in_bundle routes to CarbonLang.
-# --- 129 bundles (single-era; all share the CarbonLang config).
-_BUNDLE_NIS_CARBON = [
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Single-era repo: every bundle key routes to the one CarbonLang class. Each key
+# is the EXACT dash-joined prs_in_bundle of one instance -- never a range (§11a).
+# Bundle-level, not PR-level: #keys == #instances. Data-derived -- REGENERATE
+# whenever the bundles change (§11b).
+_BUNDLE_NIS_CarbonLang = [
     "5545-6694",
     "6235-6245-6256-6257-6259-6260-6262-6263-6266-6267",
     "6254-6571-6572",
@@ -660,6 +818,6 @@ _BUNDLE_NIS_CARBON = [
     "7091-7097-7101-7104-7105-7108-7109-7110-7111-7112",
     "7114-7117-7121-7123-7124",
 ]
-for _ni in _BUNDLE_NIS_CARBON:
+for _ni in _BUNDLE_NIS_CarbonLang:
     Instance.register("carbon-language", _ni)(CarbonLang)
 
