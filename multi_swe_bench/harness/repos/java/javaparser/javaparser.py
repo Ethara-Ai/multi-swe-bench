@@ -1,6 +1,5 @@
 import re
 import textwrap
-from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -20,7 +19,7 @@ class JavaParserImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
+    def dependency(self) -> str | Image:
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
@@ -49,8 +48,12 @@ class JavaParserImageBase(Image):
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
+ENV CI=true
+ENV MAVEN_OPTS="-Xmx4g -XX:+ExitOnOutOfMemoryError"
 WORKDIR /home/
-RUN apt-get update && apt-get install -y git openjdk-11-jdk maven
+RUN apt-get update && apt-get install -y git openjdk-11-jdk maven \
+    && ln -sfn "$(dirname $(dirname $(readlink -f $(which javac))))" /usr/lib/jvm/default-java
+ENV JAVA_HOME=/usr/lib/jvm/default-java
 
 {code}
 
@@ -119,10 +122,13 @@ exit 0
                 "prepare.sh",
                 """#!/bin/bash
 set -e
+export CI=true
 
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
+git remote get-url origin >/dev/null 2>&1 || git remote add origin https://github.com/{pr.org}/{pr.repo}.git
+git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null || git fetch --depth=1 origin {pr.base.sha}
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 if [ ! -f ~/.m2/settings.xml ]; then
@@ -153,28 +159,36 @@ else
       </mirror> \\
   </mirrors>' ~/.m2/settings.xml
 fi
-if [ -f ./mvnw ]; then ./mvnw clean test -fae || true; else mvn clean test -fae || true; fi
+if [ -f ./mvnw ]; then
+    ./mvnw -B -q dependency:go-offline -fae || true
+    ./mvnw -B -q test-compile -fae || true
+else
+    mvn -B -q dependency:go-offline -fae || true
+    mvn -B -q test-compile -fae || true
+fi
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
-if [ -f ./mvnw ]; then ./mvnw clean test -fae; else mvn clean test -fae; fi
+if [ -f ./mvnw ]; then ./mvnw -B clean test -fae; else mvn -B clean test -fae; fi
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-if [ -f ./mvnw ]; then ./mvnw clean test -fae; else mvn clean test -fae; fi
+if [ -f ./mvnw ]; then ./mvnw -B clean test -fae; else mvn -B clean test -fae; fi
 
 """.format(pr=self.pr),
             ),
@@ -182,11 +196,12 @@ if [ -f ./mvnw ]; then ./mvnw clean test -fae; else mvn clean test -fae; fi
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-if [ -f ./mvnw ]; then ./mvnw clean test -fae; else mvn clean test -fae; fi
+if [ -f ./mvnw ]; then ./mvnw -B clean test -fae; else mvn -B clean test -fae; fi
 
 """.format(pr=self.pr),
             ),
@@ -268,6 +283,11 @@ if [ -f ./mvnw ]; then ./mvnw clean test -fae; else mvn clean test -fae; fi
 """
 
 
+# Era coverage: PRs #2522..#3034 (span 512, ~2020-08 to ~2021-06).
+# Verified across all 5 dataset base SHAs (4b2858cc, cac75a4c, bdf9ac04,
+# f20d6fdc, b75521515b93): pom.xml pins <java.version>1.8</java.version>
+# with Maven and maven-surefire-plugin throughout. JDK 11 in the image
+# compiles Java 8 source cleanly. Single-era configuration is justified.
 @Instance.register("javaparser", "javaparser")
 class JavaParser(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
@@ -279,7 +299,7 @@ class JavaParser(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image | None:
         return JavaParserImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -301,44 +321,63 @@ class JavaParser(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        re_ansi = re.compile(r"\x1b\[[0-9;]*m")
-        re_running = re.compile(r"\[INFO\] Running (.+)")
-        re_tests_run = re.compile(
-            r"\[(?:INFO|ERROR|WARNING)\] Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+)"
+        re_ansi = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+        re_running = re.compile(r"\[INFO\] Running (\S+)")
+        re_perclass = re.compile(
+            r"\[(?:INFO|ERROR|WARNING)\] Tests run: (\d+), Failures: (\d+), "
+            r"Errors: (\d+), Skipped: (\d+),\s+Time elapsed:.* - in (\S+)"
+        )
+        re_compile_err = re.compile(
+            r"[\w./]+/([A-Z]\w+)\.java:\[\d+,\d+\] cannot find symbol"
+        )
+        re_fork_crash = re.compile(
+            r"Crashed tests:\s*\n\s*\[ERROR\]\s+([\w.$]+)"
         )
 
+        text = re_ansi.sub("", test_log)
+
         passed_tests = set()
+        skipped_tests = set()
         failed_tests = set()
+        summarized = set()
 
-        current_test = None
-
-        for line in test_log.split("\n"):
-            clean_line = re_ansi.sub("", line)
-
-            if current_test is None:
-                running_match = re_running.search(clean_line)
-                if running_match:
-                    current_test = running_match.group(1).strip()
+        for line in text.split("\n"):
+            m = re_perclass.search(line)
+            if not m:
                 continue
+            tests_run = int(m.group(1))
+            failures = int(m.group(2))
+            errors = int(m.group(3))
+            skipped = int(m.group(4))
+            cls = m.group(5)
+            summarized.add(cls)
+            if failures > 0 or errors > 0:
+                failed_tests.add(cls)
+            elif tests_run > 0 and skipped == tests_run:
+                skipped_tests.add(cls)
+            else:
+                passed_tests.add(cls)
+                for i in range(skipped):
+                    skipped_tests.add(f"{cls}#skipped-{i}")
 
-            tests_run_match = re_tests_run.search(clean_line)
-            if tests_run_match:
-                failures = int(tests_run_match.group(2))
-                errors = int(tests_run_match.group(3))
-                if failures > 0 or errors > 0:
-                    failed_tests.add(current_test)
-                else:
-                    passed_tests.add(current_test)
-                current_test = None
+        for cls in {m.group(1) for m in re_running.finditer(text)} - summarized:
+            failed_tests.add(cls)
+            passed_tests.discard(cls)
+        for m in re_fork_crash.finditer(text):
+            failed_tests.add(m.group(1))
+            passed_tests.discard(m.group(1))
+        for m in re_compile_err.finditer(text):
+            failed_tests.add(f"<compile-error>{m.group(1)}")
 
-        # A test that failed in any run takes precedence over passing in another
         passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
             failed_count=len(failed_tests),
-            skipped_count=0,
+            skipped_count=len(skipped_tests),
             passed_tests=passed_tests,
             failed_tests=failed_tests,
-            skipped_tests=set(),
+            skipped_tests=skipped_tests,
         )
