@@ -35,6 +35,7 @@ from multi_swe_bench.harness.repos.typescript.Borewit import *
 from multi_swe_bench.harness.repos.typescript.calcom import *
 from multi_swe_bench.harness.repos.typescript.canonical import *
 from multi_swe_bench.harness.repos.typescript.capricorn86 import *
+from multi_swe_bench.harness.repos.typescript.cdimascio import *
 from multi_swe_bench.harness.repos.typescript.CatchTheTornado import *
 from multi_swe_bench.harness.repos.typescript.ChainSafe import *
 from multi_swe_bench.harness.repos.typescript.chakra_ui import *

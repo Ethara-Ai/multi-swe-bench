@@ -10,6 +10,7 @@ from multi_swe_bench.harness.repos.rust.bitcoindevkit import *
 from multi_swe_bench.harness.repos.rust.blopker import *
 from multi_swe_bench.harness.repos.rust.boa_dev import *
 from multi_swe_bench.harness.repos.rust.BurntSushi import *
+from multi_swe_bench.harness.repos.rust.Byron import *
 from multi_swe_bench.harness.repos.rust.bytecodealliance import *
 from multi_swe_bench.harness.repos.rust.casey import *
 from multi_swe_bench.harness.repos.rust.clap_rs import *
