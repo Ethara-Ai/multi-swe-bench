@@ -93,3 +93,4 @@ from multi_swe_bench.harness.repos.rust.quickwit_oss import *
 from multi_swe_bench.harness.repos.rust.leapdao import *
 from multi_swe_bench.harness.repos.rust.mozilla import *
 from multi_swe_bench.harness.repos.rust.ruma import *
+from multi_swe_bench.harness.repos.rust.jonhoo import *
