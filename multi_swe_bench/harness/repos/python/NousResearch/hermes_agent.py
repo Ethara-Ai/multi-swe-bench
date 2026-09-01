@@ -20,39 +20,63 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "python:3.11-slim"
+        # The full `python:3.11` (Debian bookworm), NOT `-slim`. The reference
+        # base structure goes straight from `WORKDIR /home/` to
+        # `RUN git clone`, with no apt layer — which is only correct when the
+        # runtime image already carries git and a compiler. `node:14` and
+        # `rust:1.91` do; `python:3.11-slim` does not (it ships neither git nor
+        # gcc), which is why the slim variant would force an apt block that the
+        # reference structure has no slot for. The full image ships git, gcc,
+        # and pkg-config, so no package layer is needed at all.
+        return "python:3.11"
 
     def image_tag(self) -> str:
-        return "base"
+        # P1 requires the PR layer to inherit `…:base-pr-<N>`, so the base must
+        # publish under that tag — not a bare `base`.
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
+        # Emit the reference base structure verbatim. The shared generator
+        # (Image.dockerfile) hardcodes an apt layer and re-declares
+        # DEBIAN_FRONTEND/LANG after `WORKDIR /home/`; neither appears in the
+        # reference, and neither is suppressible through `extra_packages()`.
+        # Overriding here keeps the deviation inside this repo's config rather
+        # than editing shared harness code.
+        #
+        # Everything below the FROM line — the ARG/ENV/LABEL/CA-farm infra —
+        # is still injected by DockerfileEnhancer at pipeline level, exactly as
+        # for every other repo in the registry.
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        repo = self.pr.repo
 
+        # The two extra blank lines before WORKDIR match the reference exactly
+        # (the enhancer's infra block ends with one newline; the reference has
+        # four blank lines total between the CA farm and WORKDIR).
         return f"""FROM {image_name}
 
-{self.global_env}
 
-RUN apt-get update && apt-get install -y --no-install-recommends git build-essential && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
-{self.clear_env}
+WORKDIR /home/{repo}
 
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{Image._HARDENING_BLOCK}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -119,11 +143,27 @@ set -e
 
 cd /home/{pr.repo}
 git reset --hard
+git clean -fdq
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach {pr.base.sha}
+test "$(git rev-parse HEAD)" = "$(git rev-parse {pr.base.sha})"
+git clean -fdq
 bash /home/check_git_changes.sh
 
-pip install -e ".[dev]" || true
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+export PYTHONDONTWRITEBYTECODE=1
+python -V
+
+# NOT `|| true`: an install that fails quietly would ship an image with a
+# broken environment and leave every graded act collecting zero tests, which
+# reads as "resolved" for all the wrong reasons.
+python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+python -m pip install --no-cache-dir -e ".[dev]"
+python -m pytest tests/tui_gateway/test_protocol.py --collect-only -q -p no:cacheprovider -n 0
+
+git reset --hard
+git clean -fdq
+bash /home/check_git_changes.sh
 
 """.format(pr=self.pr),
             ),
@@ -131,10 +171,13 @@ pip install -e ".[dev]" || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -eo pipefail
+set -uo pipefail
+export CI=true
 
 cd /home/{pr.repo}
-python -m pytest -v tests/ 2>&1
+python -m pytest tests/tui_gateway/test_protocol.py \\
+    -p no:cacheprovider -n 0 \\
+    -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
 
 """.format(pr=self.pr),
             ),
@@ -142,11 +185,14 @@ python -m pytest -v tests/ 2>&1
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -eo pipefail
+set -uo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-python -m pytest -v tests/ 2>&1
+python -m pytest tests/tui_gateway/test_protocol.py \\
+    -p no:cacheprovider -n 0 \\
+    -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
 
 """.format(pr=self.pr),
             ),
@@ -154,11 +200,14 @@ python -m pytest -v tests/ 2>&1
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -eo pipefail
+set -uo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-python -m pytest -v tests/ 2>&1
+python -m pytest tests/tui_gateway/test_protocol.py \\
+    -p no:cacheprovider -n 0 \\
+    -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
 
 """.format(pr=self.pr),
             ),
@@ -236,12 +285,19 @@ class NousResearchHermesAgent(Instance):
             r"(PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)\s+(\S+::\S+)"
         )
 
+        # `-rA` short-summary form: STATUS path::Class::test [reason].
+        # SKIPPED/XFAIL carry a bracketed count first: `SKIPPED [1] path::test`.
+        re_summary = re.compile(
+            r"^(PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)\s+"
+            r"(?:\[\d+\]\s+)?(\S+::\S+)"
+        )
+
         for line in cleaned.splitlines():
             line = line.strip()
             if not line:
                 continue
 
-            m = re_xdist.match(line)
+            m = re_xdist.match(line) or re_summary.match(line)
             if m:
                 status = m.group(1)
                 test_name = m.group(2)
