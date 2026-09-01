@@ -106,6 +106,7 @@ from multi_swe_bench.harness.repos.golang.rclone import *
 from multi_swe_bench.harness.repos.golang.docker import *
 from multi_swe_bench.harness.repos.golang.k3s_io import *
 from multi_swe_bench.harness.repos.golang.k8sgpt_ai import *
+from multi_swe_bench.harness.repos.golang.kubernetes_sigs import *
 from multi_swe_bench.harness.repos.golang.grafana import *
 from multi_swe_bench.harness.repos.golang.gogs import *
 from multi_swe_bench.harness.repos.golang.dapr import *
