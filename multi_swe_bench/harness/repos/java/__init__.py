@@ -89,5 +89,5 @@ from multi_swe_bench.harness.repos.java.thingsboard import *
 from multi_swe_bench.harness.repos.java.A248 import *
 # from multi_swe_bench.harness.repos.java.mercedes_benz import *
 from multi_swe_bench.harness.repos.java.selenide import *
-# from multi_swe_bench.harness.repos.java.brarcher import *  # module not present under repos/; blocks the whole registry at import time
+from multi_swe_bench.harness.repos.java.brarcher import *  
 from multi_swe_bench.harness.repos.java.tlaplus import *
