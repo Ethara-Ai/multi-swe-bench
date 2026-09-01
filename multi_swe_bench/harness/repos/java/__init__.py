@@ -9,6 +9,7 @@ from multi_swe_bench.harness.repos.java.binarywang import *
 from multi_swe_bench.harness.repos.java.cambridge_cares import *
 from multi_swe_bench.harness.repos.java.carlspring import *
 from multi_swe_bench.harness.repos.java.checkstyle import *
+from multi_swe_bench.harness.repos.java.commonmark import *
 from multi_swe_bench.harness.repos.java.eclipsevertx import *
 from multi_swe_bench.harness.repos.java.elastic import *
 from multi_swe_bench.harness.repos.java.FabLabsMC import *
