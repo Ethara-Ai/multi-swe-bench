@@ -138,7 +138,12 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-yarn install --frozen-lockfile --ignore-engines --ignore-scripts || yarn install --ignore-engines --ignore-scripts
+yarn install --frozen-lockfile --ignore-engines --ignore-scripts || yarn install --ignore-engines --ignore-scripts || true
+
+# Hard verification, deliberately without "|| true": a hollow image must fail
+# loudly here rather than yield a container where every stage reports 0 tests.
+test -d node_modules
+node -e "require.resolve('react-scripts/package.json')"
 
 """.format(pr=self.pr),
             ),
@@ -149,7 +154,7 @@ yarn install --frozen-lockfile --ignore-engines --ignore-scripts || yarn install
 set -eo pipefail
 
 cd /home/{pr.repo}
-CI=true yarn test --watchAll=false --verbose 2>&1
+CI=true yarn test:app --watchAll=false --verbose 2>&1
 
 """.format(pr=self.pr),
             ),
@@ -160,9 +165,9 @@ CI=true yarn test --watchAll=false --verbose 2>&1
 set -eo pipefail
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+git apply --whitespace=nowarn --exclude='*.png' /home/test.patch
 yarn install --frozen-lockfile --ignore-engines --ignore-scripts || yarn install --ignore-engines --ignore-scripts
-CI=true yarn test --watchAll=false --verbose 2>&1
+CI=true yarn test:app --watchAll=false --verbose 2>&1
 
 """.format(pr=self.pr),
             ),
@@ -173,9 +178,9 @@ CI=true yarn test --watchAll=false --verbose 2>&1
 set -eo pipefail
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn --exclude='*.png' /home/test.patch /home/fix.patch
 yarn install --frozen-lockfile --ignore-engines --ignore-scripts || yarn install --ignore-engines --ignore-scripts
-CI=true yarn test --watchAll=false --verbose 2>&1
+CI=true yarn test:app --watchAll=false --verbose 2>&1
 
 """.format(pr=self.pr),
             ),
@@ -242,48 +247,88 @@ class EXCALIDRAW_527_TO_6336(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        lines = log.split("\n")
-        for line in lines:
-            line = line.strip()
+        # Strip ANSI escapes FIRST. Jest emits colour in code frames and diffs
+        # even under CI=true; without this the patterns below silently miss.
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
-            # Jest PASS file: "PASS src/tests/something.test.tsx"
-            pass_match = re.search(r"PASS\s+(\S+\.test\.\w+)", line)
-            if pass_match:
-                test_file = pass_match.group(1)
-                name_match = re.search(r"([^/]+)\.test\.\w+$", test_file)
-                passed_tests.add(name_match.group(1) if name_match else test_file)
+        # Jest --verbose nests results under the test file and its describe()
+        # blocks, by indentation:
+        #
+        #   PASS src/tests/dragCreate.test.tsx (37.373 s)
+        #     add element to the scene when pointer dragging long enough
+        #       > rectangle (1951 ms)
+        #     do not add element to the scene if size is too small
+        #       > rectangle (670 ms)
+        #
+        # The leaf name alone is ambiguous ("rectangle" appears twice above), so
+        # every test is qualified with its file and its describe() chain. That
+        # keeps names unique within a file and identical across the three
+        # stages, which is what Report.__post_init__ unions on.
+        current_file = ""
+        suites: list[tuple[int, str]] = []
+
+        marker_pass = "\u2713\u221a\u2714"
+        marker_fail = "\u2715\u2716\u00d7"
+        marker_skip = "\u25cb\u2298\u25ef"
+        tail = r"(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?$"
+
+        def qualify(name: str) -> str:
+            parts = [s for _, s in suites]
+            parts.append(name)
+            joined = " > ".join(parts)
+            return f"{current_file}::{joined}" if current_file else joined
+
+        for raw_line in log.split("\n"):
+            line = raw_line.strip()
+            if not line:
+                continue
+            indent = len(raw_line) - len(raw_line.lstrip())
+
+            # File-level result: "PASS src/tests/foo.test.tsx (40.4 s)"
+            m = re.match(r"^(PASS|FAIL)\s+(\S+\.(?:test|spec)\.\w+)", line)
+            if m:
+                current_file = m.group(2)
+                suites = []
+                if m.group(1) == "PASS":
+                    passed_tests.add(current_file)
+                else:
+                    failed_tests.add(current_file)
                 continue
 
-            # Jest FAIL file: "FAIL src/tests/something.test.tsx"
-            fail_match = re.search(r"FAIL\s+(\S+\.test\.\w+)", line)
-            if fail_match:
-                test_file = fail_match.group(1)
-                name_match = re.search(r"([^/]+)\.test\.\w+$", test_file)
-                test_id = name_match.group(1) if name_match else test_file
-                passed_tests.discard(test_id)
-                failed_tests.add(test_id)
+            m = re.match(r"^[" + marker_pass + r"]\s+(.+?)" + tail, line)
+            if m:
+                passed_tests.add(qualify(m.group(1).strip()))
                 continue
 
-            # Jest individual pass: "  ✓ test name (123 ms)"
-            individual_pass = re.match(r"[✓√✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", line)
-            if individual_pass:
-                passed_tests.add(individual_pass.group(1).strip())
+            m = re.match(r"^[" + marker_fail + r"]\s+(.+?)" + tail, line)
+            if m:
+                failed_tests.add(qualify(m.group(1).strip()))
                 continue
 
-            # Jest individual fail via "●": "● suite › test name"
-            if "●" in line:
-                match = re.search(r"●\s*(.+)", line)
-                if match:
-                    test_name = match.group(1).strip()
-                    if test_name:
-                        failed_tests.add(test_name)
+            m = re.match(r"^[" + marker_skip + r"]\s+(?:skipped\s+)?(.+?)" + tail, line)
+            if m:
+                skipped_tests.add(qualify(m.group(1).strip()))
                 continue
 
-            # Skipped tests
-            skip_match = re.search(r"[○⊘]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", line)
-            if skip_match:
-                skipped_tests.add(skip_match.group(1).strip())
-                continue
+            # Any other indented, unmarked line inside a file block is a
+            # describe() header. Console blocks and code frames are emitted
+            # after that file's test list, so they can never mis-qualify a test.
+            if current_file and indent >= 2 and not line.startswith("\u25cf"):
+                while suites and suites[-1][0] >= indent:
+                    suites.pop()
+                suites.append((indent, line))
+
+            # NOTE: jest's "\u25cf" blocks are deliberately NOT parsed as test
+            # names. They also cover non-test output ("\u25cf Console",
+            # "\u25cf Test suite failed to run"), and they spell a failure as
+            # "suite > test" while the "\u2715" line spells it as "test" - the
+            # same test would then appear under two different names across
+            # stages and corrupt the union in Report.__post_init__.
+
+        # TestResult.__post_init__ requires these three sets to be disjoint.
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        passed_tests -= skipped_tests
 
         return TestResult(
             passed_count=len(passed_tests),
