@@ -7,11 +7,6 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 def _extract_test_files(test_patch: str) -> dict[str, list[str]]:
-    """Parse .test.ts/.spec.ts paths from diff headers, grouped by package dir.
-
-    Returns e.g. ``{"packages/core": ["src/tools/builder.test.ts"]}``.
-    Keys are the first two path components; values are paths relative to that dir.
-    """
     seen: set[str] = set()
     files: list[str] = []
     for m in re.finditer(r"^diff --git a/\S+ b/(\S+)", test_patch, re.MULTILINE):
@@ -36,7 +31,6 @@ def _extract_test_files(test_patch: str) -> dict[str, list[str]]:
 
 
 def _build_vitest_commands(repo: str, test_patch: str) -> str:
-    """Build per-package vitest commands so workspace mode doesn't run all packages."""
     grouped = _extract_test_files(test_patch)
     if not grouped:
         return "pnpm vitest run --reporter=verbose 2>&1 || true"
@@ -53,7 +47,6 @@ def _build_vitest_commands(repo: str, test_patch: str) -> str:
 
 
 def _build_turbo_commands(test_patch: str) -> str:
-    """turbo build --filter auto-resolves workspace deps in topological order."""
     grouped = _extract_test_files(test_patch)
     if not grouped:
         return ""
@@ -68,38 +61,33 @@ def _build_turbo_commands(test_patch: str) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Shared parse_log for vitest output
-# ---------------------------------------------------------------------------
+def _vitest_name(name: str) -> str:
+    parts = name.split(" > ")
+    if len(parts) <= 1:
+        return name
+    return parts[0] + "::" + "/".join(parts[1:])
 
 
-def mastra_parse_log(test_log: str) -> TestResult:
-    """Parse Vitest test output for mastra-ai/mastra.
-
-    Handles:
-    - Vitest verbose: checkmark/cross individual tests
-    - Vitest file-level PASS/FAIL
-    - Vitest summary lines
-    """
+def _parse_log(test_log: str) -> TestResult:
     passed_tests = set()
     failed_tests = set()
     skipped_tests = set()
 
     ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
 
-    # Vitest patterns
     re_vitest_pass = re.compile(
         r"^\s*[✓✔]\s+(.+?)(?:\s+\d+[\.\d]*\s*(?:ms|s))?\s*$"
     )
     re_vitest_fail = re.compile(
         r"^\s*[×✗]\s+(.+?)(?:\s+\d+[\.\d]*\s*(?:ms|s))?\s*$"
     )
+
     re_vitest_skip = re.compile(
-        r"^\s*[-↓○]\s+(.+?)(?:\s+\d+[\.\d]*\s*(?:ms|s))?\s*$"
+        r"^\s*[↓○]\s+(.+?)(?:\s+\d+[\.\d]*\s*(?:ms|s))?\s*$"
     )
-    # Vitest file-level FAIL
+
     re_vitest_fail_file = re.compile(
-        r"^\s*FAIL\s+(\S+\.(?:test|spec)\.(?:ts|tsx|js|jsx|mts|mjs))"
+        r"^\s*FAIL\s+(\S+\.(?:test|spec)\.(?:ts|tsx|js|jsx|mts|mjs))\s*$"
     )
     # Vitest summary: "Test Files  N passed (N)"
     re_vitest_summary_passed = re.compile(
@@ -114,24 +102,23 @@ def mastra_parse_log(test_log: str) -> TestResult:
         if not line:
             continue
 
-        # Vitest pass/fail/skip
         m = re_vitest_pass.match(line)
         if m:
-            name = m.group(1).strip()
+            name = _vitest_name(m.group(1).strip())
             if name not in failed_tests:
                 passed_tests.add(name)
             continue
 
         m = re_vitest_fail.match(line)
         if m:
-            name = m.group(1).strip()
+            name = _vitest_name(m.group(1).strip())
             failed_tests.add(name)
             passed_tests.discard(name)
             continue
 
         m = re_vitest_skip.match(line)
         if m:
-            skipped_tests.add(m.group(1).strip())
+            skipped_tests.add(_vitest_name(m.group(1).strip()))
             continue
 
         m = re_vitest_fail_file.match(line)
@@ -161,10 +148,6 @@ def mastra_parse_log(test_log: str) -> TestResult:
     )
 
 
-# ---------------------------------------------------------------------------
-# Shared shell script templates
-# ---------------------------------------------------------------------------
-
 _PREPARE_SH = """#!/bin/bash
 set -e
 
@@ -173,7 +156,13 @@ npm install -g pnpm@{pnpm_version}
 
 cd /home/{repo}
 git reset --hard
-git checkout {base_sha}
+
+if ! git checkout {base_sha} 2>/dev/null; then
+    git remote add origin https://github.com/{org}/{repo}.git 2>/dev/null || \\
+        git remote set-url origin https://github.com/{org}/{repo}.git
+    git fetch --depth 1 origin {base_sha}
+    git checkout {base_sha}
+fi
 
 # Install dependencies
 pnpm install --no-frozen-lockfile 2>&1 || pnpm install 2>&1 || true
@@ -207,15 +196,7 @@ pnpm install --no-frozen-lockfile 2>&1 || true
 _NODE_IMAGE = "node:20"
 
 
-# ---------------------------------------------------------------------------
-# Single shared base image — clones repo, installs git/jq.
-# pnpm version is NOT in the base; it's installed in prepare.sh per-PR.
-# All 71 PRs share this one base image (image_tag="base").
-# ---------------------------------------------------------------------------
-
-
 class MastraImageBase(Image):
-    """Shared base image — node:20, git, jq, repo clone. No pnpm."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -256,8 +237,6 @@ class MastraImageBase(Image):
 {global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
 RUN apt-get update && apt-get install -y --no-install-recommends git jq && rm -rf /var/lib/apt/lists/*
 
 {code}
@@ -272,11 +251,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends git jq && rm -r
         )
 
 
-# ---------------------------------------------------------------------------
-# Per-PR image helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_pr_files(pr: PullRequest, pnpm_version: str) -> list[File]:
     """Generate shell scripts and patch files for a PR image."""
     vitest_commands = _build_vitest_commands(pr.repo, pr.test_patch)
@@ -288,7 +262,7 @@ def _make_pr_files(pr: PullRequest, pnpm_version: str) -> list[File]:
             ".",
             "prepare.sh",
             _PREPARE_SH.format(
-                repo=pr.repo, base_sha=pr.base.sha,
+                org=pr.org, repo=pr.repo, base_sha=pr.base.sha,
                 build_commands=build_commands,
                 pnpm_version=pnpm_version,
             ),
@@ -304,23 +278,16 @@ def _make_pr_files(pr: PullRequest, pnpm_version: str) -> list[File]:
 
 
 def _make_pr_dockerfile(image: Image, pnpm_version: str) -> str:
-    """Generate multi-stage Dockerfile for a per-PR image.
-
-    Uses cross-compilation: the build stage runs on the native platform
-    (no QEMU emulation) so Go-based tools like esbuild don't crash.
-    The final stage targets each requested platform and re-installs native
-    node modules for that platform while reusing the JS build artifacts.
-    """
     dep = image.dependency()
-    name = dep.image_name()
-    tag = dep.image_tag()
+    name = dep.image_name() # type: ignore
+    tag = dep.image_tag() # type: ignore
 
     copy_commands = ""
     for file in image.files():
         copy_commands += "COPY {name} /home/\n".format(name=file.name)
 
     return """# syntax=docker/dockerfile:1.6
-FROM --platform=$BUILDPLATFORM {name}:{tag} AS builder
+FROM {name}:{tag}
 
 {global_env}
 
@@ -328,24 +295,11 @@ FROM --platform=$BUILDPLATFORM {name}:{tag} AS builder
 
 RUN bash /home/prepare.sh
 
-FROM {name}:{tag}
-
-{global_env}
-
-COPY --from=builder /home/{repo} /home/{repo}
-
-RUN npm install -g pnpm@{pnpm_version} && \\
-    cd /home/{repo} && \\
-    (pnpm install --no-frozen-lockfile 2>&1 || pnpm install 2>&1 || true)
-
-{copy_commands}
-
 {clear_env}
 
 """.format(
         name=name,
         tag=tag,
-        repo=image.pr.repo,
         pnpm_version=pnpm_version,
         global_env=image.global_env,
         copy_commands=copy_commands,
@@ -353,15 +307,10 @@ RUN npm install -g pnpm@{pnpm_version} && \\
     )
 
 
-# ---------------------------------------------------------------------------
-# Default Mastra Instance (fallback for PRs without number_interval)
-# ---------------------------------------------------------------------------
-
 _DEFAULT_PNPM_VERSION = "10.18.2"
 
 
 class MastraImageDefault(Image):
-    """Default per-PR image (no number_interval fallback)."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -393,8 +342,6 @@ class MastraImageDefault(Image):
 
 @Instance.register("mastra-ai", "mastra")
 class Mastra(Instance):
-    """Default instance for mastra-ai/mastra (no number_interval)."""
-
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -404,7 +351,7 @@ class Mastra(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Optional[Image]: # type: ignore
         return MastraImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -423,19 +370,10 @@ class Mastra(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        return mastra_parse_log(test_log)
-
-
-# ---------------------------------------------------------------------------
-# Interval-specific instance factory
-# All intervals share MastraImageBase (one base image).
-# pnpm version is baked into prepare.sh, not the base image.
-# ---------------------------------------------------------------------------
+        return _parse_log(test_log)
 
 
 def _make_interval_image_default(pnpm_version: str):
-    """Create an ImageDefault subclass bound to a specific pnpm version."""
-
     class _ImageDefault(Image):
 
         def __init__(self, pr: PullRequest, config: Config):
@@ -469,8 +407,6 @@ def _make_interval_image_default(pnpm_version: str):
 
 
 def _register_interval(interval_name: str, pnpm_version: str):
-    """Create and register an Instance subclass for a specific interval."""
-
     image_cls = _make_interval_image_default(pnpm_version)
 
     @Instance.register("mastra-ai", interval_name)
@@ -485,7 +421,7 @@ def _register_interval(interval_name: str, pnpm_version: str):
         def pr(self) -> PullRequest:
             return self._pr
 
-        def dependency(self) -> Optional[Image]:
+        def dependency(self) -> Optional[Image]: # type: ignore
             return image_cls(self.pr, self._config)
 
         def run(self, run_cmd: str = "") -> str:
@@ -504,7 +440,7 @@ def _register_interval(interval_name: str, pnpm_version: str):
             return "bash /home/fix-run.sh"
 
         def parse_log(self, test_log: str) -> TestResult:
-            return mastra_parse_log(test_log)
+            return _parse_log(test_log)
 
     class_name = "MASTRA_{interval}".format(
         interval=interval_name.upper().replace("MASTRA_", "")
