@@ -122,6 +122,7 @@ from multi_swe_bench.harness.repos.python.hyperspy import *
 from multi_swe_bench.harness.repos.python.HypothesisWorks import *
 from multi_swe_bench.harness.repos.python.ibis_project import *
 from multi_swe_bench.harness.repos.python.idaholab import *
+from multi_swe_bench.harness.repos.python.infiniflow import *
 from multi_swe_bench.harness.repos.python.intel import *
 from multi_swe_bench.harness.repos.python.ipfs_shipyard import *
 from multi_swe_bench.harness.repos.python.ipython import *
