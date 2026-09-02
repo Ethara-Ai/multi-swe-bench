@@ -1,7 +1,7 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -55,10 +55,23 @@ class PipecatImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        repo_url = f"https://github.com/{self.pr.org}/{self.pr.repo}.git"
+
+        # PIPELINE.md 3: clone via "${REPO_URL}", then strip the remote so the
+        # base carries full history but no fetch path. The PR layer does the
+        # strict hardening.
         if self.config.need_clone:
-            code = f"RUN git clone --no-single-branch https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        code += (
+            f"\n\nWORKDIR /home/{self.pr.repo}\n"
+            "RUN git remote remove origin 2>/dev/null || true; \\\n"
+            "    git config --local fetch.recurseSubmodules false; \\\n"
+            '    git config --local remote.pushDefault ""\n'
+            "WORKDIR /home/"
+        )
 
         label_block = (
             f'LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\\n'
@@ -67,14 +80,33 @@ class PipecatImageBase(Image):
             f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
         )
 
+        # MITM proxy/cert scaffolding. This base carries the `# syntax` directive,
+        # so DockerfileEnhancer.enhance() returns it raw (image.py:315) and never
+        # auto-injects. Per PIPELINE.md 2a the scaffolding is added by hand here;
+        # the constants are imported from image.py rather than copied so they stay
+        # canonical by construction and cannot drift (HARD RULE 4).
+        # Order mirrors DockerfileEnhancer._infrastructure_block: ARGs, ENV, LABEL,
+        # cert symlinks.
         return f"""# syntax=docker/dockerfile:1.6
 FROM {image_name}
 
+ARG TARGETARCH
+ARG REPO_URL="{repo_url}"
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+# LC_ALL is required by PIPELINE.md 3 but is not part of the canonical
+# _ENV_BLOCK, so it is set separately rather than editing that constant.
+ENV LC_ALL=C.UTF-8
+
 {label_block}
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 {self.global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_ROOT_USER_ACTION=ignore
 ENV UV_LINK_MODE=copy
 WORKDIR /home/
@@ -244,6 +276,14 @@ bash /home/run_tests.sh
             f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
         )
 
+        # PIPELINE.md 4: the hardening block must assert against the LITERAL
+        # base.sha, not ${BASE_COMMIT}. A build ARG could be overridden with
+        # --build-arg and redirect both the checkout and the assertions, which
+        # would defeat the anti-reward-hacking control in section 2.
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        )
+
         return f"""# syntax=docker/dockerfile:1.6
 FROM {name}:{tag}
 
@@ -255,10 +295,7 @@ FROM {name}:{tag}
 
 WORKDIR /home/{self.pr.repo}
 
-ARG BASE_COMMIT="{self.pr.base.sha}"
-ENV BASE_COMMIT=${{BASE_COMMIT}}
-
-{Image._HARDENING_BLOCK}
+{hardening}
 
 {prepare_commands}
 
