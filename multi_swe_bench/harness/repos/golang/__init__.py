@@ -212,3 +212,6 @@ from multi_swe_bench.harness.repos.golang.allegro import *
 from multi_swe_bench.harness.repos.golang.dominikbraun import *
 
 from multi_swe_bench.harness.repos.golang.kubeflow import *
+
+from multi_swe_bench.harness.repos.golang.KusionStack import *
+
