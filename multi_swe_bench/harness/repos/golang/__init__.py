@@ -215,3 +215,4 @@ from multi_swe_bench.harness.repos.golang.kubeflow import *
 
 from multi_swe_bench.harness.repos.golang.KusionStack import *
 
+from multi_swe_bench.harness.repos.golang.volcano_sh import *
