@@ -230,3 +230,4 @@ from multi_swe_bench.harness.repos.typescript.tiagosiebler import *
 
 from multi_swe_bench.harness.repos.typescript.wei import *
 from multi_swe_bench.harness.repos.typescript.johnpapa import *
+from multi_swe_bench.harness.repos.typescript.Yeachan_Heo.oh_my_claudecode import *
