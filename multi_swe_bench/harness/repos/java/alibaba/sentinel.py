@@ -21,7 +21,7 @@ class SentinelImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:20.04"
+        return "eclipse-temurin:8-jdk-focal"
 
     def image_tag(self) -> str:
         return "base"
@@ -46,17 +46,19 @@ class SentinelImageBase(Image):
 
 {self.global_env}
 
-ENV JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai" \\
-    LC_ALL=C.UTF-8
+ENV LC_ALL=C.UTF-8 \\
+    CI=true \\
+    MAVEN_OPTS="-Xmx2g" \\
+    JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8"
 
 WORKDIR /home/
 
-RUN apt update && apt install -y gnupg ca-certificates git curl maven
-RUN curl -s https://repos.azul.com/azul-repo.key | gpg --dearmor -o /usr/share/keyrings/azul.gpg \\
-    && echo "deb [signed-by=/usr/share/keyrings/azul.gpg] https://repos.azul.com/zulu/deb stable main" | tee /etc/apt/sources.list.d/zulu.list
-RUN apt update && apt install -y zulu11-jdk zulu17-jdk
-ENV JAVA_HOME=/usr/lib/jvm/zulu17
-ENV PATH=$JAVA_HOME/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    curl \\
+    git \\
+    maven \\
+    && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -103,7 +105,7 @@ class SentinelImageDefault(Image):
                 ".",
                 "check_git_changes.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
   echo "check_git_changes: Not inside a git repository"
@@ -136,57 +138,19 @@ echo "*.jpg binary" >> .gitattributes
 git add .
 git reset --hard
 bash /home/check_git_changes.sh
+fetch_base() {{
+    git cat-file -e {pr.base.sha} 2>/dev/null \\
+        || git fetch --quiet https://github.com/{pr.org}/{pr.repo}.git {pr.base.sha}
+}}
+
+fetch_base
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# Configure Maven mirror for faster downloads
-if [ ! -f ~/.m2/settings.xml ]; then
-    mkdir -p ~/.m2 && cat <<EOFXML > ~/.m2/settings.xml
-<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
-          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+mvn -B -V --no-transfer-progress -fae -Dgrpc.version=1.26.0 clean test-compile
 
-    <mirrors>
-        <mirror>
-            <id>aliyunmaven</id>
-            <mirrorOf>central</mirrorOf>
-            <name>Aliyun Maven Mirror</name>
-            <url>https://maven.aliyun.com/repository/public</url>
-        </mirror>
-    </mirrors>
-
-</settings>
-EOFXML
-else
-  grep -q "<mirror>" ~/.m2/settings.xml || sed -i '/<\\/settings>/i \\
-  <mirrors> \\
-      <mirror> \\
-          <id>aliyunmaven</id> \\
-          <mirrorOf>central</mirrorOf> \\
-          <name>Aliyun Maven Mirror</name> \\
-          <url>https://maven.aliyun.com/repository/public</url> \\
-      </mirror> \\
-  </mirrors>' ~/.m2/settings.xml
-fi
-
-# Auto-detect JDK version needed based on pom.xml source level
-export JAVA_HOME=/usr/lib/jvm/zulu17
-export PATH=$JAVA_HOME/bin:$PATH
-
-mvn -V --no-transfer-progress clean package -DskipTests 2>&1 | tee /tmp/build_output.log
-BUILD_EXIT=${{PIPESTATUS[0]}}
-
-if [ $BUILD_EXIT -ne 0 ] && grep -q "Source option .* is no longer supported" /tmp/build_output.log; then
-    echo "=== JDK 17 failed due to unsupported source level, switching to JDK 11 ==="
-    export JAVA_HOME=/usr/lib/jvm/zulu11
-    export PATH=$JAVA_HOME/bin:$PATH
-    echo "export JAVA_HOME=/usr/lib/jvm/zulu11" > /home/jdk_env.sh
-    echo "export PATH=\\$JAVA_HOME/bin:\\$PATH" >> /home/jdk_env.sh
-    mvn -V --no-transfer-progress clean package -DskipTests || true
-else
-    echo "export JAVA_HOME=/usr/lib/jvm/zulu17" > /home/jdk_env.sh
-    echo "export PATH=\\$JAVA_HOME/bin:\\$PATH" >> /home/jdk_env.sh
-fi
+git checkout -- .
+bash /home/check_git_changes.sh
 
 """.format(pr=self.pr),
             ),
@@ -195,10 +159,12 @@ fi
                 "run.sh",
                 """#!/bin/bash
 set -e
-source /home/jdk_env.sh
 
 cd /home/{pr.repo}
-mvn -V --no-transfer-progress clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false
+mvn -B --no-transfer-progress -fae -Dgrpc.version=1.26.0 clean test \\
+  -Dsurefire.useFile=false \\
+  -Dmaven.test.failure.ignore=true \\
+  -DfailIfNoTests=false
 
 """.format(pr=self.pr),
             ),
@@ -207,11 +173,15 @@ mvn -V --no-transfer-progress clean test -Dsurefire.useFile=false -Dmaven.test.s
                 "test-run.sh",
                 """#!/bin/bash
 set -e
-source /home/jdk_env.sh
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-mvn -V --no-transfer-progress clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false
+mvn -B --no-transfer-progress -fae -Dgrpc.version=1.26.0 \\
+  -Dmaven.compiler.failOnError=false \\
+  clean test \\
+  -Dsurefire.useFile=false \\
+  -Dmaven.test.failure.ignore=true \\
+  -DfailIfNoTests=false
 
 """.format(pr=self.pr),
             ),
@@ -220,11 +190,13 @@ mvn -V --no-transfer-progress clean test -Dsurefire.useFile=false -Dmaven.test.s
                 "fix-run.sh",
                 """#!/bin/bash
 set -e
-source /home/jdk_env.sh
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-mvn -V --no-transfer-progress clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false
+mvn -B --no-transfer-progress -fae -Dgrpc.version=1.26.0 clean test \\
+  -Dsurefire.useFile=false \\
+  -Dmaven.test.failure.ignore=true \\
+  -DfailIfNoTests=false
 
 """.format(pr=self.pr),
             ),
@@ -245,7 +217,6 @@ mvn -V --no-transfer-progress clean test -Dsurefire.useFile=false -Dmaven.test.s
         proxy_cleanup = ""
 
         if self.global_env:
-            # Extract proxy host and port
             proxy_host = None
             proxy_port = None
 
@@ -341,7 +312,6 @@ class Sentinel(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        # Strip ANSI escape sequences
         ansi_escape_pattern = re.compile(r"\x1B\[[0-?9;]*[mK]")
         test_log = ansi_escape_pattern.sub("", test_log)
 
@@ -350,7 +320,7 @@ class Sentinel(Instance):
         skipped_tests = set()
 
         pattern = re.compile(
-            r"Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+), Time elapsed: [\d.]+ .+? in (.+)"
+            r"Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+), Time elapsed: [\d.,]+ .+? in (.+)"
         )
 
         for line in test_log.splitlines():
@@ -360,19 +330,18 @@ class Sentinel(Instance):
                 failures = int(match.group(2))
                 errors = int(match.group(3))
                 skipped = int(match.group(4))
-                test_name = match.group(5)
+                test_name = match.group(5).strip()
 
-                if (
-                    tests_run > 0
-                    and failures == 0
-                    and errors == 0
-                    and skipped != tests_run
-                ):
-                    passed_tests.add(test_name)
-                elif failures > 0 or errors > 0:
+                if failures > 0 or errors > 0:
                     failed_tests.add(test_name)
-                elif skipped == tests_run:
+                elif tests_run > 0 and skipped == tests_run:
                     skipped_tests.add(test_name)
+                elif tests_run > 0:
+                    passed_tests.add(test_name)
+
+        skipped_tests -= failed_tests
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
 
         return TestResult(
             passed_count=len(passed_tests),
