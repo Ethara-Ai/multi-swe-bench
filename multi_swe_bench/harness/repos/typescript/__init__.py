@@ -228,7 +228,10 @@ from multi_swe_bench.harness.repos.typescript.Semro import *
 from multi_swe_bench.harness.repos.typescript.will_stone import *
 
 from multi_swe_bench.harness.repos.typescript.tiagosiebler import *
+from multi_swe_bench.harness.repos.typescript.graphql_hive import *
 
+# [neutralized: module typescript/zwave_js does not exist (registration pushed without the file) - blocks the whole registry import]
+# from multi_swe_bench.harness.repos.typescript.zwave_js import *
 from multi_swe_bench.harness.repos.typescript.wei import *
 from multi_swe_bench.harness.repos.typescript.johnpapa import *
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo.oh_my_claudecode import *
