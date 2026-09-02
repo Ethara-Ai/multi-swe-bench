@@ -230,8 +230,14 @@ from multi_swe_bench.harness.repos.typescript.will_stone import *
 from multi_swe_bench.harness.repos.typescript.tiagosiebler import *
 from multi_swe_bench.harness.repos.typescript.graphql_hive import *
 
+# [neutralized: typescript/zwave_js was never committed (import added by 00bc6b46).
+#  The folder does not exist on disk or anywhere in git history, so this line
+#  raises ModuleNotFoundError and takes the WHOLE registry down.]
+# from multi_swe_bench.harness.repos.typescript.zwave_js import *
 # [neutralized: module typescript/zwave_js does not exist (registration pushed without the file) - blocks the whole registry import]
 # from multi_swe_bench.harness.repos.typescript.zwave_js import *
 from multi_swe_bench.harness.repos.typescript.wei import *
 from multi_swe_bench.harness.repos.typescript.johnpapa import *
+from multi_swe_bench.harness.repos.typescript.hoppscotch import *
+
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo.oh_my_claudecode import *
