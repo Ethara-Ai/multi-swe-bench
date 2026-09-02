@@ -249,6 +249,28 @@ yarn test -- --verbose || true
 """
 
 
+# Datasets whose entries carry no `number_interval` resolve to the bare
+# "jestjs/jest" key (instance.py:40-51), so this class is what the harness
+# instantiates for them regardless of how old the PR is. The defaults below
+# (node:18, yarn) are wrong for the 2016-era PRs: that codebase is a Lerna
+# monorepo on Node 10 with no yarn lockfile, and it needs `lerna bootstrap`
+# before any package resolves. Delegate those PRs to the era config that
+# already encodes the correct environment.
+_ERA_1983_TO_1174 = (1174, 1983)
+
+
+def _delegate_for(pr: PullRequest):
+    """Return the era instance handling this PR, or None to use jest.py itself."""
+    low, high = _ERA_1983_TO_1174
+    if low <= pr.number <= high:
+        from multi_swe_bench.harness.repos.typescript.jestjs.jest_1983_to_1174 import (
+            Jest_1983_to_1174,
+        )
+
+        return Jest_1983_to_1174
+    return None
+
+
 @Instance.register("jestjs", "jest")
 class jest(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
@@ -256,32 +278,51 @@ class jest(Instance):
         self._pr = pr
         self._config = config
 
+        delegate_cls = _delegate_for(pr)
+        self._delegate = (
+            delegate_cls(pr, config, *args, **kwargs) if delegate_cls else None
+        )
+
     @property
     def pr(self) -> PullRequest:
         return self._pr
 
     def dependency(self) -> Optional[Image]:
+        if self._delegate:
+            return self._delegate.dependency()
         return jestImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
+        if self._delegate:
+            return self._delegate.run()
 
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
+        if self._delegate:
+            return self._delegate.test_patch_run()
 
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
+        if self._delegate:
+            return self._delegate.fix_patch_run()
 
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        if self._delegate:
+            return self._delegate.parse_log(test_log)
+
+        return self._parse_log_default(test_log)
+
+    def _parse_log_default(self, test_log: str) -> TestResult:
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
