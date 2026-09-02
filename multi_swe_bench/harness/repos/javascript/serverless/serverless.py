@@ -4,27 +4,19 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# Era split (by pr.number, confirmed no overlap): PRs <= 13185 use Mocha,
-# PRs >= 13194 use Jest workspaces. Both eras are registered under a single
-# bare key ("serverless/serverless") and share ONE base image (base-node18);
-# the era difference lives only in the per-PR test scripts + parse_log. The raw
-# dataset carries the bundle's PR list in `prs_in_bundle` but leaves
-# `number_interval` empty; the registry-scoped shim at the bottom of this file
-# derives number_interval from prs_in_bundle for the OUTPUT record, and an
-# Instance.create fallback keeps routing on the bare key.
 MOCHA_ERA_MAX_NUMBER = 13185
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_DURATION_RE = re.compile(r"\s*\(\d+(?:\.\d+)?\s*(?:ms|s|m)\)\s*$")
+_SUMMARY_RE = re.compile(r"^[ \t]*\d+ (?:passing|failing|pending)\b")
+_PASS_RE = re.compile(r"^[✓✔]\s+(.+)$")
+_PENDING_RE = re.compile(r"^-\s+(.+)$")
+_INLINE_FAIL_RE = re.compile(r"^\d+\)\s+(.+)$")
+_VOLATILE_RE = re.compile(r"\d{8,}")
+_EMBEDDED_PASS_RE = re.compile(r"^.*?\S {2,}([✓✔]\s+.+)$")
 
 
 class ServerlessImageBase(Image):
-    """Shared base image (ONE, node:18) for both the Mocha and Jest eras.
-
-    Clones the repo (full history) and installs OS tooling + corepack. It does
-    NOT check out BASE_COMMIT, does NOT install project deps, and has NO
-    hardening block -- so it is built once and reused by every per-PR image.
-    Emits the BuildKit syntax directive so DockerfileEnhancer returns it
-    unchanged (no proxy/cert/MITM injection). Mirrors the vueuse base pattern.
-    """
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -41,116 +33,65 @@ class ServerlessImageBase(Image):
         return "node:18"
 
     def image_tag(self) -> str:
-        return "base-node18"
+        return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
-        return "base-node18"
+        return f"base-pr-{self.pr.number}"
 
     def files(self) -> list[File]:
         return []
 
     def extra_packages(self) -> list[str]:
-        return ["jq"]
+        return ["jq", "ruby"]
 
     def dockerfile(self) -> str:
+        from multi_swe_bench.harness.image import DockerfileEnhancer
+
         base_img = self.dependency()
-        if isinstance(base_img, Image):
-            base_img = base_img.image_full_name()
-
-        org, repo = self.pr.org, self.pr.repo
-        repo_url = f"https://github.com/{org}/{repo}.git"
-
-        default_packages = [
-            "ca-certificates",
-            "curl",
-            "build-essential",
-            "git",
-            "gnupg",
-            "make",
-            "python3",
-            "sudo",
-            "wget",
-        ]
-        packages_str = " \\\n    ".join(default_packages + self.extra_packages())
-        apt_command = self._get_apt_update_command(packages_str, base_img)
-
+        repo = self.pr.repo
+        packages_str = " \\\n    ".join(
+            [
+                "ca-certificates",
+                "curl",
+                "build-essential",
+                "git",
+                "gnupg",
+                "make",
+                "python3",
+                "sudo",
+                "wget",
+            ]
+            + self.extra_packages()
+        )
         if self.config.need_clone:
-            clone = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+            clone = 'RUN git clone "${REPO_URL}" /home/' + repo
         else:
             clone = f"COPY {repo} /home/{repo}"
 
         sections = [
-            "# syntax=docker/dockerfile:1.6",
+            DockerfileEnhancer.SYNTAX_DIRECTIVE,
             f"FROM {base_img}",
-            (
-                "ARG TARGETARCH\n"
-                f'ARG REPO_URL="{repo_url}"\n'
-                "ARG BASE_COMMIT"
-            ),
-            (
-                "ENV DEBIAN_FRONTEND=noninteractive \\\n"
-                "    LANG=C.UTF-8 \\\n"
-                "    TZ=UTC"
-            ),
-            (
-                f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
-                f'      org.opencontainers.image.description="{org}/{repo} base image" \\\n'
-                f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
-                '      org.opencontainers.image.authors="https://www.ethara.ai/"'
-            ),
+            DockerfileEnhancer._infrastructure_block(self, base_img).rstrip("\n"),
             "WORKDIR /home/",
-            apt_command,
-            "RUN corepack enable || true",
+            self._get_apt_update_command(packages_str, base_img),
             clone,
+            f"WORKDIR /home/{repo}",
+            "RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}",
+            Image._HARDENING_BLOCK.rstrip("\n"),
             'CMD ["/bin/bash"]',
         ]
-        return "\n\n".join(s for s in sections if s) + "\n"
+        return "\n\n".join(sections) + "\n"
 
 
 def _per_pr_dockerfile(image: Image) -> str:
-    """Industry-standard per-PR Dockerfile shared by both eras.
-
-    FROM the shared base -> declare BASE_COMMIT (build-arg, overridable, then
-    ENV) -> WORKDIR -> checkout BASE_COMMIT BEFORE copying patches -> COPY the
-    eval scripts/patches -> prepare.sh (deps) -> Image._HARDENING_BLOCK (strips
-    every other ref/commit so the fix can't be read from git history; anchored
-    on ${BASE_COMMIT}) -> CMD. dependency() returns an Image, so
-    DockerfileEnhancer leaves this content untouched.
-    """
     base = image.dependency()
-    name = base.image_name()
-    tag = base.image_tag()
-    org, repo = image.pr.org, image.pr.repo
-    number = image.pr.number
-    sha = image.pr.base.sha
+    copy_lines = "\n".join(f"COPY {f.name} /home/" for f in image.files())
+    return f"""FROM {base.image_full_name()}
 
-    copy_line = "COPY " + " ".join(f.name for f in image.files()) + " /home/"
+{copy_lines}
 
-    label_block = (
-        f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
-        f'      org.opencontainers.image.description="{org}/{repo} PR pr-{number} image" \\\n'
-        f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
-        f'      org.opencontainers.image.version="pr-{number}" \\\n'
-        f'      org.opencontainers.image.revision="{sha}" \\\n'
-        '      org.opencontainers.image.authors="https://www.ethara.ai/"'
-    )
-
-    sections = [
-        "# syntax=docker/dockerfile:1.6",
-        f"FROM {name}:{tag}",
-        (
-            f'ARG BASE_COMMIT="{sha}"\n'
-            "ENV BASE_COMMIT=${BASE_COMMIT}"
-        ),
-        label_block,
-        f"WORKDIR /home/{repo}",
-        "RUN git reset --hard && git checkout ${BASE_COMMIT}",
-        copy_line,
-        "RUN bash /home/prepare.sh",
-        Image._HARDENING_BLOCK.rstrip("\n"),
-        'CMD ["/bin/bash"]',
-    ]
-    return "\n\n".join(s for s in sections if s) + "\n"
+RUN bash /home/prepare.sh
+"""
 
 
 class ServerlessMochaImageDefault(Image):
@@ -189,6 +130,26 @@ class ServerlessMochaImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+""",
+            ),
+            File(
+                ".",
                 "fix-deps.sh",
                 """#!/bin/bash
 if [ -f package.json ] && command -v python3 &>/dev/null; then
@@ -222,26 +183,33 @@ fi
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-# Repo is already cloned + checked out at ${{BASE_COMMIT}} by the Dockerfile,
-# so this script performs no git checkout -- only dependency prep.
 set -e
 
 cd /home/{pr.repo}
-git reset --hard || true
+git reset --hard
+bash /home/check_git_changes.sh
+git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
 
 bash /home/fix-deps.sh
 npm install --legacy-peer-deps || npm install --legacy-peer-deps --ignore-scripts || true
+
+md5sum package.json > /home/.pkg-manifest.md5 2>/dev/null || true
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 cd /home/{pr.repo}
 
-bash /home/fix-deps.sh
-npm install --legacy-peer-deps || npm install --legacy-peer-deps --ignore-scripts || true
+export CI=true SLS_IGNORE_WARNING='*'
+
+if ! md5sum -c --status /home/.pkg-manifest.md5 2>/dev/null; then
+    bash /home/fix-deps.sh
+    npm install --legacy-peer-deps || npm install --legacy-peer-deps --ignore-scripts || true
+fi
 bash /home/run-tests.sh
 """.format(pr=self.pr),
             ),
@@ -249,12 +217,16 @@ bash /home/run-tests.sh
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 cd /home/{pr.repo}
 git apply --exclude='*package-lock.json' --exclude='*npm-shrinkwrap.json' --exclude='*yarn.lock' --exclude='*pnpm-lock.yaml' --whitespace=nowarn /home/test.patch
 
-bash /home/fix-deps.sh
-npm install --legacy-peer-deps || npm install --legacy-peer-deps --ignore-scripts || true
+export CI=true SLS_IGNORE_WARNING='*'
+
+if ! md5sum -c --status /home/.pkg-manifest.md5 2>/dev/null; then
+    bash /home/fix-deps.sh
+    npm install --legacy-peer-deps || npm install --legacy-peer-deps --ignore-scripts || true
+fi
 bash /home/run-tests.sh
 
 """.format(pr=self.pr),
@@ -263,12 +235,16 @@ bash /home/run-tests.sh
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 cd /home/{pr.repo}
 git apply --exclude='*package-lock.json' --exclude='*npm-shrinkwrap.json' --exclude='*yarn.lock' --exclude='*pnpm-lock.yaml' --whitespace=nowarn /home/test.patch /home/fix.patch
 
-bash /home/fix-deps.sh
-npm install --legacy-peer-deps || npm install --legacy-peer-deps --ignore-scripts || true
+export CI=true SLS_IGNORE_WARNING='*'
+
+if ! md5sum -c --status /home/.pkg-manifest.md5 2>/dev/null; then
+    bash /home/fix-deps.sh
+    npm install --legacy-peer-deps || npm install --legacy-peer-deps --ignore-scripts || true
+fi
 bash /home/run-tests.sh
 
 """.format(pr=self.pr),
@@ -276,9 +252,19 @@ bash /home/run-tests.sh
             File(
                 ".",
                 "run-tests.sh",
-                """#!/bin/bash
-npm test || true
-""".format(),
+                "#!/bin/bash\n"
+                "set -o pipefail\n"
+                f"cd /home/{self.pr.repo}\n"
+                "\n"
+                "npm test 2>&1 | tee /home/mocha-output.log\n"
+                "\n"
+                "if ! grep -qE '^[[:space:]]*[0-9]+ (passing|failing|pending)' "
+                "/home/mocha-output.log; then\n"
+                '    echo "FATAL: mocha emitted no summary line -- the test runner '
+                'failed to start."\n'
+                "    exit 1\n"
+                "fi\n"
+                "exit 0\n",
             ),
         ]
 
@@ -322,14 +308,35 @@ class ServerlessJestImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
-# Repo is already cloned + checked out at ${{BASE_COMMIT}} by the Dockerfile,
-# so this script performs no git checkout -- only dependency prep.
 set -e
 
 cd /home/{pr.repo}
-git reset --hard || true
+git reset --hard
+bash /home/check_git_changes.sh
+git checkout {pr.base.sha}
+bash /home/check_git_changes.sh
 
 rm -f package-lock.json
 npm install --legacy-peer-deps || npm install --legacy-peer-deps --ignore-scripts || true
@@ -400,7 +407,6 @@ class Serverless(Instance):
         super().__init__()
         self._pr = pr
         self._config = config
-        self._seen_failed_names = set()
 
     @property
     def pr(self) -> PullRequest:
@@ -439,61 +445,63 @@ class Serverless(Instance):
         return self._parse_log_jest(test_log)
 
     def _parse_log_mocha(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        clean_log = ansi_escape.sub("", test_log)
+        clean_log = _ANSI_RE.sub("", test_log)
 
-        # Mocha summary lines: "N passing (Ns)" / "N failing" / "N pending"
-        passing_summary = re.findall(r"(\d+)\s+passing", clean_log)
-        failing_summary = re.findall(r"(\d+)\s+failing", clean_log)
-        pending_summary = re.findall(r"(\d+)\s+pending", clean_log)
+        suite_stack: list[tuple[int, str]] = []
+        occurrences: dict[str, int] = {}
 
-        total_passing = int(passing_summary[-1]) if passing_summary else 0
-        total_failing = int(failing_summary[-1]) if failing_summary else 0
-        total_pending = int(pending_summary[-1]) if pending_summary else 0
+        def qualify(title: str) -> str:
+            title = _DURATION_RE.sub("", title).strip()
+            name = " > ".join([t for _, t in suite_stack] + [title])
+            name = _VOLATILE_RE.sub("<n>", name)
+            seen = occurrences[name] = occurrences.get(name, 0) + 1
+            return name if seen == 1 else f"{name} #{seen}"
 
-        # Extract individual failed test names from numbered failure lines:
-        #   "  1) Suite name\n       should do something:\n     Error: ..."
-        numbered_fail_re = re.compile(r"^\s*\d+\)\s+(.+?)\s*$", re.MULTILINE)
-        for m in numbered_fail_re.finditer(clean_log):
-            test_name = m.group(1).strip()
-            if test_name:
-                failed_tests.add(test_name)
+        for raw_line in clean_log.split("\n"):
+            line = raw_line.rstrip()
+            if not line.strip():
+                continue
 
-        # Capture individual pass/fail from mocha spec reporter
-        for line in clean_log.splitlines():
-            line = line.strip()
-            # spec reporter: ✔ / ✓ for pass
-            m = re.match(r"[✔✓]\s+(.*?)(?:\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$", line)
-            if m and m.group(1) not in failed_tests:
-                passed_tests.add(m.group(1))
+            if _SUMMARY_RE.match(line):
+                break
 
-        # Synthetic pass marker when Mocha summary shows passing tests
-        if total_passing > 0:
-            passed_tests.add("ToTal_Test")
+            indent = len(line) - len(line.lstrip(" "))
+            text = line.strip()
 
-        if not failed_tests and total_failing > 0:
-            failed_tests.add("ToTal_Test")
+            if indent < 2:
+                m = _EMBEDDED_PASS_RE.match(line)
+                if not m:
+                    continue
+                text = m.group(1)
+                indent = 2
 
-        if total_pending > 0 and not skipped_tests:
-            skipped_tests.add("ToTal_Pending")
+            m = _PASS_RE.match(text)
+            if m:
+                passed_tests.add(qualify(m.group(1)))
+                continue
 
-        # Ensure sets are disjoint
+            m = _INLINE_FAIL_RE.match(text)
+            if m:
+                failed_tests.add(qualify(m.group(1)))
+                continue
+
+            m = _PENDING_RE.match(text)
+            if m:
+                skipped_tests.add(qualify(m.group(1)))
+                continue
+
+            while suite_stack and suite_stack[-1][0] >= indent:
+                suite_stack.pop()
+            expected_indent = suite_stack[-1][0] + 2 if suite_stack else 2
+            if indent <= expected_indent:
+                suite_stack.append((indent, text))
+
+        passed_tests -= failed_tests
         skipped_tests -= passed_tests | failed_tests
-
-        # Accumulate failure names across parse_log calls (run→test→fix).
-        # generate_report calls parse_log 3x on the same instance sequentially.
-        # When a stage has all tests passing (0 failures), previously-seen
-        # failure names implicitly passed — add them to passed_tests so
-        # report.py detects f2p transitions.
-        self._seen_failed_names |= failed_tests
-        if total_passing > 0 and total_failing == 0 and self._seen_failed_names:
-            passed_tests |= self._seen_failed_names
-            passed_tests.discard("ToTal_Test") if "ToTal_Test" not in self._seen_failed_names else None
-            passed_tests.add("ToTal_Test")
 
         return TestResult(
             passed_count=len(passed_tests),
@@ -509,15 +517,13 @@ class Serverless(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        clean_log = ansi_escape.sub("", test_log)
+        clean_log = _ANSI_RE.sub("", test_log)
 
         for line in clean_log.splitlines():
             line = line.strip()
             if not line:
                 continue
 
-            # Jest verbose: ✓ <test name> (<time>) for pass
             m = re.match(r"[✓✔]\s+(.*?)(?:\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$", line)
             if m:
                 test_name = m.group(1).strip()
@@ -525,7 +531,6 @@ class Serverless(Instance):
                     passed_tests.add(test_name)
                 continue
 
-            # Jest verbose: ✕ <test name> for fail
             m = re.match(r"[✕✗×]\s+(.*?)(?:\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$", line)
             if m:
                 test_name = m.group(1).strip()
@@ -534,20 +539,17 @@ class Serverless(Instance):
                     passed_tests.discard(test_name)
                 continue
 
-            # Jest FAIL header: "FAIL path/to/test.js"
             m = re.match(r"FAIL\s+(\S+)", line)
             if m:
                 failed_tests.add(m.group(1))
                 continue
 
-            # Jest skipped: ○ <test name>
             m = re.match(r"○\s+(.*)", line)
             if m:
                 test_name = m.group(1).strip()
                 if test_name:
                     skipped_tests.add(test_name)
 
-        # Jest summary: "Tests: N failed, N passed, N total"
         test_summary = re.search(r"Tests:\s+(.+)", clean_log)
         if test_summary:
             summary_text = test_summary.group(1)
@@ -562,6 +564,7 @@ class Serverless(Instance):
             if skipped_match and int(skipped_match.group(1)) > 0 and not skipped_tests:
                 skipped_tests.add("ToTal_Pending")
 
+        passed_tests -= failed_tests
         skipped_tests -= passed_tests | failed_tests
 
         return TestResult(
@@ -574,37 +577,10 @@ class Serverless(Instance):
         )
 
 
-# ---------------------------------------------------------------------------
-# number_interval auto-population -- REGISTRY-SCOPED shim (no other file edited).
-#
-# The output (resolved) dataset jsonl's `number_interval` is written from the
-# loaded PullRequest (Dataset.build reads pr.number_interval), but the raw
-# serverless records leave `number_interval` empty and instead carry the
-# bundle's PR list in `prs_in_bundle` (e.g. [146, 147, 150, 155, 157]). The
-# harness drops unknown fields when parsing, so without this the emitted
-# number_interval comes out empty. As this must live ONLY in the registry, we
-# install two small, idempotent, serverless-scoped shims at import time (this
-# file is the only one changed):
-#
-#   1. PullRequest.from_json -- for serverless/serverless records whose
-#      number_interval is empty, fill it from the raw line's prs_in_bundle as
-#      the EXPLICIT dash-joined member list "146-147-150-155-157" (the exact PRs
-#      in the bundle, NOT a "146-157" range, which would wrongly imply every PR
-#      in between belongs to the bundle). That value then flows straight into the
-#      output dataset record via Dataset.build.
-#   2. Instance.create -- a non-empty number_interval makes routing look up
-#      `serverless/<that-list>`, which is not a registered key; catch that and
-#      fall back to the registered bare key `serverless/serverless` so the build
-#      still routes to the era-dispatching Serverless class. Other repos are
-#      unaffected: shim 1 only fills serverless rows, and the fallback only fires
-#      for serverless/serverless.
-# ---------------------------------------------------------------------------
 import json as _sls_json  # noqa: E402
 
 
 def _sls_number_interval_from_bundle(bundle) -> str:
-    # Explicit member list in bundle order; dash-joined, de-duplicated while
-    # preserving order. Range collapsing is intentionally avoided.
     seen = set()
     members = []
     for n in bundle:
