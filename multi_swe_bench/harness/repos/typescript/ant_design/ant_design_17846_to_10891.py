@@ -148,6 +148,34 @@ try {{
       changed = true;
     }}
   }}
+  // Turn OFF ts-jest type-checking.
+  //
+  // The base commits at the young end of this interval declare jest ^23 and transitively
+  // resolve ts-jest 23.10.5, which type-checks every suite and FAILS the suite on any
+  // TypeScript error. The commits at the old end declare jest ^24, resolve no ts-jest at
+  // all, and therefore never type-check. So type-checking is already inconsistent across
+  // the interval, and it is applied to exactly the half that then cannot produce results.
+  //
+  // With unpinned @types resolving to modern versions against 2018/2019 source this
+  // produced 964 TypeScript errors for PR #13939 - `classnames` with no usable declaration
+  // file, and @types/react signature mismatches such as
+  //   components/button/button.tsx:97 - error TS2554: Expected 3 arguments, but got 1
+  // which failed 162 of 274 suites. Every stage reported 0 passed / 536 failed, so f2p was
+  // 0 and the instance was rejected as invalid, even though the PR itself is sound.
+  //
+  // Disabling diagnostics makes the whole interval behave the way its jest-24 half already
+  // does. The graded artifact is the jest result, not the type check. Pinning era-correct
+  // versions for every @types package was the alternative and is not attempted: the repo
+  // commits no lockfile, so that chase has no visible bottom.
+  if (!/diagnostics/.test(c)) {{
+    if (/globals\\s*:/.test(c)) {{
+      c = c.replace(/'ts-jest'\\s*:\\s*{{/, "'ts-jest': {{ diagnostics: false,");
+    }} else {{
+      c = c.replace(/module\\.exports\\s*=\\s*{{/,
+                    "module.exports = {{\\n  globals: {{ 'ts-jest': {{ diagnostics: false }} }},");
+    }}
+    changed = true;
+  }}
   if (changed) {{ fs.writeFileSync('.jest.js', c); console.log('Patched .jest.js ESM modules'); }}
 }} catch(e) {{ console.log('No .jest.js to patch'); }}
 PATCHEOF

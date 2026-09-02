@@ -10,7 +10,6 @@ from multi_swe_bench.harness.repos.rust.bitcoindevkit import *
 from multi_swe_bench.harness.repos.rust.blopker import *
 from multi_swe_bench.harness.repos.rust.boa_dev import *
 from multi_swe_bench.harness.repos.rust.BurntSushi import *
-from multi_swe_bench.harness.repos.rust.Byron import *
 from multi_swe_bench.harness.repos.rust.bytecodealliance import *
 from multi_swe_bench.harness.repos.rust.casey import *
 from multi_swe_bench.harness.repos.rust.clap_rs import *
@@ -87,12 +86,9 @@ from multi_swe_bench.harness.repos.rust.messense import *
 from multi_swe_bench.harness.repos.rust.rpgp import *
 from multi_swe_bench.harness.repos.rust.atsamd_rs import *
 from multi_swe_bench.harness.repos.rust.Harry_kp import *
-from multi_swe_bench.harness.repos.rust.imsnif import *
+from multi_swe_bench.harness.repos.rust.gendx import *
 from multi_swe_bench.harness.repos.rust.sunjay import *
 from multi_swe_bench.harness.repos.rust.quickwit_oss import *
-from multi_swe_bench.harness.repos.rust.leapdao import *
 from multi_swe_bench.harness.repos.rust.mozilla import *
 from multi_swe_bench.harness.repos.rust.ruma import *
-from multi_swe_bench.harness.repos.rust.jonhoo import *
-from multi_swe_bench.harness.repos.rust.modular_bitfield import *
-from multi_swe_bench.harness.repos.rust.railwayapp import *
+from multi_swe_bench.harness.repos.rust.openmls import *
