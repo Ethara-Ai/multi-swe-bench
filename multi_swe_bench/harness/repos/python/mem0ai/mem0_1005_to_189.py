@@ -12,74 +12,72 @@ from multi_swe_bench.harness.repos.python.mem0ai.mem0 import (
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
-# v0.0.24 .. v0.1.33 -- embedchain in-tree, poetry build backend.
 register_era("mem0_1005_to_189", min_version=(0, 0, 0), min_anchor=0)
 
-# embedchain is imported by the tests of this era but is not always installed as
-# a distribution, so importlib.metadata lookups raise PackageNotFoundError at
-# collection time. Synthesising a dist-info directory satisfies the lookup.
-_EMBEDCHAIN_DISTINFO = (
-    "RUN python -c \"import os,sysconfig; nl=chr(10); "
-    "d=os.path.join(sysconfig.get_paths()['purelib'],'embedchain-0.0.0.dist-info'); "
-    "os.makedirs(d,exist_ok=True); "
-    "open(os.path.join(d,'METADATA'),'w').write("
-    "'Metadata-Version: 2.1'+nl+'Name: embedchain'+nl+'Version: 0.0.0'+nl)\" || true"
-)
 
-# Runs in the per-PR layer, in WORKDIR /home/mem0 after the ${BASE_COMMIT}
-# checkout and before the hardening block, so the project is installed at this
-# PR's commit. It cannot live in the shared base: the base has no repo.
-# poetry is pinned to 1.6.1 -- this era's lockfiles predate the poetry 2.x
-# lockfile format and a newer poetry refuses to read them.
-# This era has NO poetry.lock, so `poetry install` re-resolves from scratch and
-# hangs (>>10 min) -- and the setuptools flat-layout build backend makes
-# `pip install .`/`-e .` fail on package discovery. Both silent-|| paths left the
-# image with none of embedchain's deps -> every test file ImportError'd at
-# collection -> (0,0,0). Instead, read THIS commit's own non-optional deps +
-# lightweight dataloaders straight from pyproject.toml and pip-install them
-# (seconds, no resolve). Heavy ML extras (torch/unstructured/sentence-transformers
-# /...) are skipped: not needed to import embedchain or collect its tests. WORKDIR
-# is /home/mem0 here; base declares `# syntax=docker/dockerfile:1.6` so heredoc RUN
-# works, and python3 is 3.11 (tomllib in stdlib).
-_INSTALL = (
-    "RUN pip install --upgrade pip setuptools wheel\n"
-    "RUN python3 <<'PYEOF' || true\n"
-    "import tomllib, subprocess, re\n"
-    "poe = tomllib.load(open('pyproject.toml','rb')).get('tool',{}).get('poetry',{})\n"
-    "deps, extras = poe.get('dependencies',{}), poe.get('extras',{})\n"
-    "HEAVY = {'torch','torchvision','unstructured','sentence-transformers','gpt4all',\n"
-    "         'pymilvus','google-cloud-aiplatform','detectron2','llama-hub','replicate',\n"
-    "         'cohere','weaviate-client','pinecone-client','qdrant-client','opensearch-py',\n"
-    "         'elasticsearch','huggingface_hub'}\n"
-    "def conv(name, spec):\n"
-    "    v = spec.get('version') if isinstance(spec, dict) else spec\n"
-    "    if not v: return name\n"
-    "    v = v.strip()\n"
-    "    if v.startswith('^'):\n"
-    "        b = v[1:].split(',')[0].strip()\n"
-    "        p = [int(x) for x in re.findall(r'\\d+', b)] + [0, 0, 0]\n"
-    "        hi = f'{p[0]+1}.0.0' if p[0] else (f'0.{p[1]+1}.0' if p[1] else f'0.0.{p[2]+1}')\n"
-    "        return f'{name}>={b},<{hi}'\n"
-    "    if v.startswith('~'):\n"
-    "        b = v[1:].strip(); p = [int(x) for x in re.findall(r'\\d+', b)] + [0, 0]\n"
-    "        return f'{name}>={b},<{p[0]}.{p[1]+1}.0'\n"
-    "    if v[0].isdigit(): return f'{name}=={v}'\n"
-    "    return f'{name}{v}'\n"
-    "pk, seen = [], set()\n"
-    "for n, s in deps.items():\n"
-    "    if n.lower()=='python' or n.lower() in HEAVY: continue\n"
-    "    if isinstance(s, dict) and s.get('optional'): continue\n"
-    "    pk.append(conv(n, s)); seen.add(n.lower())\n"
-    "for n in extras.get('dataloaders', []):\n"
-    "    r = 'youtube-transcript-api' if n.lower().startswith('youtube') else n\n"
-    "    if r.lower() in HEAVY or r.lower() in seen: continue\n"
-    "    pk.append(conv(r, deps.get(n) or deps.get(r) or '')); seen.add(r.lower())\n"
-    "print('INSTALLING:', pk, flush=True)\n"
-    "subprocess.run(['pip','install',*pk])\n"
-    "PYEOF\n"
-    f"{_EMBEDCHAIN_DISTINFO}\n"
-    "RUN pip install onnxruntime pyyaml pytest pytest-mock pytest-asyncio pytest-env || true"
-)
+_REFETCH = """#!/bin/bash
+set -e
+cd /home/{pr.repo}
+###ACTION_DELIMITER###
+git reset --hard
+###ACTION_DELIMITER###
+git clean -fd
+###ACTION_DELIMITER###
+git cat-file -e {pr.base.sha} 2>/dev/null || git fetch --quiet https://github.com/{pr.org}/{pr.repo}.git {pr.base.sha}
+###ACTION_DELIMITER###
+git checkout {pr.base.sha}
+###ACTION_DELIMITER###
+test -z "$(git status --porcelain)"
+###ACTION_DELIMITER###
+"""
+
+_UPGRADE = """pip install --upgrade pip setuptools wheel
+###ACTION_DELIMITER###
+"""
+
+_INSTALL_CALL = """bash /home/install-deps.sh
+###ACTION_DELIMITER###
+echo 'PYTHONPATH=/home/mem0 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o addopts=' > test_commands.sh
+###ACTION_DELIMITER###
+bash test_commands.sh || true"""
+
+_INSTALL_HEADER = """#!/bin/bash
+set -e
+cd /home/{pr.repo}
+###ACTION_DELIMITER###
+"""
+
+_PREPARE = r"""python3 <<'PYEOF'
+import tomllib, subprocess, re
+poe = tomllib.load(open('pyproject.toml','rb')).get('tool',{}).get('poetry',{})
+deps = poe.get('dependencies',{})
+HEAVY = {'torch','torchvision','unstructured','sentence-transformers','gpt4all',
+         'pymilvus','google-cloud-aiplatform','detectron2','llama-hub','replicate',
+         'cohere','weaviate-client','pinecone-client','qdrant-client','opensearch-py',
+         'elasticsearch','huggingface_hub'}
+def conv(name, spec):
+    v = spec.get('version') if isinstance(spec, dict) else spec
+    if not v: return name
+    v = v.strip()
+    if v.startswith('^') or v.startswith('~'):
+        return f'{name}=={v[1:].split(chr(44))[0].strip()}'
+    if v[0].isdigit(): return f'{name}=={v}'
+    return f'{name}{v}'
+pk = []
+for n, sp in deps.items():
+    if n.lower() == 'python' or n.lower() in HEAVY: continue
+    if isinstance(sp, dict) and sp.get('optional'): continue
+    pk.append(conv(n, sp))
+print('INSTALLING:', pk, flush=True)
+subprocess.check_call(['pip','install',*pk])
+PYEOF
+###ACTION_DELIMITER###
+python -c "import os,sysconfig; nl=chr(10); d=os.path.join(sysconfig.get_paths()['purelib'],'embedchain-0.0.0.dist-info'); os.makedirs(d,exist_ok=True); open(os.path.join(d,'METADATA'),'w').write('Metadata-Version: 2.1'+nl+'Name: embedchain'+nl+'Version: 0.0.0'+nl)"
+###ACTION_DELIMITER###
+pip install onnxruntime pyyaml "pytest==7.3.1" "pytest-mock==3.10.0" "pytest-env==0.8.1"
+###ACTION_DELIMITER###
+pip install "elasticsearch>=8.9,<9"
+"""
 
 
 def parse_pytest_log(log: str) -> TestResult:
@@ -89,10 +87,10 @@ def parse_pytest_log(log: str) -> TestResult:
     skipped_tests = set()
 
     pattern_status_after = re.compile(
-        r"^((?:tests|embedchain/tests)/.*)::(.*) (PASSED|SKIPPED|XFAIL)"
+        r"^((?:tests|embedchain/tests)/.*)::(.*) (PASSED|FAILED|ERROR|SKIPPED|XFAIL)"
     )
     pattern_failed = re.compile(
-        r"^FAILED ((?:tests|embedchain/tests)/.*)::(.*)"
+        r"^FAILED ((?:tests|embedchain/tests)/.*?)::(.*?)(?= - |$)"
     )
 
     for line in log.splitlines():
@@ -105,6 +103,8 @@ def parse_pytest_log(log: str) -> TestResult:
             full_test_name = f"{test_path}::{test_name}"
             if status == "PASSED":
                 passed_tests.add(full_test_name)
+            elif status in ("FAILED", "ERROR"):
+                failed_tests.add(full_test_name)
             elif status in ("SKIPPED", "XFAIL"):
                 skipped_tests.add(full_test_name)
             continue
@@ -158,15 +158,12 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """pip install --upgrade pip setuptools wheel && pip install "poetry==1.6.1"
-###ACTION_DELIMITER###
-poetry config virtualenvs.create false 2>/dev/null || true
-###ACTION_DELIMITER###
-timeout 600 poetry install --no-root --no-interaction 2>/dev/null || pip install -e . 2>/dev/null || pip install . 2>/dev/null || true
-###ACTION_DELIMITER###
-python -c "import os,sysconfig; nl=chr(10); d=os.path.join(sysconfig.get_paths()['purelib'],'embedchain-0.0.0.dist-info'); os.makedirs(d,exist_ok=True); open(os.path.join(d,'METADATA'),'w').write('Metadata-Version: 2.1'+nl+'Name: embedchain'+nl+'Version: 0.0.0'+nl)" || true
-###ACTION_DELIMITER###
-pip install onnxruntime pytest pytest-mock pytest-asyncio pytest-env || true""",
+                _REFETCH.format(pr=self.pr) + _UPGRADE + _INSTALL_CALL,
+            ),
+            File(
+                ".",
+                "install-deps.sh",
+                _INSTALL_HEADER.format(pr=self.pr) + _PREPARE,
             ),
             File(
                 ".",
@@ -175,6 +172,9 @@ pip install onnxruntime pytest pytest-mock pytest-asyncio pytest-env || true""",
 set -eo pipefail
 cd /home/{pr.repo}
 export PYTHONPATH=/home/{pr.repo}
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
@@ -185,7 +185,13 @@ pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-colle
 set -eo pipefail
 cd /home/{pr.repo}
 export PYTHONPATH=/home/{pr.repo}
-git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch 2>/dev/null || git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/test.patch 2>/dev/null || true
+if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1
+fi
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
@@ -196,15 +202,24 @@ pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-colle
 set -eo pipefail
 cd /home/{pr.repo}
 export PYTHONPATH=/home/{pr.repo}
-git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch 2>/dev/null || git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/test.patch 2>/dev/null || true
-git -C /home/{pr.repo} apply --whitespace=nowarn /home/fix.patch 2>/dev/null || git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/fix.patch 2>/dev/null || true
+if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1
+fi
+if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/fix.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1
+fi
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
-        return pr_dockerfile(self, _INSTALL)
+        return pr_dockerfile(self)
 
 
 @Instance.register("mem0ai", "mem0_1005_to_189")

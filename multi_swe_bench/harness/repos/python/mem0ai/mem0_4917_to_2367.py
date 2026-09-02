@@ -5,7 +5,6 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 from multi_swe_bench.harness.repos.python.mem0ai.mem0 import (
-    _PROVIDER_DEPS,
     ImageBase,
     pr_dockerfile,
     register_era,
@@ -13,9 +12,7 @@ from multi_swe_bench.harness.repos.python.mem0ai.mem0 import (
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
-# v0.1.101 onward -- hatchling build backend.
 register_era("mem0_4917_to_2367", min_version=(0, 1, 101), min_anchor=2738)
-
 
 
 def parse_pytest_log(log: str) -> TestResult:
@@ -25,10 +22,10 @@ def parse_pytest_log(log: str) -> TestResult:
     skipped_tests = set()
 
     pattern_status_after = re.compile(
-        r"^((?:tests|embedchain/tests)/.*)::(.*) (PASSED|SKIPPED|XFAIL)"
+        r"^((?:tests|embedchain/tests)/.*)::(.*) (PASSED|FAILED|ERROR|SKIPPED|XFAIL)"
     )
     pattern_failed = re.compile(
-        r"^FAILED ((?:tests|embedchain/tests)/.*)::(.*)"
+        r"^FAILED ((?:tests|embedchain/tests)/.*?)::(.*?)(?= - |$)"
     )
 
     for line in log.splitlines():
@@ -41,6 +38,8 @@ def parse_pytest_log(log: str) -> TestResult:
             full_test_name = f"{test_path}::{test_name}"
             if status == "PASSED":
                 passed_tests.add(full_test_name)
+            elif status in ("FAILED", "ERROR"):
+                failed_tests.add(full_test_name)
             elif status in ("SKIPPED", "XFAIL"):
                 skipped_tests.add(full_test_name)
             continue
@@ -63,19 +62,6 @@ def parse_pytest_log(log: str) -> TestResult:
         failed_tests=failed_tests,
         skipped_tests=skipped_tests,
     )
-
-
-# Runs in the per-PR layer, in WORKDIR /home/mem0 after the ${BASE_COMMIT}
-# checkout and before the hardening block, so the project is installed at this
-# PR's commit. It cannot live in the shared base: the base has no repo.
-_INSTALL = (
-    "RUN pip install poetry-core hatchling poetry || true\n"
-    "RUN poetry config virtualenvs.create false 2>/dev/null || true\n"
-    'RUN pip install -e ".[test]" 2>/dev/null || pip install -e ".[dev,test]" 2>/dev/null '
-    '|| pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true\n'
-    "RUN pip install pytest pytest-mock pytest-asyncio pytest-env || true\n"
-    f"{_PROVIDER_DEPS}"
-)
 
 
 class ImageDefault(Image):
@@ -107,13 +93,42 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """pip install --upgrade pip setuptools wheel poetry-core hatchling poetry
+                """#!/bin/bash
+set -e
+cd /home/{pr.repo}
+###ACTION_DELIMITER###
+git reset --hard
+###ACTION_DELIMITER###
+git clean -fd
+###ACTION_DELIMITER###
+git cat-file -e {pr.base.sha} 2>/dev/null || git fetch --quiet https://github.com/{pr.org}/{pr.repo}.git {pr.base.sha}
+###ACTION_DELIMITER###
+git checkout {pr.base.sha}
+###ACTION_DELIMITER###
+test -z "$(git status --porcelain)"
+###ACTION_DELIMITER###
+bash /home/install-deps.sh
+###ACTION_DELIMITER###
+echo 'pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o addopts=' > test_commands.sh
+###ACTION_DELIMITER###
+bash test_commands.sh || true""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "install-deps.sh",
+                """#!/bin/bash
+set -e
+cd /home/{pr.repo}
+###ACTION_DELIMITER###
+pip install --upgrade pip setuptools wheel poetry-core hatchling poetry || true
 ###ACTION_DELIMITER###
 poetry config virtualenvs.create false 2>/dev/null || true
 ###ACTION_DELIMITER###
 pip install -e ".[test]" 2>/dev/null || pip install -e ".[dev,test]" 2>/dev/null || pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true
 ###ACTION_DELIMITER###
-pip install pytest pytest-mock pytest-asyncio pytest-env || true""",
+pip install pytest pytest-mock pytest-asyncio pytest-env || true
+###ACTION_DELIMITER###
+pip install litellm google-generativeai vertexai ollama groq together huggingface_hub chromadb || true""",
             ),
             File(
                 ".",
@@ -121,6 +136,9 @@ pip install pytest pytest-mock pytest-asyncio pytest-env || true""",
                 """#!/bin/bash
 set -eo pipefail
 cd /home/{pr.repo}
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
@@ -131,6 +149,9 @@ pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-colle
 set -eo pipefail
 cd /home/{pr.repo}
 git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch 2>/dev/null || git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/test.patch 2>/dev/null || true
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
@@ -142,13 +163,16 @@ set -eo pipefail
 cd /home/{pr.repo}
 git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch 2>/dev/null || git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/test.patch 2>/dev/null || true
 git -C /home/{pr.repo} apply --whitespace=nowarn /home/fix.patch 2>/dev/null || git -C /home/{pr.repo} apply --whitespace=nowarn --reject /home/fix.patch 2>/dev/null || true
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
-        return pr_dockerfile(self, _INSTALL)
+        return pr_dockerfile(self)
 
 
 @Instance.register("mem0ai", "mem0_4917_to_2367")

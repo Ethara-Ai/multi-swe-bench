@@ -10,20 +10,7 @@ from multi_swe_bench.harness.repos.python.mem0ai.mem0 import (
     register_era,
 )
 
-# Covers the single-PR bundle 1459, pinned by number_interval rather than by
-# release range so it never competes with the three packaging eras.
 register_era("mem0_1459_to_1459", bundles=("1459",))
-
-
-# Runs in the per-PR layer, in WORKDIR /home/mem0 after the ${BASE_COMMIT}
-# checkout and before the hardening block, so the project is installed at this
-# PR's commit. It cannot live in the shared base: the base has no repo.
-_INSTALL = (
-    "RUN cd /home/mem0/embedchain && pip install poetry-core poetry || true\n"
-    "RUN cd /home/mem0/embedchain && poetry install --all-extras 2>/dev/null "
-    '|| pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true\n'
-    "RUN pip install pytest pytest-mock pytest-env || true"
-)
 
 
 class ImageDefault(Image):
@@ -55,7 +42,32 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -la
+                """#!/bin/bash
+set -e
+cd /home/{pr.repo}
+###ACTION_DELIMITER###
+git reset --hard
+###ACTION_DELIMITER###
+git clean -fd
+###ACTION_DELIMITER###
+git cat-file -e {pr.base.sha} 2>/dev/null || git fetch --quiet https://github.com/{pr.org}/{pr.repo}.git {pr.base.sha}
+###ACTION_DELIMITER###
+git checkout {pr.base.sha}
+###ACTION_DELIMITER###
+test -z "$(git status --porcelain)"
+###ACTION_DELIMITER###
+bash /home/install-deps.sh
+###ACTION_DELIMITER###
+echo 'cd /home/{pr.repo}/embedchain && pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o addopts=' > test_commands.sh
+###ACTION_DELIMITER###
+bash test_commands.sh || true""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "install-deps.sh",
+                """#!/bin/bash
+set -e
+cd /home/{pr.repo}
 ###ACTION_DELIMITER###
 cd /home/{pr.repo}/embedchain && pip install --upgrade pip setuptools wheel poetry-core poetry || true
 ###ACTION_DELIMITER###
@@ -68,6 +80,9 @@ pip install pytest pytest-mock pytest-env || true""".format(pr=self.pr),
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}/embedchain
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
@@ -81,6 +96,9 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     exit 1
 fi
 cd /home/{pr.repo}/embedchain
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
@@ -94,13 +112,16 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix
     exit 1
 fi
 cd /home/{pr.repo}/embedchain
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
-        return pr_dockerfile(self, _INSTALL)
+        return pr_dockerfile(self)
 
 
 @Instance.register("mem0ai", "mem0_1459_to_1459")

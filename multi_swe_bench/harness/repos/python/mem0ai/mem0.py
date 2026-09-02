@@ -22,10 +22,10 @@ def parse_pytest_log(log: str) -> TestResult:
     skipped_tests = set()
 
     pattern_status_after = re.compile(
-        r"^((?:tests|embedchain/tests)/.*)::(.*) (PASSED|SKIPPED|XFAIL)"
+        r"^((?:tests|embedchain/tests)/.*)::(.*) (PASSED|FAILED|ERROR|SKIPPED|XFAIL)"
     )
     pattern_failed = re.compile(
-        r"^FAILED ((?:tests|embedchain/tests)/.*)::(.*)"
+        r"^FAILED ((?:tests|embedchain/tests)/.*?)::(.*?)(?= - |$)"
     )
 
     for line in log.splitlines():
@@ -38,6 +38,8 @@ def parse_pytest_log(log: str) -> TestResult:
             full_test_name = f"{test_path}::{test_name}"
             if status == "PASSED":
                 passed_tests.add(full_test_name)
+            elif status in ("FAILED", "ERROR"):
+                failed_tests.add(full_test_name)
             elif status in ("SKIPPED", "XFAIL"):
                 skipped_tests.add(full_test_name)
             continue
@@ -47,6 +49,10 @@ def parse_pytest_log(log: str) -> TestResult:
             test_name = match_failed.group(2)
             full_test_name = f"{test_path}::{test_name}"
             failed_tests.add(full_test_name)
+
+    passed_tests -= failed_tests
+    passed_tests -= skipped_tests
+    skipped_tests -= failed_tests
 
     return TestResult(
         passed_count=len(passed_tests),
@@ -58,9 +64,6 @@ def parse_pytest_log(log: str) -> TestResult:
     )
 
 
-# Dummy provider credentials so import-time / env-gated tests do not abort
-# collection. mem0 integrates many LLM + vector-DB providers. Era-independent,
-# so it is baked once into the shared base.
 _DUMMY_ENV = """ENV OPENAI_API_KEY=sk-dummy0000000000000000000000000000000000000000
 ENV ANTHROPIC_API_KEY=sk-ant-dummy0000000000000000000000000000000000
 ENV GOOGLE_API_KEY=dummy
@@ -84,50 +87,8 @@ ENV PYTHONDONTWRITEBYTECODE=1"""
 
 _APT_PACKAGES = ["libgeos-dev"]
 
-# Optional provider SDKs that mem0 imports lazily. Without them the affected test
-# modules fail at *collection*, not at assert time -- and mem0/proxy/main.py is
-# worse than a plain ImportError: it catches the ImportError and then prompts
-#     input("The 'litellm' library is required. Install it now? [y/N]: ")
-# which under pytest raises "OSError: reading from stdin while output is
-# captured" and kills the whole module. Pre-caching them is the image's job, so
-# the model never needs to reach the network for them.
-#
-# Appended AFTER the project install so the project's own pinned deps resolve
-# first and these only fill the gaps. Deliberately NOT applied to the embedchain
-# era (mem0_1005_to_189): that era imports none of them, and pulling modern
-# litellm/chromadb into its old pinned dependency set risks breaking a currently
-# healthy environment.
-# sentence-transformers is deliberately excluded: it pulls in torch (~2-3 GB per
-# image), and on a shared host that multiplied across the poetry+hatchling eras
-# is what exhausted the disk. It only gates tests/embeddings/test_huggingface_*
-# collection (p2p signal, never fail-to-pass), so the cost is not worth it.
-_PROVIDER_DEPS = (
-    "RUN pip install litellm google-generativeai vertexai ollama groq together "
-    "huggingface_hub chromadb || true"
-)
-
 
 class ImageBase(Image):
-    """Toolchain-only base image, SHARED by every mem0 PR across every era.
-
-    One image (tag ``base``, constant) for all PRs. It carries the interpreter,
-    apt packages, pip tooling and dummy provider creds -- and deliberately does
-    NOT clone the repo.
-
-    That last point is the whole safety argument for a shared base. A base that
-    clones must checkout ``${BASE_COMMIT}``, and Image._HARDENING_BLOCK then
-    force-detaches to that commit and deletes every other ref. Under a constant
-    tag the first PR to build would pin the image to *its* commit and strip the
-    history every other PR needs, so all the others would check out the wrong
-    tree. Keeping the clone out of the base makes the image commit-independent,
-    which is exactly what lets it be shared.
-
-    ``dependency()`` returns a string, so the DockerfileEnhancer still adds the
-    syntax directive and the ARG/ENV/LABEL infra block. It injects no hardening
-    here because this Dockerfile contains no git clone/fetch/remote-add for it
-    to find -- correct, since there is no repo in this layer to harden.
-    """
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -144,7 +105,6 @@ class ImageBase(Image):
         return "python:3.11-slim"
 
     def image_tag(self) -> str:
-        # Constant: no PR-specific state in this layer, so all 99 PRs share it.
         return "base"
 
     def workdir(self) -> str:
@@ -157,8 +117,6 @@ class ImageBase(Image):
         return list(_APT_PACKAGES)
 
     def dockerfile(self) -> str:
-        # Overrides Image.dockerfile() only to omit its clone/checkout/hardening
-        # sequence; everything else mirrors it, including the apt helper.
         base_img = self.dependency()
 
         default_packages = [
@@ -180,80 +138,42 @@ class ImageBase(Image):
         if self.global_env:
             sections.append(self.global_env)
 
-        sections.append(
-            "WORKDIR /home/\nENV DEBIAN_FRONTEND=noninteractive\nENV LANG=C.UTF-8"
-        )
+        sections.append("WORKDIR /home/")
         sections.append(apt_command)
         sections.append(_DUMMY_ENV)
         sections.append(
             "RUN pip install --upgrade pip setuptools wheel || true"
         )
 
+        sections.append(
+            f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git"
+            f" /home/{self.pr.repo}"
+        )
+
         if self.clear_env:
             sections.append(self.clear_env)
-
-        sections.append('CMD ["/bin/bash"]')
 
         return "\n\n".join(sections) + "\n"
 
 
-def pr_dockerfile(image: Image, install: str) -> str:
-    """Render the per-PR layer: clone, checkout, era install, COPY, harden.
-
-    dependency() is an Image, so DockerfileEnhancer.enhance() returns this file
-    verbatim -- it injects nothing. Two consequences this function has to honour:
-
-    * build_dataset only passes REPO_URL / BASE_COMMIT as build args for *string*
-      dependencies, so both are declared here as ARGs with literal defaults. The
-      BASE_COMMIT default is this PR's own sha, which is what the hardening block
-      interpolates.
-    * no hardening is injected for us, so Image._HARDENING_BLOCK is embedded
-      explicitly, last, after the repo is cloned and the project installed.
-    """
+def pr_dockerfile(image: Image) -> str:
     base = image.dependency()
-    org = image.pr.org
-    repo = image.pr.repo
 
-    sections = [
-        f"FROM {base.image_full_name()}",
-        f'ARG REPO_URL="https://github.com/{org}/{repo}.git"\n'
-        f'ARG BASE_COMMIT="{image.pr.base.sha}"',
-    ]
+    sections = [f"FROM {base.image_full_name()}"]
 
     if image.global_env:
         sections.append(image.global_env)
-
-    sections.append("WORKDIR /home/")
-    sections.append(f'RUN git clone "${{REPO_URL}}" /home/{repo}')
-    sections.append(f"WORKDIR /home/{repo}")
-    sections.append("RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}")
-
-    if install:
-        sections.append(install)
 
     copy_commands = "".join(f"COPY {file.name} /home/\n" for file in image.files())
     if copy_commands:
         sections.append(copy_commands.rstrip("\n"))
 
-    sections.append(Image._HARDENING_BLOCK.rstrip("\n"))
+    sections.append("RUN bash /home/prepare.sh")
 
     if image.clear_env:
         sections.append(image.clear_env)
 
-    sections.append('CMD ["/bin/bash"]')
-
     return "\n\n".join(sections) + "\n"
-
-
-_INSTALL = (
-    "RUN pip install --upgrade pip setuptools wheel poetry-core hatchling poetry || true\n"
-    "RUN poetry config virtualenvs.create false 2>/dev/null || true\n"
-    "RUN poetry install --all-extras 2>/dev/null "
-    '|| pip install -e ".[dev,test]" 2>/dev/null '
-    '|| pip install -e ".[test,graph,vector_stores,llms,extras]" 2>/dev/null '
-    '|| pip install -e ".[test]" 2>/dev/null || pip install -e . 2>/dev/null || true\n'
-    "RUN pip install pytest pytest-mock pytest-asyncio pytest-env || true"
-)
 
 
 class ImageDefault(Image):
@@ -285,9 +205,36 @@ class ImageDefault(Image):
             File(
                 ".",
                 "prepare.sh",
-                """ls -la
+                """#!/bin/bash
+set -e
+cd /home/{pr.repo}
 ###ACTION_DELIMITER###
-pip install --upgrade pip setuptools wheel poetry-core hatchling poetry
+git reset --hard
+###ACTION_DELIMITER###
+git clean -fd
+###ACTION_DELIMITER###
+git cat-file -e {pr.base.sha} 2>/dev/null || git fetch --quiet https://github.com/{pr.org}/{pr.repo}.git {pr.base.sha}
+###ACTION_DELIMITER###
+git checkout {pr.base.sha}
+###ACTION_DELIMITER###
+test -z "$(git status --porcelain)"
+###ACTION_DELIMITER###
+bash /home/install-deps.sh
+###ACTION_DELIMITER###
+echo 'pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o addopts=' > test_commands.sh
+###ACTION_DELIMITER###
+bash test_commands.sh || true""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "install-deps.sh",
+                """#!/bin/bash
+set -e
+cd /home/{pr.repo}
+###ACTION_DELIMITER###
+pip install --upgrade pip setuptools wheel poetry-core hatchling poetry || true
+###ACTION_DELIMITER###
+poetry config virtualenvs.create false 2>/dev/null || true
 ###ACTION_DELIMITER###
 poetry install --all-extras 2>/dev/null || pip install -e ".[dev,test]" 2>/dev/null || pip install -e ".[test,graph,vector_stores,llms,extras]" 2>/dev/null || pip install -e ".[test]" 2>/dev/null || pip install -e . 2>/dev/null || true
 ###ACTION_DELIMITER###
@@ -298,6 +245,9 @@ pip install pytest pytest-mock pytest-asyncio pytest-env || true""",
                 "run.sh",
                 """#!/bin/bash
 cd /home/{pr.repo}
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
@@ -310,6 +260,9 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
@@ -322,13 +275,16 @@ if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix
     echo "Error: git apply failed" >&2
     exit 1
 fi
+export http_proxy=http://127.0.0.1:9
+export https_proxy=http://127.0.0.1:9
+export no_proxy=
 pytest tests/ -v --no-header -rA --tb=no -p no:cacheprovider --continue-on-collection-errors -o 'addopts='
 """.format(pr=self.pr),
             ),
         ]
 
     def dockerfile(self) -> str:
-        return pr_dockerfile(self, _INSTALL)
+        return pr_dockerfile(self)
 
 
 _ORG = "mem0ai"
@@ -337,10 +293,7 @@ _REPO = "mem0"
 _SEMVER = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 _BUNDLE = re.compile(r"^\d+(?:-\d+)*$")
 
-# Era coverage, declared by each era module at import time via register_era().
-# Entries are (min_version, min_anchor, era_key), sorted ascending.
 _ERAS = []
-# Exact number_interval -> era key, for eras that cover one specific bundle.
 _ERA_BUNDLES = {}
 
 
@@ -417,18 +370,13 @@ def resolve_era(pr: PullRequest) -> str:
     return selected
 
 
-# Route a bundle onto its era only when the stock exact-match lookup would fail,
-# so a number_interval that is already a registered key still wins. number_interval
-# itself is left untouched: report.py and dataset.py pass it straight through, and
-# they should record the real bundle rather than an era key.
 if not getattr(Instance, "_mem0_route_hook", False):
     _stock_create = Instance.create.__func__
 
     def _mem0_create(cls, pr, config, *args, **kwargs):
         interval = getattr(pr, "number_interval", "") or ""
         if (
-            interval
-            and getattr(pr, "org", "") == _ORG
+            getattr(pr, "org", "") == _ORG
             and getattr(pr, "repo", "") == _REPO
             and f"{pr.org}/{interval}" not in cls._registry
         ):
