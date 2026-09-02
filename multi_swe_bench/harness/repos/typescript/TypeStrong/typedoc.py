@@ -1,9 +1,107 @@
+import json
 import re
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+# ---------------------------------------------------------------------------
+# typedoc spans three toolchain eras across the PRs in this dataset. The Node
+# version is taken from the repo's OWN CI at each base commit, not guessed:
+#
+#   #936  2019-10-12  .travis.yml  node_js: 8    engines >=6.0.0   mocha dist/
+#   #1169 2020-01-13  .travis.yml  node_js: 8    engines >=6.0.0   mocha dist/
+#   #1412 2020-11-30  .travis.yml  node_js: 10   engines >=10.0.0  mocha dist/
+#   #2078 2022-10-10  gh-actions   node: 16      engines >=14.14   ts-node
+#   #2129 2023-03-05  gh-actions   node: 16      engines >=14.14   ts-node
+#
+# A single node:20 (the previous value) cannot install the 2019/2020
+# package-lock.json trees, so the older PRs need their era's runtime.
+#
+# ONE SHARED BASE IMAGE serves all five PRs. Rather than three separate base
+# images (one per era), the single base carries all three runtimes side by
+# side: node 16 is the image's own, and 8 and 10 are unpacked into /opt. Each
+# PR's scripts put its era's bin directory first on PATH, so every PR still
+# runs on exactly the runtime its own CI used - the era mapping is unchanged,
+# only where it is applied moved from image-selection time to run time.
+_ERA_NODE_MAJOR = (
+    (1200, "8"),    # PRs <= 1200  -> era A
+    (1761, "10"),   # PRs <= 1761  -> era B
+)
+_DEFAULT_NODE_MAJOR = "16"
+
+# Last release of each EOL major, pinned exactly. Both ship linux-x64 AND
+# linux-arm64 tarballs, so the shared base stays multi-arch buildable.
+_EXTRA_NODE_VERSIONS = ("8.17.0", "10.24.1")
+
+_SHARED_BASE_RUNTIME = "node:16"
+
+
+def _node_major(number: int) -> str:
+    for upper, major in _ERA_NODE_MAJOR:
+        if number <= upper:
+            return major
+    return _DEFAULT_NODE_MAJOR
+
+
+def _node_path_line(number: int) -> str:
+    """PATH export selecting this PR's era runtime inside the shared base.
+
+    Node 16 is the base image's own interpreter and is already on PATH, so it
+    needs no line; 8 and 10 live under /opt and must be prepended.
+    """
+    major = _node_major(number)
+    if major == _DEFAULT_NODE_MAJOR:
+        return ""
+    return f'export PATH="/opt/node-{major}/bin:$PATH"\n'
+
+
+def _pr_dockerfile(image: Image) -> str:
+    """Dockerfile for a PR image on top of the SHARED base.
+
+    Because ImageDefault.dependency() returns an Image rather than a string,
+    DockerfileEnhancer.enhance() returns this text untouched - it injects
+    nothing. Everything the enhancer would normally add to a base image and
+    that still matters per-PR is therefore written out here explicitly: the
+    syntax directive, the clone, the checkout of THIS PR's base commit, and
+    the harness's own hardening block (reused verbatim from
+    Image._HARDENING_BLOCK, not reimplemented).
+
+    The proxy/CA ENV trust block does NOT need repeating: ENV is inherited
+    from the shared base, so SSL_CERT_FILE and friends are already in force
+    for the `git clone` and `npm ci` performed here.
+    """
+    pr = image.pr
+    base = image.dependency()
+    copy_commands = "".join(f"COPY {f.name} /home/\n" for f in image.files())
+
+    return f"""# syntax=docker/dockerfile:1.6
+
+FROM {base.image_name()}:{base.image_tag()}
+
+{image.global_env}
+
+ARG REPO_URL="https://github.com/{pr.org}/{pr.repo}.git"
+ARG BASE_COMMIT="{pr.base.sha}"
+
+{copy_commands}
+RUN git clone "${{REPO_URL}}" /home/{pr.repo}
+
+WORKDIR /home/{pr.repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{Image._HARDENING_BLOCK}
+
+RUN bash /home/prepare.sh
+
+{image.clear_env}
+
+CMD ["/bin/bash"]
+"""
 
 
 class ImageBase(Image):
@@ -20,9 +118,23 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:20"
+        # A STRING, so DockerfileEnhancer.enhance() runs and injects the shared
+        # infrastructure (syntax directive, TARGETARCH/proxy/CA ARGs, the ENV
+        # trust block, OCI labels, the CA symlink farm). Because this file
+        # contains no `COPY <repo> /home/<repo>`, no `git clone`, `git fetch`
+        # or `git remote add`, neither _standardize_repo_fetch nor
+        # _inject_final_sanitize matches - so the enhancer adds the infra and
+        # nothing else. That is exactly what makes ONE shared base possible:
+        # the injected `git checkout ${BASE_COMMIT}` + ref-deleting hardening
+        # would otherwise pin the single image to one PR's commit forever.
+        # The clone, checkout and hardening move into each PR image instead,
+        # where they are still applied per-PR and in full.
+        return _SHARED_BASE_RUNTIME
 
     def image_tag(self) -> str:
+        # SHARED across all five PRs. image_full_name() is what the harness
+        # dedupes on, so this builds exactly one base image. Safe only because
+        # this image holds no repository checkout at all - see dependency().
         return "base"
 
     def workdir(self) -> str:
@@ -36,10 +148,31 @@ class ImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # uname -m, not ${TARGETARCH}: the predefined platform ARGs are only
+        # populated by BuildKit, and this config is built both ways (plain SDK
+        # build for single-arch, buildx for the two-platform build). uname is
+        # correct under both, and under QEMU emulation reports the TARGET arch.
+        versions = " ".join(_EXTRA_NODE_VERSIONS)
+        extra_runtimes = f"""RUN set -eux; \\
+    arch="$(uname -m)"; \\
+    case "$arch" in \\
+        x86_64) narch=x64 ;; \\
+        aarch64) narch=arm64 ;; \\
+        *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \\
+    esac; \\
+    for v in {versions}; do \\
+        major="${{v%%.*}}"; \\
+        curl -fsSL --retry 5 --retry-delay 3 \\
+            "https://nodejs.org/dist/v${{v}}/node-v${{v}}-linux-${{narch}}.tar.xz" \\
+            -o /tmp/node.tar.xz; \\
+        mkdir -p "/opt/node-${{major}}"; \\
+        tar -xJf /tmp/node.tar.xz -C "/opt/node-${{major}}" --strip-components=1; \\
+        rm -f /tmp/node.tar.xz; \\
+        "/opt/node-${{major}}/bin/node" --version; \\
+        "/opt/node-${{major}}/bin/npm" --version; \\
+    done; \\
+    node --version; \\
+    npm --version"""
 
         return f"""FROM {image_name}
 
@@ -47,12 +180,11 @@ class ImageBase(Image):
 
 WORKDIR /home/
 
-{code}
-
-RUN apt update && apt install -y git
+{extra_runtimes}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -117,6 +249,8 @@ exit 0
                 """#!/bin/bash
 set -e
 
+# Select this PR's era runtime out of the shared base image.
+{node_path}
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
@@ -124,67 +258,79 @@ git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 npm ci --ignore-scripts || true
 
-""".format(pr=self.pr),
+# HARD GATE - the install above is tolerant (|| true) because native
+# rebuilds are flaky, so something must prove the tree is actually usable.
+# Without this a failed install reaches the graded stages and surfaces as
+# an unexplained empty report instead of a build failure.
+if [ ! -d node_modules/.bin ]; then
+    echo "FATAL: npm ci produced no node_modules" >&2
+    exit 1
+fi
+node --version
+echo "DEPS_OK"
+
+""".format(pr=self.pr, node_path=_node_path_line(self.pr.number)),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+export CI=true
+{node_path}
 cd /home/{pr.repo}
-npm test
+# -e is lifted only around the test call: at the test stage the suite is
+# SUPPOSED to fail, and dying before the output is flushed would report zero
+# tests and satisfy report.py's "fix something" check vacuously.
+set +e
+npm test -- --reporter json --timeout 120000
+RC=$?
+set -e
+echo "TEST_EXIT_CODE=$RC"
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, node_path=_node_path_line(self.pr.number)),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+export CI=true
+{node_path}
 cd /home/{pr.repo}
-git apply /home/test.patch
-npm test
+git apply --whitespace=nowarn /home/test.patch
+set +e
+npm test -- --reporter json --timeout 120000
+RC=$?
+set -e
+echo "TEST_EXIT_CODE=$RC"
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, node_path=_node_path_line(self.pr.number)),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+export CI=true
+{node_path}
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
-npm test
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+set +e
+npm test -- --reporter json --timeout 120000
+RC=$?
+set -e
+echo "TEST_EXIT_CODE=$RC"
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, node_path=_node_path_line(self.pr.number)),
             ),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
+        return _pr_dockerfile(self)
 
 
 class ImageDefault1761(Image):
@@ -248,6 +394,8 @@ exit 0
                 """#!/bin/bash
 set -e
 
+# Select this PR's era runtime out of the shared base image.
+{node_path}
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
@@ -255,70 +403,90 @@ git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 npm ci --ignore-scripts || true
 
-""".format(pr=self.pr),
+# HARD GATE - the install above is tolerant (|| true) because native
+# rebuilds are flaky, so something must prove the tree is actually usable.
+# Without this a failed install reaches the graded stages and surfaces as
+# an unexplained empty report instead of a build failure.
+if [ ! -d node_modules/.bin ]; then
+    echo "FATAL: npm ci produced no node_modules" >&2
+    exit 1
+fi
+node --version
+echo "DEPS_OK"
+
+""".format(pr=self.pr, node_path=_node_path_line(self.pr.number)),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+export CI=true
+{node_path}
 cd /home/{pr.repo}
+# This era runs mocha against COMPILED dist/. `npm run build` must not abort
+# the script under `set -e`: at the test stage the patched sources may not
+# compile, and dying here would leave the stage with ZERO results - which
+# satisfies report.py's "fix something" check vacuously. Capture both codes
+# and always reach npm test.
+set +e
 npm run build
-npm test
+BUILD_RC=$?
+npm test -- --reporter json --timeout 120000
+RC=$?
+set -e
+echo "BUILD_EXIT_CODE=$BUILD_RC"
+echo "TEST_EXIT_CODE=$RC"
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, node_path=_node_path_line(self.pr.number)),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+export CI=true
+{node_path}
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn /home/test.patch
+set +e
 npm run build
-npm test
+BUILD_RC=$?
+npm test -- --reporter json --timeout 120000
+RC=$?
+set -e
+echo "BUILD_EXIT_CODE=$BUILD_RC"
+echo "TEST_EXIT_CODE=$RC"
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, node_path=_node_path_line(self.pr.number)),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
+export CI=true
+{node_path}
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+set +e
 npm run build
-npm test
+BUILD_RC=$?
+npm test -- --reporter json --timeout 120000
+RC=$?
+set -e
+echo "BUILD_EXIT_CODE=$BUILD_RC"
+echo "TEST_EXIT_CODE=$RC"
 
-""".format(pr=self.pr),
+""".format(pr=self.pr, node_path=_node_path_line(self.pr.number)),
             ),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
+        return _pr_dockerfile(self)
 
 
 @Instance.register("TypeStrong", "typedoc")
@@ -357,112 +525,97 @@ class Typedoc(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
-
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        test_log = ansi_escape.sub("", test_log)
-
-        # Mocha spec reporter: indentation encodes suite hierarchy (2-space per level).
-        # Tests are suite-qualified as "Suite > SubSuite > test name" to disambiguate
-        # duplicate leaf names across different suites (e.g. "[specs] matches specs").
-        re_pass = re.compile(r"^(\s*)[✓✔]\s+(.+?)(?:\s+\(\d+\s*ms\))?$")
-        re_inline_fail = re.compile(r"^(\s*)\d+\)\s+(.+)$")
-        re_suite = re.compile(r"^(\s+)(\S.*)$")
-        re_summary_pass = re.compile(r"^\s*\d+\s+passing")
-        re_summary_fail = re.compile(r"^\s*\d+\s+failing")
-        re_fail_entry = re.compile(r"^\s+\d+\)\s+(.+)$")
-
-        suite_stack: list[tuple[int, str]] = []
-        in_failure_section = False
-
-        def _qualified_name(stack: list[tuple[int, str]], test: str) -> str:
-            parts = [s for _, s in stack]
-            parts.append(test)
-            return " > ".join(parts)
-
-        lines = test_log.splitlines()
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            stripped = line.strip()
-
-            if not stripped:
-                i += 1
+        # HANDOFF rule (b): parse machine-readable output, never console text.
+        # All three stages run `npm test -- --reporter json`, so mocha emits a
+        # single JSON document. It is NOT alone on stdout: npm prints a banner
+        # before it, the suite logs warnings during the run, and (eras A/B) nyc
+        # appends a coverage summary after it.
+        #
+        # Anchor on a column-0 "{" and hand the REST of the log to raw_decode,
+        # which consumes exactly one JSON value and reports where it stopped.
+        # Do NOT try to find the closing brace by matching a line equal to "}":
+        # mocha does not terminate the document with a newline, so the script's
+        # own `echo "TEST_EXIT_CODE=$RC"` lands on the same line ("}TEST_EXIT_
+        # CODE=38") and no such line exists. raw_decode does not care what
+        # follows the value, so it is immune to that and to any future trailer.
+        decoder = json.JSONDecoder()
+        report = None
+        # Leading "\n" so a document starting at byte 0 is still found by the
+        # "\n{" anchor below.
+        haystack = "\n" + test_log
+        offset = 0
+        while True:
+            start = haystack.find("\n{", offset)
+            if start == -1:
+                break
+            start += 1
+            try:
+                candidate, _ = decoder.raw_decode(haystack, start)
+            except ValueError:
+                offset = start
                 continue
+            if isinstance(candidate, dict) and "stats" in candidate:
+                report = candidate
+                break
+            offset = start
 
-            if re_summary_fail.match(stripped):
-                in_failure_section = True
-                i += 1
-                continue
+        if report is None:
+            # No JSON document: the stage produced no usable result. Return an
+            # empty TestResult rather than guessing from console text - an
+            # honest zero surfaces as an invalid instance instead of silently
+            # inventing passes.
+            return TestResult(
+                passed_count=0,
+                failed_count=0,
+                skipped_count=0,
+                passed_tests=set(),
+                failed_tests=set(),
+                skipped_tests=set(),
+            )
 
-            if re_summary_pass.match(stripped):
-                i += 1
-                continue
-
-            if not in_failure_section:
-                pass_match = re_pass.match(line)
-                if pass_match:
-                    indent = len(pass_match.group(1))
-                    test_name = pass_match.group(2).strip()
-                    while suite_stack and suite_stack[-1][0] >= indent:
-                        suite_stack.pop()
-                    passed_tests.add(_qualified_name(suite_stack, test_name))
-                    i += 1
+        def _ids(bucket: str) -> set:
+            # "fullTitle" is the suite-qualified name mocha builds itself, so
+            # duplicate leaf names across suites (e.g. the several "matches
+            # specs") stay distinct without reconstructing indentation. The
+            # file is folded in too: the same fullTitle can legitimately come
+            # from two spec files, and the id must be stable across stages.
+            out = set()
+            seen: dict[str, int] = {}
+            for case in report.get(bucket) or []:
+                if not isinstance(case, dict):
                     continue
-
-                inline_fail = re_inline_fail.match(line)
-                if inline_fail:
-                    indent = len(inline_fail.group(1))
-                    test_name = inline_fail.group(2).strip()
-                    while suite_stack and suite_stack[-1][0] >= indent:
-                        suite_stack.pop()
-                    failed_tests.add(_qualified_name(suite_stack, test_name))
-                    i += 1
+                title = (case.get("fullTitle") or case.get("title") or "").strip()
+                if not title:
                     continue
+                title = re.sub(r"\s+", " ", title)
+                path = (case.get("file") or "").strip()
+                if path:
+                    path = path.replace("\\", "/")
+                    for root in ("/home/typedoc/", "/home/typedoc"):
+                        if path.startswith(root):
+                            path = path[len(root) :]
+                            break
+                    ident = f"{path}::{title}"
+                else:
+                    ident = title
+                # typedoc really does define the same test title twice in one
+                # suite (e.g. Events "listenTo and stopListening with event
+                # maps"). A plain set would silently merge them and understate
+                # the count, so suffix repeats by their order of appearance.
+                # mocha emits cases in deterministic file order, so the suffix
+                # is stable across the three stages.
+                n = seen.get(ident, 0)
+                seen[ident] = n + 1
+                out.add(ident if n == 0 else f"{ident}#{n + 1}")
+            return out
 
-                suite_match = re_suite.match(line)
-                if suite_match:
-                    indent = len(suite_match.group(1))
-                    name = suite_match.group(2).strip()
-                    if name.startswith("(") or name.startswith(">") or name.startswith("Using ") or name.startswith("Documentation "):
-                        i += 1
-                        continue
-                    while suite_stack and suite_stack[-1][0] >= indent:
-                        suite_stack.pop()
-                    suite_stack.append((indent, name))
-                    i += 1
-                    continue
+        passed_tests = _ids("passes")
+        failed_tests = _ids("failures")
+        skipped_tests = _ids("pending")
 
-            else:
-                # Failure summary: "  1) Suite\n       SubSuite\n         test name:"
-                fail_entry = re_fail_entry.match(line)
-                if fail_entry:
-                    parts = [fail_entry.group(1).strip()]
-                    i += 1
-                    while i < len(lines):
-                        cont_line = lines[i]
-                        cont_stripped = cont_line.strip()
-                        if not cont_stripped:
-                            break
-                        if cont_stripped.endswith(":"):
-                            parts.append(cont_stripped.rstrip(":").strip())
-                            i += 1
-                            break
-                        if re_fail_entry.match(cont_line):
-                            break
-                        if any(cont_stripped.startswith(p) for p in [
-                            "Assertion", "Error", "TypeError", "at ",
-                            "+", "-", "Uncaught", "expected", "actual"
-                        ]):
-                            break
-                        parts.append(cont_stripped)
-                        i += 1
-                    failed_tests.add(" > ".join(parts))
-                    continue
-
-            i += 1
+        # A case can appear in both "passes" and "failures" when mocha retries.
+        # Failure wins so a flaky-but-failing test is never credited as passed.
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

@@ -1,40 +1,82 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 # ---------------------------------------------------------------------------
-# ONE command, interpolated into run.sh / test-run.sh / fix-run.sh via the
-# shared run_tests.sh, so the three graded stages cannot drift apart.
-#
-# --junitxml         : machine-readable output. Console -v text is NOT parsed;
-#                      pytest's short summary prints
-#                      "FAILED tests/x.py::test_y - TypeError: ..." and a regex
-#                      over that captures the error message INTO the test id,
-#                      so the same test gets a different id at the test stage
-#                      than at the fix stage and the transition is lost.
-# --override-ini     : setup.cfg wires covdefaults/coverage into addopts;
-#                      neutralise it so a missing coverage plugin cannot abort.
-# --continue-on-collection-errors : one bad import must not zero the whole stage.
+# go.mod declares `go 1.16`. The sibling tektoncd config for this era
+# (pipeline_go1_16.py) uses the same runtime and the same -mod=vendor flag.
+GO_IMAGE = "golang:1.16-bullseye"
+
+# ONE command, reached by run.sh / test-run.sh / fix-run.sh through
+# run_tests.sh, so the three graded stages cannot drift apart.
+#   -mod=vendor : the repo ships a populated vendor/ tree; using it keeps the
+#                 build hermetic and needs no module downloads at all.
+#   -json       : machine-readable events (never parse `go test` console text).
+#   -count=1    : defeat the test cache so every stage genuinely re-runs.
+# NOTE: test/e2e_test.go carries `//go:build e2e`, so the Kubernetes end-to-end
+# tests are excluded automatically. No -tags e2e is passed and none should be:
+# those tests create Tasks/TaskRuns against a live Tekton cluster.
 TEST_CMD = (
-    "python -m pytest tests/ -v --tb=short "
-    "--override-ini=addopts= -p no:cacheprovider "
-    "--continue-on-collection-errors "
-    "--junitxml=/home/results.xml"
+    "go test -json -count=1 -mod=vendor -timeout 20m ./... > /home/results.jsonl"
 )
 
 BEGIN_MARKER = "===== BEGIN TEST DETAIL ====="
 END_MARKER = "===== END TEST DETAIL ====="
 
-# pyupgrade 2.3.0 (setup.cfg) declares python_requires >=3.6.1 and classifiers
-# capping at 3.8; azure-pipelines runs py36/py37/py38. This tool rewrites source
-# via the ast + tokenize modules, both of which changed materially after 3.8, so
-# the runtime must follow the repo's own pins rather than the newest available.
-PYTHON_IMAGE = "python:3.8-slim-bullseye"
+PARSE_GOTEST_PY = '''import json
+import os
+
+PATH = "/home/results.jsonl"
+
+# `go test -json` emits one JSON object per line. A per-test verdict is an
+# event carrying BOTH "Test" and a terminal Action. Package-level events (no
+# "Test" key) are ignored - a package that fails to COMPILE emits no test
+# events at all, which correctly yields NONE for its tests rather than a
+# fabricated FAIL.
+STATUS = {"pass": "PASSED", "fail": "FAILED", "skip": "SKIPPED"}
+
+if os.path.exists(PATH):
+    with open(PATH, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+
+            test = ev.get("Test")
+            action = ev.get("Action")
+            if not test or action not in STATUS:
+                continue
+
+            pkg = ev.get("Package") or "?"
+            # Subtests arrive as "TestFoo/sub"; keep the full path so ids stay
+            # unique and rerunnable across packages.
+            print("TESTCASE " + pkg + "::" + test + " " + STATUS[action])
+'''
+
+CHECK_GIT_CHANGES_SH = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+"""
 
 
 class ImageBase(Image):
@@ -51,15 +93,15 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> str | Image:
-        return PYTHON_IMAGE
+        return GO_IMAGE
 
     def image_prefix(self) -> str:
-        return "envagent"
+        return "mswebench"
 
     def image_tag(self) -> str:
-        # Per-PR, never a shared tag. The injected hardening block checks out
-        # ${BASE_COMMIT} and then deletes every git ref, so a shared base tag
-        # stays permanently pinned to whichever PR built it first.
+        # Per-PR, never shared: the injected hardening block checks out
+        # ${BASE_COMMIT} then deletes every git ref, so a shared base tag would
+        # stay pinned to whichever PR built it first.
         return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
@@ -78,16 +120,17 @@ class ImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        # Do NOT set DEBIAN_FRONTEND or LANG here - DockerfileEnhancer injects
-        # both into this (base) Dockerfile and duplicates would result.
+        # Do NOT set DEBIAN_FRONTEND or LANG - DockerfileEnhancer injects both.
+        # ca-certificates is listed explicitly rather than inherited silently,
+        # so TLS trust is not an unstated dependency on the base image.
         return f"""FROM {image_name}
 
 {self.global_env}
 
 WORKDIR /home/
-RUN apt-get update && apt-get install -y --no-install-recommends git bash && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir --upgrade pip setuptools
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates build-essential \\
+ && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -125,83 +168,20 @@ class ImageDefault(Image):
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-""",
-            ),
-            # Reads the junit XML and emits exactly one line per test method.
-            # Uses the testcase @file attribute (pytest records it) so ids are
-            # real, rerunnable node ids: tests/six_test.py::test_fix_six[...]
-            File(
-                ".",
-                "parse_junit.py",
-                '''import os
-import xml.etree.ElementTree as ET
-
-PATH = "/home/results.xml"
-
-if os.path.exists(PATH):
-    try:
-        root = ET.parse(PATH).getroot()
-    except ET.ParseError:
-        root = None
-
-    if root is not None:
-        for tc in root.iter("testcase"):
-            path = tc.get("file")
-            if not path:
-                classname = tc.get("classname") or ""
-                path = classname.replace(".", "/") + ".py"
-            name = tc.get("name") or ""
-            # pytest escapes newlines inside parametrized ids, but guarantee it:
-            # a raw newline would split the TESTCASE line and corrupt the id.
-            name = name.replace("\\r", " ").replace("\\n", " ")
-
-            status = "PASSED"
-            for child in tc:
-                if child.tag in ("failure", "error"):
-                    status = "FAILED"
-                    break
-                if child.tag == "skipped":
-                    status = "SKIPPED"
-                    break
-
-            print("TESTCASE " + path + "::" + name + " " + status)
-''',
-            ),
+            File(".", "check_git_changes.sh", CHECK_GIT_CHANGES_SH),
+            File(".", "parse_gotest.py", PARSE_GOTEST_PY),
             File(
                 ".",
                 "print_test_detail.sh",
                 "#!/bin/bash\n"
                 f'echo "{BEGIN_MARKER}"\n'
-                "python /home/parse_junit.py\n"
+                "python3 /home/parse_gotest.py\n"
                 f'echo "{END_MARKER}"\n',
             ),
-            # The ONE place the suite is invoked; all three stages delegate here.
             File(
                 ".",
                 "run_tests.sh",
                 "#!/bin/bash\n"
-                # Deliberately no `set -e`: at the test stage the suite is
-                # SUPPOSED to fail. Dying before print_test_detail.sh runs would
-                # report zero tests and satisfy report.py's "fix something"
-                # check vacuously, producing a false-positive valid instance.
                 "set -eo pipefail\n"
                 "\n"
                 "export CI=true\n"
@@ -209,7 +189,7 @@ if os.path.exists(PATH):
                 f"cd /home/{repo}\n"
                 "\n"
                 "# never inherit the previous stage's results\n"
-                "rm -f /home/results.xml\n"
+                "rm -f /home/results.jsonl\n"
                 "\n"
                 # -e is lifted only around the test call: at the test stage the
                 # suite is SUPPOSED to fail, and dying here would report zero
@@ -235,18 +215,16 @@ if os.path.exists(PATH):
                 f"git checkout {sha}\n"
                 "bash /home/check_git_changes.sh\n"
                 "\n"
-                "python --version\n"
-                # tokenize-rt <5 keeps the 2020-era API this pyupgrade expects.
-                # Tests use `from unittest import mock` (stdlib), so no `mock`.
-                'pip install --no-cache-dir "tokenize-rt<5" pytest\n'
-                f"pip install --no-cache-dir -e /home/{repo}\n"
+                "go version\n"
+                # vendor/ is committed, so there is nothing to download and the
+                # build is hermetic. No `go mod download` is needed or wanted.
+                'test -d vendor && echo "vendor/ present"\n'
                 "\n"
-                # HARD GATE - not tolerant. If the base tree cannot import, no
-                # stage can produce results, and that must fail HERE rather than
-                # surfacing as an unexplained empty report three stages later.
-                'python -c "import pyupgrade, tokenize_rt, pytest; print(\'imports ok\')"\n'
-                f"cd /home/{repo} && python -m pytest tests/ --collect-only -q "
-                "--override-ini=addopts= -p no:cacheprovider > /dev/null\n"
+                # HARD GATE - not tolerant. Warm the cache with a COMPILE-only
+                # step (never a test run, which would bake results into the
+                # image): `-run ^$` builds every test binary and executes none.
+                "go build -mod=vendor ./...\n"
+                "go test -count=1 -mod=vendor -run '^$' ./... > /dev/null\n"
                 "\n"
                 'echo "DEPS_OK"\n',
             ),
@@ -311,8 +289,8 @@ if os.path.exists(PATH):
 """
 
 
-@Instance.register("asottile", "pyupgrade")
-class ASOTTILE_PYUPGRADE(Instance):
+@Instance.register("tektoncd", "chains")
+class Chains(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -322,7 +300,7 @@ class ASOTTILE_PYUPGRADE(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image | None:
         return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -345,12 +323,10 @@ class ASOTTILE_PYUPGRADE(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Strip ANSI before any matching.
         test_log = re.sub(r"\x1B\[[0-?9;]*[mK]", "", test_log)
 
-        # Greedy id capture with the status as the FINAL token: pytest
-        # parametrized ids embed source snippets that can contain spaces, so a
-        # non-greedy or \S+ capture would silently truncate them.
+        # Greedy id capture with the status as the FINAL token; Go subtest
+        # names can contain spaces, which a \S+ capture would truncate.
         case_re = re.compile(r"^TESTCASE (.+) (PASSED|FAILED|SKIPPED)\s*$")
 
         in_detail = False
@@ -363,17 +339,16 @@ class ASOTTILE_PYUPGRADE(Instance):
             if stripped.startswith(END_MARKER):
                 in_detail = False
                 continue
-            # Everything outside the markers is raw pytest console output and
-            # is ignored, so the "FAILED <id> - <error>" summary lines can never
-            # pollute a test id.
+            # Everything outside the markers is raw go/build output and is
+            # ignored, so compile-error spew cannot pollute a test id.
             if not in_detail:
                 continue
 
-            match = case_re.match(stripped)
-            if not match:
+            m = case_re.match(stripped)
+            if not m:
                 continue
 
-            name, status = match.group(1), match.group(2)
+            name, status = m.group(1), m.group(2)
             if status == "PASSED":
                 passed_tests.add(name)
             elif status == "FAILED":

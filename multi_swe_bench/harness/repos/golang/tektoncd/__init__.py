@@ -5,3 +5,4 @@ from .pipeline_go1_19 import *
 from .pipeline_go1_22 import *
 from .pipeline_go1_24 import *
 from .cli import *
+from multi_swe_bench.harness.repos.golang.tektoncd.chains import *
