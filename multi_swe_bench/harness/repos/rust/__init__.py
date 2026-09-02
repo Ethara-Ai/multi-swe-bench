@@ -94,3 +94,4 @@ from multi_swe_bench.harness.repos.rust.leapdao import *
 from multi_swe_bench.harness.repos.rust.mozilla import *
 from multi_swe_bench.harness.repos.rust.ruma import *
 from multi_swe_bench.harness.repos.rust.jonhoo import *
+from multi_swe_bench.harness.repos.rust.modular_bitfield import *
