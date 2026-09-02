@@ -24,10 +24,10 @@ class DayjsImageBase(Image):
         return "node:10"
 
     def image_tag(self) -> str:
-        return "base-198-to-94"
+        return "base-90-to-90"
 
     def workdir(self) -> str:
-        return "base-198-to-94"
+        return "base-90-to-90"
 
     def files(self) -> list[File]:
         return []
@@ -172,8 +172,8 @@ bash /home/check_git_changes.sh
 
 # The shared base deliberately skips `git gc --prune=now --aggressive` and
 # `git repack`: it is built ONCE for the whole range, so pruning there would
-# delete the other PR's base commit. That commit survives it as a dangling
-# object, reachable by full SHA -- which is exactly what the checkout above
+# delete every other PR's base commit. Those commits survive it as dangling
+# objects, reachable by full SHA -- which is exactly what the checkout above
 # needs. The prune runs HERE instead, after this PR's checkout, so the graded
 # pr-<N> image still ships a fully pruned single-history tree. None of the
 # hardening block's four asserts are repeated here: all four are established by
@@ -186,17 +186,18 @@ git gc --prune=now --aggressive
 git repack -a -d -l --quiet
 
 # The install runs AFTER both clean-checks and the prune: npm 6 writes an
-# untracked package-lock.json on first install (these bases commit none), which a
+# untracked package-lock.json on first install (this base commits none), which a
 # later `git status --porcelain` would report. It does not affect `git apply`,
-# and package.json itself is never rewritten here -- both fix patches in this
-# range edit that file, and git apply rejects a file prepare.sh has touched (R22).
+# and package.json itself is never rewritten here -- the fix patch edits that
+# file, and git apply rejects a file prepare.sh has touched (R22).
 npm install --no-audit --no-fund || true
 
-# R21/R22: npm 6 REWRITES package.json during install (it normalises the
-# `"dependencies"` block). Both fix patches in this range edit package.json, so
-# left in place `git apply` rejects the whole fix patch and the fix stage
-# collects zero tests. Restore every TRACKED file; node_modules and the
-# generated package-lock.json are untracked, so the warm cache survives.
+# R21/R22: npm 6 REWRITES package.json during install -- it normalises
+# `"dependencies": {{\\n  }}` to `"dependencies": {{}}`, which here is
+# byte-identical to this PR's own fix-patch hunk. Left in place, `git apply`
+# rejects the whole fix patch ("error: patch failed: package.json:44") and the
+# fix stage collects zero tests. Restore every TRACKED file; node_modules and
+# the generated package-lock.json are untracked, so the warm cache survives.
 git checkout -- .
 test -z "$(git status --porcelain --untracked-files=no)"
 
@@ -250,8 +251,8 @@ fi""".format(repo=self.pr.repo),
         return "\n\n".join(s for s in sections if s) + "\n"
 
 
-@Instance.register("iamkun", "dayjs_198_to_94")
-class DAYJS_198_TO_94(Instance):
+@Instance.register("iamkun", "dayjs_90_to_90")
+class DAYJS_90_TO_90(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
