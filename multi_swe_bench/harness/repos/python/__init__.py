@@ -127,7 +127,7 @@ from multi_swe_bench.harness.repos.python.intel import *
 from multi_swe_bench.harness.repos.python.ipfs_shipyard import *
 from multi_swe_bench.harness.repos.python.ipython import *
 from multi_swe_bench.harness.repos.python.isi_vista import *
-# from multi_swe_bench.harness.repos.python.iterative import *
+from multi_swe_bench.harness.repos.python.iterative import *
 from multi_swe_bench.harness.repos.python.jackdewinter import *
 from multi_swe_bench.harness.repos.python.jaraco import *
 from multi_swe_bench.harness.repos.python.jazzband import *
