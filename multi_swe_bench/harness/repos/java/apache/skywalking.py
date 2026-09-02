@@ -7,6 +7,45 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+_MVN_SKIPS = (
+    "-Dcheckstyle.skip=true "
+    "-Drat.skip=true "
+    "-Dlicense.skip=true "
+    "-Denforcer.skip=true "
+    "-Danimal.sniffer.skip=true "
+    "-Dmdep.analyze.skip=true "
+    "-Dmaven.javadoc.skip=true "
+    "-Dgpg.skip=true"
+)
+
+_MVN_TEST = (
+    "clean test -B -fn "
+    f"{_MVN_SKIPS} "
+    "-Dsurefire.useFile=false -Dsurefire.skipAfterFailureCount=0 "
+    "-DfailIfNoTests=false"
+)
+
+_MVN_WARMUP = f"clean install -T 4 -B -q -fn -DskipTests {_MVN_SKIPS}"
+
+_JAVA_ENV = """export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))
+export PATH="$JAVA_HOME/bin:$PATH"
+export MAVEN_OPTS='-Xmx4g -XX:+UseParallelGC'"""
+
+_MVN_SETUP = """if [ -x ./mvnw ]; then
+  MVN="./mvnw"
+else
+  MVN="mvn"
+fi"""
+
+_SUBMODULE_SETUP = """if [ -f .gitmodules ]; then
+  sed -i 's|git@github.com:|https://github.com/|g' .gitmodules
+  git submodule update --init --recursive || true
+fi"""
+
+_SUREFIRE_DUMP = """echo "===== SUREFIRE REPORTS BEGIN ====="
+find . -path '*/target/surefire-reports/TEST-*.xml' -exec cat {} \\; 2>/dev/null
+echo "===== SUREFIRE REPORTS END =====\""""
+
 class SkywalkingImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -42,21 +81,17 @@ class SkywalkingImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        global_env = self.global_env
-        global_env_block = f"\n{global_env}\n" if global_env.strip() else ""
-
         return f"""FROM {image_name}
-{global_env_block}
 
+{self.global_env}
+
+ENV LC_ALL=C.UTF-8
 WORKDIR /home/
-
-RUN apt-get update && \\
-    apt-get install -y --no-install-recommends \\
-        git \\
-        ca-certificates \\
-        curl \\
-        make && \\
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-8-jdk \
+    && apt-get install -y --no-install-recommends \
+    git ca-certificates curl unzip make maven \
+    && rm -rf /var/lib/apt/lists/*
 
 {code}
 
@@ -87,33 +122,7 @@ class SkywalkingImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    @classmethod
-    def _jdk_package(cls, pr_number: int) -> str:
-        if pr_number >= 10298:
-            return "openjdk-11-jdk"
-        return "openjdk-8-jdk"
-
-    @classmethod
-    def _mvn_cmd(cls, pr_number: int) -> str:
-        if pr_number >= 1619:
-            return "./mvnw"
-        return "mvn"
-
-    @classmethod
-    def _submodule_cmd(cls, pr_number: int) -> str:
-        if pr_number >= 1210:
-            return "git submodule update --init --recursive"
-        return ""
-
     def files(self) -> list[File]:
-        jdk_pkg = self._jdk_package(self.pr.number)
-        mvn_cmd = self._mvn_cmd(self.pr.number)
-        submodule_cmd = self._submodule_cmd(self.pr.number)
-
-        submodule_step = ""
-        if submodule_cmd:
-            submodule_step = submodule_cmd
-
         return [
             File(
                 ".",
@@ -152,62 +161,124 @@ exit 0
                 """#!/bin/bash
 set -e
 
-apt-get update && apt-get install -y --no-install-recommends {jdk_pkg} maven && rm -rf /var/lib/apt/lists/*
+{java_env}
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-if [ -f .gitmodules ]; then
-    sed -i 's|git@github.com:|https://github.com/|g' .gitmodules
-fi
-{submodule_step}
 
-{mvn_cmd} clean install -T 4 -B -q -fn -Dcheckstyle.skip -Dgpg.skip -Dmaven.javadoc.skip=true -Denforcer.skip=true -Danimal.sniffer.skip=true -Drat.skip=true -Dmdep.analyze.skip=true -DskipTests || true
+if ! git cat-file -e {sha}^{{commit}} 2>/dev/null; then
+    git fetch --no-tags --depth 1 https://github.com/{org}/{repo}.git {sha}
+    git checkout --detach FETCH_HEAD
+else
+    git checkout --detach {sha}
+fi
+bash /home/check_git_changes.sh
+
+test "$(git rev-parse HEAD)" = "{sha}"
+
+{submodule_setup}
+
+{mvn_setup}
+
+$MVN {mvn_warmup} || true
 """.format(
-                    pr=self.pr,
-                    jdk_pkg=jdk_pkg,
-                    mvn_cmd=mvn_cmd,
-                    submodule_step=submodule_step,
+                    org=self.pr.org,
+                    repo=self.pr.repo,
+                    sha=self.pr.base.sha,
+                    java_env=_JAVA_ENV,
+                    submodule_setup=_SUBMODULE_SETUP,
+                    mvn_setup=_MVN_SETUP,
+                    mvn_warmup=_MVN_WARMUP,
                 ),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+
+export CI=true
+{java_env}
 
 cd /home/{pr.repo}
-{mvn_cmd} clean install -T 4 -U -B -q -fn -Dcheckstyle.skip -Dgpg.skip -Dmaven.javadoc.skip=true -Denforcer.skip=true -Danimal.sniffer.skip=true -Drat.skip=true -Dmdep.analyze.skip=true -DskipTests
-{mvn_cmd} clean test -U -B -fn -Dcheckstyle.skip -Dgpg.skip -Dsurefire.useFile=false -DfailIfNoTests=false
-""".format(pr=self.pr, mvn_cmd=mvn_cmd),
+{mvn_setup}
+
+set +e
+$MVN {mvn_test}
+MVN_STATUS=$?
+set -e
+
+{surefire_dump}
+
+exit $MVN_STATUS
+""".format(
+                    pr=self.pr,
+                    java_env=_JAVA_ENV,
+                    mvn_setup=_MVN_SETUP,
+                    mvn_test=_MVN_TEST,
+                    surefire_dump=_SUREFIRE_DUMP,
+                ),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+
+export CI=true
+{java_env}
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.bmp' --exclude='*.class' /home/test.patch
-{mvn_cmd} clean install -T 4 -U -B -q -fn -Dcheckstyle.skip -Dgpg.skip -Dmaven.javadoc.skip=true -Denforcer.skip=true -Danimal.sniffer.skip=true -Drat.skip=true -Dmdep.analyze.skip=true -DskipTests
-{mvn_cmd} clean test -U -B -fn -Dcheckstyle.skip -Dgpg.skip -Dsurefire.useFile=false -DfailIfNoTests=false
+{mvn_setup}
 
-""".format(pr=self.pr, mvn_cmd=mvn_cmd),
+git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.bmp' --exclude='*.class' /home/test.patch
+
+set +e
+$MVN {mvn_test}
+MVN_STATUS=$?
+set -e
+
+{surefire_dump}
+
+exit $MVN_STATUS
+""".format(
+                    pr=self.pr,
+                    java_env=_JAVA_ENV,
+                    mvn_setup=_MVN_SETUP,
+                    mvn_test=_MVN_TEST,
+                    surefire_dump=_SUREFIRE_DUMP,
+                ),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+
+export CI=true
+{java_env}
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.bmp' --exclude='*.class' /home/test.patch /home/fix.patch
-{mvn_cmd} clean install -T 4 -U -B -q -fn -Dcheckstyle.skip -Dgpg.skip -Dmaven.javadoc.skip=true -Denforcer.skip=true -Danimal.sniffer.skip=true -Drat.skip=true -Dmdep.analyze.skip=true -DskipTests
-{mvn_cmd} clean test -U -B -fn -Dcheckstyle.skip -Dgpg.skip -Dsurefire.useFile=false -DfailIfNoTests=false
+{mvn_setup}
 
-""".format(pr=self.pr, mvn_cmd=mvn_cmd),
+git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.bmp' --exclude='*.class' /home/test.patch /home/fix.patch
+
+set +e
+$MVN {mvn_test}
+MVN_STATUS=$?
+set -e
+
+{surefire_dump}
+
+exit $MVN_STATUS
+""".format(
+                    pr=self.pr,
+                    java_env=_JAVA_ENV,
+                    mvn_setup=_MVN_SETUP,
+                    mvn_test=_MVN_TEST,
+                    surefire_dump=_SUREFIRE_DUMP,
+                ),
             ),
         ]
 
@@ -329,36 +400,88 @@ class Skywalking(Instance):
 
         test_log = remove_ansi_escape_sequences(test_log)
 
-        pattern = re.compile(
-            r"Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+), Time elapsed: [\d.]+ .+? (?:--|-) in (.+)"
+        def record(test_name, tests_run, failures, errors, skipped):
+            if failures > 0 or errors > 0:
+                failed_tests.add(test_name)
+            elif tests_run > 0 and skipped == tests_run:
+                skipped_tests.add(test_name)
+            elif tests_run > 0:
+                passed_tests.add(test_name)
+
+        def finish():
+            passed_tests.difference_update(failed_tests)
+            skipped_tests.difference_update(failed_tests)
+            skipped_tests.difference_update(passed_tests)
+            return TestResult(
+                passed_count=len(passed_tests),
+                failed_count=len(failed_tests),
+                skipped_count=len(skipped_tests),
+                passed_tests=passed_tests,
+                failed_tests=failed_tests,
+                skipped_tests=skipped_tests,
+            )
+
+        re_case = re.compile(r"<testcase\b([^>]*?)(/>|>(.*?)</testcase>)", re.S)
+        re_attr = re.compile(r'(\w+)="([^"]*)"')
+        saw_xml = False
+        for match in re_case.finditer(test_log):
+            attrs = dict(re_attr.findall(match.group(1)))
+            method = attrs.get("name", "")
+            if not method:
+                continue
+            saw_xml = True
+            classname = attrs.get("classname", "")
+            name = f"{classname}#{method}" if classname else method
+            body = match.group(3) or ""
+            if "<failure" in body or "<error" in body:
+                failed_tests.add(name)
+            elif "<skipped" in body:
+                skipped_tests.add(name)
+            else:
+                passed_tests.add(name)
+
+        if saw_xml:
+            return finish()
+
+        re_running = re.compile(r"Running\s+([\w.$]+)\s*$")
+        re_summary_with_class = re.compile(
+            r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),"
+            r"\s*Skipped:\s*(\d+),\s*Time elapsed:.*?(?:--|-)\s+in\s+([\w.$]+)"
+        )
+        re_summary_plain = re.compile(
+            r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),"
+            r"\s*Skipped:\s*(\d+),\s*Time elapsed:"
         )
 
+        current_class = None
         for line in test_log.splitlines():
-            match = pattern.search(line)
+            match = re_summary_with_class.search(line)
             if match:
-                tests_run = int(match.group(1))
-                failures = int(match.group(2))
-                errors = int(match.group(3))
-                skipped = int(match.group(4))
-                test_name = match.group(5)
+                current_class = None
+                record(
+                    match.group(5),
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    int(match.group(3)),
+                    int(match.group(4)),
+                )
+                continue
 
-                if (
-                    tests_run > 0
-                    and failures == 0
-                    and errors == 0
-                    and skipped != tests_run
-                ):
-                    passed_tests.add(test_name)
-                elif failures > 0 or errors > 0:
-                    failed_tests.add(test_name)
-                elif skipped == tests_run:
-                    skipped_tests.add(test_name)
+            match = re_summary_plain.search(line)
+            if match:
+                if current_class:
+                    record(
+                        current_class,
+                        int(match.group(1)),
+                        int(match.group(2)),
+                        int(match.group(3)),
+                        int(match.group(4)),
+                    )
+                    current_class = None
+                continue
 
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+            match = re_running.search(line)
+            if match:
+                current_class = match.group(1)
+
+        return finish()
