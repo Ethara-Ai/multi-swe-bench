@@ -19,7 +19,7 @@ records, so routing falls back to `{org}/{repo}`).
 import re
 from typing import Optional
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -59,16 +59,22 @@ class FastmcpImageBase(Image):
         # PR's base.sha and breaking every other PR with "reference is not a
         # tree". The base keeps full history; the strict anti-reward-hack
         # hardening runs per-PR (see FastmcpImageDefault).
+        # `# syntax` opts this base out of DockerfileEnhancer auto-injection, so the
+        # canonical MITM scaffolding (image.py: _PROXY_ARGS + _ENV_BLOCK proxy/cert
+        # ENV + _CERT_SYMLINKS) is added BY HAND here, verbatim from the same
+        # constants the enhancer would inject (gvisor/rqlite pattern). The PR layer
+        # FROMs this base and inherits its proxy ENV + cert symlinks. fastmcp's own
+        # LC_ALL / PIP / uv ENV are kept as a separate ENV line (not in _ENV_BLOCK).
         return f"""# syntax=docker/dockerfile:1.6
 FROM python:3.11-slim
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC \\
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+ENV LC_ALL=C.UTF-8 \\
     PIP_DISABLE_PIP_VERSION_CHECK=1 \\
     UV_LINK_MODE=copy
 
@@ -76,6 +82,8 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 WORKDIR /home/
 RUN apt-get update && apt-get install -y --no-install-recommends \\
