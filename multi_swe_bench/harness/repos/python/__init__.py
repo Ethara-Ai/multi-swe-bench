@@ -408,3 +408,11 @@ from multi_swe_bench.harness.repos.python.siddhantgoel.streaming_form_data impor
 from multi_swe_bench.harness.repos.python.ResonantGeoData import *
 from multi_swe_bench.harness.repos.python.tlsfuzzer import *
 from multi_swe_bench.harness.repos.python.pytorch.vision import *
+from multi_swe_bench.harness.repos.python.novaweb_mobi import *
+from multi_swe_bench.harness.repos.python.histolab import *
+from multi_swe_bench.harness.repos.python.kornia_rs import *
+from multi_swe_bench.harness.repos.python.speechbrain import *
+from multi_swe_bench.harness.repos.python.CycloneDX import *
+from multi_swe_bench.harness.repos.python.benthayer import *
+from multi_swe_bench.harness.repos.python.missionpinball import *
+from multi_swe_bench.harness.repos.python.stan_dev import *
