@@ -6,7 +6,7 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-class ImageDefault(Image):
+class PipxImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -21,6 +21,91 @@ class ImageDefault(Image):
 
     def dependency(self) -> str:
         return "python:3.9-slim"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM python:3.9-slim
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/pypa/pipx.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="pypa/pipx" \\
+      org.opencontainers.image.description="pypa/pipx Docker image" \\
+      org.opencontainers.image.source="https://github.com/pypa/pipx" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone "${{REPO_URL}}" /home/pipx
+
+WORKDIR /home/pipx
+
+CMD ["/bin/bash"]
+"""
+
+
+class ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Optional[Image]:
+        return PipxImageBase(self.pr, self.config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -45,55 +130,115 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
-                "prepare.sh",
-                """ls
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y git
-###ACTION_DELIMITER###
-pip install -e .
-###ACTION_DELIMITER###
-pip install pytest pytest-cov
-###ACTION_DELIMITER###
-python -m pytest tests/ -v --tb=short
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -eu
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    echo "ERROR: not inside a git repository" >&2
+    exit 1
+fi
+if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: working tree is not clean" >&2
+    git status --porcelain >&2
+    exit 1
+fi
 """,
+            ),
+            File(
+                ".",
+                "prepare.sh",
+                """#!/bin/bash
+set -eux
+cd /home/pipx
+git reset --hard
+bash /home/check_git_changes.sh
+git checkout --detach {sha}
+git remote remove origin 2>/dev/null || true
+git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all
+git reflog expire --expire-unreachable=now --all
+git gc --prune=now --aggressive
+git repack -a -d -l --quiet
+rm -f .git/objects/info/alternates
+git config --local gc.auto 0
+git config --local fetch.recurseSubmodules false
+git config --local remote.pushDefault ""
+test "$(git rev-parse HEAD)" = "$(git rev-parse {sha})"
+test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"
+test -z "$(git remote)"
+test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+if [ -f .gitmodules ]; then
+    git submodule foreach --recursive '
+        git checkout --detach HEAD
+        git remote remove origin 2>/dev/null || true
+        git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+        git reflog expire --expire=now --all
+        git reflog expire --expire-unreachable=now --all
+        git gc --prune=now --aggressive
+        rm -f .git/objects/info/alternates
+    '
+fi
+bash /home/check_git_changes.sh
+pip install -e . || true
+pip install pytest pytest-cov || true
+""".format(sha=self.pr.base.sha),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-cd /home/{pr.repo}
+cd /home/pipx
 pip install -e . pytest pytest-cov
 python -m pytest tests/ -v --tb=short
 
-""".format(pr=self.pr),
+""",
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
+cd /home/pipx
+if ! git -C /home/pipx apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
+fi
+if [ ! -f src/pipx/interpreter.py ]; then
+    mkdir -p src/pipx
+    cat > src/pipx/interpreter.py <<'STUB_EOF'
+\"\"\"Stub for test-patch stage - real implementation is added by fix.patch.
+
+Any attribute access returns a callable that raises NotImplementedError at
+call-time. This lets `import pipx.interpreter` and `from pipx.interpreter
+import X` succeed at collection time, so pytest can enter each test and
+record it as FAILED (rather than aborting collection).
+\"\"\"
+def _stub_impl(*args, **kwargs):
+    raise NotImplementedError(
+        "pipx.interpreter symbol not implemented in test-patch stage"
+    )
+
+def __getattr__(name):
+    return _stub_impl
+STUB_EOF
 fi
 pip install -e . pytest pytest-cov
 python -m pytest tests/ -v --tb=short
 
-""".format(pr=self.pr),
+""",
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+cd /home/pipx
+if ! git -C /home/pipx apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
 pip install -e . pytest pytest-cov
 python -m pytest tests/ -v --tb=short
 
-""".format(pr=self.pr),
+""",
             ),
         ]
 
@@ -102,28 +247,13 @@ python -m pytest tests/ -v --tb=short
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-FROM python:3.9-slim
+        dep = self.dependency()
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {dep.image_name()}:{dep.image_tag()}
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y git
-
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/pypa/pipx.git /home/pipx
-
-WORKDIR /home/pipx
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("pypa", "pipx_541_to_340")
