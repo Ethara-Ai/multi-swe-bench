@@ -92,3 +92,4 @@ from multi_swe_bench.harness.repos.rust.quickwit_oss import *
 from multi_swe_bench.harness.repos.rust.mozilla import *
 from multi_swe_bench.harness.repos.rust.ruma import *
 from multi_swe_bench.harness.repos.rust.openmls import *
+from multi_swe_bench.harness.repos.rust.cxlinux_ai import *

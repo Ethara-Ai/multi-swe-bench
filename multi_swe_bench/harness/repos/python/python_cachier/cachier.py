@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import re
-from typing import Optional
+from typing import Optional, Union
 
 from unidiff import PatchSet
 
@@ -42,6 +44,117 @@ def _test_files_from_patch(patch: str, pr_number: int) -> list[str]:
     return sorted(seen)
 
 
+class ImageBase(Image):
+    """SHARED base image (tag "base"), ONE image reused by EVERY cachier PR.
+
+    It keeps the full git history + origin so each PR image can check out its
+    own base.sha on top of it. Building N PRs therefore yields N pr-images plus
+    this single base image.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return "python:3.11-bookworm"
+
+    def image_prefix(self) -> str:
+        return "envagent"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        org = self.pr.org
+        repo = self.pr.repo
+
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        # The `# syntax` directive makes DockerfileEnhancer.enhance() skip this
+        # file: per-PR checkout + history hardening live in ImageDefault, since
+        # a shared base cannot be pinned to a single commit.
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+{self.global_env}
+
+WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+
+{code}
+
+# History hardening is deferred to prepare.sh, which runs per-PR and ends with
+# test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+# Keep that marker here so DockerfileEnhancer._inject_final_sanitize does not
+# pin this shared base to a single PR's BASE_COMMIT.
+
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+
+
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -55,8 +168,8 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.11-bookworm"
+    def dependency(self) -> Optional[Image]:
+        return ImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -71,20 +184,44 @@ class ImageDefault(Image):
         test_files = _test_files_from_patch(self.pr.test_patch, self.pr.number)
         test_files_str = " ".join(test_files)
 
+        pytest_opts = (
+            "python -m pytest --noconftest --no-header -rN --tb=short -v"
+            " -m 'not mongo and not sql and not redis'"
+            " -p no:cacheprovider -o 'addopts='"
+        )
+
+        # test-run.sh / fix-run.sh apply the test patch first, so every path in
+        # test_files exists by the time pytest runs.
+        pytest_cmd = f"{pytest_opts} {test_files_str}" if test_files_str else f"{pytest_opts} tests/"
+
+        # run.sh is the baseline: it deliberately does NOT apply the test patch,
+        # so any test file the PR *creates* is absent. pytest treats a missing
+        # path as a fatal collection error and aborts the whole session, which
+        # wipes out the baseline even for files that do exist (PR #322 lost all
+        # 213 base tests to one missing tests/test_varargs.py; PR #338 lost
+        # tests/test_async_core.py to a missing tests/s3_tests/helpers.py).
+        # Keep only the paths present at the base commit, and exit cleanly when
+        # none remain so `set -e` does not fail the run.
         if test_files_str:
-            pytest_cmd = (
-                "python -m pytest --noconftest --no-header -rN --tb=short -v"
-                " -m 'not mongo and not sql and not redis'"
-                " -p no:cacheprovider -o 'addopts='"
-                f" {test_files_str}"
+            baseline_cmd = (
+                "BASELINE_FILES=\"\"\n"
+                f"for f in {test_files_str}; do\n"
+                '    if [ -e "$f" ]; then\n'
+                '        BASELINE_FILES="$BASELINE_FILES $f"\n'
+                "    else\n"
+                '        echo "baseline: skipping $f (does not exist at the base commit)"\n'
+                "    fi\n"
+                "done\n"
+                "\n"
+                'if [ -z "$BASELINE_FILES" ]; then\n'
+                '    echo "baseline: no test files exist at the base commit; nothing to run"\n'
+                "    exit 0\n"
+                "fi\n"
+                "\n"
+                f"{pytest_opts} $BASELINE_FILES"
             )
         else:
-            pytest_cmd = (
-                "python -m pytest --noconftest --no-header -rN --tb=short -v"
-                " -m 'not mongo and not sql and not redis'"
-                " -p no:cacheprovider -o 'addopts='"
-                " tests/"
-            )
+            baseline_cmd = f"{pytest_opts} tests/"
 
         # PRs #36, #116, #121, #133 have no tests/requirements.txt;
         # PR #134+ ships one.  The prepare script handles both eras.
@@ -101,6 +238,25 @@ class ImageDefault(Image):
         return [
             File(".", "fix.patch", self.pr.fix_patch),
             File(".", "test.patch", self.pr.test_patch),
+            File(
+                ".",
+                "check_git_changes.sh",
+                "#!/bin/bash\n"
+                "set -e\n"
+                "\n"
+                "if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then\n"
+                '  echo "check_git_changes: Not inside a git repository"\n'
+                "  exit 1\n"
+                "fi\n"
+                "\n"
+                "if [[ -n $(git status --porcelain) ]]; then\n"
+                '  echo "check_git_changes: Uncommitted changes"\n'
+                "  exit 1\n"
+                "fi\n"
+                "\n"
+                'echo "check_git_changes: No uncommitted changes"\n'
+                "exit 0\n",
+            ),
             File(
                 ".",
                 "prepare.sh",
@@ -122,8 +278,8 @@ class ImageDefault(Image):
                 "#!/bin/bash\n"
                 "set -e\n"
                 "cd /home/{repo}\n"
-                "{pytest_cmd}\n".format(
-                    repo=self.pr.repo, pytest_cmd=pytest_cmd
+                "{baseline_cmd}\n".format(
+                    repo=self.pr.repo, baseline_cmd=baseline_cmd
                 ),
             ),
             File(
@@ -155,34 +311,73 @@ class ImageDefault(Image):
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = "".join(
             f"COPY {f.name} /home/\n" for f in self.files()
         )
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # Per-PR anti-cheat hardening: pin to BASE_COMMIT, drop origin + every
+        # ref + reflog, gc-prune everything unreachable (the fix commit and all
+        # later history), then audit that only BASE_COMMIT's history remains.
+        return """FROM {name}:{tag}
 
-        return f"""FROM {self.dependency()}
+ARG BASE_COMMIT="{base_sha}"
 
-{self.global_env}
+{global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /home/{repo}
 
-RUN apt-get update && apt-get install -y git
-
-WORKDIR /home/
-
-{code}
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
 
 {copy_commands}
-
 RUN bash /home/prepare.sh
 
-{self.clear_env}
+RUN set -eux; \\
+    git checkout --detach "${{BASE_COMMIT}}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
-"""
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+
+{clear_env}
+
+""".format(
+            name=name,
+            tag=tag,
+            base_sha=self.pr.base.sha,
+            global_env=self.global_env,
+            clear_env=self.clear_env,
+            repo=self.pr.repo,
+            copy_commands=copy_commands,
+        )
 
 
 @Instance.register("python-cachier", "cachier")
