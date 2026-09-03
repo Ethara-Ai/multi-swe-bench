@@ -73,19 +73,39 @@ from multi_swe_bench.harness.repos.typescript.webdriverio.webdriverio_10978_to_5
 from multi_swe_bench.harness.repos.typescript.webdriverio.webdriverio_14635_to_8578 import (
     WebDriverIOVitestNpm,
 )
+from multi_swe_bench.harness.repos.typescript.webdriverio.webdriverio_pnpm import (
+    WebDriverIOVitestPnpm,
+)
 
-# At and below this PR number the repository is the lerna + Jest monorepo; above
-# it the suite has moved to vitest. The two declared intervals overlap, so the
-# boundary has to be stated explicitly somewhere -- it is stated here.
-JEST_ERA_MAX_PR = 10978
+# Toolchain boundaries on the MAIN branch, established by inspecting package.json,
+# the lockfile and .nvmrc at every base commit in the dataset:
+#
+#   PR <= 8432    npm + lerna + Jest      (node:18)  -> WebDriverIOJest
+#   8578..12092   npm + lerna + vitest    (node:20)  -> WebDriverIOVitestNpm
+#   PR >= 12432   pnpm workspace + vitest (node:24)  -> WebDriverIOVitestPnpm
+#
+# jest is REMOVED at PR 8578 (no jest dep, no jest.config -- replaced by vitest),
+# so the previous single boundary at 10978 misrouted every 8578..10978 PR to the
+# dead Jest config. These boundaries fix that.
+JEST_ERA_MAX_PR = 8432
+VITEST_NPM_ERA_MAX_PR = 12092
+
+# The v8 MAINTENANCE branch never migrated to pnpm: its backport PRs (e.g. 12778,
+# 14235, 14617) keep npm + lerna + vitest even though their PR numbers interleave
+# with the main-branch pnpm PRs. PR number alone cannot separate them, so these
+# are routed by base.ref before the numeric rules below.
+LEGACY_NPM_REFS = {"v8"}
 
 
 class WebDriverIODispatch(Instance):
-    """Forwards to whichever era config matches this PR number.
+    """Forwards to whichever era config matches this PR.
 
     Composition rather than inheritance: the era classes are complete, working
     Instances, and delegating leaves them untouched. Every method of the
     Instance interface is forwarded, so the harness cannot tell the difference.
+
+    Routing is by base.ref first (to catch the v8 npm backports whose numbers
+    interleave with the pnpm era), then by PR number for the main-branch eras.
     """
 
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
@@ -93,7 +113,15 @@ class WebDriverIODispatch(Instance):
         self._pr = pr
         self._config = config
 
-        era = WebDriverIOJest if pr.number <= JEST_ERA_MAX_PR else WebDriverIOVitestNpm
+        base_ref = getattr(pr.base, "ref", "") or ""
+        if base_ref in LEGACY_NPM_REFS:
+            era = WebDriverIOVitestNpm
+        elif pr.number <= JEST_ERA_MAX_PR:
+            era = WebDriverIOJest
+        elif pr.number <= VITEST_NPM_ERA_MAX_PR:
+            era = WebDriverIOVitestNpm
+        else:
+            era = WebDriverIOVitestPnpm
         self._delegate: Instance = era(pr, config, *args, **kwargs)
 
     @property

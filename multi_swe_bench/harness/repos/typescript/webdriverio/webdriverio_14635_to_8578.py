@@ -136,7 +136,8 @@ npx lerna bootstrap --no-ci --force-local || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 npm run setup || true
@@ -154,7 +155,9 @@ if [ -f scripts/test/globalSetup.ts ]; then
     printf 'export const setup = async () => {{}}\\nexport const teardown = async () => {{}}\\n' > scripts/test/globalSetup.ts
 fi
 
-npx vitest --config vitest.config.ts --run --reporter=verbose || true
+CFG=vitest.config.ts
+[ -f vitest.config.mts ] && CFG=vitest.config.mts
+npx vitest --config "$CFG" --run --reporter=verbose
 
 """.format(pr=self.pr),
             ),
@@ -162,10 +165,11 @@ npx vitest --config vitest.config.ts --run --reporter=verbose || true
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn /home/test.patch
 npm run setup || true
 
 # Fix EXDEV: Docker overlay cannot rename across layers
@@ -179,7 +183,9 @@ if [ -f scripts/test/globalSetup.ts ]; then
     printf 'export const setup = async () => {{}}\\nexport const teardown = async () => {{}}\\n' > scripts/test/globalSetup.ts
 fi
 
-npx vitest --config vitest.config.ts --run --reporter=verbose || true
+CFG=vitest.config.ts
+[ -f vitest.config.mts ] && CFG=vitest.config.mts
+npx vitest --config "$CFG" --run --reporter=verbose
 
 """.format(pr=self.pr),
             ),
@@ -187,10 +193,11 @@ npx vitest --config vitest.config.ts --run --reporter=verbose || true
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 npm run setup || true
 
 # Fix EXDEV: Docker overlay cannot rename across layers
@@ -204,7 +211,9 @@ if [ -f scripts/test/globalSetup.ts ]; then
     printf 'export const setup = async () => {{}}\\nexport const teardown = async () => {{}}\\n' > scripts/test/globalSetup.ts
 fi
 
-npx vitest --config vitest.config.ts --run --reporter=verbose || true
+CFG=vitest.config.ts
+[ -f vitest.config.mts ] && CFG=vitest.config.mts
+npx vitest --config "$CFG" --run --reporter=verbose
 
 """.format(pr=self.pr),
             ),
@@ -267,17 +276,41 @@ class WebDriverIOVitestNpm(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        """Parse vitest verbose output into per-test results.
+
+        Verified against real captured vitest output. The verbose reporter emits
+        one line per test with the file path first, which makes each id unique
+        across the monorepo (Check 4A):
+
+            ✓ packages/foo/tests/bar.test.ts > suite > name
+            × packages/foo/tests/bar.test.ts > suite > name
+
+        Check 4B: vitest appends a duration to slow tests -- "... name 304ms",
+        "... name 0ms". Left in the id, the SAME test gets a DIFFERENT name when
+        its timing drifts between the run/test/fix stages and silently drops out
+        of the cross-stage comparison. Timing is stripped from every id.
+        """
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
 
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        cleaned_log = ansi_escape.sub("", test_log)
+        # Strip ALL CSI escapes, not just colour (SGR) ones.
+        cleaned_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        re_pass_individual = re.compile(r"^\s*[✓✔]\s+(.+)")
-        re_fail_individual = re.compile(r"^\s*[×✕✖]\s+(.+)")
+        # Require the "file.test.<ext>" path so the bare summary glyphs
+        # ("✓ 12 passed") are not mistaken for tests.
+        re_pass_individual = re.compile(r"^\s*[✓✔]\s+(\S+\.test\.\w+.*)")
+        re_fail_individual = re.compile(r"^\s*[×✕✗✖]\s+(\S+\.test\.\w+.*)")
+        # File-level failure header. Capture ONLY the file path token so a
+        # load-failure id is clean and identical across stages (vitest appends a
+        # " [ ... ]" annotation that must not reach the id).
         re_fail_summary = re.compile(r"^\s*FAIL\s+(\S+\.test\.\w+)")
-        re_skip = re.compile(r"^\s*[-↓]\s+(.+)\s*\[skipped\]")
+        re_skip = re.compile(r"^\s*[↓○]\s+(\S+\.test\.\w+.*?)(?:\s*\[skipped\])?$")
+        # Trailing vitest duration -- "304ms", "1.5s", "0ms".
+        re_timing = re.compile(r"\s+\d+(?:\.\d+)?\s*m?s$")
+
+        def clean(name: str) -> str:
+            return re_timing.sub("", name).strip()
 
         for line in cleaned_log.splitlines():
             line_stripped = line.strip()
@@ -286,14 +319,14 @@ class WebDriverIOVitestNpm(Instance):
 
             m = re_pass_individual.match(line_stripped)
             if m:
-                test = m.group(1).strip()
+                test = clean(m.group(1))
                 if test and test not in failed_tests:
                     passed_tests.add(test)
                 continue
 
             m = re_fail_individual.match(line_stripped)
             if m:
-                test = m.group(1).strip()
+                test = clean(m.group(1))
                 if test:
                     failed_tests.add(test)
                     if test in passed_tests:
@@ -302,7 +335,7 @@ class WebDriverIOVitestNpm(Instance):
 
             m = re_fail_summary.match(line_stripped)
             if m:
-                test = m.group(1).strip()
+                test = clean(m.group(1))
                 if test:
                     failed_tests.add(test)
                     if test in passed_tests:
@@ -311,9 +344,11 @@ class WebDriverIOVitestNpm(Instance):
 
             m = re_skip.match(line_stripped)
             if m:
-                test = m.group(1).strip()
-                if test:
+                test = clean(m.group(1))
+                if test and test not in passed_tests and test not in failed_tests:
                     skipped_tests.add(test)
+
+        passed_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
