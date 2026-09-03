@@ -127,7 +127,6 @@ from multi_swe_bench.harness.repos.python.intel import *
 from multi_swe_bench.harness.repos.python.ipfs_shipyard import *
 from multi_swe_bench.harness.repos.python.ipython import *
 from multi_swe_bench.harness.repos.python.isi_vista import *
-from multi_swe_bench.harness.repos.python.iterative import *
 from multi_swe_bench.harness.repos.python.jackdewinter import *
 from multi_swe_bench.harness.repos.python.jaraco import *
 from multi_swe_bench.harness.repos.python.jazzband import *
@@ -408,4 +407,4 @@ from multi_swe_bench.harness.repos.python.rgerganov import *
 from multi_swe_bench.harness.repos.python.siddhantgoel.streaming_form_data import *
 from multi_swe_bench.harness.repos.python.ResonantGeoData import *
 from multi_swe_bench.harness.repos.python.tlsfuzzer import *
-#python
+from multi_swe_bench.harness.repos.python.pytorch.vision import *
