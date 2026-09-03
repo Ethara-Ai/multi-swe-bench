@@ -53,16 +53,26 @@ class LobeHubImageBaseEarly(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        # Toolchain-only base: deliberately does NOT clone the repo. A single
+        # Shared base for the whole era: clones the repo ONCE so the 1.2 GB clone
+        # layer is not duplicated across every per-PR image. It deliberately does
+        # NOT check out ``${BASE_COMMIT}`` and does NOT prune git history: a single
         # ``base-early`` tag is shared by every PR in this era, but each PR has a
-        # different ``base.sha``. Cloning here would let DockerfileEnhancer
-        # (which processes string-dependency images like this one) rewrite the
-        # hardcoded clone into a ``git checkout ${BASE_COMMIT}`` + hardening
-        # sequence pinned to whichever PR triggered the shared base build,
-        # pruning every other PR's commit out of git history and breaking them.
-        # The clone + checkout + hardening happen per-PR in
-        # ``LobeHubImageDefaultEarly`` instead. With no clone/COPY line here, the
-        # enhancer leaves this base untouched apart from its infra block.
+        # different ``base.sha``, so pinning here would strip every other PR's
+        # commit out of history. The per-PR checkout + hardening run in
+        # ``prepare.sh``, which executes as a build layer of the per-PR image.
+        #
+        # Two DockerfileEnhancer interactions to keep in mind (image.py):
+        #   * ``_standardize_repo_fetch`` rewrites a hardcoded ``git clone <url>``
+        #     into a BASE_COMMIT-pinned sequence. Its Pattern-2 regex carries the
+        #     negative lookahead ``(?!"\$\{REPO_URL\}")``, so writing the clone
+        #     against the literal ``"${REPO_URL}"`` (injected as an ARG by the
+        #     infra block) leaves it untouched.
+        #   * ``_inject_final_sanitize`` appends a BASE_COMMIT-pinned hardening
+        #     block to any Dockerfile that mentions ``git clone`` -- unless the
+        #     content already carries the hardening marker line before its CMD.
+        #     The comment below supplies that marker, so the shared base stays
+        #     unpinned. It must sit AFTER the clone: the enhancer re-injects if a
+        #     clone/fetch appears between the marker and the CMD.
         return f"""FROM {image_name}
 
 {self.global_env}
@@ -70,8 +80,16 @@ class LobeHubImageBaseEarly(Image):
 WORKDIR /home/
 RUN apt-get update && apt-get install -y --no-install-recommends git libvips-dev && rm -rf /var/lib/apt/lists/*
 
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+# History hardening is deferred to prepare.sh, which runs per-PR and ends with
+# test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+# Keep that marker here so DockerfileEnhancer._inject_final_sanitize does not
+# pin this shared base to a single PR's BASE_COMMIT.
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -103,6 +121,27 @@ class LobeHubImageDefaultEarly(Image):
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(
+                ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""",
+            ),
             File(
                 ".",
                 "prepare.sh",
@@ -204,20 +243,22 @@ fi
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        # The repo is cloned once in the shared base image, so this layer does
+        # NOT clone (and needs no ``REPO_URL``): it only checks out this PR's
+        # commit in the inherited working tree.
+        #
         # This per-PR image chains to a base *Image* (not a string), so
         # DockerfileEnhancer returns this dockerfile verbatim and does NOT
-        # auto-inject git-history hardening. We therefore clone, check out
-        # ``${BASE_COMMIT}``, and apply ``Image._HARDENING_BLOCK`` manually so
+        # auto-inject git-history hardening. We therefore check out
+        # ``${BASE_COMMIT}`` and apply ``Image._HARDENING_BLOCK`` manually so
         # the fix / future commits cannot be read out of git history (reward
-        # hacking). ``BASE_COMMIT`` is pinned to *this* PR's ``base.sha``.
+        # hacking). ``BASE_COMMIT`` is pinned to *this* PR's ``base.sha``, which
+        # also prunes the full history inherited from the shared base.
         return f"""FROM {name}:{tag}
 
-ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 ARG BASE_COMMIT="{self.pr.base.sha}"
 
 {self.global_env}
-
-RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
 WORKDIR /home/{self.pr.repo}
 
@@ -230,8 +271,6 @@ RUN bash /home/prepare.sh
 {Image._HARDENING_BLOCK}
 
 {self.clear_env}
-
-CMD ["/bin/bash"]
 """
 
 
