@@ -32,6 +32,7 @@ from typing import Optional
 
 from multi_swe_bench.harness.image import Image
 from multi_swe_bench.harness.instance import Instance
+from multi_swe_bench.harness.repos.java.skylot._common import _PR_NUMBERS
 from multi_swe_bench.harness.repos.java.skylot.jadx_170_to_792 import (
     JadxJdk8Era2ImageDefault,
 )
@@ -51,6 +52,10 @@ _JDK11_MAX = 1831  # v1.1.x .. v1.4.x  -> eclipse-temurin:11
 
 @Instance.register("skylot", "jadx")
 class Jadx(Jadx793To1831):
+    def __init__(self, pr, config, *args, **kwargs):
+        super().__init__(pr, config, *args, **kwargs)
+        _PR_NUMBERS.add(pr.number)
+
     def dependency(self) -> Optional[Image]:
         number = self.pr.number
         if number <= _JDK8_MAX:

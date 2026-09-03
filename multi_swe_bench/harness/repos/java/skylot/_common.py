@@ -13,6 +13,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_PR_NUMBERS: set = set()
+
 
 def _filter_binary_patches(patch_content: str) -> str:
     """Remove binary diff sections from a git patch.
@@ -121,7 +123,7 @@ def _binary_extract_shell(fix_patch: str, test_patch: str, end_tag: str) -> str:
     the repo root; emits a bash snippet with no leading shebang.
     """
     if not end_tag:
-        return '# no end_tag; skipping binary pre-extract\n'
+        return ''
     merged = {}
     for action, path in _extract_binary_ops(test_patch) + _extract_binary_ops(fix_patch):
         merged[path] = action
@@ -161,7 +163,7 @@ def _binary_restore_shell(fix_patch: str, test_patch: str, end_tag: str) -> str:
     no leading shebang; runs from the repo root.
     """
     if not end_tag:
-        return '# no end_tag; skipping binary restore\n'
+        return ''
     merged = {}
     for action, path in _extract_binary_ops(test_patch) + _extract_binary_ops(fix_patch):
         merged[path] = action
@@ -290,8 +292,8 @@ class JadxBaseImage(Image):
         return self.JDK_IMAGE
 
     def image_tag(self) -> str:
-        # era-specific, NO pr number -> one shared base per JDK era
-        return "base-" + self.JDK_IMAGE.replace(":", "-")
+        nums = _PR_NUMBERS or {self.pr.number}
+        return f"base-{min(nums)}-{max(nums)}"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -312,13 +314,30 @@ FROM {jdk}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
     LC_ALL=C.UTF-8 \\
     TZ=UTC \\
     JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8" \\
-    GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx2g"
+    GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx2g" \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
 
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
@@ -327,6 +346,15 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
 
 WORKDIR /home/
 
+RUN set -eux; \\
+    mkdir -p /etc/pki/tls/certs /etc/ssl /etc/pki/ca-trust/extracted/pem; \\
+    ln -sf ${{CA_CERT_PATH}} /etc/pki/tls/certs/ca-bundle.crt; \\
+    ln -sf ${{CA_CERT_PATH}} /etc/ssl/cert.pem; \\
+    ln -sf ${{CA_CERT_PATH}} /etc/ssl/ca-bundle.pem; \\
+    ln -sf ${{CA_CERT_PATH}} /etc/pki/tls/cacert.pem; \\
+    ln -sf ${{CA_CERT_PATH}} /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem; \\
+    ln -sf ${{CA_CERT_PATH}} /etc/ssl/certs/ca-bundle.crt
+
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     {_BASE_APT} && rm -rf /var/lib/apt/lists/*
 
@@ -334,15 +362,6 @@ COPY init.gradle /root/.gradle/init.gradle
 COPY gradle.properties /root/.gradle/gradle.properties
 
 RUN git clone "${{REPO_URL}}" /home/{repo}
-
-WORKDIR /home/{repo}
-# Warm the SHARED Gradle dependency cache from the repo's current default branch
-# so the common deps live in this single base layer instead of being downloaded
-# by every PR. `|| true`: the latest commit may need a newer JDK than this era's
-# image (e.g. a JDK 8 base vs a master that needs JDK 11); the per-PR assemble
-# re-resolves the exact deps at the checked-out base commit.
-RUN ./gradlew --no-daemon assemble || true
-
 CMD ["/bin/bash"]
 """
 
@@ -394,34 +413,64 @@ class JadxPRImage(Image):
             self.pr.fix_patch, self.pr.test_patch, end_tag
         )
         bin_restore_test = _binary_restore_shell("", self.pr.test_patch, end_tag)
+        org = self.pr.org
         repo = self.pr.repo
         sha = self.pr.base.sha
 
+        # Integrity guard (QC P4/P5). `git status --porcelain` lists modified,
+        # staged and untracked files but NOT gitignored ones, so the warm
+        # `.gradle`/`build` artifacts the shared base leaves behind do not trip
+        # it - it fires only on a genuinely dirty tree.
+        check_git_changes_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            "if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then\n"
+            '  echo "check_git_changes: Not inside a git repository"\n'
+            "  exit 1\n"
+            "fi\n"
+            "if [[ -n $(git status --porcelain) ]]; then\n"
+            '  echo "check_git_changes: Uncommitted changes"\n'
+            "  git status --porcelain\n"
+            "  exit 1\n"
+            "fi\n"
+            'echo "check_git_changes: No uncommitted changes"\n'
+            "exit 0\n"
+        )
+
         prepare_sh = (
             "#!/bin/bash\n"
-            "# FROM the shared era base (repo already cloned + deps warmed). Check\n"
-            "# out THIS PR's base commit, pre-extract binary fixtures from the\n"
-            "# end-of-range tag (origin/tags still present from the base), and warm\n"
-            "# the per-SHA deps. The Dockerfile hardening pass strips history after.\n"
             "set -e\n"
+            # BASE_COMMIT arrives as a build ARG (available as env to the RUN);
+            # default to the dataset SHA so the script is also correct standalone.
+            f'BASE_COMMIT="${{BASE_COMMIT:-{sha}}}"\n'
             f"cd /home/{repo}\n"
-            "git reset --hard || true\n"
-            f"git checkout {sha}\n"
+            # No `|| true`: a failed reset must abort the build (QC P5).
+            "git reset --hard\n"
+            "bash /home/check_git_changes.sh\n"
+            'git checkout "${BASE_COMMIT}"\n'
+            "bash /home/check_git_changes.sh\n"
             "\n"
             + bin_extract
             + "\n"
             "./gradlew --no-daemon assemble || true\n"
+            "\n"
+            "git checkout -- .\n"
+            "bash /home/check_git_changes.sh\n"
         )
         run_sh = (
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             f"cd /home/{repo}\n"
+            "git reset --hard\n"
+            "git clean -qfd\n"
             "./gradlew --no-daemon test --continue\n"
         )
         test_run_sh = (
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             f"cd /home/{repo}\n"
+            "git reset --hard\n"
+            "git clean -qfd\n"
             "git apply --whitespace=nowarn /home/test.patch\n"
             + bin_restore_test
             + "./gradlew --no-daemon test --continue\n"
@@ -430,6 +479,8 @@ class JadxPRImage(Image):
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             f"cd /home/{repo}\n"
+            "git reset --hard\n"
+            "git clean -qfd\n"
             "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
             + bin_restore_fix
             + "./gradlew --no-daemon test --continue\n"
@@ -438,6 +489,7 @@ class JadxPRImage(Image):
         return [
             File(".", "fix.patch", f"{filtered_fix_patch}"),
             File(".", "test.patch", f"{filtered_test_patch}"),
+            File(".", "check_git_changes.sh", check_git_changes_sh),
             File(".", "prepare.sh", prepare_sh),
             File(".", "run.sh", run_sh),
             File(".", "test-run.sh", test_run_sh),
@@ -455,17 +507,16 @@ class JadxPRImage(Image):
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        # Git-history hardening for the per-PR (agent) image, applied AFTER
-        # prepare.sh has checked out this PR's base commit -- so the commit to
-        # KEEP is the current HEAD (== this PR's base sha). The shared base
-        # deliberately keeps full history + origin (see JadxBaseImage); this
-        # strips the remote and every ref/commit not reachable from HEAD, so the
-        # evaluated agent cannot recover the fix from git log/show/history.
-        # Mirrors the harness _HARDENING_BLOCK, anchored on HEAD, and asserts
-        # HEAD really is this PR's base commit.
-        harden = f"""RUN set -eux; \\
+        return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{sha}"
+
+{copy_commands}
+RUN bash /home/prepare.sh
+
+RUN set -eux; \\
     cd /home/{repo}; \\
-    git checkout --detach HEAD; \\
+    git checkout --detach "${{BASE_COMMIT}}"; \\
     git remote remove origin 2>/dev/null || true; \\
     git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
         | xargs -r -n1 git update-ref -d; \\
@@ -477,7 +528,7 @@ class JadxPRImage(Image):
     git config --local gc.auto 0; \\
     git config --local fetch.recurseSubmodules false; \\
     git config --local remote.pushDefault ""; \\
-    test "$(git rev-parse HEAD)" = "{sha}"; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"; \\
     test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
     test -z "$(git remote)"; \\
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
@@ -493,14 +544,5 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
             git gc --prune=now --aggressive; \\
             rm -f .git/objects/info/alternates; \\
         '; \\
-    fi"""
-
-        return f"""FROM {name}:{tag}
-
-{copy_commands}
-RUN bash /home/prepare.sh
-
-{harden}
-
-CMD ["/bin/bash"]
+    fi
 """

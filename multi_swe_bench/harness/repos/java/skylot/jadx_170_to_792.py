@@ -40,7 +40,10 @@ allprojects {
 
 
 class JadxJdk8Era2Base(JadxBaseImage):
-    JDK_IMAGE = "eclipse-temurin:8"
+    # Pinned to a specific build (QC D2) instead of the floating :8 tag, so the
+    # image is reproducible over time. 8u462-b08 is verified multi-arch
+    # (linux/amd64 + linux/arm64), which the arm64 build pass requires.
+    JDK_IMAGE = "eclipse-temurin:8u462-b08-jdk"
     INIT_GRADLE = _INIT_GRADLE
 
 
