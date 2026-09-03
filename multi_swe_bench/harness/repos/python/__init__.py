@@ -416,3 +416,4 @@ from multi_swe_bench.harness.repos.python.CycloneDX import *
 from multi_swe_bench.harness.repos.python.benthayer import *
 from multi_swe_bench.harness.repos.python.missionpinball import *
 from multi_swe_bench.harness.repos.python.stan_dev import *
+from multi_swe_bench.harness.repos.python.strawberry_graphql import *
