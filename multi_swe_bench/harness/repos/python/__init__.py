@@ -127,10 +127,6 @@ from multi_swe_bench.harness.repos.python.intel import *
 from multi_swe_bench.harness.repos.python.ipfs_shipyard import *
 from multi_swe_bench.harness.repos.python.ipython import *
 from multi_swe_bench.harness.repos.python.isi_vista import *
-# NOTE: `iterative` module file is missing from disk (removed outside this work);
-# its import crashed the whole harness. Commented out to unblock — not in the
-# webdriverio dataset, so no impact. Restore the module + this line if needed.
-# from multi_swe_bench.harness.repos.python.iterative import *
 from multi_swe_bench.harness.repos.python.jackdewinter import *
 from multi_swe_bench.harness.repos.python.jaraco import *
 from multi_swe_bench.harness.repos.python.jazzband import *
