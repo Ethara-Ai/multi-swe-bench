@@ -1,27 +1,212 @@
+import json
 import re
-import textwrap
-from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-def _clean_test_name(name: str) -> str:
-    """Strip variable timing and metadata from test names for stable eval matching."""
-    # Strip jest file-level metadata with optional trailing bare timing:
-    #   (2 tests) 75ms, (1 test | 1 failed) 120ms
-    name = re.sub(
-        r"\s+\(\d+\s+tests?(?:\s*\|\s*\d+\s+\w+)*\)\s*(?:\d+(?:\.\d+)?\s*m?s)?\s*$",
-        "",
-        name,
+_YARN_BERRY_FIRST_PR = 3000
+
+# One shared base image for the whole repo config. It carries only the
+# toolchain -- it deliberately does NOT clone the repository. The clone,
+# the checkout of the PR's base commit and the history scrub all happen
+# inside prepare.sh's single RUN in the per-PR layer, so no lower image
+# layer ever retains unscrubbed history that could leak future commits.
+_SHARED_BASE_IMAGE = "node:16-bullseye"
+_BASE_IMAGE_TAG = "base"
+
+# PRs predating yarn berry were developed on Node 14 with yarn classic.
+# The shared base ships that toolchain alongside Node 16 so a single base
+# image can serve both eras without changing either PR's runtime.
+_LEGACY_NODE_VERSION = "14.21.3"
+_LEGACY_YARN_VERSION = "1.22.19"
+_LEGACY_NODE_PREFIX = "/opt/node14"
+
+_TARGET_PACKAGES: dict[int, tuple[str, ...]] = {
+    1854: ("packages/cli",),
+    3536: ("packages/cli",),
+    3598: ("packages/cli",),
+    3616: ("packages/cli",),
+    3772: ("packages/router", "packages/testing"),
+}
+
+_DEFAULT_TARGET_PACKAGES: tuple[str, ...] = ("packages/cli",)
+
+_JSON_BEGIN = "===MSWEB_JEST_JSON_BEGIN==="
+_JSON_END = "===MSWEB_JEST_JSON_END==="
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+_JSON_BLOCK = re.compile(
+    re.escape(_JSON_BEGIN) + r"\s*\n(.*?)\n\s*" + re.escape(_JSON_END),
+    re.DOTALL,
+)
+
+_APT_PACKAGES = (
+    "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+    "    ca-certificates \\\n"
+    "    curl \\\n"
+    "    build-essential \\\n"
+    "    git \\\n"
+    "    gnupg \\\n"
+    "    make \\\n"
+    "    python3 \\\n"
+    "    sudo \\\n"
+    "    wget \\\n"
+    "    xz-utils \\\n"
+    "    && rm -rf /var/lib/apt/lists/*"
+)
+
+_LEGACY_NODE_SETUP = f"""RUN set -eux; \\
+    arch="$(dpkg --print-architecture)"; \\
+    case "$arch" in \\
+        amd64) node_arch=x64 ;; \\
+        arm64) node_arch=arm64 ;; \\
+        *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \\
+    esac; \\
+    mkdir -p {_LEGACY_NODE_PREFIX}; \\
+    curl -fsSL "https://nodejs.org/dist/v{_LEGACY_NODE_VERSION}/node-v{_LEGACY_NODE_VERSION}-linux-$node_arch.tar.xz" \\
+        | tar -xJ -C {_LEGACY_NODE_PREFIX} --strip-components=1; \\
+    {_LEGACY_NODE_PREFIX}/bin/npm install -g --prefix {_LEGACY_NODE_PREFIX} yarn@{_LEGACY_YARN_VERSION}; \\
+    {_LEGACY_NODE_PREFIX}/bin/node --version; \\
+    {_LEGACY_NODE_PREFIX}/bin/yarn --version"""
+
+
+def _uses_yarn_berry(number: int) -> bool:
+    return number >= _YARN_BERRY_FIRST_PR
+
+
+def _uses_legacy_node(number: int) -> bool:
+    return not _uses_yarn_berry(number)
+
+
+def _target_packages(number: int) -> tuple[str, ...]:
+    return _TARGET_PACKAGES.get(number, _DEFAULT_TARGET_PACKAGES)
+
+
+def _stage_env(number: int) -> str:
+    lines = [
+        "export CI=true",
+        'export NODE_OPTIONS="--max-old-space-size=4096"',
+    ]
+    if _uses_legacy_node(number):
+        # Select the Node 14 / yarn classic toolchain baked into the shared base.
+        lines.append(f'export PATH="{_LEGACY_NODE_PREFIX}/bin:$PATH"')
+    if _uses_yarn_berry(number):
+        lines.append("export YARN_ENABLE_IMMUTABLE_INSTALLS=false")
+        lines.append("export YARN_NODE_LINKER=node-modules")
+        lines.append("export YARN_HTTP_TIMEOUT=600000")
+    return "\n".join(lines)
+
+
+def _install_command(number: int) -> str:
+    if _uses_yarn_berry(number):
+        return "yarn install"
+    return "yarn install --frozen-lockfile"
+
+def _test_body(pr: PullRequest) -> str:
+    packages = " ".join(_target_packages(pr.number))
+    return f"""
+PACKAGES="{packages}"
+
+for pkg in $PACKAGES; do
+    cd /home/{pr.repo}/$pkg
+    set +e
+    yarn build:js
+    BUILD_RC=$?
+    set -e
+    if [ "$BUILD_RC" -ne 0 ]; then
+        echo "NOTE: yarn build:js exited $BUILD_RC in $pkg; the suite runs against the previously built output"
+    fi
+done
+
+for pkg in $PACKAGES; do
+    cd /home/{pr.repo}/$pkg
+    REPORT="/tmp/jest-$(echo $pkg | tr / _).json"
+    rm -f "$REPORT"
+    set +e
+    yarn jest src --json --outputFile="$REPORT" --colors=false --maxWorkers=2
+    JEST_RC=$?
+    set -e
+    if [ ! -s "$REPORT" ]; then
+        echo "Error: jest wrote no report for $pkg (exit $JEST_RC)" >&2
+        exit 1
+    fi
+    echo "{_JSON_BEGIN}"
+    cat "$REPORT"
+    echo
+    echo "{_JSON_END}"
+done
+"""
+
+
+def parse_jest_json_log(log: str, repo: str) -> TestResult:
+    clean = _ANSI_ESCAPE.sub("", log)
+
+    passed_tests: set[str] = set()
+    failed_tests: set[str] = set()
+    skipped_tests: set[str] = set()
+    occurrences: dict[str, int] = {}
+
+    prefix = f"/home/{repo}/"
+
+    for block in _JSON_BLOCK.findall(clean):
+        try:
+            report = json.loads(block)
+        except ValueError:
+            continue
+
+        for suite in report.get("testResults") or []:
+            path = (suite.get("name") or "").replace("\\", "/")
+            if path.startswith(prefix):
+                path = path[len(prefix) :]
+
+            assertions = suite.get("assertionResults") or []
+            if not assertions:
+                if suite.get("status") == "failed":
+                    failed_tests.add(path)
+                continue
+
+            for assertion in assertions:
+                titles = [t for t in (assertion.get("ancestorTitles") or []) if t]
+                name = " > ".join([path] + titles + [assertion.get("title") or ""])
+
+                occurrences[name] = occurrences.get(name, 0) + 1
+                if occurrences[name] > 1:
+                    name = f"{name} #{occurrences[name]}"
+
+                status = assertion.get("status")
+                if status == "passed":
+                    passed_tests.add(name)
+                elif status == "failed":
+                    failed_tests.add(name)
+                else:
+                    skipped_tests.add(name)
+
+    passed_tests -= failed_tests
+    passed_tests -= skipped_tests
+    skipped_tests -= failed_tests
+
+    return TestResult(
+        passed_count=len(passed_tests),
+        failed_count=len(failed_tests),
+        skipped_count=len(skipped_tests),
+        passed_tests=passed_tests,
+        failed_tests=failed_tests,
+        skipped_tests=skipped_tests,
     )
-    # Strip parenthesized timing: (75ms), (150 ms), (8.954 s)
-    name = re.sub(r"\s+\(\d+(?:\.\d+)?\s*m?s\)\s*$", "", name)
-    return name.strip()
+
 
 
 class RedwoodjsGraphqlImageBase(Image):
+    """Single shared base image for every PR in this repo config.
+
+    Deliberately toolchain-only: no clone, no per-PR checkout, no history
+    scrub. Those cannot live here because one image tag cannot hold five
+    different base commits, and because anything cloned here would persist
+    in a lower layer of every PR image even if a later layer scrubbed it.
+    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -35,46 +220,112 @@ class RedwoodjsGraphqlImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:18-bullseye"
+    def dependency(self) -> str | Image:
+        return _SHARED_BASE_IMAGE
 
     def image_tag(self) -> str:
-        return "base"
+        return _BASE_IMAGE_TAG
 
     def workdir(self) -> str:
-        return "base"
+        return _BASE_IMAGE_TAG
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        base_image = self.dependency()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        sections = [f"FROM {base_image}"]
+        if self.global_env:
+            sections.append(self.global_env)
+        sections.append(
+            "WORKDIR /home/\nENV DEBIAN_FRONTEND=noninteractive\nENV LANG=C.UTF-8"
+        )
+        sections.append(_APT_PACKAGES)
+        sections.append(_LEGACY_NODE_SETUP)
+        if self.clear_env:
+            sections.append(self.clear_env)
+        sections.append('CMD ["/bin/bash"]')
 
-        return f"""FROM {image_name}
+        return "\n\n".join(sections) + "\n"
 
-{self.global_env}
 
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN apt-get update && apt-get install -y python3 && \
-    dpkg --add-architecture amd64 && apt-get update && \
-    apt-get install -y libc6:amd64 libssl1.1:amd64 zlib1g:amd64 && \
-    rm -rf /var/lib/apt/lists/*
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \
-    export NVM_DIR="$HOME/.nvm" && \
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-{code}
+_PREPARE_TEMPLATE = """#!/bin/bash
+set -e
+{env}
 
-{self.clear_env}
+git config --global --add safe.directory /home/{repo}
+git config --global url."https://github.com/".insteadOf "git://github.com/"
 
+# Clone, pin to the PR's base commit and scrub the history in ONE layer.
+# Doing all three here (rather than in the shared base image) is what keeps
+# future commits out of the shipped image: no lower layer ever holds the
+# unscrubbed clone, so the fix cannot be recovered from image history.
+# The packfile transfer is ~500MB and dies with "early EOF"/"index-pack failed"
+# on a lossy link, so tolerate slow/interrupted transfers and retry the clone.
+git config --global http.postBuffer 524288000
+git config --global http.lowSpeedLimit 1000
+git config --global http.lowSpeedTime 300
+
+for attempt in 1 2 3 4 5; do
+    rm -rf /home/{repo}
+    if git clone "{repo_url}" /home/{repo}; then
+        break
+    fi
+    echo "clone attempt $attempt failed; retrying in 20s" >&2
+    sleep 20
+done
+if [ ! -d /home/{repo}/.git ]; then
+    echo "FATAL: git clone failed after 5 attempts" >&2
+    exit 1
+fi
+cd /home/{repo}
+
+git checkout --detach {sha}
+git remote remove origin 2>/dev/null || true
+git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+    | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all
+git reflog expire --expire-unreachable=now --all
+git gc --prune=now --aggressive
+git repack -a -d -l --quiet
+rm -f .git/objects/info/alternates
+git config --local gc.auto 0
+git config --local fetch.recurseSubmodules false
+git config --local remote.pushDefault ""
+
+# Integrity asserts: pinned to the right commit, and nothing else is reachable.
+test "$(git rev-parse HEAD)" = "$(git rev-parse {sha})"
+test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"
+test -z "$(git remote)"
+test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+if [ -f .gitmodules ]; then
+    git submodule foreach --recursive '
+        git checkout --detach HEAD;
+        git remote remove origin 2>/dev/null || true;
+        git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+            | xargs -r -n1 git update-ref -d;
+        git reflog expire --expire=now --all;
+        git reflog expire --expire-unreachable=now --all;
+        git gc --prune=now --aggressive;
+        rm -f .git/objects/info/alternates;
+    '
+fi
+
+git reset --hard
+bash /home/check_git_changes.sh
+
+# Retry the install: transient DNS/TLS failures otherwise leave node_modules
+# incomplete, and the trailing "|| true" would hide that behind a green build.
+for attempt in 1 2 3; do
+    if {install}; then
+        break
+    fi
+    echo "install attempt $attempt failed; retrying in 20s" >&2
+    sleep 20
+done
+yarn build || true
 """
 
 
@@ -92,8 +343,8 @@ class RedwoodjsGraphqlImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image:
-        return RedwoodjsGraphqlImageBase(self.pr, self.config)
+    def dependency(self) -> Image | None:
+        return RedwoodjsGraphqlImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -103,16 +354,8 @@ class RedwoodjsGraphqlImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -132,177 +375,59 @@ fi
 echo "check_git_changes: No uncommitted changes"
 exit 0
 
-""".format(),
+""",
             ),
             File(
                 ".",
                 "prepare.sh",
-                """#!/bin/bash
-set -e
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-# Fix deprecated git:// protocol (blocked by GitHub since 2021)
-git config --global url."https://".insteadOf git://
-
-# Detect yarn version and set Node version accordingly
-# yarn berry 3.0.2 has ERR_STREAM_PREMATURE_CLOSE on Node 18 — use Node 16
-if [ -f .yarnrc.yml ]; then
-  echo ">>> Detected yarn berry (.yarnrc.yml found) — using Node 16"
-  nvm install 16 || true
-  nvm use 16 || true
-else
-  echo ">>> Detected yarn classic (v1) — using Node 18"
-  nvm install 18 || true
-  nvm use 18 || true
-fi
-corepack enable || true
-
-# Ensure node_modules/.bin is on PATH (for lerna, ttsc, etc.)
-export PATH="$(pwd)/node_modules/.bin:$PATH"
-
-# Install dependencies
-if [ -f .yarnrc.yml ]; then
-  export YARN_ENABLE_IMMUTABLE_INSTALLS=false
-  export YARN_HTTP_TIMEOUT=120000
-  export YARN_NETWORK_CONCURRENCY=4
-  # Retry yarn install up to 3 times (yarn berry fetch can fail intermittently)
-  for attempt in 1 2 3; do
-    echo ">>> yarn install attempt $attempt"
-    if yarn install; then
-      echo ">>> yarn install succeeded on attempt $attempt"
-      break
-    fi
-    echo ">>> yarn install failed on attempt $attempt, retrying..."
-    sleep 5
-  done || true
-else
-  yarn install --ignore-engines || true
-fi
-
-# Build all workspaces (some may fail under constrained environments)
-yarn build || true
-
-""".format(pr=self.pr),
+                _PREPARE_TEMPLATE.format(
+                    repo=self.pr.repo,
+                    repo_url=f"https://github.com/{self.pr.org}/{self.pr.repo}.git",
+                    sha=self.pr.base.sha,
+                    env=_stage_env(self.pr.number),
+                    install=_install_command(self.pr.number),
+                ),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
 set -eo pipefail
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-export CI=true
-export NODE_OPTIONS="--max-old-space-size=4096"
+{env}
 
 cd /home/{pr.repo}
-
-# Fix deprecated git:// protocol
-git config --global url."https://".insteadOf git://
-
-if [ -f .yarnrc.yml ]; then
-  nvm use 16 || true
-  export YARN_ENABLE_IMMUTABLE_INSTALLS=false
-else
-  nvm use 18 || true
-fi
-export PATH="$(pwd)/node_modules/.bin:$PATH"
-
-yarn test --verbose || true
-""".format(pr=self.pr),
+""".format(pr=self.pr, env=_stage_env(self.pr.number))
+                + _test_body(self.pr),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
 set -eo pipefail
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-export CI=true
-export NODE_OPTIONS="--max-old-space-size=4096"
+{env}
 
 cd /home/{pr.repo}
-
-# Fix deprecated git:// protocol
-git config --global url."https://".insteadOf git://
-
-git apply --whitespace=nowarn --exclude yarn.lock /home/test.patch
-if git diff --name-only HEAD | grep -q 'package\\.json' || git ls-files --others --exclude-standard | grep -q 'package\\.json'; then
-  echo ">>> package.json changed by patch, running yarn install && yarn build"
-  export PATH="$(pwd)/node_modules/.bin:$PATH"
-  if [ -f .yarnrc.yml ]; then
-    export YARN_ENABLE_IMMUTABLE_INSTALLS=false
-    export YARN_HTTP_TIMEOUT=120000
-    export YARN_NETWORK_CONCURRENCY=4
-    for attempt in 1 2 3; do
-      echo ">>> yarn install attempt $attempt"
-      if yarn install; then break; fi
-      echo ">>> yarn install failed on attempt $attempt, retrying..."
-      sleep 5
-    done
-  else
-    yarn install --ignore-engines || true
-  fi
-  yarn build || true
+if ! git apply --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply failed for test.patch" >&2
+    exit 1
 fi
-if [ -f .yarnrc.yml ]; then
-  nvm use 16 || true
-else
-  nvm use 18 || true
-fi
-export PATH="$(pwd)/node_modules/.bin:$PATH"
-yarn test --verbose || true
-
-""".format(pr=self.pr),
+""".format(pr=self.pr, env=_stage_env(self.pr.number))
+                + _test_body(self.pr),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
 set -eo pipefail
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-export CI=true
-export NODE_OPTIONS="--max-old-space-size=4096"
+{env}
 
 cd /home/{pr.repo}
-
-# Fix deprecated git:// protocol
-git config --global url."https://".insteadOf git://
-
-git apply --whitespace=nowarn --exclude yarn.lock /home/test.patch /home/fix.patch
-if git diff --name-only HEAD | grep -q 'package\\.json' || git ls-files --others --exclude-standard | grep -q 'package\\.json'; then
-  echo ">>> package.json changed by patch, running yarn install && yarn build"
-  export PATH="$(pwd)/node_modules/.bin:$PATH"
-  if [ -f .yarnrc.yml ]; then
-    export YARN_ENABLE_IMMUTABLE_INSTALLS=false
-    export YARN_HTTP_TIMEOUT=120000
-    export YARN_NETWORK_CONCURRENCY=4
-    for attempt in 1 2 3; do
-      echo ">>> yarn install attempt $attempt"
-      if yarn install; then break; fi
-      echo ">>> yarn install failed on attempt $attempt, retrying..."
-      sleep 5
-    done
-  else
-    yarn install --ignore-engines || true
-  fi
-  yarn build || true
+if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+    echo "Error: git apply failed for test.patch and fix.patch" >&2
+    exit 1
 fi
-if [ -f .yarnrc.yml ]; then
-  nvm use 16 || true
-else
-  nvm use 18 || true
-fi
-export PATH="$(pwd)/node_modules/.bin:$PATH"
-yarn test --verbose || true
-
-""".format(pr=self.pr),
+""".format(pr=self.pr, env=_stage_env(self.pr.number))
+                + _test_body(self.pr),
             ),
         ]
 
@@ -316,54 +441,18 @@ yarn test --verbose || true
             copy_commands += f"COPY {file.name} /home/\n"
 
         prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
 
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                    RUN mkdir -p $HOME && \\
-                        touch $HOME/.npmrc && \\
-                        echo "proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "https-proxy=http://{proxy_host}:{proxy_port}" >> $HOME/.npmrc && \\
-                        echo "strict-ssl=false" >> $HOME/.npmrc
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN rm -f $HOME/.npmrc
-                """
-                )
         return f"""FROM {name}:{tag}
 
 {self.global_env}
-
-{proxy_setup}
 
 {copy_commands}
 
 {prepare_commands}
 
-{proxy_cleanup}
-
 {self.clear_env}
 
 """
-
 
 @Instance.register("redwoodjs", "graphql")
 class RedwoodjsGraphql(Instance):
@@ -377,7 +466,7 @@ class RedwoodjsGraphql(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image | None:
         return RedwoodjsGraphqlImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -395,69 +484,5 @@ class RedwoodjsGraphql(Instance):
             return fix_patch_run_cmd
         return "bash /home/fix-run.sh"
 
-    _NEEDS_AMD64 = set()
-
-    def run_platform(self) -> str | None:
-        if self._pr.number in self._NEEDS_AMD64:
-            return "linux/amd64"
-        return None
-
     def parse_log(self, test_log: str) -> TestResult:
-        # Strip ANSI escape sequences
-        clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
-
-        for line in clean_log.splitlines():
-            stripped = line.strip()
-
-            # Strip monorepo workspace prefix:
-            # @redwoodjs/cli: PASS ... → PASS ...
-            # @redwoodjs/internal:   ✓ test name → ✓ test name
-            stripped = re.sub(r"^@[\w\-/.]+:\s*", "", stripped)
-
-            # Jest file-level PASS/FAIL
-            if stripped.startswith("PASS "):
-                passed_tests.add(_clean_test_name(stripped[5:].strip()))
-                continue
-            if stripped.startswith("FAIL "):
-                failed_tests.add(_clean_test_name(stripped[5:].strip()))
-                continue
-
-            # Test-level pass (✓/✔)
-            m = re.match(
-                r"\s*[✓✔]\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?$", stripped
-            )
-            if m:
-                passed_tests.add(_clean_test_name(m.group(1)))
-                continue
-
-            # Test-level fail (×/✕/✗)
-            m = re.match(
-                r"\s*[×✕✗]\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?$", stripped
-            )
-            if m:
-                failed_tests.add(_clean_test_name(m.group(1)))
-                continue
-
-            # Skipped (○)
-            m = re.match(
-                r"\s*○\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?$", stripped
-            )
-            if m:
-                skipped_tests.add(_clean_test_name(m.group(1)))
-                continue
-
-        # A file that FAILed should not also appear in passed
-        passed_tests -= failed_tests
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+        return parse_jest_json_log(test_log, self.pr.repo)
