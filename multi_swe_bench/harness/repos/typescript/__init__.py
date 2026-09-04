@@ -110,6 +110,9 @@ from multi_swe_bench.harness.repos.typescript.MetaMask import *
 from multi_swe_bench.harness.repos.typescript.microsoft import *
 from multi_swe_bench.harness.repos.typescript.modernweb_dev import *
 from multi_swe_bench.harness.repos.typescript.mswjs.data import *
+from multi_swe_bench.harness.repos.typescript.mswjs.msw_607_to_607 import *
+from multi_swe_bench.harness.repos.typescript.mswjs.msw_1369_to_1257 import *
+from multi_swe_bench.harness.repos.typescript.mswjs.msw_2206_to_2000 import *
 from multi_swe_bench.harness.repos.typescript.MTES_MCT import *
 from multi_swe_bench.harness.repos.typescript.mui import *
 from multi_swe_bench.harness.repos.typescript.nbfontana import *
