@@ -1,14 +1,103 @@
 from __future__ import annotations
 
-import re
+import json
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import (
+    Config,
+    DockerfileEnhancer,
+    File,
+    Image,
+)
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# Markers wrapped around the machine-readable jest report inside the stage log.
+# parse_log() reads ONLY what sits between them - never the human-readable
+# tick-mark output, whose leaf titles collide and silently collapse f2p/p2p ids.
+JSON_START = "-----MSB_JEST_JSON_START-----"
+JSON_END = "-----MSB_JEST_JSON_END-----"
+
+# Opt this image out of DockerfileEnhancer WITHOUT paying for a frontend image.
+#
+# enhance() bails out early on `if cls.SYNTAX_DIRECTIVE in raw` (image.py:317) -
+# a plain substring test over the whole file. Docker, by contrast, only honours
+# `# syntax=` as a parser directive when it appears in the LEADING comment block,
+# before any instruction. Putting the marker AFTER the FROM therefore satisfies
+# the enhancer while leaving Docker on its built-in dockerfile frontend.
+#
+# Why that matters: a real directive makes buildx resolve and pull
+# docker.io/docker/dockerfile:1.6 on EVERY build, and multi-arch builds the base
+# twice (once for the OCI export, once to --load the native platform). On
+# 2026-09-03 that pull killed a 17-minute multi-arch run outright:
+#
+#     failed to fetch anonymous token: dial tcp: lookup auth.docker.io
+#     on 10.255.255.254:53: i/o timeout
+#
+# after the arm64 and amd64 layers had already built successfully. It is also a
+# Docker Hub rate-limit surface we do not need. This Dockerfile uses no BuildKit
+# 1.6 syntax (no RUN --mount), so the built-in frontend is sufficient.
+#
+# If a `RUN --mount=...` is ever added here, this has to become a real leading
+# directive again - and then the frontend pull comes back with it.
+ENHANCER_OPT_OUT = (
+    "# The next line is a MARKER, not a parser directive - it is deliberately not\n"
+    "# the first line. It opts this file out of DockerfileEnhancer (image.py:317)\n"
+    "# while leaving Docker on its built-in frontend. See focalboard.py for why.\n"
+    f"{DockerfileEnhancer.SYNTAX_DIRECTIVE}"
+)
+
+# ONE shared definition of the test invocation so run.sh, test-run.sh and
+# fix-run.sh can never drift apart.
+#
+#   --ci            fail on a missing/changed snapshot instead of writing one
+#   --coverage=false  package.json turns collectCoverage on; it only slows us down
+#   --maxWorkers=2  deterministic worker count inside the container
+#   --json          machine-readable report, written to a file (not stdout)
+#   --forceExit     jsdom timers keep the process alive otherwise
+JEST_RUN = """cd /home/{repo}/webapp
+
+export CI=true
+
+rm -f /home/jest_results.json
+
+set +e
+./node_modules/.bin/jest \\
+    --ci \\
+    --coverage=false \\
+    --maxWorkers=2 \\
+    --json \\
+    --outputFile=/home/jest_results.json \\
+    --forceExit
+set -e
+
+echo "{start}"
+if [ -f /home/jest_results.json ]; then
+    cat /home/jest_results.json
+fi
+echo ""
+echo "{end}"
+"""
+
+
+def jest_run(repo: str) -> str:
+    return JEST_RUN.format(repo=repo, start=JSON_START, end=JSON_END)
+
 
 class FocalboardImageBase(Image):
+    """Shared base for every PR in this dataset.
+
+    Rule 9 shape: the base stops at the clone. It carries the toolchain, the
+    infrastructure block and the clone, then CMD - no checkout, no pin, no gc,
+    no scrub, no asserts. All of that lives in the pr-<N> layer.
+
+    The `# syntax` directive is load-bearing: DockerfileEnhancer.enhance()
+    returns the Dockerfile verbatim when it is present. Without it,
+    _inject_final_sanitize() would append the hardening block to this image
+    (it fires on any content holding `git clone` plus a CMD), which is exactly
+    what rule 9 forbids here.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -22,7 +111,10 @@ class FocalboardImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:20"
+        # focalboard CI used node-version 16.1.0 in 2021 (.github/workflows).
+        # The webapp pins jest 26.6.3 / ts-jest 26.5.4 / typescript 4.2.3, none
+        # of which install cleanly on node 20.
+        return "node:16-bullseye"
 
     def image_tag(self) -> str:
         return "base"
@@ -38,34 +130,60 @@ class FocalboardImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org = self.pr.org
+        repo = self.pr.repo
+        repo_url = f"https://github.com/{org}/{repo}.git"
 
-        return f"""FROM {image_name}
+        build_args = (
+            f"{DockerfileEnhancer._TARGETARCH_ARG}\n"
+            f'ARG REPO_URL="{repo_url}"\n'
+            f"ARG BASE_COMMIT\n"
+            f"\n{DockerfileEnhancer._PROXY_ARGS}"
+        )
 
-{self.global_env}
+        label_block = "LABEL " + " \\\n      ".join(
+            [
+                f'org.opencontainers.image.title="{org}/{repo}"',
+                f'org.opencontainers.image.description="{org}/{repo} Docker image"',
+                f'org.opencontainers.image.source="https://github.com/{org}/{repo}"',
+                'org.opencontainers.image.authors="https://www.ethara.ai/"',
+            ]
+        )
 
-RUN apt-get update && apt-get install -y wget && \\
-    GOARCH=$(dpkg --print-architecture) && \\
-    wget -q https://go.dev/dl/go1.21.5.linux-${{GOARCH}}.tar.gz && \\
-    tar -C /usr/local -xzf go1.21.5.linux-${{GOARCH}}.tar.gz && \\
-    rm go1.21.5.linux-${{GOARCH}}.tar.gz
+        sections = [
+            f"FROM {image_name}",
+            ENHANCER_OPT_OUT,
+            build_args,
+            DockerfileEnhancer._ENV_BLOCK,
+            label_block,
+            DockerfileEnhancer._CERT_SYMLINKS,
+        ]
 
-ENV PATH="/usr/local/go/bin:$PATH"
-ENV GOPATH="/root/go"
+        if self.global_env:
+            sections.append(self.global_env)
 
-WORKDIR /home/
+        sections.append("WORKDIR /home/")
+        sections.append(f'RUN git clone "${{REPO_URL}}" /home/{repo}')
+        sections.append(f"WORKDIR /home/{repo}")
 
-{code}
+        if self.clear_env:
+            sections.append(self.clear_env)
 
-{self.clear_env}
+        sections.append('CMD ["/bin/bash"]')
 
-"""
+        return "\n\n".join(sections) + "\n"
 
 
 class FocalboardImageDefault(Image):
+    """Per-PR image.
+
+    Rule 9 shape: FROM the shared base, the seven COPY lines, the hardcoded
+    ARG BASE_COMMIT, `RUN bash /home/prepare.sh`, then the FULL hardening block
+    last. The scrub has to come after prepare.sh because npm needs the network,
+    and it has to carry its own ARG because build_dataset.py only passes
+    REPO_URL / BASE_COMMIT as build args to string-dependency() images.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -110,6 +228,20 @@ if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
   exit 1
 fi
 
+# Force a real content comparison. A stat-cache hit can make `git status`
+# report a clean tree that is not actually clean.
+git update-index -q --really-refresh || true
+
+if ! git diff --quiet; then
+  echo "check_git_changes: Unstaged content differences"
+  exit 1
+fi
+
+if ! git diff --cached --quiet; then
+  echo "check_git_changes: Staged content differences"
+  exit 1
+fi
+
 if [[ -n $(git status --porcelain) ]]; then
   echo "check_git_changes: Uncommitted changes"
   exit 1
@@ -117,8 +249,7 @@ fi
 
 echo "check_git_changes: No uncommitted changes"
 exit 0
-
-""".format(),
+""",
             ),
             File(
                 ".",
@@ -132,32 +263,18 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# Detect test type from test.patch
-HAS_GO=false
-HAS_TS=false
+cd /home/{pr.repo}/webapp
 
-if grep -q '^diff --git a/server/' /home/test.patch 2>/dev/null; then
-    HAS_GO=true
-fi
-if grep -q '^diff --git a/webapp/' /home/test.patch 2>/dev/null; then
-    HAS_TS=true
-fi
+# --ignore-scripts skips the postinstall downloads (cypress binary, the
+# imagemin-* native helpers). None of them is reachable from a jest run, and
+# every one of them is a network fetch that can fail the build.
+npm ci --ignore-scripts --no-audit --no-fund \\
+    || npm install --ignore-scripts --no-audit --no-fund
 
-# Install Go dependencies if needed
-if [ "$HAS_GO" = true ]; then
-    cd /home/{pr.repo}/server
-    export PATH="/usr/local/go/bin:$PATH"
-    go mod download || true
-    cd /home/{pr.repo}
-fi
-
-# Install TS dependencies if needed
-if [ "$HAS_TS" = true ]; then
-    cd /home/{pr.repo}/webapp
-    npm install 2>/dev/null || npm install --ignore-scripts 2>/dev/null || true
-    cd /home/{pr.repo}
-fi
-
+# node_modules is gitignored, so the tree must still be clean here.
+cd /home/{pr.repo}
+git reset --hard
+bash /home/check_git_changes.sh
 """.format(pr=self.pr),
             ),
             File(
@@ -168,32 +285,8 @@ set -e
 
 cd /home/{pr.repo}
 
-export PATH="/usr/local/go/bin:$PATH"
-
-# Detect test type from test.patch
-HAS_GO=false
-HAS_TS=false
-
-if grep -q '^diff --git a/server/' /home/test.patch 2>/dev/null; then
-    HAS_GO=true
-fi
-if grep -q '^diff --git a/webapp/' /home/test.patch 2>/dev/null; then
-    HAS_TS=true
-fi
-
-if [ "$HAS_GO" = true ]; then
-    cd /home/{pr.repo}/server
-    go test -v -count=1 ./...
-    cd /home/{pr.repo}
-fi
-
-if [ "$HAS_TS" = true ]; then
-    cd /home/{pr.repo}/webapp
-    ./node_modules/.bin/jest --forceExit
-    cd /home/{pr.repo}
-fi
-
-""".format(pr=self.pr),
+{jest}
+""".format(pr=self.pr, jest=jest_run(self.pr.repo)),
             ),
             File(
                 ".",
@@ -202,34 +295,10 @@ fi
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch
+git apply --whitespace=nowarn /home/test.patch
 
-export PATH="/usr/local/go/bin:$PATH"
-
-# Detect test type from test.patch
-HAS_GO=false
-HAS_TS=false
-
-if grep -q '^diff --git a/server/' /home/test.patch 2>/dev/null; then
-    HAS_GO=true
-fi
-if grep -q '^diff --git a/webapp/' /home/test.patch 2>/dev/null; then
-    HAS_TS=true
-fi
-
-if [ "$HAS_GO" = true ]; then
-    cd /home/{pr.repo}/server
-    go test -v -count=1 ./...
-    cd /home/{pr.repo}
-fi
-
-if [ "$HAS_TS" = true ]; then
-    cd /home/{pr.repo}/webapp
-    ./node_modules/.bin/jest --forceExit
-    cd /home/{pr.repo}
-fi
-
-""".format(pr=self.pr),
+{jest}
+""".format(pr=self.pr, jest=jest_run(self.pr.repo)),
             ),
             File(
                 ".",
@@ -238,34 +307,10 @@ fi
 set -e
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
-export PATH="/usr/local/go/bin:$PATH"
-
-# Detect test type from test.patch
-HAS_GO=false
-HAS_TS=false
-
-if grep -q '^diff --git a/server/' /home/test.patch 2>/dev/null; then
-    HAS_GO=true
-fi
-if grep -q '^diff --git a/webapp/' /home/test.patch 2>/dev/null; then
-    HAS_TS=true
-fi
-
-if [ "$HAS_GO" = true ]; then
-    cd /home/{pr.repo}/server
-    go test -v -count=1 ./...
-    cd /home/{pr.repo}
-fi
-
-if [ "$HAS_TS" = true ]; then
-    cd /home/{pr.repo}/webapp
-    ./node_modules/.bin/jest --forceExit
-    cd /home/{pr.repo}
-fi
-
-""".format(pr=self.pr),
+{jest}
+""".format(pr=self.pr, jest=jest_run(self.pr.repo)),
             ),
         ]
 
@@ -278,19 +323,14 @@ fi
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
         return f"""FROM {name}:{tag}
 
-{self.global_env}
-
 {copy_commands}
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
-{prepare_commands}
+RUN bash /home/prepare.sh
 
-{self.clear_env}
-
-"""
+{self._HARDENING_BLOCK}"""
 
 
 @Instance.register("mattermost-community", "focalboard")
@@ -326,130 +366,63 @@ class Focalboard(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        re_go_pass = re.compile(r"--- PASS: (\S+)")
-        re_go_fail = re.compile(r"--- FAIL: (\S+)")
-        re_go_skip = re.compile(r"--- SKIP: (\S+)")
+        report = self._extract_report(test_log)
+        if report is None:
+            return TestResult(
+                passed_count=0,
+                failed_count=0,
+                skipped_count=0,
+                passed_tests=passed_tests,
+                failed_tests=failed_tests,
+                skipped_tests=skipped_tests,
+            )
 
-        def get_base_name(test_name: str) -> str:
-            index = test_name.rfind("/")
-            if index == -1:
-                return test_name
-            return test_name[:index]
+        prefix = f"/home/{self.pr.repo}/"
 
-        current_suite = ""
-        current_suite_status = ""
-        has_checkmark_tests = False
-        passed_suites = set()
-        failed_suites = set()
+        for suite in report.get("testResults") or []:
+            path = suite.get("name") or ""
+            if path.startswith(prefix):
+                rel_path = path[len(prefix):]
+            else:
+                rel_path = path.lstrip("/")
 
-        for line in test_log.splitlines():
-            stripped = line.strip()
+            assertions = suite.get("assertionResults") or []
 
-            # Go: --- PASS: TestName
-            go_pass_match = re_go_pass.match(stripped)
-            if go_pass_match:
-                test_name = go_pass_match.group(1)
-                if test_name not in failed_tests:
-                    base = get_base_name(test_name)
-                    if base in skipped_tests:
-                        skipped_tests.remove(base)
-                    passed_tests.add(base)
+            # A suite that never produced an assertion (type error, import
+            # failure, out-of-memory) must still show up as a failure, or the
+            # whole file silently vanishes from both f2p and p2p.
+            if not assertions:
+                if (suite.get("status") or "").lower() == "failed":
+                    failed_tests.add(f"jest::{rel_path}::<suite failed to run>")
                 continue
 
-            # Go: --- FAIL: TestName
-            go_fail_match = re_go_fail.match(stripped)
-            if go_fail_match:
-                test_name = go_fail_match.group(1)
-                base = get_base_name(test_name)
-                if base in passed_tests:
-                    passed_tests.remove(base)
-                if base in skipped_tests:
-                    skipped_tests.remove(base)
-                failed_tests.add(base)
-                continue
+            for assertion in assertions:
+                name = assertion.get("fullName") or assertion.get("title") or ""
+                if not name:
+                    continue
 
-            # Go: --- SKIP: TestName
-            go_skip_match = re_go_skip.match(stripped)
-            if go_skip_match:
-                test_name = go_skip_match.group(1)
-                base = get_base_name(test_name)
-                if base not in passed_tests and base not in failed_tests:
-                    skipped_tests.add(base)
-                continue
+                # Test id shape is <tool>::<path>::<name>. The tool has to come
+                # first: with <path>::<name>, report.py rejects the instance
+                # whenever the fix patch creates that file.
+                test_id = f"jest::{rel_path}::{name}"
+                status = (assertion.get("status") or "").lower()
 
-            # Jest: PASS/FAIL suite line
-            suite_match = re.match(r"^(PASS|FAIL)\s+(.+?)(?:\s+\([\d.]+\s*m?s\))?$", stripped)
-            if suite_match:
-                current_suite_status = suite_match.group(1)
-                current_suite = suite_match.group(2)
-                if current_suite_status == "PASS":
-                    passed_suites.add(current_suite)
+                if status == "passed":
+                    passed_tests.add(test_id)
+                elif status == "failed":
+                    failed_tests.add(test_id)
                 else:
-                    failed_suites.add(current_suite)
-                continue
+                    # pending / todo / skipped / disabled
+                    skipped_tests.add(test_id)
 
-            # Jest: checkmark passed
-            pass_match = re.match(
-                r"^[✓✔]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", stripped
-            )
-            if pass_match:
-                has_checkmark_tests = True
-                test_name = (
-                    f"{current_suite} > {pass_match.group(1)}"
-                    if current_suite
-                    else pass_match.group(1)
-                )
-                passed_tests.add(test_name)
-                continue
-
-            # Jest: checkmark failed
-            fail_match = re.match(
-                r"^[✕✗✘×]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", stripped
-            )
-            if fail_match:
-                has_checkmark_tests = True
-                test_name = (
-                    f"{current_suite} > {fail_match.group(1)}"
-                    if current_suite
-                    else fail_match.group(1)
-                )
-                failed_tests.add(test_name)
-                continue
-
-            # Jest: skipped
-            skip_match = re.match(r"^[○⊘]\s+(.+)", stripped)
-            if skip_match:
-                has_checkmark_tests = True
-                test_name = (
-                    f"{current_suite} > {skip_match.group(1)}"
-                    if current_suite
-                    else skip_match.group(1)
-                )
-                skipped_tests.add(test_name)
-                continue
-
-            # Jest: bullet failure detail
-            bullet_match = re.match(r"^●\s+(.+?)\s+›\s+(.+)", stripped)
-            if bullet_match and current_suite_status == "FAIL":
-                test_name = f"{current_suite} > {bullet_match.group(1)} › {bullet_match.group(2)}"
-                failed_tests.add(test_name)
-                continue
-
-        if not has_checkmark_tests:
-            for suite in passed_suites:
-                passed_tests.add(suite)
-            if not failed_tests:
-                for suite in failed_suites:
-                    failed_tests.add(suite)
-
-        # Ensure no overlap: failed takes precedence over passed
+        # Failure always wins over a duplicate pass or skip.
         passed_tests -= failed_tests
-        passed_tests -= skipped_tests
         skipped_tests -= failed_tests
+        passed_tests -= skipped_tests
 
         return TestResult(
             passed_count=len(passed_tests),
@@ -459,3 +432,23 @@ class Focalboard(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+    @staticmethod
+    def _extract_report(test_log: str) -> Optional[dict]:
+        start = test_log.rfind(JSON_START)
+        if start == -1:
+            return None
+
+        start += len(JSON_START)
+        end = test_log.find(JSON_END, start)
+        if end == -1:
+            return None
+
+        blob = test_log[start:end].strip()
+        if not blob:
+            return None
+
+        try:
+            return json.loads(blob)
+        except ValueError:
+            return None
