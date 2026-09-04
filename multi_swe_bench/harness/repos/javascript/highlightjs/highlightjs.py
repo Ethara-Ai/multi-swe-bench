@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Optional, Union
 import textwrap
@@ -37,36 +38,58 @@ class highlightjsImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-
-RUN apt update && apt install -y libxkbfile-dev pkg-config build-essential python3 libkrb5-dev libxss1 xvfb libgtk-3-0 libgbm1
-
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg \
-        fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 \
-        --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \
-    export NVM_DIR="$HOME/.nvm" && \
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
 {code}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -83,7 +106,7 @@ class highlightjsImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Image:
         return highlightjsImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -91,6 +114,125 @@ class highlightjsImageDefault(Image):
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
+
+
+    _AUTO_WIRE_NEW_TEST_FILES = """\
+for f in $(git ls-files --others --exclude-standard -- 'test/*/*.js' 2>/dev/null); do
+  dir=$(dirname "$f")
+  base=$(basename "$f" .js)
+  idx="$dir/index.js"
+  if [ -f "$idx" ] && ! grep -qE "require\\(['\\\"]\\./${base}['\\\"]\\)" "$idx"; then
+    printf "\\nrequire('./%s');\\n" "$base" >> "$idx"
+  fi
+done
+"""
+
+    _SPLIT_TEST_RUN = r"""
+rm -rf /tmp/mocha_reports /tmp/mocha_shims
+mkdir -p /tmp/mocha_reports /tmp/mocha_shims
+TARGETS=()
+if [ -f test/index.js ]; then
+  while IFS= read -r t; do
+    [ -n "$t" ] && TARGETS+=("$t")
+  done < <(grep -oE "require\(['\"]\./[^'\"]+['\"]\)" test/index.js | sed -E "s/require\(['\"]\.\/([^'\"]+)['\"]\)/\1/")
+fi
+if [ ${#TARGETS[@]} -eq 0 ]; then
+  while IFS= read -r t; do
+    [ -n "$t" ] && TARGETS+=("$t")
+  done < <(cd test && find . -mindepth 1 -maxdepth 1 \( -name "*.js" -o -type d \) | sed 's#^\./##')
+fi
+
+i=0
+for t in "${TARGETS[@]}"; do
+  i=$((i+1))
+  target="test/$t"
+  if [ ! -e "$target" ]; then
+    target="test/${t}.js"
+  fi
+  [ -e "$target" ] || continue
+  report="/tmp/mocha_reports/${i}.json"
+  su nobody -s /bin/bash -c "npx mocha --globals document --no-bail --recursive \"$target\" --reporter json" > "$report" 2>/dev/null || true
+  if ! grep -q '"stats"' "$report" 2>/dev/null; then
+
+    recovered=0
+    if [ "${ENABLE_FIX_DISCOVERY:-0}" = "1" ] && [ -f /home/fix.patch ] && [ -s /home/fix.patch ]; then
+
+      if git apply --check --whitespace=nowarn /home/fix.patch 2>/dev/null; then
+        git apply --whitespace=nowarn /home/fix.patch
+        (npm run build || node tools/build.js -t node) >/dev/null 2>&1 || true
+        discover_report="/tmp/mocha_reports/${i}_discover.json"
+        su nobody -s /bin/bash -c "npx mocha --globals document --no-bail --recursive \"$target\" --reporter json" > "$discover_report" 2>/dev/null || true
+        git apply -R --whitespace=nowarn /home/fix.patch
+        (npm run build || node tools/build.js -t node) >/dev/null 2>&1 || true
+        if grep -q '"stats"' "$discover_report" 2>/dev/null; then
+          python3 - "$discover_report" "$report" "$t" <<'PY_EOF'
+import json, sys
+
+discover_path, out_path, target_name = sys.argv[1:4]
+with open(discover_path) as f:
+    data = json.load(f)
+
+def entries(key):
+    return data.get(key) or []
+
+reason = (
+    f"{target_name}: unavailable in the test.patch-only environment "
+    "(requires fix.patch, discovered via post-fix enumeration)"
+)
+failures = [
+    {
+        "title": e.get("title"),
+        "fullTitle": e.get("fullTitle"),
+        "file": e.get("file"),
+        "err": {"message": reason},
+    }
+    for e in entries("passes") + entries("failures")
+]
+pending = [
+    {"title": e.get("title"), "fullTitle": e.get("fullTitle"), "file": e.get("file")}
+    for e in entries("pending")
+]
+out = {
+    "stats": {
+        "tests": len(failures) + len(pending),
+        "passes": 0,
+        "failures": len(failures),
+        "pending": len(pending),
+    },
+    "passes": [],
+    "failures": failures,
+    "pending": pending,
+}
+with open(out_path, "w") as f:
+    json.dump(out, f)
+PY_EOF
+          recovered=1
+        fi
+      fi
+    fi
+    if [ "$recovered" != "1" ]; then
+
+      target_abs="$(pwd)/$target"
+      shim="/tmp/mocha_shims/${i}.js"
+      cat > "$shim" <<SHIM_EOF
+try {
+  require("$target_abs");
+} catch (e) {
+  describe("$t (load error)", function () {
+    it("should load without throwing", function () {
+      throw e;
+    });
+  });
+}
+SHIM_EOF
+      su nobody -s /bin/bash -c "npx mocha --globals document --no-bail \"$shim\" --reporter json" > "$report" 2>/dev/null || true
+    fi
+  fi
+  echo "===MOCHA_JSON_START==="
+  cat "$report" 2>/dev/null || echo "{}"
+  echo "===MOCHA_JSON_END==="
+done
+"""
 
     def files(self) -> list[File]:
         return [
@@ -130,6 +272,22 @@ exit 0
                 "prepare.sh",
                 """#!/bin/bash
 set -e
+
+apt update && apt install -y libxkbfile-dev pkg-config build-essential python3 libkrb5-dev libxss1 xvfb libgtk-3-0 libgbm1
+
+if [ "$(dpkg --print-architecture)" = "amd64" ]; then
+    wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list
+    apt-get update
+    apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 --no-install-recommends
+    rm -rf /var/lib/apt/lists/*
+else
+    apt-get update
+    apt-get install -y chromium fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-khmeros fonts-kacst fonts-freefont-ttf libxss1 dbus dbus-x11 --no-install-recommends
+    rm -rf /var/lib/apt/lists/*
+fi
+
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
@@ -155,11 +313,11 @@ cd /home/{pr.repo}
 
 nvm use || true
 npm install || true
-npm run build || true
+npm run build || node tools/build.js -t node || true
 Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
-su nobody -s /bin/bash -c "npm test" || true
-""".format(pr=self.pr),
+{split_test_run}
+""".format(pr=self.pr, split_test_run=self._SPLIT_TEST_RUN),
             ),
             File(
                 ".",
@@ -170,15 +328,20 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-
+{test_wiring_fixup}
 nvm use || true
 npm install || true
-npm run build || true
+npm run build || node tools/build.js -t node || true
 Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
-su nobody -s /bin/bash -c "npm test" || true
+export ENABLE_FIX_DISCOVERY=1
+{split_test_run}
 
-""".format(pr=self.pr),
+""".format(
+                    pr=self.pr,
+                    test_wiring_fixup=self._AUTO_WIRE_NEW_TEST_FILES,
+                    split_test_run=self._SPLIT_TEST_RUN,
+                ),
             ),
             File(
                 ".",
@@ -189,15 +352,19 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
+{test_wiring_fixup}
 nvm use || true
 npm install || true
-npm run build || true
+npm run build || node tools/build.js -t node || true
 Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
-su nobody -s /bin/bash -c "npm test" || true
+{split_test_run}
 
-""".format(pr=self.pr),
+""".format(
+                    pr=self.pr,
+                    test_wiring_fixup=self._AUTO_WIRE_NEW_TEST_FILES,
+                    split_test_run=self._SPLIT_TEST_RUN,
+                ),
             ),
         ]
 
@@ -245,13 +412,19 @@ su nobody -s /bin/bash -c "npm test" || true
                 )
         return f"""FROM {name}:{tag}
 
+ENV BASE_COMMIT={self.pr.base.sha}
+
 {self.global_env}
 
 {proxy_setup}
 
 {copy_commands}
 
+WORKDIR /home/{self.pr.repo}
+
 {prepare_commands}
+
+{Image._HARDENING_BLOCK}
 
 {proxy_cleanup}
 
@@ -271,7 +444,7 @@ class highlightjs(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Optional[Image]: # type: ignore
         return highlightjsImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -293,55 +466,150 @@ class highlightjs(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
         ignore_tests = ["ast-utils", "bin/highlightjs.js"]
-        passed_res = [
-            re.compile(r"PASS:?\s+([^\(]+)"),
-            re.compile(r"\s*[✔✓]\s+(.*?)(?:\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$"),
-        ]
 
-        failed_res = [
-            re.compile(r"FAIL:?\s+([^\(]+)"),
-            re.compile(r"\s*[×✗]\s+(.*?)(?:\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$"),
-            re.compile(
-                r"^(?!\s*\(node:)\s*\d+\)\s+(.*?)(?:\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$"
-            ),
-        ]
+        json_blocks = re.findall(
+            r"===MOCHA_JSON_START===(.*?)===MOCHA_JSON_END===", test_log, re.DOTALL
+        )
+        merged: dict[str, list] = {"passes": [], "failures": [], "pending": []}
+        found_any = False
+        for raw in json_blocks:
+            raw = raw.strip()
+            anchor = re.search(r'\{\s*"stats"', raw)
+            if not anchor:
+                continue
+            try:
+                data, _ = json.JSONDecoder().raw_decode(raw[anchor.start():])
+            except json.JSONDecodeError:
+                continue
+            if data.get("passes") or data.get("failures") or data.get("pending"):
+                found_any = True
+                merged["passes"].extend(data.get("passes") or [])
+                merged["failures"].extend(data.get("failures") or [])
+                merged["pending"].extend(data.get("pending") or [])
 
-        skipped_res = [
-            re.compile(r"SKIP:?\s+([^\(]+)"),
-        ]
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        for line in test_log.splitlines():
-            line = ansi_escape.sub("", line)
-            line = line.strip()
-            for passed_re in passed_res:
-                m = passed_re.search(line)
-                if m and m.group(1) not in failed_tests:
-                    passed_tests.add(m.group(1))
+        if found_any:
+            return self._result_from_mocha_json(merged, ignore_tests)
 
-            for failed_re in failed_res:
-                m = failed_re.search(line)
-                if m:
-                    failed_tests.add(m.group(1))
-                    if m.group(1) in passed_tests:
-                        passed_tests.remove(m.group(1))
+        return self._result_from_mocha_text(test_log, ignore_tests)
 
-            for skipped_re in skipped_res:
-                m = skipped_re.search(line)
-                if m:
-                    skipped_tests.add(m.group(1))
+    @staticmethod
+    def _result_from_mocha_json(data: dict, ignore_tests: list[str]) -> TestResult:
+        def key(entry: dict) -> str:
+            file = entry.get("file") or ""
+            full_title = entry.get("fullTitle") or entry.get("title") or ""
+            return f"{file}::{full_title}" if file else full_title
 
-        for test in failed_tests:
+        passed_tests = {key(e) for e in data.get("passes", []) or []}
+        failed_tests = {key(e) for e in data.get("failures", []) or []}
+        skipped_tests = {key(e) for e in data.get("pending", []) or []}
+
+        for test in list(failed_tests):
             if test in ignore_tests:
                 failed_tests.remove(test)
 
         if failed_tests:
             failed_tests.add("ToTal_Test")
-        else:
+        elif passed_tests or skipped_tests:
             passed_tests.add("ToTal_Test")
+        else:
+            failed_tests.add("ToTal_Test")
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
+        )
+
+    @staticmethod
+    def _result_from_mocha_text(test_log: str, ignore_tests: list[str]) -> TestResult:
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
+        flat_passed_re = re.compile(r"PASS:?\s+([^\(]+)")
+        flat_failed_re = re.compile(r"FAIL:?\s+([^\(]+)")
+        flat_skipped_re = re.compile(r"SKIP:?\s+([^\(]+)")
+        mocha_pass_re = re.compile(r"^[✔✓]\s+(.*?)(?:\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\))?$")
+        mocha_fail_x_re = re.compile(r"^[×✗]\s+(.*?)(?:\s*\(\d+(?:\.\d+)?\s*(?:ms|s)\))?$")
+        mocha_fail_numbered_re = re.compile(r"^(?!\(node:)\d+\)\s+(.*)$")
+        mocha_pending_re = re.compile(r"^-\s+(.*)$")
+        mocha_summary_re = re.compile(r"^\d+\s+(?:passing|failing|pending)(?:\s*\(.*\))?$")
+
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+
+        stack: list[tuple[int, str]] = []
+
+        def qualified_name(name: str) -> str:
+            if not stack:
+                return name
+            return "/".join(entry[1] for entry in stack) + "/" + name
+
+        in_detailed_summary = False
+        for raw_line in test_log.splitlines():
+            line = ansi_escape.sub("", raw_line)
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            for m, target in (
+                (flat_passed_re.search(stripped), passed_tests),
+                (flat_failed_re.search(stripped), failed_tests),
+                (flat_skipped_re.search(stripped), skipped_tests),
+            ):
+                if m:
+                    target.add(m.group(1))
+
+            if in_detailed_summary:
+                continue
+
+            if mocha_summary_re.match(stripped):
+                if re.match(r"^\d+\s+failing", stripped):
+                    in_detailed_summary = True
+                continue
+
+            m = mocha_pass_re.match(stripped)
+            if m:
+                name = qualified_name(m.group(1))
+                if name not in failed_tests:
+                    passed_tests.add(name)
+                continue
+
+            m = mocha_fail_x_re.match(stripped)
+            if m:
+                name = qualified_name(m.group(1))
+                failed_tests.add(name)
+                passed_tests.discard(name)
+                continue
+
+            m = mocha_fail_numbered_re.match(stripped)
+            if m:
+                name = qualified_name(m.group(1))
+                failed_tests.add(name)
+                passed_tests.discard(name)
+                continue
+
+            m = mocha_pending_re.match(stripped)
+            if m:
+                skipped_tests.add(qualified_name(m.group(1)))
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            if indent == 0:
+                continue
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            stack.append((indent, stripped))
+
+        for test in failed_tests:
+            if test in ignore_tests:
+                failed_tests.remove(test)
+        if failed_tests:
+            failed_tests.add("ToTal_Test")
+        elif passed_tests or skipped_tests:
+            passed_tests.add("ToTal_Test")
+        else:
+            failed_tests.add("ToTal_Test")
         return TestResult(
             passed_count=len(passed_tests),
             failed_count=len(failed_tests),
