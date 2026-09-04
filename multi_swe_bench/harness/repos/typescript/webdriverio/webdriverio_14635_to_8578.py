@@ -113,6 +113,30 @@ exit 0
             ),
             File(
                 ".",
+                "patch_tsconfig.sh",
+                """#!/bin/bash
+# Force tsc to emit JS even with type errors so the @wdio/* build output exists
+# and vitest can resolve cross-package imports. The repo's `compile` runs
+# `tsc -b` (scripts/build.js); with noEmitOnError on, a type error in an early
+# package (e.g. wdio-types) stops emit for all downstream packages, leaving
+# @wdio/* unbuilt -> tests fail to resolve their imports.
+node -e '
+const fs = require("fs");
+const strip = (s) => s.replace(/\\/\\/[^\\n]*/g, "").replace(/\\/\\*[\\s\\S]*?\\*\\//g, "");
+for (const f of ["tsconfig.json", "tsconfig.prod.json"]) {
+  try {
+    if (!fs.existsSync(f)) continue;
+    const j = JSON.parse(strip(fs.readFileSync(f, "utf8")));
+    j.compilerOptions = Object.assign({}, j.compilerOptions, { noEmitOnError: false, skipLibCheck: true });
+    fs.writeFileSync(f, JSON.stringify(j, null, 2));
+    console.log("patch_tsconfig: relaxed " + f);
+  } catch (e) { console.log("patch_tsconfig: skip " + f + " (" + e.message + ")"); }
+}
+' || true
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
@@ -122,6 +146,8 @@ npm install -g lerna@6 npm-run-all rimraf || true
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
+git remote add origin https://github.com/{pr.org}/{pr.repo}.git 2>/dev/null || true
+git fetch --depth=1 origin {pr.base.sha} 2>/dev/null || git fetch origin 2>/dev/null || true
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
@@ -129,6 +155,8 @@ rm -f package-lock.json
 npm install --legacy-peer-deps || npm install --force || true
 npm install shelljs --legacy-peer-deps --no-save || true
 npx lerna bootstrap --no-ci --force-local || true
+
+bash /home/patch_tsconfig.sh || true
 
 """.format(pr=self.pr),
             ),
@@ -157,7 +185,18 @@ fi
 
 CFG=vitest.config.ts
 [ -f vitest.config.mts ] && CFG=vitest.config.mts
-npx vitest --config "$CFG" --run --reporter=verbose
+# Scope vitest to ONLY the test files touched by test.patch. The whole monorepo
+# suite pulls in unrelated flaky/env tests whose PASS->FAIL drift between stages
+# invalidates otherwise-good f2p instances. Only run target files that exist
+# (new test files added by the patch won't exist in the baseline run.sh stage).
+TARGET=$(grep -E '^\\+\\+\\+ b/' /home/test.patch | awk '{{print $2}}' | sed 's#^b/##' | grep -E '\\.test\\.[cm]?[jt]sx?$' | sort -u)
+RUN_FILES=""
+for f in $TARGET; do [ -f "$f" ] && RUN_FILES="$RUN_FILES $f"; done
+if [ -n "$RUN_FILES" ]; then
+    npx vitest --config "$CFG" --run --reporter=verbose --coverage.enabled=false $RUN_FILES
+else
+    echo "no target test files present (nothing to run)"
+fi
 
 """.format(pr=self.pr),
             ),
@@ -169,7 +208,7 @@ set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
+git apply --whitespace=nowarn --exclude=package-lock.json /home/test.patch
 npm run setup || true
 
 # Fix EXDEV: Docker overlay cannot rename across layers
@@ -185,7 +224,18 @@ fi
 
 CFG=vitest.config.ts
 [ -f vitest.config.mts ] && CFG=vitest.config.mts
-npx vitest --config "$CFG" --run --reporter=verbose
+# Scope vitest to ONLY the test files touched by test.patch. The whole monorepo
+# suite pulls in unrelated flaky/env tests whose PASS->FAIL drift between stages
+# invalidates otherwise-good f2p instances. Only run target files that exist
+# (new test files added by the patch won't exist in the baseline run.sh stage).
+TARGET=$(grep -E '^\\+\\+\\+ b/' /home/test.patch | awk '{{print $2}}' | sed 's#^b/##' | grep -E '\\.test\\.[cm]?[jt]sx?$' | sort -u)
+RUN_FILES=""
+for f in $TARGET; do [ -f "$f" ] && RUN_FILES="$RUN_FILES $f"; done
+if [ -n "$RUN_FILES" ]; then
+    npx vitest --config "$CFG" --run --reporter=verbose --coverage.enabled=false $RUN_FILES
+else
+    echo "no target test files present (nothing to run)"
+fi
 
 """.format(pr=self.pr),
             ),
@@ -197,7 +247,7 @@ set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+git apply --whitespace=nowarn --exclude=package-lock.json /home/test.patch /home/fix.patch
 npm run setup || true
 
 # Fix EXDEV: Docker overlay cannot rename across layers
@@ -213,7 +263,18 @@ fi
 
 CFG=vitest.config.ts
 [ -f vitest.config.mts ] && CFG=vitest.config.mts
-npx vitest --config "$CFG" --run --reporter=verbose
+# Scope vitest to ONLY the test files touched by test.patch. The whole monorepo
+# suite pulls in unrelated flaky/env tests whose PASS->FAIL drift between stages
+# invalidates otherwise-good f2p instances. Only run target files that exist
+# (new test files added by the patch won't exist in the baseline run.sh stage).
+TARGET=$(grep -E '^\\+\\+\\+ b/' /home/test.patch | awk '{{print $2}}' | sed 's#^b/##' | grep -E '\\.test\\.[cm]?[jt]sx?$' | sort -u)
+RUN_FILES=""
+for f in $TARGET; do [ -f "$f" ] && RUN_FILES="$RUN_FILES $f"; done
+if [ -n "$RUN_FILES" ]; then
+    npx vitest --config "$CFG" --run --reporter=verbose --coverage.enabled=false $RUN_FILES
+else
+    echo "no target test files present (nothing to run)"
+fi
 
 """.format(pr=self.pr),
             ),
