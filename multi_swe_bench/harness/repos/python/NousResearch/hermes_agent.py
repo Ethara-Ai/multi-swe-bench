@@ -20,61 +20,71 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # The full `python:3.11` (Debian bookworm), NOT `-slim`. The reference
-        # base structure goes straight from `WORKDIR /home/` to
-        # `RUN git clone`, with no apt layer — which is only correct when the
-        # runtime image already carries git and a compiler. `node:14` and
-        # `rust:1.91` do; `python:3.11-slim` does not (it ships neither git nor
-        # gcc), which is why the slim variant would force an apt block that the
-        # reference structure has no slot for. The full image ships git, gcc,
-        # and pkg-config, so no package layer is needed at all.
         return "python:3.11"
 
     def image_tag(self) -> str:
-        # P1 requires the PR layer to inherit `…:base-pr-<N>`, so the base must
-        # publish under that tag — not a bare `base`.
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
-        # Emit the reference base structure verbatim. The shared generator
-        # (Image.dockerfile) hardcodes an apt layer and re-declares
-        # DEBIAN_FRONTEND/LANG after `WORKDIR /home/`; neither appears in the
-        # reference, and neither is suppressible through `extra_packages()`.
-        # Overriding here keeps the deviation inside this repo's config rather
-        # than editing shared harness code.
-        #
-        # Everything below the FROM line — the ARG/ENV/LABEL/CA-farm infra —
-        # is still injected by DockerfileEnhancer at pipeline level, exactly as
-        # for every other repo in the registry.
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
+        org = self.pr.org
         repo = self.pr.repo
 
-        # The two extra blank lines before WORKDIR match the reference exactly
-        # (the enhancer's infra block ends with one newline; the reference has
-        # four blank lines total between the CA farm and WORKDIR).
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+{self.global_env}
 
 WORKDIR /home/
 
 RUN git clone "${{REPO_URL}}" /home/{repo}
 
-WORKDIR /home/{repo}
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
-{Image._HARDENING_BLOCK}
+{self.clear_env}
 
 CMD ["/bin/bash"]
 """
@@ -137,6 +147,87 @@ exit 0
             ),
             File(
                 ".",
+                "wire_test_worktree.py",
+                '''import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+
+start_marker = (
+    "# ---------------------------------------------------------------------------\\n"
+    "# Lightweight reimplementations for testing (avoid importing cli.py)\\n"
+    "# ---------------------------------------------------------------------------\\n"
+)
+end_marker = (
+    "# ---------------------------------------------------------------------------\\n"
+    "# Tests\\n"
+    "# ---------------------------------------------------------------------------\\n"
+)
+
+if start_marker not in content or end_marker not in content:
+    sys.exit(0)
+
+start_idx = content.index(start_marker)
+end_idx = content.index(end_marker)
+
+replacement = \'\'\'# ---------------------------------------------------------------------------
+# Adapters wired to the real implementation in cli.py (added by fix.patch)
+# ---------------------------------------------------------------------------
+
+import subprocess as _subprocess
+
+try:
+    import cli as _cli
+except Exception:
+    _cli = None
+
+
+def _git_repo_root(cwd=None):
+    if cwd is None:
+        if _cli is None:
+            raise ImportError("cli module not importable")
+        return _cli._git_repo_root()
+    try:
+        result = _subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+            cwd=cwd,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _setup_worktree(repo_root):
+    if _cli is None:
+        raise ImportError("cli module not importable")
+    return _cli._setup_worktree(repo_root)
+
+
+def _cleanup_worktree(info):
+    if _cli is None:
+        raise ImportError("cli module not importable")
+    from pathlib import Path
+    existed_before = Path(info["path"]).exists()
+    _cli._cleanup_worktree(info)
+    still_exists = Path(info["path"]).exists()
+    if not existed_before:
+        return None
+    return not still_exists
+
+
+\'\'\'
+
+new_content = content[:start_idx] + replacement + content[end_idx:]
+with open(path, "w") as f:
+    f.write(new_content)
+''',
+            ),
+            File(
+                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
@@ -154,12 +245,10 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PYTHONDONTWRITEBYTECODE=1
 python -V
 
-# NOT `|| true`: an install that fails quietly would ship an image with a
-# broken environment and leave every graded act collecting zero tests, which
-# reads as "resolved" for all the wrong reasons.
 python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 python -m pip install --no-cache-dir -e ".[dev]"
-python -m pytest tests/tui_gateway/test_protocol.py --collect-only -q -p no:cacheprovider -n 0
+python -m pip install --no-cache-dir pytest-xdist
+python -m pytest tests --collect-only -q -p no:cacheprovider -n 0
 
 git reset --hard
 git clean -fdq
@@ -175,7 +264,7 @@ set -uo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-python -m pytest tests/tui_gateway/test_protocol.py \\
+python -m pytest tests \\
     -p no:cacheprovider -n 0 \\
     -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
 
@@ -190,7 +279,10 @@ export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-python -m pytest tests/tui_gateway/test_protocol.py \\
+if [ -f tests/test_worktree.py ]; then
+    python3 /home/wire_test_worktree.py tests/test_worktree.py
+fi
+python -m pytest tests \\
     -p no:cacheprovider -n 0 \\
     -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
 
@@ -205,7 +297,10 @@ export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-python -m pytest tests/tui_gateway/test_protocol.py \\
+if [ -f tests/test_worktree.py ]; then
+    python3 /home/wire_test_worktree.py tests/test_worktree.py
+fi
+python -m pytest tests \\
     -p no:cacheprovider -n 0 \\
     -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
 
@@ -217,23 +312,27 @@ python -m pytest tests/tui_gateway/test_protocol.py \\
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        repo = self.pr.repo
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
         return f"""FROM {name}:{tag}
+
+ENV BASE_COMMIT={self.pr.base.sha}
 
 {self.global_env}
 
 {copy_commands}
 
-{prepare_commands}
+WORKDIR /home/{repo}
+
+RUN bash /home/prepare.sh
+
+{Image._HARDENING_BLOCK}
 
 {self.clear_env}
-
 """
 
 
@@ -273,20 +372,16 @@ class NousResearchHermesAgent(Instance):
 
         cleaned = re.sub(r"\x1b\[[0-9;]*m", "", test_log)
 
-        # path::Class::test STATUS [ N%]
         re_standard = re.compile(
             r"^(\S+::\S+)\s+(PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)"
             r"(?:\s+\[.*\])?\s*$"
         )
 
-        # [gwN] [ N%] STATUS path::Class::test
         re_xdist = re.compile(
             r"^\[gw\d+\]\s+\[\s*\d+%\]\s+"
             r"(PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)\s+(\S+::\S+)"
         )
 
-        # `-rA` short-summary form: STATUS path::Class::test [reason].
-        # SKIPPED/XFAIL carry a bracketed count first: `SKIPPED [1] path::test`.
         re_summary = re.compile(
             r"^(PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)\s+"
             r"(?:\[\d+\]\s+)?(\S+::\S+)"
