@@ -7,37 +7,25 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 # ---------------------------------------------------------------------------
-# LAYOUT NOTE -- this config follows the REVISED Dockerfile split:
-#
-#   base/            FROM -> apt -> git clone -> CMD          (NOTHING else)
-#   pr-<N>/          FROM base -> COPY -> checkout <sha> + git hardening
-#                    -> prepare.sh
-#
-# The checkout and the history scrub live in the PR-SPECIFIC Dockerfile, not in
-# the base and not in prepare.sh. Because the base no longer contains anything
-# commit-specific, ONE base image now serves every PR of this repo -- which is
-# what makes a shared `:base` tag correct here (FLOW Issue 25 does not apply: it
-# warns against a shared tag whose CONTENT is per-PR, and this base's content is
-# identical for all five PRs).
-#
-# TWO HARNESS-CORE BEHAVIOURS SHAPE THIS FILE, and neither may be edited:
+# TWO HARNESS BEHAVIOURS SHAPE THIS FILE. Neither may be worked around by
+# editing the harness, so the config is written to accommodate them.
 #
 # 1. DockerfileEnhancer._inject_final_sanitize() appends the hardening block
 #    before CMD in ANY Dockerfile whose text contains "git clone", "git fetch"
 #    or "git remote add". A base written as `RUN git clone "${REPO_URL}" ...`
-#    therefore CANNOT stay clone-only. Writing the clone as
+#    therefore cannot remain clone-only. Writing it as
 #    `RUN git -C /home clone "${REPO_URL}" narwhals` -- an ordinary git
-#    invocation -- does not match that substring test, so the base keeps the
-#    required shape. Verified by rendering the enhanced output.
-#    NOTE: this relies on a substring check in core. If that check is ever
-#    broadened, the base would silently regain the scrub -- so the QC for this
-#    repo asserts the base contains no `rev-list --all --count`.
+#    invocation -- does not match that substring test.
+#
+#    This depends on a substring check. If that check is ever broadened, the
+#    base would silently regain the block, so assert the base contains no
+#    `rev-list --all --count` before trusting it.
 #
 # 2. build_dataset.py passes REPO_URL/BASE_COMMIT as build args ONLY when
 #    `dependency()` returns a str -- i.e. only to the BASE image. The PR image's
 #    dependency() returns an Image, so it receives NO build args and cannot use
-#    ${BASE_COMMIT}. The PR Dockerfile therefore embeds the literal base sha,
-#    which it knows at generation time.
+#    ${BASE_COMMIT}; it would expand to the empty string and check out the
+#    default branch. The PR Dockerfile embeds the literal base sha instead.
 # ---------------------------------------------------------------------------
 
 
@@ -61,7 +49,7 @@ exit 0
 
 
 # apply_patch.sh -- plain `git apply` first, `--3way` only as an ANNOUNCED
-# fallback. FLOW VERDICT DISCIPLINE requires a failure to be counted from the
+# fallback. A failure must be counted from the
 # PRIMARY apply, so a silent --3way rescue would hide a genuinely broken patch.
 _APPLY_PATCH_SH = """#!/bin/bash
 set -e
@@ -108,11 +96,11 @@ rm -f "$EXCL"
 # `pytest --verbose`, whose result lines carry a trailing progress percentage
 # (`... PASSED  [ 61%]`). That percentage MOVES when the test count changes, and
 # every one of these five PRs adds tests -- so folding it into the name would
-# manufacture a false transition for every test in the run (audit 4B).
+# manufacture a false transition for every test in the run.
 #
 # The plugin records the nodeid and outcome directly, so a name is
 # byte-identical across the three acts. It lives in /home, never the work tree,
-# so it cannot dirty `git status` (FLOW Issue 7) -- which is why run_tests.sh
+# so it cannot dirty `git status` -- which is why run_tests.sh
 # must export PYTHONPATH=/home for `-p conftest_report` to import it.
 _CONFTEST_REPORT_PY = '''"""pytest plugin: write `<nodeid>\\t<outcome>` per test to $PYTEST_REPORT_FILE."""
 import os
@@ -123,7 +111,7 @@ _STORE = {}
 def pytest_runtest_logreport(report):
     # `when` matters: a test that errors during SETUP never reaches "call" and
     # must still be recorded, or it silently vanishes and looks uncollected --
-    # the shape FLOW GATE 0 exists to catch.
+    # the silent-zero shape.
     nodeid = report.nodeid
     if report.when == "call":
         _STORE[nodeid] = "passed" if report.passed else ("skipped" if report.skipped else "failed")
@@ -149,7 +137,7 @@ usage: pytest_test_report.py <tsv>
     pytest:tests/frame/head_test.py::test_head PASSED
 
 Exit 0 all passed, 1 at least one failed, 2 the run produced NO tests at all
-(the runner never started -- the case FLOW GATE 0 exists to catch, and which
+(the runner never started -- the silent-zero case, which
 must never be confused with "zero tests passed").
 """
 import sys
@@ -203,7 +191,7 @@ if __name__ == "__main__":
 #
 # `set -e` is absent (only -uo pipefail): pytest exits non-zero whenever a test
 # fails, which is EXPECTED in the test act by design. Under -e the act would
-# abort before the report script ran and score a silent 0/0/0 (GATE 0).
+# abort before the report script ran and score a silent 0/0/0.
 _RUN_TESTS_SH = """#!/bin/bash
 set -uo pipefail
 cd /home/narwhals
@@ -295,7 +283,7 @@ class NarwhalsImageBase(Image):
             image_name = image_name.image_full_name()
 
         # `git -C /home clone ...` rather than `git clone ... /home/narwhals`:
-        # see the LAYOUT NOTE at the top of this file. The two forms are
+        # see note 1 at the top of this file. The two forms are
         # equivalent to git; only the second one trips core's injector.
         return f"""FROM {image_name}
 
@@ -358,7 +346,7 @@ class NarwhalsImageDefault(Image):
             File(".", "run_tests.sh", _RUN_TESTS_SH),
             File(".", "constraints.txt", _CONSTRAINTS_TXT),
             # prepare.sh does NOT check out and does NOT harden -- both now live
-            # in the PR Dockerfile, per the revised layout. What remains here is
+            # in the PR Dockerfile. What remains here is
             # the dependency install and the clean-tree discipline.
             #
             # THE CONSTRAINTS FILE IS THE LOAD-BEARING PART. requirements-dev.txt
@@ -375,7 +363,7 @@ class NarwhalsImageDefault(Image):
             # `git clean -fdq` is required, not decorative: pytest writes
             # .pytest_cache/ and __pycache__/, and the editable install leaves
             # *.egg-info/ in the tree. Without the clean the next act aborts on a
-            # dirty tree (FLOW Issue 4).
+            # dirty tree.
             File(
                 ".",
                 "prepare.sh",
@@ -458,13 +446,27 @@ bash /home/run_tests.sh
 
         # The checkout uses the LITERAL sha, not ${BASE_COMMIT}: build_dataset
         # only passes build args when dependency() returns a str, so a PR image
-        # receives none (see the LAYOUT NOTE).
+        # receives none (see note 2 at the top of this file).
         #
         # The hardening block is spelled out here rather than inherited from the
-        # base, per the revised layout. Its four assertions are what make the
-        # image hash-safe and prove no future history ships (FLOW Issue 18):
+        # base. Its four assertions are what make the
+        # image hash-safe:
         #   HEAD == the PR's base sha · no refs · no remotes · rev-list all == HEAD
+        # The scrub above only reaches the SUPERPROJECT. A submodule keeps its own
+        # .git with its own history and its own `origin`, so without this block a
+        # repo with submodules would ship a scrubbed parent and untouched children.
+        # Guarded on .gitmodules, so it is a no-op where there are none.
         sha = self.pr.base.sha
+        # The hardening block is DERIVED from the harness's own definition rather
+        # than retyped here. Copying it by hand is how the submodule scrub went
+        # missing once: the superproject was scrubbed, every submodule kept its
+        # full history and its own `origin`. Deriving makes that class of omission
+        # impossible -- if the harness gains a step, this layer gains it too.
+        #
+        # `_HARDENING_BLOCK` is READ from harness.image; nothing in core is
+        # modified. It is parameterised on ${BASE_COMMIT}, which the harness only
+        # supplies to a base image, so the PR layer substitutes the literal sha.
+        scrub = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", sha).strip()
         return f"""FROM {image_name}
 
 {copies}
@@ -472,23 +474,7 @@ WORKDIR /home/{self.pr.repo}
 
 RUN git reset --hard && git checkout {sha}
 
-RUN set -eux; \\
-    git checkout --detach "{sha}"; \\
-    git remote remove origin 2>/dev/null || true; \\
-    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
-        | xargs -r -n1 git update-ref -d; \\
-    git reflog expire --expire=now --all; \\
-    git reflog expire --expire-unreachable=now --all; \\
-    git gc --prune=now --aggressive; \\
-    git repack -a -d -l --quiet; \\
-    rm -f .git/objects/info/alternates; \\
-    git config --local gc.auto 0; \\
-    git config --local fetch.recurseSubmodules false; \\
-    git config --local remote.pushDefault ""; \\
-    test "$(git rev-parse HEAD)" = "$(git rev-parse "{sha}")"; \\
-    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
-    test -z "$(git remote)"; \\
-    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+{scrub}
 
 RUN bash /home/prepare.sh
 
@@ -527,7 +513,7 @@ class Narwhals(Instance):
         # words, so a whole-log scan would double-count every test AND absorb the
         # trailing progress percentage into the name. The fallback to the whole
         # text keeps a bare sequence of result lines parseable (the config
-        # audit's 4C probe has no marker).
+        # probe has no marker).
         marker = "----- per-test results -----"
         if marker in test_log:
             test_log = test_log.rsplit(marker, 1)[1]
