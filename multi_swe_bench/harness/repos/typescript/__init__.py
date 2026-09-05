@@ -127,6 +127,7 @@ from multi_swe_bench.harness.repos.typescript.obsidian_tasks_group import *
 from multi_swe_bench.harness.repos.typescript.obsidianmd import *
 from multi_swe_bench.harness.repos.typescript.onaio import *
 from multi_swe_bench.harness.repos.typescript.ONEARMY import *
+from multi_swe_bench.harness.repos.typescript.openclaw import *
 from multi_swe_bench.harness.repos.typescript.palantir import *
 from multi_swe_bench.harness.repos.typescript.PalisadoesFoundation import *
 from multi_swe_bench.harness.repos.typescript.ParabolInc import *
