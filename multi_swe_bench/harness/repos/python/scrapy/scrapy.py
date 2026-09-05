@@ -14,6 +14,7 @@ _PIP_STEPS = [
     'pip install --no-cache-dir "pip<21" "setuptools<45" "wheel<0.38"',
     'pip install --no-cache-dir -e .',
     'pip install --no-cache-dir "pytest==4.6.11" "pytest-timeout==1.4.2" "mock<4" "testfixtures<6.10" jmespath',
+    'pip install --no-cache-dir "boto==2.49.0" "botocore==1.12.253"',
 ]
 
 _TEST_CMD = "pytest tests -v --continue-on-collection-errors --timeout=120"
