@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Optional, Union
 
@@ -88,14 +89,39 @@ ARG TARGETARCH
 ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 ARG BASE_COMMIT
 
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
 LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
       org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    TZ=UTC
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 ENV GOTOOLCHAIN=local
 ENV GOFLAGS="-buildvcs=false -mod=mod"
@@ -289,6 +315,57 @@ RUN bash /home/prepare.sh
 """
 
 
+# ---------------------------------------------------------------------------
+# number_interval -- bundle routing for junegunn/fzf (PIPELINE.md S11).
+#
+# Each record is a BUNDLE of PRs, and the required value is the EXACT PRs of
+# that bundle joined with '-', never a range:
+#
+#     prs_in_bundle: [146, 147, 150, 155, 157]
+#     number_interval: "146-147-150-155-157"      (NOT "146-157")
+#
+# A range would claim every PR in between, which is wrong -- these bundles are
+# sparse (e.g. 4145-4699-4700-... skips ~550 intervening PRs, and
+# 1297-1810-1813 skips ~500).
+#
+# Bundle membership was derived from git + the GitHub API, not guessed: for
+# every record the file set of fix_patch + test_patch reproduces
+# `git diff <base.sha>..<end>` EXACTLY, which pins the bundle's end commit;
+# prs_in_bundle is then the set of MERGED PRs that landed in that commit range
+# (merge commit inside the range, or credited as "(#N)" by a commit in it).
+# The bundles cover 664 commits and 171 PRs with zero overlap, and every
+# record's lead PR falls inside its own bundle. Two bundles (2208, 2305) were
+# dropped at delivery on target-quality grounds, so 17 keys ship here; the
+# 19-key list is in fzf.py.bak5.final17.* if they are ever reinstated.
+#
+# _NUMBER_INTERVAL above is NOT bundle membership -- it is the lead-PR list of
+# the original 57-record dataset. It stays registered (harmless) so older
+# records keep routing, but the delivered JSONL now carries real bundles.
+#
+# Bundle-level, NOT pr-level: one key per bundle, so #keys == #instances.
+# Keys are data-derived -- REGENERATE this list whenever the bundles change.
+# ---------------------------------------------------------------------------
+_BUNDLE_NIS_Fzf = [
+    "1297-1810-1813-1815-1820-1832-1837-1844-1845-1847-1848-1861-1875-1876-1878-1881-1886-1891-1892-1893-1921",
+    "1962-1967-1977-1978-1995-2000-2003-2042-2051-2054-2064-2066-2096-2100-2119",
+    "2353-2356-2363-2368-2370-2375-2379-2383",
+    "2641-2646-2647",
+    "2817-2991-2993-2997-2998-2999-3012-3021",
+    "2880-2926-2946-2948-2952-2964-2965-2974-2984-2985",
+    "3059-3062-3064-3093-3094-3110-3111-3117",
+    "3248-3249-3257",
+    "3284-3285-3306",
+    "3512-3525-3526-3537-3542-3544",
+    "3684-3687-3688-3693-3699-3709",
+    "3849-3850-3852-3855-3856-3871-3875-3877-3878-3882-3885-3887-3893-3894-3906-3907-3909-3912-3913",
+    "4136-4137-4138-4141-4143-4157-4158-4162-4165-4166-4171-4175-4179-4181-4189",
+    "4145-4699-4700-4703-4714-4719-4721-4723-4734-4739-4743-4750-4753",
+    "4225-4230-4231-4232-4234-4236",
+    "4307-4308",
+    "4554-4567-4574-4581-4582-4586-4589-4590",
+]
+
+
 @Instance.register("junegunn", _NUMBER_INTERVAL)
 class Fzf(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
@@ -396,3 +473,80 @@ class Fzf(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# --- bundle routing keys -------------------------------------------------
+# Instance.create() looks up f"{org}/{number_interval}", so every dash-joined
+# bundle value the JSONL carries must be a registered key or it raises
+# ValueError: not registered. The JSONL and this registry ship together.
+#
+# No blanket routing fallback is installed here on purpose: junegunn/fzf is a
+# MULTI-era repo (fzf_gopath_preglide / fzf_gopath_glide / fzf_go1_13 /
+# fzf_go1_17 / this modern era), so silently defaulting an unknown bundle key
+# to Fzf could build a record with the wrong Go toolchain. An unregistered key
+# must fail loudly; regenerate _BUNDLE_NIS_Fzf when the bundles change.
+for _ni in _BUNDLE_NIS_Fzf:
+    Instance.register("junegunn", _ni)(Fzf)
+
+
+# --- number_interval must reach the resolved JSONL -----------------------
+# Dataset.build() copies number_interval straight off the loaded PullRequest
+# into the resolved/classified output (dataset.py), so a record that arrives
+# with an EMPTY number_interval but a populated prs_in_bundle would silently
+# emit an empty interval downstream. This junegunn/fzf-scoped shim fills it at
+# load time. Only empty values are filled, so an explicitly-set
+# number_interval is never overwritten and no other repo is affected.
+#
+# Signature-transparent (*args/**kwargs): the @dataclass_json decorator
+# REPLACES the class-body from_dict/from_json, so the live signatures are
+# dataclass_json's -- from_dict(cls, kvs, *, infer_missing=False) and
+# from_json(cls, s, **kw), whose from_json delegates to cls.from_dict. A
+# fixed-arity shim here would break every repo's loader, not just this one.
+_FZF_ORG = "junegunn"
+_FZF_REPO = "fzf"
+
+
+def fzf_number_interval(prs_in_bundle) -> str:
+    """Dash-join a bundle's PR numbers: [146, 147, 150] -> '146-147-150'."""
+    if not prs_in_bundle:
+        return ""
+    return "-".join(str(p) for p in prs_in_bundle)
+
+
+def _fzf_fill_number_interval(pr, raw) -> None:
+    if not isinstance(raw, dict):
+        return
+    if getattr(pr, "org", "") != _FZF_ORG or getattr(pr, "repo", "") != _FZF_REPO:
+        return
+    if getattr(pr, "number_interval", ""):
+        return
+    interval = fzf_number_interval(raw.get("prs_in_bundle"))
+    if interval:
+        pr.number_interval = interval
+
+
+if not getattr(PullRequest, "_junegunn_ni_shim", False):
+    _fzf_orig_from_json = PullRequest.from_json.__func__
+    _fzf_orig_from_dict = PullRequest.from_dict.__func__
+
+    def _fzf_from_json(cls, *args, **kwargs):
+        pr = _fzf_orig_from_json(cls, *args, **kwargs)
+        try:
+            if args:
+                _fzf_fill_number_interval(pr, json.loads(args[0]))
+        except Exception:
+            pass
+        return pr
+
+    def _fzf_from_dict(cls, *args, **kwargs):
+        pr = _fzf_orig_from_dict(cls, *args, **kwargs)
+        try:
+            raw = args[0] if args else kwargs.get("kvs")
+            _fzf_fill_number_interval(pr, raw)
+        except Exception:
+            pass
+        return pr
+
+    PullRequest.from_json = classmethod(_fzf_from_json)
+    PullRequest.from_dict = classmethod(_fzf_from_dict)
+    PullRequest._junegunn_ni_shim = True
