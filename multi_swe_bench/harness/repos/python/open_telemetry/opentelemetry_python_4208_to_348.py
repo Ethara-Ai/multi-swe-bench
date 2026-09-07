@@ -201,18 +201,46 @@ rm -f "$PYTEST_REPORT_FILE"
 # A hardcoded `pytest ext/opentelemetry-ext-otcollector/tests/` therefore collects
 # ZERO tests on any later PR. The detection below keeps the narrow, fully-measured
 # scope for the era that has it, and falls back to the repo-wide layout otherwise.
+# The image installed BEFORE any patch existed, so a package the patches CREATE is
+# importable nowhere. #719 is exactly that: ext/opentelemetry-ext-sqlite3 does not exist at
+# its base commit - the fix patch adds the whole package, and its tests cannot import it
+# unless something installs it after the patch lands. The resolver also picks up the
+# in-repo dependency that package pulls in (ext-dbapi), which no patch mentions.
+#
+# Runs in ALL THREE acts, not just fix-run. The three stages have to see the same treatment
+# or the comparison between them stops meaning anything. Non-fatal here, unlike in
+# prepare.sh: in the run and test acts the package usually does not exist yet.
+. /home/install_set.sh
+msb_core_dirs
+msb_constraints
+msb_install > /dev/null 2>&1 || true
+
+# --import-mode=importlib is required, not cosmetic. Several packages ship their own
+# tests/conftest.py and none of those tests/ directories has an __init__.py, so under
+# pytest's default prepend import mode every one of them wants the module name
+# `tests.conftest`. Collect two in a single run and pytest raises ImportPathMismatchError
+# and aborts with exit 4 and ZERO tests - measured with opentelemetry-sdk/tests and
+# ext/opentelemetry-ext-boto/tests. importlib mode imports each by path and they coexist.
+
+# SCOPE IS DERIVED from what prepare.sh installed, not from a written-out list of glob
+# patterns. msb_install_dirs holds the core packages plus the ones this PR's test patch
+# touches; their tests/ directories are exactly the tests that can run here.
+#
+# The previous version hardcoded `ext/*/tests exporter/*/tests propagator/*/tests ...`,
+# a list that has to be re-guessed every time the repo is reorganised - and an earlier
+# revision was wrong in the other direction: it collected ONLY
+# ext/opentelemetry-ext-otcollector/tests, so #678 (opentracing-shim) and #719 (sqlite3)
+# ran with none of their own tests collected at all.
+#
+# Scoping to the installed set also means no collection errors: a package that was never
+# installed is never collected.
 TARGETS=""
-if [ -d ext/opentelemetry-ext-otcollector/tests ]; then
-    TARGETS="ext/opentelemetry-ext-otcollector/tests/"
-else
-    for d in ext/*/tests exporter/*/tests propagator/*/tests shim/*/tests \
-             instrumentation/*/tests opentelemetry-api/tests opentelemetry-sdk/tests tests; do
-        [ -d "$d" ] && TARGETS="$TARGETS $d"
-    done
-fi
+for d in $(msb_install_dirs); do
+    [ -d "$d/tests" ] && TARGETS="$TARGETS $d/tests"
+done
 echo "pytest targets: ${TARGETS}"
 
-python -m pytest ${TARGETS} -p conftest_report --continue-on-collection-errors
+python -m pytest ${TARGETS} -p conftest_report --import-mode=importlib --continue-on-collection-errors
 pytest_rc=$?
 echo "pytest exit=${pytest_rc}"
 echo "----- per-test results -----"
@@ -220,8 +248,439 @@ python /home/pytest_test_report.py "$PYTEST_REPORT_FILE"
 """
 
 
+# The base image is written out IN FULL - syntax directive, ARGs, proxy env, cert
+# symlinks, OCI labels and all - and that is the whole point.
+#
+# DockerfileEnhancer.enhance() returns the Dockerfile untouched the moment it already
+# carries the syntax directive (image.py:316-317). Without that early return it runs
+# _inject_final_sanitize(), which appends `git checkout ${BASE_COMMIT}` plus the history
+# scrub to ANY Dockerfile containing a `git clone` (image.py:389-395).
+#
+# For a per-PR base that injection is harmless. For a base SHARED by five PRs it is
+# fatal: the base would be pinned to whichever commit happened to build it first, its
+# history scrubbed down to that one commit, and every other PR's `git checkout <sha>`
+# would then fail on an object that no longer exists.
+#
+# So the enhancer is bypassed on purpose, and the infrastructure it would have added is
+# reproduced here verbatim. The config audit flags a hand-written infra block as a WARN;
+# it is accepted here because a single shared base cannot be had any other way.
+BASE_DOCKERFILE = """# syntax=docker/dockerfile:1.6
+
+FROM %(image)s
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/%(org)s/%(repo)s.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${http_proxy} \\
+    https_proxy=${https_proxy} \\
+    HTTP_PROXY=${HTTP_PROXY} \\
+    HTTPS_PROXY=${HTTPS_PROXY} \\
+    no_proxy=${no_proxy} \\
+    NO_PROXY=${NO_PROXY} \\
+    SSL_CERT_FILE=${CA_CERT_PATH} \\
+    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\
+    CURL_CA_BUNDLE=${CA_CERT_PATH}
+
+LABEL org.opencontainers.image.title="%(org)s/%(repo)s" \\
+      org.opencontainers.image.description="%(org)s/%(repo)s Docker image" \\
+      org.opencontainers.image.source="https://github.com/%(org)s/%(repo)s" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+ENV PYTHONUNBUFFERED=1 \\
+    PYTHONDONTWRITEBYTECODE=1 \\
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \\
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    curl \\
+    build-essential \\
+    git \\
+    gnupg \\
+    make \\
+    sudo \\
+    wget \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone "${REPO_URL}" /home/%(repo)s
+
+CMD ["/bin/bash"]
+"""
+
+
+_INSTALL_SET_SH = r"""#!/bin/bash
+# Shared by prepare.sh (image build) and run_tests.sh (every act). Sourced, not executed.
+#
+# The install set is derived in three layers, and the ORDER they are concatenated in is
+# load-bearing, because pip resolves local editables in the order it is given them:
+#
+#   core        every setup.py directory at the repo root, plus any under tests/. These are
+#               what the extensions pin at the in-tree dev version. Scanning for setup.py
+#               survives the ext/ -> exporter/ propagator/ shim/ rename between eras.
+#   deps        in-repo packages discovered by msb_install() below.
+#   under test  the packages whose tests THIS patch touches.
+#
+# A dependency listed AFTER its dependent is not found - pip goes to PyPI for 0.8.dev0 and
+# fails - so deps sit between core and the packages under test.
+
+msb_core_dirs() {
+    { find . -mindepth 2 -maxdepth 2 -name setup.py -printf '%h\n'
+      find ./tests -mindepth 2 -maxdepth 2 -name setup.py -printf '%h\n' 2>/dev/null
+    } | sed 's|^\./||' | sort > /home/core_dirs.txt
+    [ -f /home/dep_dirs.txt ] || : > /home/dep_dirs.txt
+}
+
+msb_install_dirs() {
+    cat /home/core_dirs.txt /home/dep_dirs.txt /home/packages_under_test.txt 2>/dev/null \
+        | awk 'NF && !seen[$0]++'
+}
+
+# Pin the third-party dependencies of the packages under test to the commit date, and
+# hand the result to pip as a constraints file. See /home/era_constraints.py for why: the
+# drift breaks the TESTS, not the install, so without this it surfaces three stages later
+# as "no tests collected" (#819 google-cloud-trace, #866 moto).
+#
+# The date comes from the commit itself, so nothing here has to be updated per PR.
+msb_constraints() {
+    local date
+    date=$(git show -s --format=%cd --date=short HEAD)
+    python3 /home/era_constraints.py "$date" /home/constraints.txt         $(cat /home/packages_under_test.txt 2>/dev/null) || return 0
+    [ -s /home/constraints.txt ] || return 0
+
+    # Handed to pip as a CONSTRAINT, never installed with -r.
+    #
+    # A constraints file fixes the version of anything that gets installed without
+    # requiring it, which is what is wanted: the closure includes entries that exist only
+    # for other platforms - pypiwin32, pathlib2, ipaddress come in through moto's metadata
+    # - and installing those on Linux fails outright. As constraints they simply never
+    # apply.
+    #
+    # Every entry is an exact ==, and the closure reaches the transitive dependencies too,
+    # so the resolver has nothing left to search. That is what stops the backtracking:
+    # before boto3 was pinned, pip walked several hundred of its releases looking for one
+    # that accepted a 2020 botocore, at 100% CPU with no output for 13 minutes.
+    export PIP_CONSTRAINT=/home/constraints.txt
+    return 0
+}
+
+# Install, and RESOLVE in-repo dependencies as pip reports them missing.
+#
+# A package under test can depend on another package in this repo that the test patch never
+# touches: #719's ext-sqlite3 requires ext-dbapi==0.8.dev0, which exists nowhere but this
+# checkout, so pip looks on PyPI and fails. The error names the distribution; setup.cfg maps
+# that name back to a directory; the directory joins the deps layer and the install is
+# retried. Two passes settled #719. The alternative - installing every package in the repo -
+# is what `eachdist develop` does, and it drags in opentelemetry-ext-celery, whose
+# celery~=4.0 pin resolves to wheels with metadata no current resolver parses.
+msb_install() {
+    local attempt miss dir args
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        args=""
+        for dir in $(msb_install_dirs); do
+            [ -d "$dir" ] && args="$args -e ./$dir[test]"
+        done
+        if python -m pip install --no-cache-dir $args > /tmp/msb_install.log 2>&1; then
+            echo "install: satisfied on pass $attempt"
+            return 0
+        fi
+        # A pinned version can also be one that cannot be BUILT on this platform. The era
+        # closure picks cryptography 2.9.2 for #866, which predates OpenSSL 3.0; on amd64
+        # pip finds a prebuilt wheel and never notices, but arm64 has no wheel for that
+        # release, so it compiles against bookworm's OpenSSL 3 and gcc fails. Drop the pin
+        # and let pip take a version that ships a wheel for this architecture - the parent
+        # packages stay pinned, so the rest of the graph is still era-correct.
+        nobuild=$(grep -oE 'Could not build wheels for [A-Za-z0-9_.-]+' /tmp/msb_install.log \
+                  | tail -1 | awk '{print $NF}' | sed 's/,.*//')
+        if [ -n "$nobuild" ] && [ -f /home/constraints.txt ]; then
+            echo "install: pass $attempt - $nobuild will not build here, dropping its pin"
+            grep -vE "^$nobuild==" /home/constraints.txt > /home/constraints.tmp
+            mv /home/constraints.tmp /home/constraints.txt
+            continue
+        fi
+
+        # A pin from the era closure can contradict a pinned parent: the closure takes
+        # the newest release on or before the commit date, but moto 1.3.14 wants idna<2.9
+        # while that date's newest idna is 2.10. pip names the offending constraint
+        # exactly, so drop it and let the resolver pick that one itself - the parent stays
+        # pinned, so the choice stays inside the era.
+        clash=$(grep -oE 'The user requested \(constraint\) [A-Za-z0-9_.-]+' /tmp/msb_install.log \
+                | tail -1 | awk '{print $NF}')
+        if [ -n "$clash" ] && [ -f /home/constraints.txt ]; then
+            echo "install: pass $attempt - constraint $clash conflicts, dropping it"
+            grep -vE "^$clash==" /home/constraints.txt > /home/constraints.tmp
+            mv /home/constraints.tmp /home/constraints.txt
+            continue
+        fi
+
+        miss=$(grep -oE 'No matching distribution found for [A-Za-z0-9_.-]+' /tmp/msb_install.log \
+               | tail -1 | awk '{print $NF}' | sed 's/==.*//')
+        [ -n "$miss" ] || break
+        dir=$(grep -rlE "^[[:space:]]*name[[:space:]]*=[[:space:]]*$miss[[:space:]]*$" \
+              --include=setup.cfg . 2>/dev/null | head -1)
+        [ -n "$dir" ] || break
+        dir=$(dirname "$dir" | sed 's|^\./||')
+        echo "install: pass $attempt needs $miss -> adding $dir"
+        echo "$dir" >> /home/dep_dirs.txt
+    done
+    echo "install: FAILED" >&2
+    tail -25 /tmp/msb_install.log >&2
+    return 1
+}
+"""
+
+
+_ERA_CONSTRAINTS_PY = r'''#!/usr/bin/env python3
+"""Pin the third-party dependencies of the packages under test to the commit date.
+
+usage: era_constraints.py <YYYY-MM-DD> <out-file> <pkg-dir> [<pkg-dir> ...]
+
+The 2020 code in this tree is tested against whatever PyPI serves today, and the drift
+breaks the tests rather than the install, so it survives every earlier gate and surfaces as
+"no tests collected":
+
+    #819  from google.cloud.trace_v2.proto.trace_pb2 import AttributeValue
+          ModuleNotFoundError: No module named 'google.cloud.trace_v2.proto'
+          -- google-cloud-trace moved that subpackage after 1.0.
+
+    #866  moto/ec2/models.py: for zone in self.zones[self.region_name]
+          KeyError: 'ap-south-2'
+          -- today's botocore lists a region today's-minus-N moto has no zones for.
+
+Neither is a fact about the config; both are facts about the commit date. So the version is
+DERIVED: for every distribution the packages under test declare - install_requires and the
+[test] extra, read out of their own setup.cfg - take the newest release that existed when
+the commit was written. Nothing is written down here, and a sixth PR needs no edit.
+
+Only the packages under test are constrained. Constraining everything would drag setuptools
+and pip back to 2020 too, which breaks the build for no gain.
+"""
+import concurrent.futures as cf
+import configparser
+import json
+import os
+import re
+import sys
+import urllib.request
+
+DATE, OUT = sys.argv[1], sys.argv[2]
+DIRS = sys.argv[3:]
+UA = {"User-Agent": "multi-swe-bench opentelemetry-python image build"}
+
+
+def requirement_names(pkg_dir):
+    """Distribution names this package declares, from setup.cfg."""
+    cfg = os.path.join(pkg_dir, "setup.cfg")
+    if not os.path.exists(cfg):
+        return set()
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(cfg)
+    except Exception:
+        return set()
+    blobs = []
+    if parser.has_option("options", "install_requires"):
+        blobs.append(parser.get("options", "install_requires"))
+    if parser.has_section("options.extras_require"):
+        for _, value in parser.items("options.extras_require"):
+            blobs.append(value)
+    names = set()
+    for blob in blobs:
+        for line in blob.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            name = re.split(r"[<>=!~\[; ]", line, 1)[0].strip()
+            # in-repo packages are installed from the tree; never constrain them
+            if name and not name.startswith("opentelemetry"):
+                names.add(name)
+    return names
+
+
+def requires_of(name, version):
+    """Distribution names that <name>==<version> depends on, from PyPI metadata.
+
+    Only base requirements: anything guarded by `extra == "..."` belongs to an optional
+    feature nobody asked for, and pulling those in widens the pin set for nothing.
+    """
+    url = "https://pypi.org/pypi/%s/%s/json" % (name, version)
+    try:
+        req = urllib.request.Request(url, headers=UA)
+        with urllib.request.urlopen(req, timeout=45) as fh:
+            data = json.load(fh)
+    except Exception:
+        return set()
+    out = set()
+    for spec in (data.get("info", {}).get("requires_dist") or []):
+        if "extra ==" in spec:
+            continue
+        dep = re.split(r"[<>=!~\[;( ]", spec.strip(), 1)[0].strip()
+        if dep and not dep.startswith("opentelemetry"):
+            out.add(dep)
+    return out
+
+
+def newest_before(name):
+    url = "https://pypi.org/pypi/%s/json" % name
+    for _ in range(3):
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with urllib.request.urlopen(req, timeout=45) as fh:
+                data = json.load(fh)
+            break
+        except Exception:
+            data = None
+    if not data:
+        return None
+    best = None
+    for version, files in data.get("releases", {}).items():
+        if not files:
+            continue
+        uploaded = min(f["upload_time"][:10] for f in files)
+        if uploaded <= DATE and (best is None or uploaded > best[0]):
+            best = (uploaded, version)
+    return best[1] if best else None
+
+
+def main():
+    """Pin the closure, not just the directly-declared names.
+
+    Pinning only what setup.cfg names leaves pip to resolve everything underneath, and
+    that is where it stalls: #866 pins botocore==1.17.14, moto needs boto3, boto3 is NOT
+    declared anywhere in this repo, and pip walks backwards through several hundred boto3
+    releases looking for one that accepts a 2020 botocore. Measured: 100% CPU, no output,
+    still going after 13 minutes.
+
+    Following requires_dist to a small depth pins boto3 too, so the resolver is handed a
+    fully-determined set and has nothing left to search. Depth 3 covers moto -> boto3 ->
+    botocore/jmespath/s3transfer, which is as deep as this repo's test dependencies go.
+    """
+    frontier = set()
+    for d in DIRS:
+        frontier |= requirement_names(d)
+    if not frontier:
+        open(OUT, "w").close()
+        print("era: nothing to constrain")
+        return 0
+
+    picked = {}
+    for depth in range(3):
+        todo = sorted(n for n in frontier if n not in picked)
+        if not todo:
+            break
+        with cf.ThreadPoolExecutor(8) as ex:
+            for name, version in zip(todo, ex.map(newest_before, todo)):
+                picked[name] = version
+        nxt = set()
+        with cf.ThreadPoolExecutor(8) as ex:
+            pairs = [(n, picked[n]) for n in todo if picked[n]]
+            for deps in ex.map(lambda p: requires_of(*p), pairs):
+                nxt |= deps
+        frontier |= nxt
+
+    with open(OUT, "w", encoding="utf-8") as fh:
+        for name in sorted(picked):
+            version = picked[name]
+            if version:
+                fh.write("%s==%s\n" % (name, version))
+            else:
+                print("era: %s - no release on or before %s, left unpinned" % (name, DATE))
+    print("era: pinned %d distribution(s) to %s" % (
+        sum(1 for v in picked.values() if v), DATE))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+_HELPER_FILES = [
+    ("check_git_changes.sh", "_CHECK_GIT_CHANGES_SH"),
+    ("install_set.sh", "_INSTALL_SET_SH"),
+    ("era_constraints.py", "_ERA_CONSTRAINTS_PY"),
+    ("apply_patch.sh", "_APPLY_PATCH_SH"),
+    ("conftest_report.py", "_CONFTEST_REPORT_PY"),
+    ("pytest_test_report.py", "_PYTEST_TEST_REPORT_PY"),
+    ("run_tests.sh", "_RUN_TESTS_SH"),
+]
+
+
+def _emit_helpers(exclude=()) -> str:
+    """Shell that writes the helper scripts into /home at image-build time.
+
+    They used to be File() entries, which put five extra files in every PR's image
+    directory. The layout that directory is supposed to have is the eight the harness
+    defines - the two patches, the four act scripts, check_git_changes.sh and the
+    Dockerfile - and anything else makes a PR folder that does not match its siblings.
+
+    Emitting them from prepare.sh keeps the directory clean and puts the scripts in the
+    image all the same. Quoted heredoc markers, so nothing inside is expanded on the way
+    in: run_tests.sh alone contains ${TARGETS}, $d and $(...) that must survive verbatim.
+    """
+    out = []
+    for name, const in _HELPER_FILES:
+        if name in exclude:
+            continue
+        body = globals()[const]
+        marker = "MSB_EOF_" + re.sub(r"[^A-Za-z0-9]", "_", name).upper()
+        out.append(
+            "cat > /home/%s <<'%s'\n%s\n%s\n" % (name, marker, body.rstrip("\n"), marker)
+        )
+        if name.endswith(".sh"):
+            out.append("chmod +x /home/%s\n" % name)
+        out.append("\n")
+    return "".join(out)
+
+
+def _packages_under_test(pr) -> list[str]:
+    """Package directories to install, read off THIS PR's own test patch.
+
+    `scripts/eachdist.py develop` was the obvious choice and it is wrong here: it installs
+    all forty packages in the repo, including opentelemetry-ext-celery, which pins
+    celery~=4.0. Every celery 4.x wheel declares `pytz (>dev)`, metadata no current
+    resolver will parse, so the whole install aborts and takes the image with it - #866
+    died exactly there. Pinning pip below 24.1 does not help; measured in the base image,
+    pip 23.0.1 rejects it too.
+
+    Nothing in this range tests celery. The packages that matter are the ones whose tests
+    the patch touches, and the patch says which those are: a test file at
+    `<pkg>/tests/...` means `<pkg>` has to be importable. Everything else is noise the
+    grading never looks at.
+    """
+    dirs = set()
+    for path in re.findall(r"^diff --git a/\S+ b/(\S+)", pr.test_patch or "", re.M):
+        parts = path.split("/")
+        if "tests" in parts:
+            pkg = "/".join(parts[: parts.index("tests")])
+            if pkg:
+                dirs.add(pkg)
+    return sorted(dirs)
+
+
 class OpentelemetryPythonImageBase(Image):
-    """Shared base image, one per PR (`base-pr-<N>`).
+    """Shared base image - ONE for the whole range (`base`).
 
     The previous version of this config was SINGLE-STAGE -- one `ImageDefault`
     with `image_tag() -> pr-<N>` and no base layer at all, so every act rebuilt
@@ -257,10 +716,15 @@ class OpentelemetryPythonImageBase(Image):
         return "python:3.8-bookworm"
 
     def image_tag(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        # ONE base for every PR in this range, not one each. The tag carries no PR
+        # number, so all five instances resolve to the same image_full_name() and the
+        # harness builds it once. That is only sound because this base stops at the
+        # clone - see dockerfile(). The moment it checked out a commit or installed
+        # from the tree it would be PR-specific again.
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -271,59 +735,31 @@ class OpentelemetryPythonImageBase(Image):
         # grpcio's C extension; nothing further is needed.
         return []
 
-    def extra_setup(self) -> str:
-        # Runs AFTER `git checkout ${BASE_COMMIT}`, so the tree is this PR's own.
-        #
-        # EVERYTHING ERA-SPECIFIC HERE IS CONDITIONAL, and it must be. This file
-        # registers the PLAIN key and prep_dataset.py strips number_interval, so
-        # EVERY opentelemetry-python entry resolves here -- across a repo that was
-        # reorganised between eras (2020: `ext/...`; today: `ext/` is gone,
-        # replaced by `exporter/ propagator/ shim/`). A hardcoded
-        # `pip install -e ./ext/opentelemetry-ext-otcollector` would fail the IMAGE
-        # BUILD outright on any later PR.
-        #
-        # THE protobuf PIN, and why it is gated rather than global: the otcollector
-        # extension declares `protobuf >= 3.8.0` with NO upper bound, so a fresh
-        # install today pulls protobuf 5.x and the 2020-era generated _pb2.py files
-        # cannot be read by it --
-        #     TypeError: Descriptors cannot not be created directly.
-        #     -> "no tests collected, 1 error"
-        # Measured: unpinned -> protobuf 5.29.6, 0 tests collectable;
-        #           `protobuf<3.20` -> 3.19.6, 5 tests collected at base_commit.
-        # But a MODERN otel PR needs modern protobuf, so the pin is applied only
-        # when the 2020-era layout is actually present.
-        #
-        # NOT `|| true` on the core installs: this is the toolchain, not a cache.
-        # A warm-up that fails quietly ships an image whose acts cannot run
-        # (FLOW Issue 14, GATE 1). The collect probe at the end proves it took
-        # effect and makes GATE 1 mechanical.
-        #
-        # RESIDUAL LIMIT, stated plainly: `dependency()` returns ONE base image, so
-        # the interpreter cannot adapt per era. python:3.8 suits the 2020 era this
-        # recipe was measured on; a recent otel PR would need a newer interpreter.
-        # Spanning 2020..today properly requires era-ranged configs -- which is what
-        # the five sibling `opentelemetry_python_*_to_*.py` files exist for.
-        return (
-            "RUN set -eux; \\\n"
-            "    python -m pip install --no-cache-dir --upgrade pip; \\\n"
-            "    python -m pip install --no-cache-dir -e ./opentelemetry-api; \\\n"
-            "    python -m pip install --no-cache-dir -e ./opentelemetry-sdk; \\\n"
-            "    if [ -d ext/opentelemetry-ext-otcollector ]; then \\\n"
-            "        python -m pip install --no-cache-dir -e ./ext/opentelemetry-ext-otcollector; \\\n"
-            '        python -m pip install --no-cache-dir "protobuf<3.20"; \\\n'
-            "    elif [ -f scripts/eachdist.py ]; then \\\n"
-            "        python scripts/eachdist.py develop; \\\n"
-            "    elif [ -f pyproject.toml ] || [ -f setup.py ]; then \\\n"
-            "        python -m pip install --no-cache-dir -e .; \\\n"
-            "    fi; \\\n"
-            '    python -m pip install --no-cache-dir "pytest~=7.4"; \\\n'
-            "    python -c 'import pytest; print(pytest.__version__)'; \\\n"
-            "    python -c 'import opentelemetry.sdk'; \\\n"
-            "    if [ -d ext/opentelemetry-ext-otcollector ]; then \\\n"
-            "        python -c 'import google.protobuf, grpc; print(google.protobuf.__version__)'; \\\n"
-            "        python -c 'from opentelemetry.ext.otcollector import trace_exporter'; \\\n"
-            "    fi"
-        )
+    def dockerfile(self) -> str:
+        """The base stops at the clone. Deliberately.
+
+        The harness default (image.py:250-256) would append `git checkout ${BASE_COMMIT}`,
+        then extra_setup(), then the hardening block - all facts about ONE pull request.
+        That is what forced a `base-pr-<N>` per PR and made the harness build five
+        near-identical bases for five PRs.
+
+        Stopping here leaves the base carrying only what every PR in the range shares:
+        the interpreter, the apt layer, and the clone. The checkout, the install and the
+        history scrub all moved to OpentelemetryPythonImageDefault, which is per-PR
+        anyway. Five clones became one.
+
+        The install had to move WITH the checkout, not merely alongside it: `pip install
+        -e` installs whatever the working tree currently holds, so it is only correct
+        once this PR's commit is checked out. See prepare.sh, where it now lives.
+
+        See BASE_DOCKERFILE for why the infrastructure block is written out by hand
+        rather than left to DockerfileEnhancer.
+        """
+        return BASE_DOCKERFILE % {
+            "image": self.dependency(),
+            "org": self.pr.org,
+            "repo": self.pr.repo,
+        }
 
 
 class OpentelemetryPythonImageDefault(Image):
@@ -357,10 +793,6 @@ class OpentelemetryPythonImageDefault(Image):
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
             File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
-            File(".", "apply_patch.sh", _APPLY_PATCH_SH),
-            File(".", "conftest_report.py", _CONFTEST_REPORT_PY),
-            File(".", "pytest_test_report.py", _PYTEST_TEST_REPORT_PY),
-            File(".", "run_tests.sh", _RUN_TESTS_SH),
             # The warm-up is a non-destructive IMPORT PROBE, never a reinstall.
             # A plain `pip install` here could REPLACE the base's EDITABLE
             # install, after which the fix patch's edit to
@@ -379,26 +811,44 @@ class OpentelemetryPythonImageDefault(Image):
                 """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
-git reset --hard
-git clean -fdq
+cd /home/@@REPO@@
+
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-test "$(git rev-parse HEAD)" = "$(git rev-parse {pr.base.sha})"
-git clean -fdq
-bash /home/check_git_changes.sh
-python -m pip --version || true
+test "$(git rev-parse HEAD)" = "$(git rev-parse @@SHA@@)"
+
+@@HELPERS@@
+cat > /home/packages_under_test.txt <<'MSB_PKGS_EOF'
+@@PACKAGES@@
+MSB_PKGS_EOF
+
+. /home/install_set.sh
+msb_core_dirs
+msb_constraints
+msb_install
+
+if msb_install_dirs | grep -q 'otcollector'; then
+    python -m pip install --no-cache-dir "protobuf<3.20"
+fi
+
+python -m pip install --no-cache-dir "pytest~=7.4"
+
 python --version
-python -c 'import pytest, opentelemetry.sdk'
-if [ -d ext/opentelemetry-ext-otcollector ]; then
-  python -c 'import google.protobuf, grpc'
+python -c 'import pytest; print(pytest.__version__)'
+python -c 'import opentelemetry.sdk'
+if msb_install_dirs | grep -q 'otcollector'; then
+  python -c 'import google.protobuf, grpc; print(google.protobuf.__version__)'
   python -c 'from opentelemetry.ext.otcollector import trace_exporter'
 fi
+
 git reset --hard
 git clean -fdq
 bash /home/check_git_changes.sh
 
-""".format(pr=self.pr),
+"""
+                .replace("@@REPO@@", self.pr.repo)
+                .replace("@@SHA@@", self.pr.base.sha)
+                .replace("@@PACKAGES@@", "\n".join(_packages_under_test(self.pr)))
+                .replace("@@HELPERS@@", _emit_helpers(exclude=("check_git_changes.sh",))),
             ),
             File(
                 ".",
@@ -447,12 +897,28 @@ bash /home/run_tests.sh
 
         copies = "".join(f"COPY {f.name} /home/\n" for f in self.files())
 
+        # The checkout lives HERE, not in the base, because the base is now shared
+        # by every PR in the range and cannot be pinned to any one commit.
+        #
+        # The hardening block moves with it. It scrubs git history down to the base
+        # commit so nothing downstream can read the fix out of `git log`, and it has
+        # to run on the image the acts actually execute in. Left in the base it would
+        # be scrubbing a tree that had not been checked out yet - i.e. nothing.
+        # BASE_COMMIT is substituted literally rather than left as a build ARG, so
+        # the block's assertions compare against this PR's sha and no other.
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
+
         return f"""FROM {image_name}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout {self.pr.base.sha}
 
 {copies}
 RUN bash /home/prepare.sh
 
-"""
+{hardening}"""
 
 
 @Instance.register("open-telemetry", "opentelemetry-python")
