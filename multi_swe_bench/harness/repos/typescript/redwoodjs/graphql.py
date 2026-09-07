@@ -486,3 +486,8 @@ class RedwoodjsGraphql(Instance):
 
     def parse_log(self, test_log: str) -> TestResult:
         return parse_jest_json_log(test_log, self.pr.repo)
+
+
+
+
+# Hello
