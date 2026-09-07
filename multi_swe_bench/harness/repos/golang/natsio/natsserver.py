@@ -1,3 +1,4 @@
+import posixpath
 import re
 from typing import Optional, Union
 
@@ -6,62 +7,47 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-# --- GOPATH-era constants -------------------------------------------------
-# nats-server PR 638 (merged 2018-03-16) predates Go modules by ~5 months, so
-# the repo at this base commit has NO go.mod -- only a vendor/ tree. Verified
-# with `git ls-tree` at dd3dccc5: no go.mod, vendor/ present.
+# =============================================================================
+# nats-io/nats-server spans THREE build eras across its 25 PRs (2018 -> 2024).
+# This registry ships ONE shared base image + one PR image per PR (1 base + N pr,
+# NOT one base per PR).  The per-era differences are decided HERE in Python and
+# interpolated into FLAT, standard shell scripts -- there is no `if era` branching
+# in any generated prepare.sh/run.sh.  Empirically (golang:1.24):
 #
-# Two consequences drive everything below:
+#   Era 1  GOPATH/gnatsd (no go.mod)      PRs 682,698,794,796,893
+#          -> `go build ./...` FAILS ("directory prefix . does not contain main
+#             module"); needs GOPATH mode + the gnatsd import path + go-nats/nuid
+#             + a re-signed test PKI (the 2018 certs expired Nov-2019).
+#   Era 2  modules + vendor               PRs 1175..2761
+#   Era 3  modules, no vendor             PRs 2973,3365,3679,4105,5281,5829
+#          -> BOTH build & test with the plain, standard `go build/test ./...`
+#             (module=github.com/nats-io/nats-server/v2); certs valid to 2029/2032,
+#             so no fixture repair is needed.
 #
-#  1. Modern Go defaults to GO111MODULE=on and refuses to build without a
-#     go.mod ("cannot find main module"). GOPATH mode must be forced OFF.
-#     Verified in Docker on golang:1.24: with GO111MODULE=off the whole
-#     package list resolves and every package compiles.
-#
-#  2. In 2018 this project was still named **gnatsd**, and the source imports
-#     itself as `github.com/nats-io/gnatsd/server`. GOPATH resolves packages
-#     by import path, so the tree must appear at
-#     $GOPATH/src/github.com/nats-io/gnatsd -- NOT .../nats-server. The
-#     harness clones to /home/nats-server and that path is fixed by
-#     DockerfileEnhancer._standardize_repo_fetch, so a symlink bridges the two.
-#     Verified in Docker: Go resolves through the symlink and all packages
-#     compile.
+# So the 20 module-era PRs share one identical standard script template; only the
+# 5 GOPATH-era PRs carry the extra setup, injected by Python.  Everything runs off
+# the single shared base (golang:1.24 + a full-history clone).
+# =============================================================================
+
+# The 5 GOPATH-era PRs.  Membership here is the ONLY era switch, evaluated in
+# Python at generation time -- the shell scripts never test it.
+_GOPATH_PRS = frozenset({682, 698, 794, 796, 893})
+
+# GOPATH import path for the 2018 tree, which imports itself as
+# github.com/nats-io/gnatsd (the project was still named gnatsd then).
 _GO_IMPORT_DIR = "/go/src/github.com/nats-io/gnatsd"
 
-# Test-only dependencies that are NOT in the repo vendor/ tree. Without these
-# BOTH packages that this PR touches fail to build:
-#   server/client_test.go  -> cannot find package "github.com/nats-io/go-nats"
-#   test/*_test.go         -> same
-# and surefire-style output is empty, so the instance yields 0 tests.
-# `go get` cannot be used to fetch them: under GO111MODULE=off modern Go
-# refuses ("modules disabled by GO111MODULE=off"), so they are git-cloned.
-# v1.3.0 is the release current as of this PR's March-2018 base commit;
-# pinning it keeps the image reproducible and API-compatible with the era.
+# Release of go-nats current as of the 2018 base commits; pinned for reproducibility.
 _GO_NATS_TAG = "v1.3.0"
 
-# --- Expired-fixture repair ------------------------------------------------
-# The repo's checked-in test PKI expired in **November 2019**:
-#     ca.pem          notAfter=Nov  4 23:06:17 2019 GMT
-#     server-cert.pem notAfter=Nov  4 23:06:34 2019 GMT
-#     client-cert.pem notAfter=Nov  4 23:10:47 2019 GMT
-#     srva-cert.pem   notAfter=Nov  7 22:08:30 2019 GMT
-#     srvb-cert.pem   notAfter=Nov  7 22:08:37 2019 GMT
-# Every TLS test therefore fails purely because of wall-clock time, not because
-# of anything in the code under test. Two of them (TestTLSClusterConfig,
-# TestBasicTLSClusterPubSub) failed outright; verified in Docker that with a
-# freshly-signed PKI they both pass (`ok github.com/nats-io/gnatsd/test 0.112s`).
-#
-# The repo ships ca.pem but NOT ca-key.pem, so the existing leaves cannot be
-# re-signed by the original CA. Instead the whole chain is regenerated: a new
-# self-signed CA, then new leaf certs that **reuse the repo's existing private
-# keys** and preserve every subject DN and SAN exactly as the fixtures had them
-# (CN=localhost + DNS:localhost,IP:127.0.0.1 for the server; CN=nats-client for
-# the client; CN=nats-cluster + the same SANs for srva/srvb). Only the validity
-# window changes, so the tests exercise real TLS rather than being skipped.
-#
-# Written without a shell function on purpose: this constant is interpolated
-# into prepare.sh via str.format(), and literal `{`/`}` would be parsed as
-# format placeholders.
+# --- Expired-fixture repair (GOPATH era only) ------------------------------
+# The 2018 checked-in test PKI expired in November 2019, so every TLS test would
+# fail purely on wall-clock time.  ca-key.pem is not shipped, so the chain is
+# regenerated: a fresh self-signed CA re-signs new leaf certs that REUSE the
+# repo's existing private keys and preserve every subject DN and SAN, changing
+# only the validity window.  Module-era certs are valid to 2029/2032, so this is
+# injected ONLY for the GOPATH PRs (empty string otherwise).
+# No literal `{`/`}` on purpose: this is interpolated into prepare.sh via .format().
 _CERT_REGEN = r"""
 CERTS=/go/src/github.com/nats-io/gnatsd/test/configs/certs
 CA_DN="/C=US/ST=CA/L=San Francisco/O=Apcera Inc/OU=nats.io/CN=localhost/emailAddress=derek@nats.io"
@@ -87,68 +73,67 @@ openssl req -new -key "$CERTS/srvb-key.pem" -out /tmp/srvb.csr -subj "/CN=nats-c
 openssl x509 -req -in /tmp/srvb.csr -CA "$CERTS/ca.pem" -CAkey "$CERTS/ca-key.pem" \
     -CAcreateserial -out "$CERTS/srvb-cert.pem" -days 7300 -sha256 -extfile /tmp/ext_srv.cnf >/dev/null 2>&1
 
-# The CA private key must NOT survive into the shipped image, and ca.srl is
-# build noise. The four leaf certs plus the regenerated ca.pem are all the
-# tests need.
 rm -f "$CERTS/ca-key.pem" "$CERTS/ca.srl" /tmp/*.csr /tmp/ext_srv.cnf /tmp/ext_cli.cnf
 openssl x509 -checkend 0 -noout -in "$CERTS/server-cert.pem"
 """
 
-# --- The one test that is genuinely unrunnable ------------------------------
-# TestTLSCloseClientConnection HANGS rather than failing: it prints
-# "!!!! closeConnection is blocked, test will hang !!!" and then sits until Go's
-# timeout fires. A Go test timeout PANICS, which kills the entire package test
-# binary -- so every test after it in the `server` package never executes. That
-# is what silently produced an empty f2p on the first Data6 build: the PR's
-# target test, TestRoutedQueueUnsubscribe, lives in server/routes_test.go, and
-# Go walks test files in sorted order, so client_test.go's hang landed first.
-#
-# This is NOT the expired-cert problem. Verified in Docker with a freshly-signed
-# PKI: the test still hangs and still burns the full timeout, with the stack
-# trace pointing into server.go:307 / RunServer -- a deadlock in the 2018 server
-# code under the Go 1.24 runtime, unrelated to the fixtures.
-#
-# Scope of the skip is deliberately ONE test, not a `TLS` pattern. An earlier
-# draft of this fix skipped everything matching /TLS/, which would have silenced
-# ~24 tests; once the certs are valid almost all of them pass, so that would
-# have thrown away real coverage to work around a single deadlock.
-# --- Non-deterministic test, excluded to keep the instance reproducible -----
-# TestRequestsAcrossRoutes is intrinsically flaky in a container: it issues a
-# request/reply across a cluster route and intermittently trips its own client
-# timeout ("Received an error on Request test [0]: nats: timeout",
-# client_cluster_test.go:310).
-#
-# It is NOT broken by fix.patch. Measured in Docker, running the test ALONE so
-# there is no cross-package contention:
-#     baseline, no patch applied : 19 PASS / 1 FAIL  (20 runs)
-#     with test.patch+fix.patch  : 12 PASS / 2 FAIL  (14 runs)
-# Identical failure message in both states -- a ~5-15% dice roll independent of
-# the patch.
-#
-# On the first clean Data6 build it happened to land pass/pass/FAIL across the
-# three stages, which blocks resolution: an instance resolves only if the f2p
-# tests flip to PASS *and* previously-passing tests stay passing. Leaving it in
-# would ship an instance that spuriously fails ~10% of the time for reasons
-# having nothing to do with the agent being graded.
-#
-# Anchored deliberately. Go's -skip is an UNANCHORED regexp match, and this repo
-# also has TestRequestsAcrossRoutesToQueues -- a different, stable test that an
-# unanchored pattern would silently take out too.
+# TestTLSCloseClientConnection deadlocks under the modern runtime and burns the
+# whole timeout, killing the package binary; TestRequestsAcrossRoutes is a
+# container-flaky cross-route request. Both are excluded so the instances stay
+# reproducible. Anchored, because unanchored -skip would also take out the stable
+# TestRequestsAcrossRoutesToQueues.
 _SKIP_TESTS = "^(TestTLSCloseClientConnection|TestRequestsAcrossRoutes)$"
 
-# Explicit timeout, well above the ~45s the full suite now needs, so that any
-# future hang fails in bounded time instead of quietly consuming Go's 10-minute
-# default and truncating the package the way the original run did.
-_GO_TEST_TIMEOUT = "600s"
+_GO_TEST_TIMEOUT = "1200s"
 
-# Defined once and reused verbatim by run.sh, test-run.sh and fix-run.sh, so the
-# three graded stages differ ONLY by which patch was applied. If the command
-# varied between stages, a FAIL->PASS transition could come from the command
-# rather than from the fix, and the f2p/n2p signal would be meaningless.
-_GO_TEST_CMD = (
-    f"go test -v -count=1 -timeout {_GO_TEST_TIMEOUT} "
-    f"-skip '{_SKIP_TESTS}' $PACKAGES"
+# Fallback package list (everything except vendor), used only when a PR's test.patch
+# touches no .go files -- normally we scope to just the touched packages (see
+# natsserverImageDefault._pkg_line), because nats-server's full suite is far too slow
+# and flaky to run ./... across three stages for every PR.
+_PKG_LINE_ALL = (
+    "PACKAGES=$(go list ./... 2>/dev/null | grep -v '/vendor/' " '|| echo "./...")'
 )
+
+
+def _touched_packages(test_patch: str) -> list[str]:
+    """Directories of the .go files a test.patch adds/modifies, as ./relative Go
+    package paths. The graded f2p/n2p tests live in these files, so running just
+    these packages captures every target test (added OR modified) while skipping the
+    rest of nats-server's large suite. Same relative paths work in GOPATH and module
+    mode. Returns [] if the patch touches no .go file (caller falls back to ./...)."""
+    dirs: set[str] = set()
+    for line in (test_patch or "").splitlines():
+        m = re.match(r"^\+\+\+ b/(.+\.go)\s*$", line)
+        if m:
+            d = posixpath.dirname(m.group(1))
+            dirs.add("./" + d if d else ".")
+    return sorted(dirs)
+
+
+def _target_tests(test_patch: str) -> list[str]:
+    """Top-level Test functions the test.patch adds or modifies, within *_test.go
+    files. Used to build `go test -run '^(...)$'` so we run ONLY the graded tests,
+    not nats-server's whole `./server` package -- which for the 2022+ era exceeds the
+    600s Go test timeout, panics, and truncates results (p2p=0, no clean transition).
+
+    Both added (`+func Test...`) and modified (context ` func Test...`) declarations
+    are captured, so f2p (modified existing test) and n2p (newly added test) both work.
+    Running the top-level Test name also runs all its t.Run subtests. Returns [] if no
+    Test decl is found (caller then runs the whole package, relying on the timeout)."""
+    names: set[str] = set()
+    in_test_file = False
+    for line in (test_patch or "").splitlines():
+        if line.startswith("+++ b/"):
+            in_test_file = line.rstrip().endswith("_test.go")
+            continue
+        if not in_test_file:
+            continue
+        # hunk body lines only (added or context), a func declaration line
+        if line[:1] in ("+", " "):
+            m = re.search(r"func\s+(?:\([^)]*\)\s+)?(Test\w+)\s*\(", line)
+            if m:
+                names.add(m.group(1))
+    return sorted(names)
 
 
 class natsserverImageBase(Image):
@@ -165,62 +150,80 @@ class natsserverImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # Pinned, and multi-arch: `docker manifest inspect golang:1.24` lists
-        # both linux/amd64 and linux/arm64. Despite being far newer than the
-        # 2018 code, it builds this tree correctly once GOPATH mode is forced
-        # (verified in Docker) -- preferred over an EOL golang:1.10 image,
-        # which would be unpatched and is not published for arm64.
+        # Pinned + multi-arch (amd64 + arm64). Builds every era of this tree once
+        # GOPATH mode is forced for the 2018 PRs; preferred over an EOL golang:1.10
+        # which is unpatched and has no arm64 image.
         return "golang:1.24"
 
     def image_tag(self) -> str:
-        # Per-PR, NOT a shared "base" tag. The hardening block injected into
-        # the rendered base Dockerfile detaches at one ${BASE_COMMIT}, deletes
-        # every other ref and gc-prunes unreachable objects, then asserts
-        # rev-list --all == rev-list HEAD. A tag shared across PRs would stay
-        # permanently pinned to whichever PR built it FIRST, and any second PR
-        # reusing it would find its own base commit already pruned away.
-        return f"base-pr-{self.pr.number}"
+        # ONE shared base for all 25 PRs. The repo is cloned with FULL history by
+        # clone_repo.sh (a COPY'd script), so each PR image can `git checkout` its
+        # own base commit out of this single image. Because the clone lives in a
+        # script and not as a `git clone` line in the Dockerfile, the harness
+        # DockerfileEnhancer neither rewrites it to a single ${BASE_COMMIT} checkout
+        # nor injects its history scrub -- which is exactly what would otherwise pin
+        # a shared base to one commit and force one base image per PR.
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def files(self) -> list[File]:
-        return []
+        return [
+            File(
+                ".",
+                "clone_repo.sh",
+                # Identical for every PR of this repo (hardcoded URLs), so the harness
+                # dedupes the base to a single build.
+                """#!/bin/bash
+set -e
+git config --global --add safe.directory '*'
+mkdir -p /go/src/github.com/nats-io
+
+# Main repo: FULL history, no checkout, no scrub -- each PR image detaches its own
+# base commit out of this shared clone.
+git clone --quiet https://github.com/nats-io/nats-server.git /home/nats-server
+
+# GOPATH-era (2018 gnatsd) build deps that are not in that era's vendor tree.
+# Harmless for the module-era PRs, which ignore GOPATH entirely.
+git clone --quiet --branch v1.3.0 --depth 1 https://github.com/nats-io/go-nats.git /go/src/github.com/nats-io/go-nats
+git clone --quiet --depth 1 https://github.com/nats-io/nuid.git /go/src/github.com/nats-io/nuid
+
+# GOPATH import path: the 2018 tree imports itself as github.com/nats-io/gnatsd.
+ln -sfn /home/nats-server /go/src/github.com/nats-io/gnatsd
+
+cd /home/nats-server && git rev-parse HEAD >/dev/null
+""",
+            ),
+        ]
 
     def dockerfile(self) -> str:
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
 
-        # NOTE ON ORDERING: the GOPATH scaffolding below must come BEFORE the
-        # clone line. DockerfileEnhancer._standardize_repo_fetch() replaces that
-        # clone line with the parameterized clone + checkout + hardening block +
-        # CMD, so anything placed after it in this template would land after CMD
-        # and never execute. Creating the symlink before its target exists is
-        # fine -- it dangles until the clone materialises /home/<repo>.
+        # GOPATH + CGO are set once here (shared). GO111MODULE is deliberately NOT
+        # set in the base: modern Go defaults it to "on" (correct for the 20 module
+        # PRs), and only the 5 GOPATH PRs flip it OFF, in their own PR Dockerfile.
+        # No `git clone` token appears in this Dockerfile (the clone is inside
+        # clone_repo.sh), so the enhancer leaves the base's full history intact.
         return f"""FROM {image_name}
 
 {self.global_env}
 
 ENV GOPATH=/go
-ENV GO111MODULE=off
 ENV CGO_ENABLED=0
 
 WORKDIR /home/
 
-RUN mkdir -p /go/src/github.com/nats-io && \\
-    git clone --quiet --branch {_GO_NATS_TAG} --depth 1 \\
-        https://github.com/nats-io/go-nats.git /go/src/github.com/nats-io/go-nats && \\
-    git clone --quiet --depth 1 \\
-        https://github.com/nats-io/nuid.git /go/src/github.com/nats-io/nuid && \\
-    ln -sfn /home/{self.pr.repo} {_GO_IMPORT_DIR}
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 
-{code}
+{copy_commands}
+RUN bash /home/clone_repo.sh
 
 {self.clear_env}
 
@@ -240,6 +243,10 @@ class natsserverImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
+    @property
+    def is_gopath(self) -> bool:
+        return self.pr.number in _GOPATH_PRS
+
     def dependency(self) -> Image | None:
         return natsserverImageBase(self.pr, self.config)
 
@@ -250,32 +257,39 @@ class natsserverImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        # Every script cds to the GOPATH path rather than /home/<repo>. They are
-        # the same directory (symlinked in the base image), but Go only resolves
-        # the `github.com/nats-io/gnatsd/...` self-imports when the tree is
-        # reached through its GOPATH import path. git operations (apply, reset,
-        # status) work identically through the symlink.
-        #
-        # The package list deliberately does NOT filter out the `test` package.
-        # The previous config excluded it with `grep -v '/test$'`, but this PR
-        # modifies test/routes_test.go -- filtering it silently dropped half the
-        # PR's tests from every stage. It only failed to build because go-nats
-        # was missing, which the base image now provides.
-        pkg_line = (
-            "PACKAGES=$(go list ./... 2>/dev/null | grep -v '/vendor/' "
-            '|| echo "./...")'
+        # The ONLY per-era values, all computed in Python. The shell templates
+        # below stay flat and identical in structure across every PR.
+        go_dir = _GO_IMPORT_DIR if self.is_gopath else "/home/nats-server"
+        cert_regen = (
+            _CERT_REGEN
+            if self.is_gopath
+            else "# module-era certs are valid to 2029/2032; no fixture repair needed"
         )
+        # Scope the graded run to the packages this PR's test.patch touches (Python-
+        # computed; the shell template just receives a PACKAGES= line either way).
+        touched = _touched_packages(self.pr.test_patch)
+        pkg_line = (
+            'PACKAGES="' + " ".join(touched) + '"' if touched else _PKG_LINE_ALL
+        )
+        # ...and to the specific Test funcs the patch touches, so we do not run all of
+        # ./server (which for the 2022+ era exceeds the 600s timeout and panics). If no
+        # Test decl is found, fall back to the whole package (no -run filter).
+        targets = _target_tests(self.pr.test_patch)
+        run_filter = (
+            "-run '^(" + "|".join(targets) + ")$' " if targets else ""
+        )
+        # -vet=off: `go test` runs `go vet` by default, and Go 1.24's vet rejects the
+        # 2018 GOPATH-era code ("non-constant format string in call to Fatalf/Errorf"),
+        # which fails the BUILD before any test runs -> 0 results. Skipping vet lets the
+        # old code compile+test; harmless for the module eras (they already pass vet).
+        test_cmd = (
+            f"go test -v -count=1 -vet=off -timeout {_GO_TEST_TIMEOUT} "
+            f"{run_filter}-skip '{_SKIP_TESTS}' $PACKAGES"
+        )
+
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -309,27 +323,26 @@ bash /home/check_git_changes.sh
 git checkout {sha}
 bash /home/check_git_changes.sh
 
-# Re-sign the expired test PKI. This runs AFTER both clean-tree assertions on
-# purpose: the certs are tracked files, so regenerating them dirties the working
-# tree, and doing it earlier would make check_git_changes.sh fail. It also has
-# to be here rather than in the base image, because the `git reset --hard`
-# above would revert anything the base image had written. No `|| true` -- this
-# is deterministic local openssl work with no network, so a failure here is a
-# real problem and should stop the build rather than silently ship dead certs.
+# Scrub THIS PR image down to its base commit's ancestry (the shared base keeps
+# full history). After this the shipped PR image carries no future/fix commits.
+git checkout --detach {sha}
+git remote remove origin 2>/dev/null || true
+git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all || true
+git gc --prune=now --aggressive
+git repack -a -d -l --quiet || true
+rm -f .git/objects/info/alternates
+git config --local gc.auto 0
+
+# Era-specific fixture repair (empty for module-era PRs). Runs AFTER the clean-tree
+# assertions and the scrub, because re-signing certs dirties tracked files.
 {cert_regen}
 
-# Warm the build cache so the three graded runs do not each pay a full
-# compile. `|| true` because a warm-up hiccup must not fail the image build --
-# the graded runs decide pass/fail, not this.
+# Warm the build cache so the three graded runs do not each pay a full compile.
 {pkg_line}
 go build $PACKAGES || true
 
-""".format(
-                    go_dir=_GO_IMPORT_DIR,
-                    sha=self.pr.base.sha,
-                    pkg_line=pkg_line,
-                    cert_regen=_CERT_REGEN,
-                ),
+""".format(go_dir=go_dir, sha=self.pr.base.sha, cert_regen=cert_regen, pkg_line=pkg_line),
             ),
             File(
                 ".",
@@ -341,7 +354,7 @@ cd {go_dir}
 {pkg_line}
 {go_test_cmd}
 
-""".format(go_dir=_GO_IMPORT_DIR, pkg_line=pkg_line, go_test_cmd=_GO_TEST_CMD),
+""".format(go_dir=go_dir, pkg_line=pkg_line, go_test_cmd=test_cmd),
             ),
             File(
                 ".",
@@ -357,7 +370,7 @@ fi
 {pkg_line}
 {go_test_cmd}
 
-""".format(go_dir=_GO_IMPORT_DIR, pkg_line=pkg_line, go_test_cmd=_GO_TEST_CMD),
+""".format(go_dir=go_dir, pkg_line=pkg_line, go_test_cmd=test_cmd),
             ),
             File(
                 ".",
@@ -373,7 +386,7 @@ fi
 {pkg_line}
 {go_test_cmd}
 
-""".format(go_dir=_GO_IMPORT_DIR, pkg_line=pkg_line, go_test_cmd=_GO_TEST_CMD),
+""".format(go_dir=go_dir, pkg_line=pkg_line, go_test_cmd=test_cmd),
             ),
         ]
 
@@ -386,14 +399,19 @@ fi
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        # The only per-era ENV. Module PRs inherit the base default (GO111MODULE on);
+        # the 5 GOPATH PRs flip it off here. No `git clone` token in this Dockerfile
+        # (checkout happens inside prepare.sh), so the enhancer does not re-scrub.
+        module_env = "ENV GO111MODULE=off" if self.is_gopath else "ENV GO111MODULE=on"
 
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
+{module_env}
+
 {copy_commands}
-{prepare_commands}
+RUN bash /home/prepare.sh
 
 {self.clear_env}
 
@@ -437,21 +455,12 @@ class natsserver(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Strip ANSI first: `go test` is usually uncoloured, but CI wrappers and
-        # gotestsum are not, and a stray escape sequence silently breaks every
-        # anchored pattern below.
+        # Strip ANSI first (gotestsum / CI wrappers colourize).
         test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        # Anchored on `go test -v` result lines only:
-        #   --- PASS: TestFoo (0.01s)
-        #   --- FAIL: TestFoo/subtest (0.00s)
-        #   --- SKIP: TestFoo (0.00s)
-        #
-        # Deliberately NOT a bare `FAIL\s+(\S+)`: go prints a package summary
-        # line (`FAIL\tgithub.com/nats-io/gnatsd/server\t0.5s`) for every failing
-        # package, and a broad pattern turns that package PATH into a phantom
-        # failing "test", inflating failed_count with entries that are not tests.
-        # The previous config carried exactly that pattern.
+        # Anchored on `go test -v` result lines only. Deliberately NOT a bare
+        # `FAIL\s+(\S+)`: go prints a per-package summary line that a broad pattern
+        # would turn into a phantom failing "test".
         re_pass = re.compile(r"^--- PASS: (\S+)")
         re_fail = re.compile(r"^--- FAIL: (\S+)")
         re_skip = re.compile(r"^--- SKIP: (\S+)")
@@ -473,14 +482,7 @@ class natsserver(Instance):
             if m:
                 skipped_tests.add(m.group(1))
 
-        # Enforce TestResult's disjointness invariants explicitly rather than
-        # relying on line order. TestResult.__post_init__ raises ValueError if
-        # any two sets intersect, which would crash the whole run.
-        # Precedence: a failure anywhere wins, then skip, then pass -- so a test
-        # that is retried and fails is never also counted as passing.
-        # (The previous config only recorded a SKIP when the test was ALREADY in
-        # failed_tests, which both suppressed real skips and could produce a
-        # failed/skipped intersection -> ValueError.)
+        # Enforce TestResult disjointness: failure wins, then skip, then pass.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
         passed_tests -= skipped_tests
