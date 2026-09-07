@@ -5,7 +5,7 @@ from typing import Generator, Optional, Union
 
 from dataclasses_json import dataclass_json
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -27,10 +27,10 @@ class MaterialUiImageBase(Image):
         return "node:20"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base_fullhist"
 
     def workdir(self) -> str:
-        return "base"
+        return "base_fullhist"
 
     def files(self) -> list[File]:
         return []
@@ -41,24 +41,52 @@ class MaterialUiImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        # The leading syntax directive makes DockerfileEnhancer.enhance() return
+        # this text untouched, so the standard repo-fetch rewrite - which pins the
+        # clone to ONE ${{BASE_COMMIT}} and gc-prunes everything unreachable from
+        # it - does not run here. That rewrite made this shared base usable by
+        # exactly one PR: any PR whose base.sha was not an ancestor of the pinned
+        # commit died at `git checkout <sha>` with "reference is not a tree", the
+        # image never built, and no report was produced.
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 {self.global_env}
 
 WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends git jq && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm@9
 
 {code}
 
-RUN apt update && apt install -y git 
-RUN npm install -g pnpm@9
-RUN apt install -y jq
+# History hardening is deferred to the per-PR image, which ends with
+# test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+# Keep that marker here so DockerfileEnhancer._inject_final_sanitize does not
+# pin this shared base to a single PR's BASE_COMMIT.
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -79,10 +107,10 @@ class MaterialUiImageBase40180(Image):
         return "node:18"
 
     def image_tag(self) -> str:
-        return "base40180"
+        return "base40180_fullhist"
 
     def workdir(self) -> str:
-        return "base40180"
+        return "base40180_fullhist"
 
     def files(self) -> list[File]:
         return []
@@ -93,23 +121,51 @@ class MaterialUiImageBase40180(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        # The leading syntax directive makes DockerfileEnhancer.enhance() return
+        # this text untouched, so the standard repo-fetch rewrite - which pins the
+        # clone to ONE ${{BASE_COMMIT}} and gc-prunes everything unreachable from
+        # it - does not run here. That rewrite made this shared base usable by
+        # exactly one PR: any PR whose base.sha was not an ancestor of the pinned
+        # commit died at `git checkout <sha>` with "reference is not a tree", the
+        # image never built, and no report was produced.
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 {self.global_env}
 
 WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends git jq && rm -rf /var/lib/apt/lists/*
 
 {code}
 
-RUN apt update && apt install -y git 
-RUN apt install -y jq
+# History hardening is deferred to the per-PR image, which ends with
+# test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+# Keep that marker here so DockerfileEnhancer._inject_final_sanitize does not
+# pin this shared base to a single PR's BASE_COMMIT.
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -232,16 +288,28 @@ pnpm test:unit -- --reporter json
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # The shared base keeps full history so every PR can reach its own
+        # base.sha; the strict single-commit strip therefore happens here, with
+        # this PR's sha carried by the BASE_COMMIT ARG, so the finished image
+        # still holds exactly one commit and no remotes.
+        hardening = Image._HARDENING_BLOCK
+
         return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/{self.pr.repo}
 
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{copy_commands}
 {prepare_commands}
 
+{hardening}
 {self.clear_env}
-
 """
 
 
@@ -312,44 +380,137 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-yarn install || true
+# --ignore-engines: this era's lockfile pins packages that cap Node at 16
+# (eslint-import-resolver-webpack@0.13.1), and yarn 1 aborts the ENTIRE install
+# on an engine mismatch. That left no node_modules at all, so every later stage
+# died with "cross-env: not found" and the report came back 0/0/0.
+yarn install --ignore-engines || true
+
+# Fail the build here instead of shipping an image whose test command cannot
+# run: without this, a broken install only shows up three stages later as an
+# unexplained (0, 0, 0).
+test -x node_modules/.bin/mocha
+test -x node_modules/.bin/cross-env
 
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
-                """#!/bin/bash
-set -e
+                r"""#!/bin/bash
+cd /home/__REPO__
+set +e
 
-cd /home/{pr.repo}
-yarn run test:unit --reporter json 
+LOGDIR=/tmp/mswb-run
+rm -rf "$LOGDIR"
+mkdir -p "$LOGDIR"
 
-""".format(pr=self.pr),
+# Report goes to a file, not straight to the container's stdout pipe: mocha
+# exits via process.exit(), and Node truncates asynchronous pipe writes, which
+# silently costs the tail of a multi-megabyte JSON report.
+yarn run test:unit --reporter json > "$LOGDIR/report.json" 2> "$LOGDIR/stderr.log"
+
+cat "$LOGDIR/report.json"
+cat "$LOGDIR/stderr.log"
+
+exit 0
+
+""".replace("__REPO__", self.pr.repo),
             ),
             File(
                 ".",
                 "test-run.sh",
-                """#!/bin/bash
+                r"""#!/bin/bash
+cd /home/__REPO__
+
 set -e
-
-cd /home/{pr.repo}
 git apply /home/test.patch
-yarn run test:unit --reporter json 
+set +e
 
-""".format(pr=self.pr),
+LOGDIR=/tmp/mswb-test-stage
+rm -rf "$LOGDIR"
+mkdir -p "$LOGDIR"
+
+# Every mocha run writes its report to a FILE and the files are concatenated at
+# the very end, once every writer has exited. Mocha runs with --exit, which
+# calls process.exit() the moment the run finishes; Node's writes to a PIPE are
+# asynchronous, so a multi-megabyte JSON report loses its tail and parse_log
+# discards the whole unparseable payload (that is how a stage with 4224 passing
+# tests still reported 0/0/0). Writes to a file are synchronous, so the report
+# survives intact.
+run_mocha() {
+  local out="$LOGDIR/$1"
+  shift
+  NODE_ENV=test npx mocha "$@" --reporter json --exit > "$out.json" 2> "$out.err"
+}
+
+# Same glob set as the package.json test:unit script, so the baseline test set
+# matches run.sh / fix-run.sh exactly. Globs stay quoted: mocha expands them.
+run_mocha main 'packages/**/*.test.{js,ts,tsx}' 'docs/**/*.test.{js,ts,tsx}' 'scripts/**/*.test.{js,ts,tsx}' 'test/utils/**/*.test.{js,ts,tsx}' --exclude '**/node_modules/**'
+
+# Mocha loads every file matched by the glob before running any test. A test
+# patch may reference a source module that only lands with the FIX patch, so
+# that load throws MODULE_NOT_FOUND and the whole suite aborts before the
+# reporter emits anything. If no report was produced, re-run with the test
+# files touched by the patch excluded, so the rest of the suite is still
+# measured, then run each touched file on its own.
+if ! grep -q '"stats"' "$LOGDIR/main.json"; then
+  echo "test-run.sh: suite produced no JSON report; retrying without the patched test files"
+
+  # git apply leaves added files untracked and modified ones tracked, so read
+  # the porcelain status and keep the path column whatever the status code is.
+  PATCHED_TESTS=$(git status --porcelain -uall | cut -c4- | grep -E '\.test\.(js|ts|tsx)$')
+
+  EXCLUDE_ARGS=()
+  while IFS= read -r f; do
+    [ -n "$f" ] && EXCLUDE_ARGS+=(--exclude "$f")
+  done <<< "$PATCHED_TESTS"
+
+  run_mocha retry 'packages/**/*.test.{js,ts,tsx}' 'docs/**/*.test.{js,ts,tsx}' 'scripts/**/*.test.{js,ts,tsx}' 'test/utils/**/*.test.{js,ts,tsx}' --exclude '**/node_modules/**' "${EXCLUDE_ARGS[@]}"
+
+  i=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    i=$((i + 1))
+    run_mocha "patched$i" "$f"
+  done <<< "$PATCHED_TESTS"
+fi
+
+# parse_log scans for multiple JSON objects, so several reports in one log are
+# all counted.
+cat "$LOGDIR"/*.json
+cat "$LOGDIR"/*.err
+
+exit 0
+
+""".replace("__REPO__", self.pr.repo),
             ),
             File(
                 ".",
                 "fix-run.sh",
-                """#!/bin/bash
+                r"""#!/bin/bash
+cd /home/__REPO__
+set +e
+
 set -e
-
-cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
-yarn run test:unit --reporter json 
+set +e
 
-""".format(pr=self.pr),
+LOGDIR=/tmp/mswb-fix
+rm -rf "$LOGDIR"
+mkdir -p "$LOGDIR"
+
+# Report goes to a file, not straight to the container's stdout pipe: mocha
+# exits via process.exit(), and Node truncates asynchronous pipe writes, which
+# silently costs the tail of a multi-megabyte JSON report.
+yarn run test:unit --reporter json > "$LOGDIR/report.json" 2> "$LOGDIR/stderr.log"
+
+cat "$LOGDIR/report.json"
+cat "$LOGDIR/stderr.log"
+
+exit 0
+
+""".replace("__REPO__", self.pr.repo),
             ),
         ]
 
@@ -364,16 +525,28 @@ yarn run test:unit --reporter json
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # The shared base keeps full history so every PR can reach its own
+        # base.sha; the strict single-commit strip therefore happens here, with
+        # this PR's sha carried by the BASE_COMMIT ARG, so the finished image
+        # still holds exactly one commit and no remotes.
+        hardening = Image._HARDENING_BLOCK
+
         return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/{self.pr.repo}
 
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{copy_commands}
 {prepare_commands}
 
+{hardening}
 {self.clear_env}
-
 """
 
 
@@ -444,44 +617,137 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-yarn install || true
+# --ignore-engines: this era's lockfile pins packages that cap Node at 16
+# (eslint-import-resolver-webpack@0.13.1), and yarn 1 aborts the ENTIRE install
+# on an engine mismatch. That left no node_modules at all, so every later stage
+# died with "cross-env: not found" and the report came back 0/0/0.
+yarn install --ignore-engines || true
+
+# Fail the build here instead of shipping an image whose test command cannot
+# run: without this, a broken install only shows up three stages later as an
+# unexplained (0, 0, 0).
+test -x node_modules/.bin/mocha
+test -x node_modules/.bin/cross-env
 
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
-                """#!/bin/bash
-set -e
+                r"""#!/bin/bash
+cd /home/__REPO__
+set +e
 
-cd /home/{pr.repo}
-yarn run test:unit --reporter json  --exit
+LOGDIR=/tmp/mswb-run
+rm -rf "$LOGDIR"
+mkdir -p "$LOGDIR"
 
-""".format(pr=self.pr),
+# Report goes to a file, not straight to the container's stdout pipe: mocha
+# exits via process.exit(), and Node truncates asynchronous pipe writes, which
+# silently costs the tail of a multi-megabyte JSON report.
+yarn run test:unit --reporter json --exit > "$LOGDIR/report.json" 2> "$LOGDIR/stderr.log"
+
+cat "$LOGDIR/report.json"
+cat "$LOGDIR/stderr.log"
+
+exit 0
+
+""".replace("__REPO__", self.pr.repo),
             ),
             File(
                 ".",
                 "test-run.sh",
-                """#!/bin/bash
+                r"""#!/bin/bash
+cd /home/__REPO__
+
 set -e
-
-cd /home/{pr.repo}
 git apply /home/test.patch
-yarn run test:unit --reporter json  --exit
+set +e
 
-""".format(pr=self.pr),
+LOGDIR=/tmp/mswb-test-stage
+rm -rf "$LOGDIR"
+mkdir -p "$LOGDIR"
+
+# Every mocha run writes its report to a FILE and the files are concatenated at
+# the very end, once every writer has exited. Mocha runs with --exit, which
+# calls process.exit() the moment the run finishes; Node's writes to a PIPE are
+# asynchronous, so a multi-megabyte JSON report loses its tail and parse_log
+# discards the whole unparseable payload (that is how a stage with 4224 passing
+# tests still reported 0/0/0). Writes to a file are synchronous, so the report
+# survives intact.
+run_mocha() {
+  local out="$LOGDIR/$1"
+  shift
+  NODE_ENV=test npx mocha "$@" --reporter json --exit > "$out.json" 2> "$out.err"
+}
+
+# Same glob set as the package.json test:unit script, so the baseline test set
+# matches run.sh / fix-run.sh exactly. Globs stay quoted: mocha expands them.
+run_mocha main 'packages/**/*.test.{js,ts,tsx}' 'docs/**/*.test.{js,ts,tsx}' 'scripts/**/*.test.{js,ts,tsx}' 'test/utils/**/*.test.{js,ts,tsx}' --exclude '**/node_modules/**'
+
+# Mocha loads every file matched by the glob before running any test. A test
+# patch may reference a source module that only lands with the FIX patch, so
+# that load throws MODULE_NOT_FOUND and the whole suite aborts before the
+# reporter emits anything. If no report was produced, re-run with the test
+# files touched by the patch excluded, so the rest of the suite is still
+# measured, then run each touched file on its own.
+if ! grep -q '"stats"' "$LOGDIR/main.json"; then
+  echo "test-run.sh: suite produced no JSON report; retrying without the patched test files"
+
+  # git apply leaves added files untracked and modified ones tracked, so read
+  # the porcelain status and keep the path column whatever the status code is.
+  PATCHED_TESTS=$(git status --porcelain -uall | cut -c4- | grep -E '\.test\.(js|ts|tsx)$')
+
+  EXCLUDE_ARGS=()
+  while IFS= read -r f; do
+    [ -n "$f" ] && EXCLUDE_ARGS+=(--exclude "$f")
+  done <<< "$PATCHED_TESTS"
+
+  run_mocha retry 'packages/**/*.test.{js,ts,tsx}' 'docs/**/*.test.{js,ts,tsx}' 'scripts/**/*.test.{js,ts,tsx}' 'test/utils/**/*.test.{js,ts,tsx}' --exclude '**/node_modules/**' "${EXCLUDE_ARGS[@]}"
+
+  i=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    i=$((i + 1))
+    run_mocha "patched$i" "$f"
+  done <<< "$PATCHED_TESTS"
+fi
+
+# parse_log scans for multiple JSON objects, so several reports in one log are
+# all counted.
+cat "$LOGDIR"/*.json
+cat "$LOGDIR"/*.err
+
+exit 0
+
+""".replace("__REPO__", self.pr.repo),
             ),
             File(
                 ".",
                 "fix-run.sh",
-                """#!/bin/bash
+                r"""#!/bin/bash
+cd /home/__REPO__
+set +e
+
 set -e
-
-cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
-yarn run test:unit --reporter json  --exit
+set +e
 
-""".format(pr=self.pr),
+LOGDIR=/tmp/mswb-fix
+rm -rf "$LOGDIR"
+mkdir -p "$LOGDIR"
+
+# Report goes to a file, not straight to the container's stdout pipe: mocha
+# exits via process.exit(), and Node truncates asynchronous pipe writes, which
+# silently costs the tail of a multi-megabyte JSON report.
+yarn run test:unit --reporter json --exit > "$LOGDIR/report.json" 2> "$LOGDIR/stderr.log"
+
+cat "$LOGDIR/report.json"
+cat "$LOGDIR/stderr.log"
+
+exit 0
+
+""".replace("__REPO__", self.pr.repo),
             ),
         ]
 
@@ -496,16 +762,28 @@ yarn run test:unit --reporter json  --exit
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        # The shared base keeps full history so every PR can reach its own
+        # base.sha; the strict single-commit strip therefore happens here, with
+        # this PR's sha carried by the BASE_COMMIT ARG, so the finished image
+        # still holds exactly one commit and no remotes.
+        hardening = Image._HARDENING_BLOCK
+
         return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
 {self.global_env}
 
-{copy_commands}
+WORKDIR /home/{self.pr.repo}
 
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+{copy_commands}
 {prepare_commands}
 
+{hardening}
 {self.clear_env}
-
 """
 
 
