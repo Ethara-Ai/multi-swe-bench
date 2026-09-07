@@ -94,16 +94,32 @@ FROM {image_name}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \
       org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \
       org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \
       org.opencontainers.image.authors="https://www.ethara.ai/"
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
 ENV LC_ALL=C.UTF-8
-ENV TZ=UTC
 ENV CGO_ENABLED=0
 ENV GOTOOLCHAIN=auto
 ENV GOFLAGS="-buildvcs=false -mod=mod"
@@ -111,6 +127,14 @@ WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git jq curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 RUN git config --global --add safe.directory '*'
 RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
@@ -377,4 +401,4 @@ _BUNDLE_NIS_ERA3 = [
 ]
 
 for _ni in _BUNDLE_NIS_ERA3:
-    Instance._registry[f"rook/{_ni}"] = ROOK_17289_TO_14029
+    Instance.register("rook", _ni)(ROOK_17289_TO_14029)
