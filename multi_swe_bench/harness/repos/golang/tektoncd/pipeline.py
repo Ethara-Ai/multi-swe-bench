@@ -1,12 +1,20 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_GO_IMAGE = "golang:1.24"
-_TAG_SUFFIX = "default"
+_GO_IMAGE = "golang:1.19-bullseye"
+
+_PACKAGES = ["ca-certificates", "git"]
+
+_LABELS = (
+    'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+    '      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
+    '      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+    '      org.opencontainers.image.authors="https://www.ethara.ai/"'
+)
 
 
 class PipelineImageBase(Image):
@@ -26,43 +34,42 @@ class PipelineImageBase(Image):
         return _GO_IMAGE
 
     def image_tag(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        base_img = self.dependency()
 
-        if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        sections = [
+            DockerfileEnhancer.SYNTAX_DIRECTIVE,
+            f"FROM {base_img}",
+            DockerfileEnhancer._TARGETARCH_ARG
+            + "\n"
+            + f'ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"\n'
+            + "ARG BASE_COMMIT\n"
+            + "\n"
+            + DockerfileEnhancer._PROXY_ARGS,
+            DockerfileEnhancer._ENV_BLOCK,
+            _LABELS.format(org=self.pr.org, repo=self.pr.repo),
+            DockerfileEnhancer._CERT_SYMLINKS,
+        ]
 
-        return f"""FROM {image_name}
+        if self.global_env:
+            sections.append(self.global_env)
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GOTOOLCHAIN=auto
+        sections.append("WORKDIR /home/")
+        sections.append(
+            self._get_apt_update_command(" \\\n    ".join(_PACKAGES), base_img)
+        )
+        sections.append(f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}')
+        sections.append('CMD ["/bin/bash"]')
 
-RUN apt-get update && apt-get install -y git
-
-{self.global_env}
-
-WORKDIR /home/
-
-{code}
-
-{self.clear_env}
-
-"""
+        return "\n\n".join(sections) + "\n"
 
 
 class PipelineImageDefault(Image):
@@ -103,7 +110,7 @@ class PipelineImageDefault(Image):
                 ".",
                 "check_git_changes.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
 
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
   echo "check_git_changes: Not inside a git repository"
@@ -124,7 +131,9 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+
+export CI=true
 
 cd /home/{pr.repo}
 git reset --hard
@@ -140,7 +149,9 @@ go test -v -count=1 -mod=vendor ./... || true
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+
+export CI=true
 
 cd /home/{pr.repo}
 go test -v -count=1 -mod=vendor ./...
@@ -151,10 +162,12 @@ go test -v -count=1 -mod=vendor ./...
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+
+export CI=true
 
 cd /home/{pr.repo}
-git apply /home/test.patch || {{ echo "Warning: git apply test.patch failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.md' /home/test.patch
 go test -v -count=1 -mod=vendor ./...
 
 """.format(pr=self.pr),
@@ -163,10 +176,12 @@ go test -v -count=1 -mod=vendor ./...
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+
+export CI=true
 
 cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch || {{ echo "Warning: git apply failed, retrying with --reject..."; git apply --reject /home/test.patch 2>&1 || true; git apply --reject /home/fix.patch 2>&1 || true; find . -name '*.rej' -delete 2>/dev/null || true; }}
+git apply --whitespace=nowarn --exclude='docs/*' --exclude='*.md' /home/test.patch /home/fix.patch
 go test -v -count=1 -mod=vendor ./...
 
 """.format(pr=self.pr),
@@ -174,27 +189,27 @@ go test -v -count=1 -mod=vendor ./...
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        base = self.dependency()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        sections = [f"FROM {base.image_full_name()}"]
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        if self.global_env:
+            sections.append(self.global_env)
 
-        return f"""FROM {name}:{tag}
+        sections.append(f"ARG BASE_COMMIT={self.pr.base.sha}")
+        sections.append("ENV BASE_COMMIT=${BASE_COMMIT}")
 
-{self.global_env}
+        copy_commands = "".join(f"COPY {file.name} /home/\n" for file in self.files())
+        sections.append(copy_commands.rstrip("\n"))
 
-{copy_commands}
+        sections.append(f"WORKDIR /home/{self.pr.repo}")
+        sections.append(Image._HARDENING_BLOCK.rstrip("\n"))
+        sections.append("RUN bash /home/prepare.sh")
 
-{prepare_commands}
+        if self.clear_env:
+            sections.append(self.clear_env)
 
-{self.clear_env}
-
-"""
+        return "\n\n".join(sections) + "\n"
 
 
 @Instance.register("tektoncd", "pipeline")
@@ -234,48 +249,50 @@ class Pipeline(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
-        re_fail_tests = [
-            re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"FAIL:?\s?(.+?)\s"),
-        ]
-        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        def get_base_name(test_name: str) -> str:
-            return test_name
+        re_result = re.compile(r"--- (PASS|FAIL|SKIP): (\S+)")
+        re_package = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
+        module_prefix = f"github.com/{self.pr.org}/{self.pr.repo}/"
 
-        for line in test_log.splitlines():
+        def record(name: str, status: str) -> None:
+            if status == "PASS":
+                if name not in failed_tests:
+                    skipped_tests.discard(name)
+                    passed_tests.add(name)
+            elif status == "FAIL":
+                passed_tests.discard(name)
+                skipped_tests.discard(name)
+                failed_tests.add(name)
+            else:
+                if name not in passed_tests and name not in failed_tests:
+                    skipped_tests.add(name)
+
+        pending = []
+
+        for line in log.splitlines():
             line = line.strip()
 
-            for re_pass_test in re_pass_tests:
-                pass_match = re_pass_test.match(line)
-                if pass_match:
-                    test_name = pass_match.group(1)
-                    if test_name in failed_tests:
-                        continue
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    passed_tests.add(get_base_name(test_name))
+            match = re_result.match(line)
+            if match:
+                pending.append((match.group(2), match.group(1)))
+                continue
 
-            for re_fail_test in re_fail_tests:
-                fail_match = re_fail_test.match(line)
-                if fail_match:
-                    test_name = fail_match.group(1)
-                    if test_name in passed_tests:
-                        passed_tests.remove(test_name)
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    failed_tests.add(get_base_name(test_name))
+            match = re_package.match(line)
+            if match:
+                marker, package = match.group(1), match.group(2)
+                if package.startswith(module_prefix):
+                    package = package[len(module_prefix):]
+                elif package == module_prefix.rstrip("/"):
+                    package = "."
+                for name, status in pending:
+                    record(f"{package}::{name}", status)
+                if marker == "FAIL" and not pending:
+                    failed_tests.add(package)
+                pending = []
 
-            for re_skip_test in re_skip_tests:
-                skip_match = re_skip_test.match(line)
-                if skip_match:
-                    test_name = skip_match.group(1)
-                    if test_name in passed_tests:
-                        continue
-                    if test_name not in failed_tests:
-                        continue
-                    skipped_tests.add(get_base_name(test_name))
+        for name, status in pending:
+            record(name, status)
 
         return TestResult(
             passed_count=len(passed_tests),
