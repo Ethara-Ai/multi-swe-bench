@@ -218,3 +218,4 @@ from multi_swe_bench.harness.repos.golang.KusionStack import *
 
 from multi_swe_bench.harness.repos.golang.volcano_sh import *
 from multi_swe_bench.harness.repos.golang.ryclarke import *
+from multi_swe_bench.harness.repos.golang.cosmonic_labs import *
