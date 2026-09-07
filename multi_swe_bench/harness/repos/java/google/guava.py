@@ -4,9 +4,53 @@ import re
 import textwrap
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+# ---------------------------------------------------------------------------
+# Dockerfile layout contract (matches repos/python/ros2/launch.py)
+# ---------------------------------------------------------------------------
+# BASE  : stops at `git clone` and then CMD ["/bin/bash"].  No checkout, no
+#         history scrub.
+# PR    : owns the commit pin AND the git stripping/hardening, with the scrub
+#         placed LAST, after prepare.sh.
+# prepare.sh : contains NO hardening and NO checkout.
+#
+# WHY THIS MATTERS HERE -- the previous layout had a real bug, not just a style
+# difference.  image_tag() returns a single shared "base" for the whole repo,
+# but the scrub was rendered INTO that base by
+# DockerfileEnhancer._standardize_repo_fetch.  The scrub detaches at one
+# ${BASE_COMMIT}, deletes every other ref and gc-prunes unreachable objects.
+# Because Image.__hash__/__eq__ key on image_full_name(), all 5 PRs collapse to
+# one base build -- so the shared base was pinned to whichever PR was built
+# FIRST, and the other four PRs' base commits were pruned out of the object
+# store.  Their `git checkout <sha>` would then fail against that base.
+# Moving the scrub into the PR layer removes the hazard and makes the shared
+# base correct.
+#
+# HOW THE LAYOUT IS ENFORCED WITHOUT TOUCHING image.py
+# ----------------------------------------------------
+# DockerfileEnhancer.enhance() has two early-outs:
+#     if not isinstance(dep, str):      -> PR layer returned verbatim
+#     if cls.SYNTAX_DIRECTIVE in raw:   -> base returned verbatim
+# The BASE therefore emits `# syntax=docker/dockerfile:1.6` itself, and supplies
+# the infrastructure block by reusing image.py's own constants so the proxy/CA
+# wiring stays identical to every other repo.
+#
+# BUILD-ARG CONSEQUENCE
+# ---------------------
+# build_dataset.py passes REPO_URL/BASE_COMMIT only when dependency() is a str,
+# i.e. only to the BASE.  The PR layer declares `ARG BASE_COMMIT="<sha>"` with
+# the SHA as a literal default so the shared _HARDENING_BLOCK, which references
+# ${BASE_COMMIT}, resolves there.
+
+_MVN_WARMUP = "mvn install -DskipTests -Dsurefire.toolchain.version=8 || true"
+_MVN_TEST = (
+    "mvn test -Dmaven.test.skip=false -DfailIfNoTests=false "
+    "-Dsurefire.toolchain.version=8"
+)
 
 
 class GuavaImageBase(Image):
@@ -35,27 +79,79 @@ class GuavaImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        repo = self.pr.repo
+        org = self.pr.org
+        repo_url = f"https://github.com/{org}/{repo}.git"
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # Reuse image.py's own infrastructure constants so the proxy/CA/locale
+        # wiring is identical to every other repo and cannot drift out of sync.
+        build_args = (
+            f"{DockerfileEnhancer._TARGETARCH_ARG}\n"
+            f'ARG REPO_URL="{repo_url}"\n'
+            f"ARG BASE_COMMIT\n"
+            f"\n{DockerfileEnhancer._PROXY_ARGS}"
+        )
+        labels = (
+            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
 
-        return f"""FROM {image_name}
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
 
-{self.global_env}
+FROM ubuntu:22.04
 
+{build_args}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+{labels}
+
+{DockerfileEnhancer._CERT_SYMLINKS}
+
+# Static, repo-independent env. Kept as a Dockerfile ENV rather than an export
+# in prepare.sh so it is still set when the graded run scripts execute. The JVM
+# needs it for locale-stable surefire output.
 ENV LC_ALL=C.UTF-8
+
 WORKDIR /home/
-RUN apt-get update && apt-get install -y --no-install-recommends git openjdk-11-jdk maven && rm -rf /var/lib/apt/lists/*
 
-{code}
+# The JDK and maven MUST be installed in two separate steps, in this order.
+#
+# maven's dependency is `default-jre-headless | java8-runtime-headless`. In a
+# single combined install apt picks the FIRST alternative, default-jre-headless,
+# which on 22.04 resolves to openjdk-11-jre-headless -- so JDK 8 and JRE 11 end
+# up configuring in the same dpkg transaction and the JRE 11 postinst fails:
+#
+#     Errors were encountered while processing:
+#      openjdk-11-jre-headless:amd64
+#     E: Sub-process /usr/bin/dpkg returned an error code (1)
+#     -> apt-get ... returned a non-zero code: 100
+#
+# Installing openjdk-8-jdk first satisfies java8-runtime-headless, so the maven
+# step then resolves the SECOND alternative and never pulls JDK 11 at all.
+# Verified on ubuntu:22.04: openjdk-11 package count 0, mvn 3.6.3, java 1.8.0_502.
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    git \\
+    openjdk-8-jdk \\
+    && rm -rf /var/lib/apt/lists/*
 
-{self.clear_env}
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    maven \\
+    && rm -rf /var/lib/apt/lists/*
 
+# Arch-agnostic JAVA_HOME. The JDK lands in
+# /usr/lib/jvm/java-8-openjdk-$(dpkg --print-architecture), so a hardcoded
+# -amd64 path would break the arm64 leg of a multi-arch build.
+RUN ln -s /usr/lib/jvm/java-8-openjdk-$(dpkg --print-architecture) \\
+    /usr/lib/jvm/java-8-openjdk
+ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+CMD ["/bin/bash"]
 """
 
 
@@ -120,14 +216,22 @@ exit 0
                 """#!/bin/bash
 set -e
 
+# NOTE: no checkout and no git stripping/hardening here by design.
+#   * the reset + `git checkout ${{BASE_COMMIT}}` now run in the PR Dockerfile,
+#     before this script;
+#   * the scrub is the LAST thing the PR Dockerfile does, after this script.
+#
+# This also does NOT call check_git_changes.sh. That clean-tree assert runs in
+# the PR Dockerfile immediately after the checkout, which is the only point
+# where it is meaningful -- the maven warm-up below writes target/ trees into
+# the working copy. What still matters is that the tree is parked on the right
+# commit, so that is what gets asserted here.
 cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
+test "$(git rev-parse HEAD)" = "{pr.base.sha}"
+echo "prepare: HEAD pinned at {pr.base.sha}"
 
-mvn install -DskipTests -Dsurefire.toolchain.version=11 || true
-""".format(pr=self.pr),
+{warmup}
+""".format(pr=self.pr, warmup=_MVN_WARMUP),
             ),
             File(
                 ".",
@@ -136,8 +240,8 @@ mvn install -DskipTests -Dsurefire.toolchain.version=11 || true
 set -eo pipefail
 
 cd /home/{pr.repo}
-mvn install -DskipTests -Dsurefire.toolchain.version=11 || true
-mvn test -Dmaven.test.skip=false -DfailIfNoTests=false -Dsurefire.toolchain.version=11
+mvn install -DskipTests -Dsurefire.toolchain.version=8 || true
+mvn test -Dmaven.test.skip=false -DfailIfNoTests=false -Dsurefire.toolchain.version=8
 """.format(pr=self.pr),
             ),
             File(
@@ -148,8 +252,8 @@ set -eo pipefail
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-mvn install -DskipTests -Dsurefire.toolchain.version=11 || true
-mvn test -Dmaven.test.skip=false -DfailIfNoTests=false -Dsurefire.toolchain.version=11
+mvn install -DskipTests -Dsurefire.toolchain.version=8 || true
+mvn test -Dmaven.test.skip=false -DfailIfNoTests=false -Dsurefire.toolchain.version=8
 
 """.format(pr=self.pr),
             ),
@@ -161,8 +265,8 @@ set -eo pipefail
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-mvn install -DskipTests -Dsurefire.toolchain.version=11 || true
-mvn test -Dmaven.test.skip=false -DfailIfNoTests=false -Dsurefire.toolchain.version=11
+mvn install -DskipTests -Dsurefire.toolchain.version=8 || true
+mvn test -Dmaven.test.skip=false -DfailIfNoTests=false -Dsurefire.toolchain.version=8
 
 """.format(pr=self.pr),
             ),
@@ -226,20 +330,60 @@ mvn test -Dmaven.test.skip=false -DfailIfNoTests=false -Dsurefire.toolchain.vers
                     RUN sed -i '/<proxies>/,/<\\/proxies>/d' ~/.m2/settings.xml
                 """
                 )
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+
+        # check_git_changes.sh is COPY'd early and run right after the checkout,
+        # so it is excluded from the bulk COPY to avoid a duplicate layer.
+        copy_commands = "".join(
+            f"COPY {f.name} /home/\n"
+            for f in self.files()
+            if f.name != "check_git_changes.sh"
+        )
+
+        # proxy_setup / proxy_cleanup render empty when no proxy is configured,
+        # which is the normal case; they are kept so MITM-proxy builds still get
+        # a ~/.m2/settings.xml. Stripped of blank padding so the layout matches
+        # the reference structure exactly when they are empty.
+        proxy_setup = proxy_setup.strip()
+        proxy_cleanup = proxy_cleanup.strip()
+        proxy_setup = f"\n{proxy_setup}\n" if proxy_setup else ""
+        proxy_cleanup = f"\n{proxy_cleanup}\n" if proxy_cleanup else ""
+
         return f"""FROM {name}:{tag}
 
-{self.global_env}
+ARG BASE_COMMIT="{sha}"
 
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
+
+# Clean-tree assert, immediately after the checkout: this is the last moment the
+# working tree is still pristine. prepare.sh below runs the maven warm-up, which
+# writes target/ trees into the working copy, so running this any later risks
+# reporting "Uncommitted changes" and failing the build.
+COPY check_git_changes.sh /home/
+RUN bash /home/check_git_changes.sh
+
+WORKDIR /home/
 {proxy_setup}
-
 {copy_commands}
-
 {prepare_commands}
-
 {proxy_cleanup}
+# Git stripping/hardening LAST, after prepare.sh.
+#
+# WORKDIR must be restored to the repo first: the block above left it at /home/,
+# and every command in the scrub is a git operation that has to run inside the
+# work tree.
+#
+# Running the scrub after prepare.sh is safe: none of its four assertions look
+# at the working tree, only at git state (HEAD == BASE_COMMIT, no refs, no
+# remotes, reachable-object count). Anything maven left in target/ is untracked
+# and cannot affect them, nor block `git checkout --detach`.
+WORKDIR /home/{repo}
 
-{self.clear_env}
-
+{Image._HARDENING_BLOCK}
 """
 
 
