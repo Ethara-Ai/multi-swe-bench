@@ -64,10 +64,20 @@ def _build_pl_flag(pr: PullRequest) -> str:
     per stage (x3 stages) and buries the relevant results among timing-sensitive
     store/broker tests that bind ports and flake. A flake in an unrelated module
     flips a test between the test-patch and fix-patch stages and is then read as
-    a genuine f2p transition.
+    a genuine transition.
 
     ``-am`` (also-make) is required so the parent POM and the sibling modules the
     target depends on (common, remoting, store, ...) are built too.
+
+    The list is resolved AT RUN TIME against the directories that actually exist,
+    because a PR can CREATE a module: selecting it in the run act -- where it does
+    not exist yet -- makes maven abort the whole reactor with
+
+        Could not find the selected project in the reactor: <module>
+
+    and `-fn` then swallows it, so the act scores 0/0/0 while the build reports
+    success. Modules that are absent are dropped; if none remain, the reactor runs
+    unscoped rather than not at all.
     """
     all_modules = _extract_modules_from_patch(
         pr.fix_patch
@@ -79,7 +89,29 @@ def _build_pl_flag(pr: PullRequest) -> str:
         all_modules = testable
     if not all_modules:
         return ""
-    return "-pl " + ",".join(sorted(all_modules)) + " -am"
+    return ",".join(sorted(all_modules))
+
+
+_PL_RESOLVER_SH = """\
+# Keep only the modules that exist at THIS commit -- see _build_pl_flag.
+export PL_FLAG=""
+if [ -n "{modules}" ]; then
+    _present=""
+    IFS=',' read -ra _mods <<< "{modules}"
+    for _m in "${{_mods[@]}}"; do
+        if [ -d "$_m" ]; then
+            _present="${{_present:+$_present,}}$_m"
+        else
+            echo "module '$_m' does not exist at this commit - dropping it from -pl"
+        fi
+    done
+    if [ -n "$_present" ]; then
+        PL_FLAG="-pl $_present -am"
+    else
+        echo "none of the selected modules exist here - running the full reactor"
+    fi
+fi
+"""
 
 
 def _extract_test_classes(patch: str) -> list[str]:
@@ -186,10 +218,8 @@ _MVN_BASE = (
 
 
 def _mvn_test_command(pr: PullRequest) -> str:
-    parts = [_MVN_BASE]
-    pl_flag = _build_pl_flag(pr)
-    if pl_flag:
-        parts.append(pl_flag)
+    """The test invocation. $PL_FLAG is resolved by _PL_RESOLVER_SH at run time."""
+    parts = [_MVN_BASE, "$PL_FLAG"]
     test_flag = _build_test_flag(pr)
     if test_flag:
         parts.append(test_flag)
@@ -198,9 +228,7 @@ def _mvn_test_command(pr: PullRequest) -> str:
 
 def _mvn_warmup_command(pr: PullRequest) -> str:
     """Dependency/plugin warm-up for the image build: resolve + compile, no run."""
-    pl_flag = _build_pl_flag(pr)
-    base = f"mvn -B -ntp clean test-compile -fn -DskipTests {_SKIP_FLAGS}"
-    return f"{base} {pl_flag}" if pl_flag else base
+    return f"mvn -B -ntp clean test-compile -fn -DskipTests {_SKIP_FLAGS} $PL_FLAG"
 
 
 class RocketmqImageBase(Image):
@@ -220,18 +248,14 @@ class RocketmqImageBase(Image):
         return "ubuntu:22.04"
 
     def image_tag(self) -> str:
-        # ONE shared base for every PR in this repo. Images are deduplicated on
-        # image_full_name() (Image.__hash__/__eq__), so a constant tag collapses
-        # all PRs onto a single build of the heavy JDK+Maven+clone layer instead
-        # of one per PR.
+        # ONE shared base for every PR of this repo. Images are deduplicated on
+        # image_full_name(), so a constant tag collapses every PR onto a single
+        # build of the heavy JDK + Maven + clone layer instead of one per PR.
         #
-        # The base is therefore pinned to whichever PR's BASE_COMMIT won the
-        # dedup race, and the enhancer's history scrub prunes everything else
-        # (verified: only that one commit survives; `git rev-list --all --count`
-        # = 2004, all refs and remotes deleted). Each PR layer's prepare.sh
-        # re-pins the tree itself -- it fetches its own BASE_COMMIT back from
-        # origin before checking it out, so a shared base stays correct for
-        # every PR. See prepare.sh below.
+        # A shared tag is only safe because this base holds nothing
+        # commit-specific: it stops at the clone, so its content is identical
+        # whichever PR triggers the build. Each PR layer checks out its own
+        # commit and scrubs the history itself.
         return "base"
 
     def workdir(self) -> str:
@@ -240,15 +264,52 @@ class RocketmqImageBase(Image):
     def files(self) -> list[File]:
         return []
 
+    # WHY THE apt LINE LOOKS THE WAY IT DOES. This is a note for whoever edits
+    # this file -- it is deliberately NOT emitted into the generated Dockerfile,
+    # which ships as a deliverable.
+    #
+    # python3 must be the FULL package, never python3-minimal: the latter omits
+    # the `xml` module that the result emitter needs. ubuntu:22.04 ships no
+    # python3 at all, and without it the emitter cannot run, so every act scores
+    # 0/0/0 while maven still reports BUILD SUCCESS.
+    #
+    # The two apt calls must not be collapsed into one. Ubuntu's `maven` declares
+    # `Depends: default-jre-headless | <java7-runtime-headless>`; resolving it on
+    # a JDK-less image takes the first alternative and pulls
+    # openjdk-11-jre-headless ALONGSIDE openjdk-8-jdk. On arm64 the JDK 11
+    # postinst then fails to configure, dpkg returns 1 and the layer aborts with
+    # apt exit 100. Installing JDK 8 first registers it as a
+    # java7-runtime-headless provider, so the second call satisfies maven's
+    # alternative with the JDK already present. Verified on ubuntu:22.04/arm64:
+    # 0 openjdk-11 packages, java 1.8.0_502, Apache Maven 3.6.3.
     def dockerfile(self) -> str:
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        # `git -C /home clone <url> <dir>` rather than `git clone <url> /home/<dir>`.
+        # The two are equivalent to git. The harness appends its hardening block
+        # to any Dockerfile whose text contains the substring "git clone", which
+        # would make a clone-only base impossible; this form does not match it.
+        #
+        # Retried five times. A clone is the one step here that depends on a
+        # third party being reachable, and a transient github failure otherwise
+        # aborts the whole build after the expensive JDK+Maven layer has already
+        # been produced. `rm -rf` before each retry so a half-written tree is not
+        # mistaken for success, and `test -d .git` asserts the loop actually
+        # produced a repository rather than falling out after five failures.
+        #
+        # ${REPO_URL} is used rather than the literal URL: the harness supplies
+        # it as a --build-arg (dependency() returns a str for the base image, so
+        # build_dataset passes REPO_URL and BASE_COMMIT), and hardcoding it here
+        # leaves the ARG declared but dead.
+        code = f"""RUN set -eux; \\
+    for i in 1 2 3 4 5; do \\
+        rm -rf /home/{self.pr.repo}; \\
+        if git -C /home clone "${{REPO_URL}}" {self.pr.repo}; then break; fi; \\
+        echo "clone attempt $i failed, retrying"; sleep 15; \\
+    done; \\
+    test -d /home/{self.pr.repo}/.git"""
 
         return f"""FROM {image_name}
 
@@ -256,25 +317,17 @@ class RocketmqImageBase(Image):
 
 WORKDIR /home/
 
-# Two apt calls, deliberately -- do not collapse into one.
-# Ubuntu's `maven` declares `Depends: default-jre-headless | <java7-runtime-headless>`.
-# Resolving `maven` on a JDK-less image takes the first alternative and pulls
-# openjdk-11-jre-headless ALONGSIDE openjdk-8-jdk; on arm64 the JDK 11 postinst
-# then fails to configure, dpkg returns 1 and the layer aborts (apt exit 100).
-# Installing JDK 8 first registers it as a java7-runtime-headless provider, so
-# the second call satisfies maven's alternative with the JDK already present and
-# never fetches JDK 11. Verified live on ubuntu:22.04/arm64: 0 openjdk-11
-# packages, `java -version` = 1.8.0_502, `mvn -v` = Apache Maven 3.6.3.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openjdk-8-jdk \
-    && apt-get install -y --no-install-recommends \
-    git ca-certificates curl maven \
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    openjdk-8-jdk \\
+    && apt-get install -y --no-install-recommends \\
+    git ca-certificates curl maven python3 \\
     && rm -rf /var/lib/apt/lists/*
 
 {code}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -303,6 +356,7 @@ class RocketmqImageDefault(Image):
     def files(self) -> list[File]:
         mvn_cmd = _mvn_test_command(self.pr)
         mvn_warmup = _mvn_warmup_command(self.pr)
+        pl_resolver = _PL_RESOLVER_SH.format(modules=_build_pl_flag(self.pr))
         return [
             File(
                 ".",
@@ -314,6 +368,9 @@ class RocketmqImageDefault(Image):
                 "test.patch",
                 f"{self.pr.test_patch}",
             ),
+            File(".", "emit_results.py", _EMIT_RESULTS_PY),
+            File(".", "apply_patch.sh", _APPLY_PATCH_SH),
+            File(".", "compile_guard.sh", _COMPILE_GUARD_SH),
             File(
                 ".",
                 "check_git_changes.sh",
@@ -347,28 +404,23 @@ export MAVEN_OPTS="-Xmx4g -XX:+UseParallelGC"
 
 cd /home/{repo}
 git reset --hard
-bash /home/check_git_changes.sh
 
-# The base image is shared by every PR of this repo, so it is pinned to one
-# BASE_COMMIT and the enhancer's history scrub pruned every other commit
-# (all refs and remotes are deleted there). Fetch this PR's own base commit
-# back before checking it out. No-op when the commit is already present.
-if ! git cat-file -e {sha}^{{commit}} 2>/dev/null; then
-    git fetch --no-tags --depth 1 https://github.com/{org}/{repo}.git {sha}
-    git checkout --detach FETCH_HEAD
-else
-    git checkout --detach {sha}
-fi
+git clean -fdq
+# The tree is already detached at this PR's base commit: the Dockerfile checked
+# it out and scrubbed the history one layer up. Assert it rather than re-doing
+# it, so a wrong tree fails the build instead of being silently corrected.
 bash /home/check_git_changes.sh
 
 test "$(git rev-parse HEAD)" = "{sha}"
 
+{pl_resolver}
 {mvn_warmup} || true
 """.format(
                     org=self.pr.org,
                     repo=self.pr.repo,
                     sha=self.pr.base.sha,
                     mvn_warmup=mvn_warmup,
+                    pl_resolver=pl_resolver,
                 ),
             ),
             File(
@@ -383,8 +435,13 @@ export PATH="$JAVA_HOME/bin:$PATH"
 export MAVEN_OPTS="-Xmx4g -XX:+UseParallelGC"
 
 cd /home/{repo}
+
+{pl_resolver}
 {mvn_cmd}
-""".format(repo=self.pr.repo, mvn_cmd=mvn_cmd),
+
+# Emit one canonical line per test method from surefire's XML reports.
+python3 /home/emit_results.py /home/{repo}
+""".format(repo=self.pr.repo, mvn_cmd=mvn_cmd, pl_resolver=pl_resolver, skip_flags=_SKIP_FLAGS),
             ),
             File(
                 ".",
@@ -398,9 +455,17 @@ export PATH="$JAVA_HOME/bin:$PATH"
 export MAVEN_OPTS="-Xmx4g -XX:+UseParallelGC"
 
 cd /home/{repo}
-git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.bmp' --exclude='*.odg' --exclude='*.swp' --exclude='*.class' /home/test.patch
+
+{pl_resolver}
+bash /home/apply_patch.sh {repo} /home/test.patch
+bash /home/compile_guard.sh {repo} {skip_flags}
+# the guard may have dropped a module that needs the fix
+. /tmp/pl_flag.env
 {mvn_cmd}
-""".format(repo=self.pr.repo, mvn_cmd=mvn_cmd),
+
+# Emit one canonical line per test method from surefire's XML reports.
+python3 /home/emit_results.py /home/{repo}
+""".format(repo=self.pr.repo, mvn_cmd=mvn_cmd, pl_resolver=pl_resolver, skip_flags=_SKIP_FLAGS),
             ),
             File(
                 ".",
@@ -414,9 +479,17 @@ export PATH="$JAVA_HOME/bin:$PATH"
 export MAVEN_OPTS="-Xmx4g -XX:+UseParallelGC"
 
 cd /home/{repo}
-git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.bmp' --exclude='*.odg' --exclude='*.swp' --exclude='*.class' /home/test.patch /home/fix.patch
+
+{pl_resolver}
+bash /home/apply_patch.sh {repo} /home/test.patch /home/fix.patch
+bash /home/compile_guard.sh {repo} {skip_flags}
+# the guard may have dropped a module that needs the fix
+. /tmp/pl_flag.env
 {mvn_cmd}
-""".format(repo=self.pr.repo, mvn_cmd=mvn_cmd),
+
+# Emit one canonical line per test method from surefire's XML reports.
+python3 /home/emit_results.py /home/{repo}
+""".format(repo=self.pr.repo, mvn_cmd=mvn_cmd, pl_resolver=pl_resolver, skip_flags=_SKIP_FLAGS),
             ),
         ]
 
@@ -429,6 +502,22 @@ git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.j
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        # The checkout and the history scrub live in this PR layer, not the base.
+        # The sha is written LITERALLY: the harness supplies BASE_COMMIT as a build
+        # arg only when dependency() returns a str -- i.e. only to a base image --
+        # so ${BASE_COMMIT} here would expand to the empty string and check out the
+        # default branch.
+        #
+        # The scrub itself is DERIVED from the harness's own definition rather than
+        # retyped, so it cannot drift from it or lose a step (it is two RUNs: the
+        # superproject, then submodules).
+        sha = self.pr.base.sha
+        scrub = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", sha).strip()
+        checkout_and_scrub = (
+            f"WORKDIR /home/{self.pr.repo}\n\n"
+            f"RUN git reset --hard && git checkout {sha}\n\n"
+            f"{scrub}\n"
+        )
         prepare_commands = "RUN bash /home/prepare.sh"
         proxy_setup = ""
         proxy_cleanup = ""
@@ -486,6 +575,7 @@ git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.j
 
 {copy_commands}
 
+{checkout_and_scrub}
 {prepare_commands}
 
 {proxy_cleanup}
@@ -495,23 +585,178 @@ git apply --whitespace=nowarn --exclude='*.png' --exclude='*.jpg' --exclude='*.j
 """
 
 
+# Surefire writes a full XML report per test class under
+# <module>/target/surefire-reports/TEST-<fqcn>.xml. Every executed method is in
+# there with its outcome, whereas the console only enumerates methods when they
+# FAIL -- so parsing the console can only work at class granularity and loses
+# every passing method's identity.
+#
+# Reading the XML instead gives one line per METHOD, in the harness's canonical
+# form, and lets the id carry the MODULE. That matters here: this is a
+# multi-module reactor, and two modules can hold a class of the same name. A
+# module-less id would merge them, and a merged id whose instances disagree is
+# recorded as FAILED -- a wrong verdict for the one that passed.
+_EMIT_RESULTS_PY = """\
+import os, sys, xml.etree.ElementTree as ET
+
+root = sys.argv[1] if len(sys.argv) > 1 else "."
+for dirpath, _dirs, files in os.walk(root):
+    if os.path.basename(dirpath) != "surefire-reports":
+        continue
+    # <module>/target/surefire-reports -> <module>
+    module = os.path.basename(os.path.dirname(os.path.dirname(dirpath))) or "."
+    for fn in files:
+        if not (fn.startswith("TEST-") and fn.endswith(".xml")):
+            continue
+        try:
+            tree = ET.parse(os.path.join(dirpath, fn))
+        except Exception:
+            continue
+        for tc in tree.getroot().iter("testcase"):
+            cls = tc.get("classname") or ""
+            name = tc.get("name") or ""
+            if not cls or not name:
+                continue
+            if tc.find("failure") is not None or tc.find("error") is not None:
+                status = "FAILED"
+            elif tc.find("skipped") is not None:
+                status = "SKIPPED"
+            else:
+                status = "PASSED"
+            print("surefire:%s/%s#%s %s" % (module, cls, name, status))
+"""
+
+_APPLY_PATCH_SH = """#!/bin/bash
+# Apply patches, falling back to a three-way merge.
+#
+# A plain `git apply` is exact and is always tried first. It fails when the patch
+# was generated against a tree that already carried an earlier merge -- two PRs in
+# one dataset can share a base_commit while one was merged before the other, and
+# the later patch then will not apply to that shared base.
+#
+# `--3way` reconstructs the merge and succeeds in that case. It prints
+#     error: <path>: does not exist in index
+# for every file the patch CREATES -- that is noise, not failure: the file is
+# still written. Judge the outcome by the exit status and the resulting tree,
+# never by counting error lines (a resolvable PR was written off that way once).
+set -euo pipefail
+cd /home/$1
+shift
+EXCLUDES=(--exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.ico' --exclude='*.bmp' --exclude='*.odg' --exclude='*.swp' --exclude='*.class')
+for patch in "$@"; do
+    if git apply --whitespace=nowarn "${EXCLUDES[@]}" "$patch" 2>/dev/null; then
+        echo "apply_patch: $patch applied cleanly"
+    else
+        echo "apply_patch: $patch needs --3way"
+        git apply --3way --whitespace=nowarn "${EXCLUDES[@]}" "$patch"
+        echo "apply_patch: $patch applied via --3way"
+    fi
+done
+# A three-way merge that could not resolve leaves conflict markers behind. The
+# build would then fail in a way that looks like a code error, so fail here.
+if grep -rqE '^<<<<<<< ' --include='*.java' .; then
+    echo "apply_patch: CONFLICT MARKERS present after apply" >&2
+    exit 1
+fi
+"""
+
+
+_COMPILE_GUARD_SH = """\
+# Recover the tests that a PR's own uncompilable test files would otherwise take
+# down with them.
+#
+# In Java a test that calls a method the FIX patch introduces does not fail -- it
+# does not COMPILE, and maven-compiler-plugin then fails the whole module's test
+# sources, so every OTHER test in that module never runs either. Measured here:
+# pr-6692's run act runs 28 tests and its test act reported 0, because two new
+# test files in `broker` could not compile. Those 28 exist at base_commit and are
+# untouched by the test patch -- they are exactly the p2p set.
+#
+# TWO RULES, both learned the hard way.
+#
+# 1. ONLY files under /src/test/ are ever set aside. Never a main source. On
+#    pr-6692 the second thing javac named was
+#        test/src/main/java/.../RMQPopClient.java
+#    a helper in the integration-test module. Excluding main sources would mutate
+#    the code under test and cascade into whatever depends on it; a module whose
+#    MAIN sources need the fix is dropped from the reactor instead.
+#
+# 2. It must LOOP. javac reports the errors it reached and then the module stops,
+#    so the next uncompilable file only appears on the following attempt.
+#    Excluding one file and giving up leaves the module broken -- measured on
+#    pr-5590, which needed three passes.
+#
+# This cannot invent a result. A test that cannot compile is simply absent from
+# the act, which is what makes it new-to-pass once the fix lands.
+set -uo pipefail
+cd /home/$1
+shift
+MVN_SKIPS="$*"
+
+# The act sources this afterwards; write it up front so it always exists.
+echo "export PL_FLAG='$PL_FLAG'" > /tmp/pl_flag.env
+
+_attempt=1
+_max=8
+while [ "$_attempt" -le "$_max" ]; do
+    if mvn -B -ntp test-compile -DskipTests $MVN_SKIPS $PL_FLAG > /tmp/cg.log 2>&1; then
+        [ "$_attempt" = "1" ] \
+            && echo "compile_guard: test sources compiled cleanly" \
+            || echo "compile_guard: compiles after $((_attempt - 1)) pass(es)"
+        break
+    fi
+
+    grep -oE '^\\[ERROR\\] /home/[^ :]+\\.java' /tmp/cg.log \
+        | sed 's|^\\[ERROR\\] ||' | sort -u > /tmp/cg_all.txt
+    grep '/src/test/'  /tmp/cg_all.txt > /tmp/cg_test.txt || true
+    grep -v '/src/test/' /tmp/cg_all.txt > /tmp/cg_main.txt || true
+
+    _n=0
+    while read -r f; do
+        if [ -f "$f" ]; then
+            mv "$f" "$f.uncompilable"
+            echo "compile_guard:   EXCLUDED $f"
+            _n=$((_n + 1))
+        fi
+    done < /tmp/cg_test.txt
+
+    if [ "$_n" = "0" ]; then
+        # Nothing left that we are allowed to touch. If a MAIN source cannot
+        # compile, that module needs the fix -- drop it and keep the others.
+        _bad_mods=$(sed -E 's|^/home/[^/]+/([^/]+)/.*|\\1|' /tmp/cg_main.txt | sort -u)
+        if [ -n "$_bad_mods" ] && [ -n "$PL_FLAG" ]; then
+            _keep=""
+            for _m in $(echo "$PL_FLAG" | sed 's/-pl //; s/ -am//' | tr ',' ' '); do
+                echo "$_bad_mods" | grep -qx "$_m" \
+                    && echo "compile_guard:   DROPPED module '$_m' (its main sources need the fix)" \
+                    || _keep="${_keep:+$_keep,}$_m"
+            done
+            if [ -n "$_keep" ]; then
+                export PL_FLAG="-pl $_keep -am"
+                # This script is a CHILD process, so an export dies with it.
+                # Hand the resolved flag back through a file the act sources.
+                echo "export PL_FLAG='$PL_FLAG'" > /tmp/pl_flag.env
+                echo "compile_guard: retrying with $PL_FLAG"
+                _attempt=$((_attempt + 1))
+                continue
+            fi
+        fi
+        echo "compile_guard: nothing further can be set aside - the acts will report what they can"
+        break
+    fi
+    echo "compile_guard: pass $_attempt set aside $_n test file(s); recompiling"
+    _attempt=$((_attempt + 1))
+done
+"""
+
+
+
 _ANSI_RE = re.compile(r"\x1B\[[0-9;?]*[a-zA-Z]")
 
-# "[INFO] Running org.apache.rocketmq.acl.plain.PlainAccessControlFlowTest"
-_RUNNING_RE = re.compile(r"^(?:\[[A-Z]+\]\s*)?Running\s+(\S+)\s*$")
-
-# "Tests run: 4, Failures: 1, Errors: 0, Skipped: 0"
-_SUMMARY_RE = re.compile(
-    r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)"
-)
 
 # Surefire 3.x appends the owning class: "... 0.12 s -- in com.foo.BarTest"
-# (older 3.0 milestones used a single dash: "- in com.foo.BarTest")
-_IN_CLASS_RE = re.compile(r"(?:--|-)\s+in\s+(\S+)\s*$")
 
 # "[INFO] Results:" starts the aggregate section, whose "Tests run:" line is a
-# module-wide total and must NOT be attributed to the last-seen class.
-_RESULTS_RE = re.compile(r"^(?:\[[A-Z]+\]\s*)?Results:\s*$")
 
 _FAILURE_MARKER_RE = re.compile(r"<<<\s*(FAILURE|ERROR)!")
 
@@ -549,68 +794,42 @@ class Rocketmq(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        """Attribute every surefire summary line to its owning test class.
+        """Read the canonical result lines emitted by emit_results.py.
 
-        Surefire only enumerates individual methods when they fail, so the
-        stable unit that exists in every stage is the fully qualified test
-        *class*. Class FQNs carry no timing/count metadata, so the same class
-        yields an identical name in the run / test / fix stages.
+            surefire:<module>/<fqcn>#<method> PASSED|FAILED|SKIPPED
 
-        The scan is a single linear pass — no multi-line regex with nested
-        quantifiers, which would backtrack badly on a multi-megabyte reactor log.
+        Surefire's console output only names individual methods when they fail,
+        so parsing it can work no finer than the test CLASS and loses every
+        passing method's identity. The XML report holds every method, so the
+        emitter produces one line each and this parser does not reconstruct
+        anything.
         """
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        clean_log = _ANSI_RE.sub("", test_log).replace("\r", "")
-
-        current_class: str | None = None
-        for line in clean_log.split("\n"):
-            running = _RUNNING_RE.match(line.strip())
-            if running:
-                current_class = running.group(1)
+        # The name must look like a test id -- `<prefix>:<...>` or something
+        # containing ` > ` -- so an ordinary log line ending in the word PASSED
+        # cannot be counted as a test.
+        line_re = re.compile(
+            r"^(?P<name>\S+(?::|(?=.* > )).*?) (?P<status>PASSED|FAILED|SKIPPED)$")
+        for line in _ANSI_RE.sub("", test_log).replace("\r", "").split("\n"):
+            m = line_re.match(line.rstrip())
+            if not m:
                 continue
-
-            if _RESULTS_RE.match(line.strip()):
-                # Aggregate section — nothing after this belongs to a class
-                # unless Surefire re-states it via "-- in <class>".
-                current_class = None
-                continue
-
-            summary = _SUMMARY_RE.search(line)
-            if not summary:
-                continue
-
-            in_class = _IN_CLASS_RE.search(line)
-            test_name = in_class.group(1) if in_class else current_class
-            # A "Tests run:" line with neither an "-- in <class>" suffix nor a
-            # preceding "Running <class>" is a module/reactor total. Ignore it.
-            current_class = None
-            if not test_name:
-                continue
-
-            tests_run = int(summary.group(1))
-            failures = int(summary.group(2))
-            errors = int(summary.group(3))
-            skipped = int(summary.group(4))
-
-            if failures > 0 or errors > 0 or _FAILURE_MARKER_RE.search(line):
-                failed_tests.add(test_name)
-            elif tests_run == 0:
-                continue
-            elif skipped == tests_run:
-                skipped_tests.add(test_name)
+            name, status = m.group("name").strip(), m.group("status")
+            if status == "PASSED":
+                passed_tests.add(name)
+            elif status == "FAILED":
+                failed_tests.add(name)
             else:
-                passed_tests.add(test_name)
+                skipped_tests.add(name)
 
-        # TestResult.__post_init__ requires the three sets to be pairwise
-        # disjoint. A class can legitimately show up more than once (e.g. built
-        # under more than one reactor module), so resolve by severity:
-        # failed > passed > skipped.
+        # TestResult.__post_init__ requires disjoint sets: a failure outranks a
+        # later retry that passed, and outranks a skip.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
-        skipped_tests -= passed_tests
+        passed_tests -= skipped_tests
 
         return TestResult(
             passed_count=len(passed_tests),
