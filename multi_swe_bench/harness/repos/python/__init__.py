@@ -230,6 +230,7 @@ from multi_swe_bench.harness.repos.python.pybamm_team import *
 from multi_swe_bench.harness.repos.python.pyca import *
 from multi_swe_bench.harness.repos.python.pyccel import *
 from multi_swe_bench.harness.repos.python.PyCQA import *
+from multi_swe_bench.harness.repos.python.pyg_team import *
 from multi_swe_bench.harness.repos.python.pydantic import *
 from multi_swe_bench.harness.repos.python.pydata import *
 from multi_swe_bench.harness.repos.python.pydicom import *
