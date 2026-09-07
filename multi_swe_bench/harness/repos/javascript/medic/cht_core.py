@@ -5,96 +5,235 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# The base commit is 2020-03-24 and .travis.yml tests node 8 / 10 / 12, so
-# node 12 is the newest line upstream supported. 12.16.1 (2020-02-18) is the
-# era-current patch of that line, and the image publishes linux/amd64 AND
-# linux/arm64 (verified in the manifest).
+# package.json declares engines node >=8.11.0 at all five base commits
+# (2020-04 through 2021-09), so one pin covers the whole set.
 NODE_IMAGE = "node:12.16.1"
 
-# Scope: the repo's own `grunt unit` aggregate mixes three unrelated suites
-# (webapp mocha, api mocha, sentinel) plus a karma/Chrome browser run. This
-# instance's test patch lands in api/tests/mocha (config.spec.js and
-# controllers/login.spec.js), so the graded command runs exactly the api
-# mocha tree - the same file set Gruntfile.js's mochaTest.unit globs for that
-# directory. UNIT_TEST_ENV=1 is the repo's OWN switch (set by Gruntfile.js
-# line 232 for these very tests): api/src/environment and api/src/db check it
-# at require time and export stubs, so no CouchDB is needed. The third
-# patched file (webapp/tests/karma/.../user-language-modal.js) needs
-# karma + a real Chrome binary; it is applied but not executed, so its tests
-# are simply absent from every stage - never misreported.
-# --reporter tap because mocha's tap reporter prints one machine-parseable
-# line per test with the test's FULL nested title, which is what parse_log
-# keys on. -A ordering, one process, no parallelism games in mocha 6 anyway.
-# --exit is load-bearing: since mocha 4 the process does NOT exit when the
-# last test finishes - it waits for the event loop to drain, and one of these
-# api tests leaves an open handle, so without the flag mocha prints its
-# summary and then hangs FOREVER (observed live: the warm run went silent
-# after the suite completed and sat for 20+ minutes). The repo's own grunt
-# runner manages this internally; raw mocha needs the flag.
-# --exclude services/settings.spec.js: that spec `require`s
-# build/ddocs/medic/_attachments/default-docs/settings.doc.json - an artifact
-# that only exists after the repo's full grunt webapp build, never in a fresh
-# clone. Run alone it dies fast (MODULE_NOT_FOUND, rc=1), but inside the full
-# suite the 63 files loaded before it hold open handles and mocha's
-# load-error path wedges instead of exiting - the whole run hangs with zero
-# tests reported (bisected live to exactly this file; excluding it takes the
-# base suite from an infinite hang to 990 passed / 0 failed). The exclusion
-# is identical in all three stages, so test-selection parity holds; the
-# file's tests are simply absent everywhere, never misreported.
-TEST_CMD = (
+# The graded command is selected per PR from where that PR's specs live: the
+# five PRs split across three runners, and a stage only resolves an instance
+# if it actually executes the specs the test patch adds.
+#
+#   6353  shared-libs/rules-engine/test/  -> rules-engine mocha
+#   6360  api/tests/mocha/                -> api mocha
+#   7081  api/tests/mocha/                -> api mocha
+#   7159  webapp/tests/karma/ts/          -> webapp karma
+#   7301  api/tests/mocha/                -> api mocha
+
+# UNIT_TEST_ENV=1 is the repo's own switch (set by the Gruntfile for these
+# tests): api/src/environment and api/src/db export stubs when it is set, so
+# no CouchDB is needed. --exit is required because these suites leave open
+# handles and mocha 4+ otherwise hangs after printing its summary.
+#
+# settings.spec.js is excluded outright because it requires a JSON file from
+# build/, produced only by the full grunt webapp build - absent in all three
+# stages, so excluding it keeps test selection identical across stages.
+#
+# One mocha process for the whole tree. This is the default because the api
+# suite is written to run that way: several specs depend on state established
+# by files loaded before them, and in isolation they fail (measured on 7301:
+# 1245 pass / 0 fail as a glob, versus 1142 pass / 7 fail one-file-per-process
+# - token-login.spec.js and config.spec.js among them). A glob therefore keeps
+# the cleanest baseline wherever it can run to completion.
+API_TEST_CMD = (
     "UNIT_TEST_ENV=1 npx mocha --exit --reporter tap --timeout 10000 "
-    "--exclude \"api/tests/mocha/services/settings.spec.js\" \"api/tests/mocha/**/*.js\""
+    '--exclude "api/tests/mocha/services/settings.spec.js" "api/tests/mocha/**/*.js"'
 )
 
-# Written verbatim into all three graded-run scripts, directly above the test
-# command, so the scoping decisions are recorded IN the artifact a reviewer
-# reads - not only here in the generator.
-SCOPE_NOTE = """# Scope notes (identical in all three stages):
-# - settings.spec.js is excluded because it require()s a JSON file from
-#   build/ (an artifact only the repo's full grunt webapp build produces,
-#   never present in a fresh clone). Loaded mid-suite, that failing require
-#   wedges mocha's load-error path and the run never terminates. The
-#   exclusion is byte-identical in run/test-run/fix-run, so test selection
-#   parity across stages is preserved; neither patch touches that file.
-# - test.patch's third file (webapp/tests/karma/unit/controllers/
-#   user-language-modal.js) is applied but not executed: it is a Karma spec
-#   needing a browser runner. Grading scope is the api mocha suite, so its
-#   tests are absent from every stage equally - never misreported.
+# The glob cannot run to completion for every PR. 6360 and 7081 each add a
+# spec whose top-level `require` targets a source file that ONLY the fix patch
+# creates, so in the test stage that module is legitimately absent. Loaded
+# mid-glob, the failing require wedges mocha's load-error path while the files
+# already loaded hold open handles: 6360 produced ZERO tap lines and hung to
+# the harness timeout (`exit=124`), 7081 aborted with an empty log. The same
+# file run alone exits `rc=1` in 0s.
+#
+# For those two PRs only, the suite runs ONE FILE PER MOCHA PROCESS, which
+# confines a load failure to its own file - every other spec still reports.
+# The isolation failures noted above are the price, and they are paid only
+# where the alternative is no data at all. Identical in all three stages, so
+# test selection parity holds either way.
+API_TEST_CMD_PER_SPEC = (
+    "for f in $(find api/tests/mocha -name '*.js' "
+    "! -path 'api/tests/mocha/services/settings.spec.js' | sort); do "
+    'UNIT_TEST_ENV=1 npx mocha --exit --reporter tap --timeout 10000 "$f" '
+    "2>&1 | grep -E '^(ok|not ok)' ; done"
+)
+
+# Mirrors shared-libs/rules-engine's own "test" script. A glob is fine here:
+# 6353's test patch adds cases to an existing spec whose imports all resolve
+# in the base tree, so nothing wedges the loader.
+RULES_ENGINE_TEST_CMD = (
+    "cd shared-libs/rules-engine && "
+    "npx mocha --exit --reporter tap --timeout 10000 "
+    '"test/*.spec.js" "test/**/*.spec.js"'
+)
+
+# The committed karma-unit.conf.js is written for interactive use (autoWatch,
+# singleRun false, plain ChromeHeadless), so grading overrides those on the
+# CLI rather than editing a tracked file each stage would reset.
+# ChromeHeadlessCI is the config's own launcher and adds --no-sandbox, needed
+# to start Chrome as root in a container.
+KARMA_TEST_CMD = (
+    "cd webapp && "
+    "../node_modules/.bin/ng test webapp --watch=false --progress=false "
+    "--code-coverage=false --browsers=ChromeHeadlessCI --reporters=mocha"
+)
+
+# 6360 and 7081 take the per-spec runner: their test patches reference a
+# source file the fix patch creates, which wedges a globbed mocha run.
+_TEST_CMD_BY_PR = {
+    6353: RULES_ENGINE_TEST_CMD,
+    6360: API_TEST_CMD_PER_SPEC,
+    7081: API_TEST_CMD_PER_SPEC,
+    7159: KARMA_TEST_CMD,
+    7301: API_TEST_CMD,
+}
+
+# Recorded in the generated scripts so the scoping is visible to a reviewer
+# reading the artifact, not only the generator.
+_SCOPE_NOTE_BY_PR = {
+    6353: (
+        "# Graded suite: shared-libs/rules-engine, matching the fix in that\n"
+        "# lib's src/target-state.js. The test patch's karma spec is applied\n"
+        "# but not executed - absent from every stage equally.\n"
+    ),
+    6360: (
+        "# Graded suite: api mocha, which runs the patched\n"
+        "# api/tests/mocha/controllers/hydration.spec.js. The lineage and e2e\n"
+        "# specs are applied but not executed - the latter needs a live\n"
+        "# CouchDB and api server.\n"
+    ),
+    7081: (
+        "# Graded suite: api mocha, which runs the five patched\n"
+        "# api/tests/mocha specs. The karma specs and the integration\n"
+        "# migration test are applied but not executed.\n"
+    ),
+    7159: (
+        "# Graded suite: webapp karma, the only runner reaching the fix in\n"
+        "# webapp/src/ts/effects/contacts.effects.ts.\n"
+    ),
+    7301: (
+        "# Graded suite: api mocha, which runs the patched\n"
+        "# api/tests/mocha/services/generate-xform.spec.js.\n"
+    ),
+}
+
+# Only PR 7159 drives a real browser (karma), and the tree pins no puppeteer
+# to supply one. Because all five PRs share one base image, Chromium is
+# installed unconditionally: the mocha PRs carry the layer without ever
+# launching it. That is the cost of a single base - a per-PR base could skip
+# it, but then it would not be a single base.
+NEEDS_CHROME = {7159}
+
+
+def _get_test_cmd(pr_number: int) -> str:
+    return _TEST_CMD_BY_PR.get(pr_number, API_TEST_CMD)
+
+
+def _get_scope_note(pr_number: int) -> str:
+    return _SCOPE_NOTE_BY_PR.get(pr_number, "# Graded suite: api mocha.\n")
+
+
+def _get_extra_install(pr_number: int) -> str:
+    if pr_number == 6353:
+        # The shared-libs loop installs with --production, which omits the
+        # devDependencies rules-engine keeps its whole test toolchain in.
+        return "(cd shared-libs/rules-engine && npm ci) || true\n"
+    if pr_number == 7159:
+        # webapp/ has its own package.json and lockfile that the root npm ci
+        # does not cover, and `ng test` compiles from there.
+        #
+        # The @medic/* shared libs must be symlinked into webapp/node_modules
+        # as well as api's: the Gruntfile's linkSharedLibs() is parameterised
+        # by directory and is applied to every workspace, not just api. Without
+        # this the Angular compile fails with "Cannot find module
+        # '@medic/<lib>'" for a dozen libs, karma reports zero tests, and the
+        # stage grades nothing (the warm run's `|| true` hides it at build
+        # time, so the failure only shows up as an empty TestResult).
+        return """(cd webapp && npm ci) || true
+mkdir -p webapp/node_modules/@medic
+for lib in /home/cht-core/shared-libs/*/; do
+    lib="${lib%/}"
+    ln -sfn "$lib" "webapp/node_modules/@medic/$(basename "$lib")"
+done
 """
+    return ""
 
-# Every byte this image emits at BUILD time is forced down to printable ASCII
-# (plus tab/LF/CR): the harness streams `docker buildx` output through
-# `subprocess` with `text=True` and no explicit encoding, so a Windows host
-# decodes it with cp1252 and any UTF-8 byte outside that map aborts the build
-# (npm progress output is full of them). Runtime logs are decoded as UTF-8
-# explicitly, so only build-time commands are wrapped.
-ASCII_FILTER = r"tr -cd '\11\12\15\40-\176'"
 
-# Declared ONCE, in the base image; Docker propagates ENV to the PR image.
-ENCODING_ENV = """ENV NO_COLOR=1 \\
-    FORCE_COLOR=0 \\
-    CI=true \\
-    NPM_CONFIG_FUND=false \\
-    NPM_CONFIG_AUDIT=false \\
-    NPM_CONFIG_PROGRESS=false"""
+# The single apt layer. node:12.16.1 is Debian 9 (stretch), retired to
+# archive.debian.org, so the sources are repointed and the stale Release file
+# accepted first; `-updates` is dropped by suffix because the archive
+# publishes no such index. chromium is in this list because PR 7159 is graded
+# by karma, which drives a real browser and the tree pins no puppeteer.
+APT_LAYER = """RUN sed -i 's|deb.debian.org|archive.debian.org|g; s|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \\
+    sed -i '/-updates/d' /etc/apt/sources.list && \\
+    apt-get -o Acquire::Check-Valid-Until=no update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    chromium \\
+    curl \\
+    build-essential \\
+    git \\
+    gnupg \\
+    make \\
+    sudo \\
+    wget \\
+    && rm -rf /var/lib/apt/lists/*"""
+
+# Toolchain pin, the counterpart of the reference base's `pip install`. npm 6
+# is what ships with node 12 and what the committed package-lock files were
+# resolved against; asserting it here fails the build loudly if the base image
+# ever moves, rather than letting `npm ci` rewrite the lockfile at run time.
+TOOLCHAIN_PIN = """RUN npm --version | grep -q '^6\\.' && node --version"""
+
+
+def _hardening_block(sha: str) -> str:
+    """Git stripping / hardening, emitted into the PR image.
+
+    This lives in the PR layer rather than the base because the base is shared
+    by all five PRs and therefore cannot hold a commit. Each PR pins the tree
+    to its OWN base commit here and reduces the repository to exactly that
+    history, then asserts the four invariants: HEAD == base commit, no
+    residual refs, no remotes, no unreachable objects.
+
+    The base keeps its remote and full history precisely so this block can
+    resolve any of the five commits locally, with no network fetch.
+    """
+    return f"""# Git stripping / hardening. Pins the tree to the base commit and reduces the
+# repository to exactly that history, then asserts the four invariants:
+# HEAD == base commit, no residual refs, no remotes, no unreachable objects.
+RUN set -eux; \\
+    git checkout --detach {sha}; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse {sha})"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi"""
 
 
 class ImageBase(Image):
-    """Per-PR base: OS + node + the repo at BASE_COMMIT.
-
-    Tagged `base-pr-<N>`, so the tag names the pull request whose code is
-    inside it (QC item P1). A single shared `base` tag cannot make that
-    promise - the first PR to build it freezes it, and every later PR silently
-    inherits the wrong commit while the tag still reads `base`.
-
-    The clone below is deliberately the bare `RUN git clone <url> /home/<repo>`
-    form: that exact shape is what DockerfileEnhancer._standardize_repo_fetch
-    matches, and its rewrite supplies the REPO_URL/BASE_COMMIT clone, the
-    checkout, the history-sanitising scrub with its four integrity asserts,
-    and the final CMD. Decorate that line and the enhancer stops recognising
-    it, so the hardening block is silently never injected.
-    """
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -110,45 +249,106 @@ class ImageBase(Image):
     def dependency(self) -> Union[str, "Image"]:
         return NODE_IMAGE
 
+    # One shared base for all five PRs. Images dedupe on image_full_name(), so
+    # a constant tag collapses the five builds into one. This is only sound
+    # because the base holds no commit: it is Node plus a full clone with its
+    # history intact, and each PR image's prepare.sh does the
+    # `git fetch <sha>` + `git checkout <sha>` that pins its own base commit.
     def image_tag(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
+        """Complete base Dockerfile, emitted verbatim.
+
+        The leading syntax directive makes DockerfileEnhancer.enhance() return
+        this file unchanged, which is required here: its _inject_final_sanitize
+        appends a git hardening block to any Dockerfile containing `git clone`,
+        stripping `origin` and pruning unreachable objects. On a base shared by
+        five PRs that would pin the tree to whichever PR built it first and
+        make the other four base commits unreachable. Emitting the file in full
+        keeps the clone, its remote and its whole history intact, so each PR
+        image can check out its own commit and harden from there.
+        """
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        # node:12.16.1 (full Debian variant) already ships git, python and a
-        # C toolchain for node-gyp, so no apt layer is needed here.
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {image_name}
 
-{ENCODING_ENV}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    NO_COLOR=1 \\
+    FORCE_COLOR=0 \\
+    CI=true \\
+    CHROME_BIN=/usr/bin/chromium \\
+    NPM_CONFIG_FUND=false \\
+    NPM_CONFIG_AUDIT=false \\
+    NPM_CONFIG_PROGRESS=false
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+{APT_LAYER}
+
+{TOOLCHAIN_PIN}
+
 
 WORKDIR /home/
 
 {code}
 
-{self.clear_env}
+WORKDIR /home/{self.pr.repo}
 
+CMD ["/bin/bash"]
 """
 
 
 class ImageDefault(Image):
-    """Per-PR layer: the patches, the stage scripts, and warmed node_modules."""
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -171,6 +371,10 @@ class ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        test_cmd = _get_test_cmd(self.pr.number)
+        scope_note = _get_scope_note(self.pr.number)
+        extra_install = _get_extra_install(self.pr.number)
+
         return [
             File(".", "fix.patch", self.pr.fix_patch),
             File(".", "test.patch", self.pr.test_patch),
@@ -180,15 +384,8 @@ class ImageDefault(Image):
                 """#!/bin/bash
 set -e
 
-# Integrity guard. prepare.sh calls this immediately after `git reset --hard`
-# and again after `git checkout <BASE_COMMIT>`, so a tree that did not actually
-# come back clean aborts the BUILD instead of being baked into the image and
-# silently contaminating all three graded stages.
-#
-# `git status --porcelain` is empty only when there is nothing modified, staged
-# or untracked - deliberately stricter than `git diff --quiet`, because the
-# failure this catches is usually a leftover UNTRACKED file (`git clean -qfd`
-# does not remove ignored files without -x).
+# Stricter than `git diff --quiet`: the failure this catches is usually a
+# leftover untracked file, which `git clean -qfd` does not remove.
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
   echo "check_git_changes: Not inside a git repository"
   exit 1
@@ -212,17 +409,11 @@ set -e
 
 cd /home/{repo}
 git reset --hard
-# Assert the reset really produced a clean tree, so a leftover file cannot be
-# baked into the image and silently inherited by all three graded stages.
 bash /home/check_git_changes.sh
 
-# The base image is frozen at ONE commit and has had its origin remote stripped
-# by the hardening block, so a commit that is not already present cannot be
-# resolved locally and `git fetch origin` has no remote to use. Ask GitHub for
-# that exact commit by sha over the full URL. A fetch drags fresh git objects
-# into an image whose history the base deliberately stripped, so the block
-# below re-runs the scrub in exactly that case. On this instance the base was
-# built from this very sha, so the fetch never runs.
+# The base image has had its remote stripped, so a commit it does not already
+# contain has to be fetched by sha over the full URL. That drags in fresh git
+# objects, so the scrub is re-run in exactly that case.
 FETCHED=0
 if ! git cat-file -e {sha} 2>/dev/null; then
     git fetch --quiet https://github.com/{org}/{repo}.git {sha}
@@ -247,29 +438,22 @@ if [ "$FETCHED" = "1" ]; then
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 fi
 
-# Both trees have committed package-lock.json files, so `npm ci` gives the
-# exact dependency graph the era resolved. Root node_modules supplies mocha,
-# chai and sinon (the specs resolve them by walking up from api/tests).
-npm ci
+# Every install ends in `|| true`: a native module that fails to build on one
+# architecture must not abort the image build. The test stage decides whether
+# the environment is usable.
+npm ci || true
 
-# api/src requires @medic/* shared libs (config.js needs
-# @medic/translation-utils at require time), but api/package.json does NOT
-# list them - the repo wires them up out-of-band. This reproduces the
-# Gruntfile's own recipe exactly: `npm-ci-shared-libs` runs
-# `npm ci --production` inside every shared-libs/<lib> (all 18 have
-# lockfiles), and `linkSharedLibs('api')` SYMLINKS each one into
-# api/node_modules/@medic. Symlinks rather than copies, faithful to the
-# Gruntfile - with the side benefit that a patch touching shared-libs would
-# be live at every stage instead of frozen in a stale copy. node_modules is
-# gitignored, so the links survive each stage's reset/clean and the
-# clean-tree guard stays honest.
+# api/src requires @medic/* shared libs that api/package.json does not list;
+# the Gruntfile wires them up out-of-band with a per-lib `npm ci --production`
+# plus symlinks into api/node_modules/@medic. Reproduced here, symlinks and
+# all, so a patch touching shared-libs is live at every stage.
 for lib in shared-libs/*/; do
     lib="${{lib%/}}"
     echo "Installing shared library: $(basename "$lib")"
-    (cd "$lib" && npm ci --production)
+    (cd "$lib" && npm ci --production) || true
 done
 cd api
-npm ci
+npm ci || true
 mkdir -p node_modules/@medic
 for lib in /home/{repo}/shared-libs/*/; do
     lib="${{lib%/}}"
@@ -277,8 +461,8 @@ for lib in /home/{repo}/shared-libs/*/; do
 done
 cd /home/{repo}
 
-# Warm run: proves the suite loads under UNIT_TEST_ENV and primes any caches.
-# The outcome is irrelevant to grading, hence `|| true`.
+{extra_install}
+# Warm run: primes caches and proves the suite loads. Outcome is irrelevant.
 {test_cmd} || true
 git reset --hard
 git clean -qfd
@@ -287,46 +471,56 @@ bash /home/check_git_changes.sh
                     repo=self.pr.repo,
                     sha=self.pr.base.sha,
                     org=self.pr.org,
-                    test_cmd=TEST_CMD,
+                    test_cmd=test_cmd,
+                    extra_install=extra_install,
                 ),
             ),
+            # `set -e` covers the setup commands so a failed reset or a failed
+            # `git apply` aborts the stage instead of silently grading the
+            # wrong tree. It is turned off again immediately before the test
+            # command: a non-zero exit there is the expected baseline result,
+            # and the harness reads stdout rather than the exit code, so
+            # letting -e kill the shell would truncate the log parse_log needs.
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -uxo pipefail
+set -euxo pipefail
 
 cd /home/{repo}
 git reset --hard
 git clean -qfd
-{scope_note}{test_cmd}
-""".format(repo=self.pr.repo, scope_note=SCOPE_NOTE, test_cmd=TEST_CMD),
+{scope_note}set +e
+{test_cmd}
+""".format(repo=self.pr.repo, scope_note=scope_note, test_cmd=test_cmd),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -uxo pipefail
+set -euxo pipefail
 
 cd /home/{repo}
 git reset --hard
 git clean -qfd
 git apply --whitespace=nowarn /home/test.patch
-{scope_note}{test_cmd}
-""".format(repo=self.pr.repo, scope_note=SCOPE_NOTE, test_cmd=TEST_CMD),
+{scope_note}set +e
+{test_cmd}
+""".format(repo=self.pr.repo, scope_note=scope_note, test_cmd=test_cmd),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -uxo pipefail
+set -euxo pipefail
 
 cd /home/{repo}
 git reset --hard
 git clean -qfd
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-{scope_note}{test_cmd}
-""".format(repo=self.pr.repo, scope_note=SCOPE_NOTE, test_cmd=TEST_CMD),
+{scope_note}set +e
+{test_cmd}
+""".format(repo=self.pr.repo, scope_note=scope_note, test_cmd=test_cmd),
             ),
         ]
 
@@ -339,22 +533,20 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
         return f"""FROM {name}:{tag}
 
-{self.global_env}
-
 {copy_commands}
+WORKDIR /home/{self.pr.repo}
 
-# `-o pipefail` so a failing prepare.sh still fails the build: without it the
-# pipeline would report the exit status of `tr`, which always succeeds, and a
-# broken image would be published as if it were good.
-RUN /bin/bash -o pipefail -c "bash /home/prepare.sh 2>&1 | {ASCII_FILTER}"
+{_hardening_block(self.pr.base.sha)}
 
-{self.clear_env}
-
+RUN bash /home/prepare.sh
 """
 
 
 @Instance.register("medic", "cht-core")
 class ChtCore(Instance):
+    """medic/cht-core. Test command varies by PR: api mocha, rules-engine
+    mocha, or webapp karma. TAP output, with a karma-mocha-reporter fallback."""
+
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -384,28 +576,110 @@ class ChtCore(Instance):
         ansi_escape = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
         log = ansi_escape.sub("", test_log)
 
-        # mocha's tap reporter prints one line per test carrying the FULL
-        # nested title (describe chain + test title):
-        #     ok 12 login controller get send login page
-        #     not ok 13 config get returns error
-        # Pending tests appear with a `# SKIP -` directive. Failure detail
-        # lines that follow a `not ok` are indented, so the ^-anchored match
-        # never picks them up as phantom tests.
+        # mocha's tap reporter prints one line per test with its full nested
+        # title. Failure detail lines are indented, so the ^ anchor keeps them
+        # from being read as phantom tests.
         re_result = re.compile(r"^(ok|not ok)\s+\d+\s+(.*?)(?:\s+#\s*SKIP\b.*)?$")
         re_skip_directive = re.compile(r"#\s*SKIP\b", re.IGNORECASE)
 
-        # Some cht tests interpolate `Date.now()` into their own titles
-        # (e.g. "controller utils valid 1787820457109" and the matching ISO
-        # form). A title that changes every run is a different ID at every
-        # stage, which fabricates phantom n2p entries out of tests that in
-        # fact pass everywhere. Normalising the volatile parts to a fixed
-        # placeholder makes the ID stable across stages without merging any
-        # genuinely distinct tests (the epoch and ISO variants stay distinct).
+        # Some cht tests interpolate Date.now() into their own titles. A title
+        # that changes every run is a different id at every stage, which
+        # fabricates phantom results; normalising keeps ids stable.
         re_epoch = re.compile(r"\b1[6-9]\d{11}\b")
         re_isodate = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z")
 
         def stable(title: str) -> str:
             return re_isodate.sub("<TS>", re_epoch.sub("<TS>", title))
+
+        def parse_karma() -> None:
+            """karma-mocha-reporter prints a nested tree instead of TAP, so
+            test ids are rebuilt by joining the describe headers above each
+            mark line, keyed on indentation."""
+            # karma-mocha-reporter marks failures with U+2716 HEAVY
+            # MULTIPLICATION X, not the U+2717 BALLOT X mocha's own spec
+            # reporter uses. Missing it silently drops every failing test:
+            # the fail stage then looks empty rather than failing, and a real
+            # fail-to-pass transition is misclassified as none-to-pass.
+            re_mark = re.compile(r"^(\s*)([✓✔v]|[✗✘✖x]|-)\s+(.*?)\s*$")
+            re_header = re.compile(r"^(\s*)(\S.*?)\s*$")
+            # Karma's banners, the `set -x` trace and the browser console are
+            # all interleaved with the tree, and console messages wrap over
+            # several lines at arbitrary indent - so a header is accepted only
+            # if it LOOKS like a describe title. Real titles are short and free
+            # of the sentence punctuation and quoting that log spew carries;
+            # rejecting on that shape is what keeps a wrapped console line from
+            # being adopted as a suite and prefixing every id beneath it.
+            re_noise = re.compile(
+                r"^(\d{2}\s+\d{2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}|"
+                r"\+\s|\d+\.\s|"
+                r"Chrome|Firefox|Headless|Executed\b|SUCCESS\b|SUMMARY:|FAILED\b|TOTAL:|"
+                r"Finished\b|\d+\s+(tests?|specs?|passing|failing|pending|completed)\b|"
+                r"INFO\b|WARN\b|LOG:|ERROR:|DEBUG:|START:|Running|"
+                r"\[|<|Browser\b|Connected\b|Disconnected\b|webpack\b|at\s)",
+                re.IGNORECASE,
+            )
+            # Punctuation that appears in log messages but effectively never in
+            # a describe title.
+            re_not_title = re.compile(r"['\"]|[.!?]$|\.\s|:\s|=>|\bhttp")
+            # The log holds the whole stage script - `set -x` traces, git
+            # output, npm noise - and only its tail is karma's tree. Anchor on
+            # the LAST browser-launch banner so nothing emitted before the run
+            # can be mistaken for a suite header; without this, whatever line
+            # precedes the tree (a `HEAD is now at ...`, a console message)
+            # becomes a root describe and prefixes every id under it.
+            lines = log.splitlines()
+            start = 0
+            for i, line in enumerate(lines):
+                if re.search(r"(Chrome|Firefox)\w*\s+[\d.]+.*\bconnected\b", line, re.I) or re.search(
+                    r"^\s*(START|Executing):", line
+                ):
+                    start = i + 1
+            stack: list[tuple[int, str]] = []
+            for line in lines[start:]:
+                if not line.strip():
+                    continue
+                mm = re_mark.match(line)
+                if mm:
+                    indent, mark, title = len(mm.group(1)), mm.group(2), mm.group(3)
+                    # karma's SUMMARY footer reuses the tick mark for its
+                    # totals ("v 1659 tests completed"), which would otherwise
+                    # be recorded as a test named after the count.
+                    if re.match(
+                        r"^\d+\s+(tests?|specs?|failed|completed|succeeded)\b",
+                        title,
+                        re.IGNORECASE,
+                    ):
+                        continue
+                    while stack and stack[-1][0] >= indent:
+                        stack.pop()
+                    # Drop the trailing "(1023ms)" karma appends to slow tests.
+                    title = re.sub(r"\s*\(\d+ms\)\s*$", "", title)
+                    full = stable(" ".join(p for _, p in stack) + " " + title).strip()
+                    if not full:
+                        continue
+                    if mark == "-":
+                        if full not in passed_tests and full not in failed_tests:
+                            skipped_tests.add(full)
+                    elif mark in ("✓", "✔", "v"):
+                        if full not in failed_tests:
+                            skipped_tests.discard(full)
+                            passed_tests.add(full)
+                    else:
+                        passed_tests.discard(full)
+                        skipped_tests.discard(full)
+                        failed_tests.add(full)
+                    continue
+                hm = re_header.match(line)
+                if (
+                    hm
+                    and not re_noise.match(hm.group(2))
+                    and not re_not_title.search(hm.group(2))
+                    and len(hm.group(2)) <= 120
+                ):
+                    indent, text = len(hm.group(1)), hm.group(2)
+                    while stack and stack[-1][0] >= indent:
+                        stack.pop()
+                    stack.append((indent, text))
 
         for raw in log.splitlines():
             m = re_result.match(raw.rstrip())
@@ -425,6 +699,11 @@ class ChtCore(Instance):
                 passed_tests.discard(title)
                 skipped_tests.discard(title)
                 failed_tests.add(title)
+
+        # A TAP run always emits at least one ok/not ok line, so an empty
+        # result means the log came from karma instead.
+        if not (passed_tests or failed_tests or skipped_tests):
+            parse_karma()
 
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
