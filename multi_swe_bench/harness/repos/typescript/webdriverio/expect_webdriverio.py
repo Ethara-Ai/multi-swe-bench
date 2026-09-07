@@ -84,6 +84,9 @@ cd /home/{repo}
 def _prepare_script(pr: PullRequest) -> str:
     # `set -e` (not `-eo pipefail`): the `|| true` on install is what absorbs a
     # non-fatal native-module build failure on arm64, and there is no pipeline.
+    # Git pin + scrub are done in the PR Dockerfile (see
+    # `_ExpectWebDriverIOImageDefault.dockerfile`), not here — this script only
+    # installs npm deps against the tree already parked at BASE_COMMIT.
     return f"""#!/bin/bash
 set -e
 
@@ -91,8 +94,6 @@ export CI=true
 export NODE_OPTIONS="--max-old-space-size=4096"
 
 cd /home/{pr.repo}
-git reset --hard
-git checkout {pr.base.sha}
 
 npm install --no-audit --no-fund || true
 """
@@ -120,11 +121,29 @@ def _fix_run_script(pr: PullRequest, test_cmd: str) -> str:
     )
 
 
+def _check_git_changes_script() -> str:
+    return """#!/bin/bash
+set -e
+
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    echo "ERROR: not inside a git repository" >&2
+    exit 1
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: working tree has uncommitted changes" >&2
+    git status
+    exit 1
+fi
+"""
+
+
 def _instance_files(pr: PullRequest, test_cmd: str) -> list[File]:
-    """The standard 6 files. Every one of them is COPY'd by `_default_dockerfile`."""
+    """The standard 7 files. Every one of them is COPY'd by `_default_dockerfile`."""
     return [
         File(".", "fix.patch", f"{pr.fix_patch}"),
         File(".", "test.patch", f"{pr.test_patch}"),
+        File(".", "check_git_changes.sh", _check_git_changes_script()),
         File(".", "prepare.sh", _prepare_script(pr)),
         File(".", "run.sh", _run_script(pr, test_cmd)),
         File(".", "test-run.sh", _test_run_script(pr, test_cmd)),
@@ -133,12 +152,16 @@ def _instance_files(pr: PullRequest, test_cmd: str) -> list[File]:
 
 
 class _ExpectWebDriverIOImageBase(Image):
-    """Clone-only base layer.
+    """Base layer: headers + git clone + CMD only. Not pinned to any BASE_COMMIT.
 
-    Deliberately minimal: no proxy/cert/label/ARG plumbing, because
-    ``DockerfileEnhancer.enhance()`` (image.py:265-291) injects all of that and
-    rewrites the hardcoded ``git clone`` into the parameterised
-    ``REPO_URL``/``BASE_COMMIT`` form plus the history-hardening block.
+    Emits ``# syntax=docker/dockerfile:1.6`` as the first line to bail
+    ``DockerfileEnhancer.enhance()`` (image.py:265-291) — everything that
+    enhancer would inject (ARGs, ENV, LABEL, CA symlink farm) is written
+    explicitly below. Git pin (``git checkout {BASE_COMMIT}``) and the
+    history-hardening scrub live in the PR Dockerfile
+    (``_ExpectWebDriverIOImageDefault.dockerfile``), NOT here — that keeps
+    this base untouched by any PR's BASE_COMMIT so it can be shared across
+    every PR of the era.
     """
 
     #: Overridden per era so the two base images never dedupe onto each other
@@ -176,20 +199,57 @@ class _ExpectWebDriverIOImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 WORKDIR /home/
 
 {code}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -235,23 +295,56 @@ class _ExpectWebDriverIOImageDefault(Image):
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
+        sha = self.pr.base.sha
 
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        return f"""# syntax=docker/dockerfile:1.6
 
-        return f"""FROM {name}:{tag}
+FROM {name}:{tag}
 
-{self.global_env}
+WORKDIR /home/{self.pr.repo}
+
+RUN git reset --hard
+RUN git checkout {sha}
+
+RUN set -eux; \\
+    git checkout --detach "{sha}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "{sha}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+
+WORKDIR /home/
 
 {copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
+RUN bash /home/prepare.sh
 """
 
 
@@ -483,3 +576,7 @@ class ExpectWebDriverIO(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+for _n in ("133", "275", "434", "454", "467", "735", "1571", "1836", "1980", "1981"):
+    Instance.register("webdriverio", _n)(ExpectWebDriverIO)
