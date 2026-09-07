@@ -43,6 +43,7 @@ class ImageBase(Image):
 FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
 
 ARG http_proxy=""
 ARG https_proxy=""
@@ -83,6 +84,8 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
 WORKDIR /home/
 
 RUN git clone "${{REPO_URL}}" /home/{repo}
+
+WORKDIR /home/{repo}
 
 {self.clear_env}
 
@@ -147,92 +150,16 @@ exit 0
             ),
             File(
                 ".",
-                "wire_test_worktree.py",
-                '''import sys
-
-path = sys.argv[1]
-with open(path) as f:
-    content = f.read()
-
-start_marker = (
-    "# ---------------------------------------------------------------------------\\n"
-    "# Lightweight reimplementations for testing (avoid importing cli.py)\\n"
-    "# ---------------------------------------------------------------------------\\n"
-)
-end_marker = (
-    "# ---------------------------------------------------------------------------\\n"
-    "# Tests\\n"
-    "# ---------------------------------------------------------------------------\\n"
-)
-
-if start_marker not in content or end_marker not in content:
-    sys.exit(0)
-
-start_idx = content.index(start_marker)
-end_idx = content.index(end_marker)
-
-replacement = \'\'\'# ---------------------------------------------------------------------------
-# Adapters wired to the real implementation in cli.py (added by fix.patch)
-# ---------------------------------------------------------------------------
-
-import subprocess as _subprocess
-
-try:
-    import cli as _cli
-except Exception:
-    _cli = None
-
-
-def _git_repo_root(cwd=None):
-    if cwd is None:
-        if _cli is None:
-            raise ImportError("cli module not importable")
-        return _cli._git_repo_root()
-    try:
-        result = _subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
-            cwd=cwd,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return None
-
-
-def _setup_worktree(repo_root):
-    if _cli is None:
-        raise ImportError("cli module not importable")
-    return _cli._setup_worktree(repo_root)
-
-
-def _cleanup_worktree(info):
-    if _cli is None:
-        raise ImportError("cli module not importable")
-    from pathlib import Path
-    existed_before = Path(info["path"]).exists()
-    _cli._cleanup_worktree(info)
-    still_exists = Path(info["path"]).exists()
-    if not existed_before:
-        return None
-    return not still_exists
-
-
-\'\'\'
-
-new_content = content[:start_idx] + replacement + content[end_idx:]
-with open(path, "w") as f:
-    f.write(new_content)
-''',
-            ),
-            File(
-                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
 
 cd /home/{pr.repo}
+
+git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null \\
+    || git fetch --no-tags --depth=2147483647 origin {pr.base.sha} \\
+    || git fetch --no-tags origin "+refs/pull/{pr.number}/head:refs/remotes/origin/pr-{pr.number}"
+
 git reset --hard
 git clean -fdq
 bash /home/check_git_changes.sh
@@ -245,10 +172,14 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PYTHONDONTWRITEBYTECODE=1
 python -V
 
-python -m pip install --no-cache-dir --upgrade pip setuptools wheel
-python -m pip install --no-cache-dir -e ".[dev]"
-python -m pip install --no-cache-dir pytest-xdist
-python -m pytest tests --collect-only -q -p no:cacheprovider -n 0
+python -m pip install --no-cache-dir --upgrade pip setuptools wheel || true
+python -m pip install --no-cache-dir -e ".[dev]" || true
+python -m pip install --no-cache-dir pytest-xdist || true
+
+python -m pytest tests --collect-only -q -p no:cacheprovider -n 0 \
+    --continue-on-collection-errors > /home/collect.txt 2>&1 || true
+tail -3 /home/collect.txt
+grep -qE "[0-9]+ (tests|test) collected" /home/collect.txt
 
 git reset --hard
 git clean -fdq
@@ -260,7 +191,7 @@ bash /home/check_git_changes.sh
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -uo pipefail
+set -euo pipefail
 export CI=true
 
 cd /home/{pr.repo}
@@ -274,13 +205,13 @@ python -m pytest tests \\
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -uo pipefail
+set -euo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-if [ -f tests/test_worktree.py ]; then
-    python3 /home/wire_test_worktree.py tests/test_worktree.py
+if ! git apply --whitespace=nowarn /home/test.patch; then
+    echo "PATCH_APPLY_FAILED: test.patch does not apply at {pr.base.sha}" >&2
+    exit 1
 fi
 python -m pytest tests \\
     -p no:cacheprovider -n 0 \\
@@ -292,13 +223,13 @@ python -m pytest tests \\
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -uo pipefail
+set -euo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-if [ -f tests/test_worktree.py ]; then
-    python3 /home/wire_test_worktree.py tests/test_worktree.py
+if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+    echo "PATCH_APPLY_FAILED: test.patch + fix.patch do not apply at {pr.base.sha}" >&2
+    exit 1
 fi
 python -m pytest tests \\
     -p no:cacheprovider -n 0 \\
@@ -318,9 +249,10 @@ python -m pytest tests \\
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM {name}:{tag}
+        sha = self.pr.base.sha
+        hardening = Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", sha)
 
-ENV BASE_COMMIT={self.pr.base.sha}
+        return f"""FROM {name}:{tag}
 
 {self.global_env}
 
@@ -328,9 +260,9 @@ ENV BASE_COMMIT={self.pr.base.sha}
 
 WORKDIR /home/{repo}
 
-RUN bash /home/prepare.sh
+{hardening}
 
-{Image._HARDENING_BLOCK}
+RUN bash /home/prepare.sh
 
 {self.clear_env}
 """
@@ -370,11 +302,11 @@ class NousResearchHermesAgent(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        cleaned = re.sub(r"\x1b\[[0-9;]*m", "", test_log)
+        cleaned = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
         re_standard = re.compile(
             r"^(\S+::\S+)\s+(PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)"
-            r"(?:\s+\[.*\])?\s*$"
+            r"(?:\s+\(.*\))?(?:\s+\[.*\])?\s*$"
         )
 
         re_xdist = re.compile(
