@@ -1,8 +1,9 @@
+import os
 import re
 import shlex
 import textwrap
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -10,7 +11,37 @@ _MAVEN_VERSION = "3.9.9"
 _JDK17_MIN_PR = 6279
 
 
+# PR-number thresholds are a proxy for the toolchain a commit expects, and the
+# proxy breaks where the two disagree. dubbo compiles its $Adaptive extension
+# classes at *runtime* through the JDK compiler API; on JDK 17 that fails with
+# "Failed to compile class, cause: null", ExtensionLoader cannot build
+# Protocol$Adaptive, and every test that touches ServiceConfig dies with
+# NoClassDefFoundError before it runs.
+#
+# pr-8032 is 3.0.0-SNAPSHOT from June 2021 -- three months before JDK 17 was
+# released -- yet its number puts it above _JDK17_MIN_PR. Measured on the built
+# image, same patches, only JAVA_HOME changed:
+#     JDK 17 -> 234 adaptive-instance errors across 21 test classes;
+#               ServiceConfigTest 14 errors, gold test FAILED
+#     JDK  8 -> Tests run: 14, Failures: 0, Errors: 0, Skipped: 1; BUILD SUCCESS
+#
+# Listed explicitly rather than by moving _JDK17_MIN_PR: the threshold is right
+# for every other PR in this range, and shifting it would re-route PRs whose
+# reports are already valid.
+# Probed on the built images -- same patches, only JAVA_HOME changed:
+#     pr-8379  43 failures / 25 adaptive errors  ->  64 run, 0 Failures, 0 Errors
+#     pr-8414  75 failures / 62 adaptive errors  -> 127 run, 0 Failures, 0 Errors
+#     pr-9397  43 failures / 25 adaptive errors  ->  64 run, 0 Failures, 0 Errors
+#     pr-9525  38 failures / 30 adaptive errors  -> 151 run, 0 Failures, 0 Errors
+#     pr-8032  79 failures                       -> 0 failures, p2p 0 -> 1397
+# pr-7778 and pr-9526 sit in the same number range and show zero adaptive
+# errors, so this is an enumerated set rather than a moved threshold.
+_FORCE_JDK8_PRS = frozenset({8032, 8379, 8414, 9397, 9525})
+
+
 def _jdk_major(pr: PullRequest) -> int:
+    if pr.number in _FORCE_JDK8_PRS:
+        return 8
     return 17 if pr.number >= _JDK17_MIN_PR else 8
 
 
@@ -151,6 +182,57 @@ _SKIP_FLAGS = (
 # It cannot hide a broken fix -- if the gold test fails to compile in the fix
 # stage it produces no !PASS -> PASS transition and Report.check rejects the
 # instance.
+# Tests that need a live ZooKeeper on localhost:2181. The container is offline
+# by design, so each one burns curator's 30s connect timeout and two hang
+# outright -- pr-10730's run stage produced a 43 MB log that was 50% connection
+# retries and never finished. Measured from the stage logs: every class here
+# either took >=25s or never reported a result.
+#
+# Scoped per PR, deliberately NOT global: ReferenceConfigTest is on this list
+# and is a *graded* test for pr-3639 (its test patch modifies it). Excluding it
+# everywhere would silently delete that instance's signal.
+_ZK_DEPENDENT_TESTS = (
+    "ConfigCenterBeanTest",
+    "ConfigCenterConfigTest",
+    "DubboBootstrapTest",
+    "DubboConfigBeanInitializerTest",
+    "Issue6000Test",
+    "Issue6252Test",
+    "Issue7003Test",
+    "LocalCallMultipleReferenceAnnotationsTest",
+    "MultiInstanceTest",
+    "MultipleConsumerAndProviderTest",
+    "MultipleRegistryCenterExportMetadataIntegrationTest",
+    "MultipleRegistryCenterExportProviderIntegrationTest",
+    "MultipleRegistryCenterInjvmIntegrationTest",
+    "MultipleRegistryCenterServiceDiscoveryRegistryIntegrationTest",
+    "ReferenceConfigTest",
+    "SingleRegistryCenterExportMetadataIntegrationTest",
+    "SingleRegistryCenterExportProviderIntegrationTest",
+    "SingleRegistryCenterInjvmIntegrationTest",
+    "SpringBootConfigPropsTest",
+    "SpringBootImportDubboXmlTest",
+    "SpringBootMultipleConfigPropsTest",
+)
+
+# PRs whose reactor selection pulls the classes above in. None of these PRs
+# grades any of them -- verified against their test patches.
+_ZK_AFFECTED_PRS = frozenset({10683, 10730})
+
+
+def _mvn_excludes(pr: PullRequest) -> str:
+    """Surefire negations for this PR, or "" when none apply.
+
+    Emitted into the script preamble as a shell variable rather than baked into
+    the command, so the graded command string stays byte-identical across
+    run.sh / test-run.sh / fix-run.sh by construction.
+    """
+    if pr.number not in _ZK_AFFECTED_PRS:
+        return ""
+    negated = ",".join("!" + name for name in _ZK_DEPENDENT_TESTS)
+    return f"-Dtest={negated} -Dsurefire.failIfNoSpecifiedTests=false"
+
+
 _MVN_BASE = (
     "mvn -B -ntp clean test -fn "
     "-Dsurefire.useFile=false -Dmaven.test.skip=false -DfailIfNoTests=false "
@@ -162,50 +244,35 @@ _MVN_BASE = (
 # module resolvable from ~/.m2 so the graded stages never need -am.
 _MVN_WARMUP = f"mvn -B -ntp clean install -fn -DskipTests {_SKIP_FLAGS}"
 
-# Checkout + scrub, in the PR Dockerfile rather than the base (which is shared
-# and must stay unpinned) or prepare.sh. Asserts the isolation the graded run
-# depends on: HEAD is the base commit and no other commit is reachable.
-_HARDEN_BLOCK = """WORKDIR /home/{repo}
-
-RUN set -eux; \\
-    git checkout --detach {sha}; \\
-    git remote remove origin 2>/dev/null || true; \\
-    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
-        | xargs -r -n1 git update-ref -d; \\
-    git reflog expire --expire=now --all; \\
-    git reflog expire --expire-unreachable=now --all; \\
-    git gc --prune=now --quiet; \\
-    rm -f .git/objects/info/alternates; \\
-    git config --local gc.auto 0; \\
-    git config --local fetch.recurseSubmodules false; \\
-    test "$(git rev-parse HEAD)" = "{sha}"; \\
-    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
-    test -z "$(git remote)"; \\
-    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
-
-RUN if [ -f .gitmodules ]; then \\
-        git submodule foreach --recursive ' \\
-            git checkout --detach HEAD; \\
-            git remote remove origin 2>/dev/null || true; \\
-            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
-                | xargs -r -n1 git update-ref -d; \\
-            git reflog expire --expire=now --all; \\
-            git reflog expire --expire-unreachable=now --all; \\
-            git gc --prune=now --aggressive; \\
-            rm -f .git/objects/info/alternates; \\
-        '; \\
-    fi
-"""
-
 _PREPARE_SH = """#!/bin/bash
 set -e
 
 export CI=true
+export LC_ALL=C.UTF-8
+export MAVEN_HOME=/opt/apache-maven-__MVNVER__
 export MAVEN_OPTS="-Xmx2g -XX:+UseParallelGC"
+# Must match the graded stages' JDK or the warmup populates ~/.m2 from a
+# different compiler than the one the tests then run under.
+export JAVA_HOME=__JAVA_HOME__
+export PATH="$JAVA_HOME/bin:$MAVEN_HOME/bin:$PATH"
 
 cd /home/__REPO__
 git reset --hard
 bash /home/check_git_changes.sh
+
+git checkout __SHA__
+bash /home/check_git_changes.sh
+
+# ---- toolchain. Deliberately not in the base image: the base is shared by
+# every PR and the standard stops it at the clone, so the JDK symlinks and the
+# Maven install live here. Install-chain lines, hence the suppressed exit
+# status; the hard verification below is what actually proves they worked.
+ln -sfn /usr/lib/jvm/java-8-openjdk-$(dpkg --print-architecture) /usr/lib/jvm/java-8-openjdk || true
+ln -sfn /usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture) /usr/lib/jvm/java-17-openjdk || true
+wget -q https://archive.apache.org/dist/maven/maven-3/__MVNVER__/binaries/apache-maven-__MVNVER__-bin.tar.gz -O /tmp/maven.tar.gz || true
+tar xzf /tmp/maven.tar.gz -C /opt || true
+ln -sf /opt/apache-maven-__MVNVER__/bin/mvn /usr/local/bin/mvn || true
+rm -f /tmp/maven.tar.gz || true
 
 PL_MODULES="$(python3 - /home/__REPO__ <<'RESOLVE_MODULES'
 __RESOLVER__
@@ -221,6 +288,24 @@ echo "reactor selection: $(cat /home/mvn_pl.txt)"
 # Full reactor, installed at base-commit state, so the graded stages resolve
 # every module they do not build themselves from ~/.m2 and never need -am.
 __WARMUP__ || true
+
+# ---- HARD VERIFICATION. No error suppression below this line, by design.
+# The warmup above suppresses its exit status because a partial reactor is
+# survivable -- which also means a warmup that 403s, OOMs or resolves nothing
+# still exits 0 and ships a hollow image: builds green, reports 0/0/0 at test
+# time. These lines are the only thing standing between that and delivery, so
+# every one of them must fail loud.
+java -version
+mvn -v
+test -d "$HOME/.m2/repository/org/apache/dubbo"
+test -n "$(find "$HOME/.m2/repository/org/apache/dubbo" -name '*.jar' -print -quit)"
+
+# Compile the exact reactor selection the graded stages will run. Proves the
+# toolchain, the plugins and every test-scope dependency actually resolved --
+# a check `dependency:resolve` alone would not make.
+mvn -B -ntp clean test-compile $(cat /home/mvn_pl.txt) __SKIPFLAGS__
+
+bash /home/check_git_changes.sh
 """
 
 # Surefire names individual methods on the console only when they fail, so a
@@ -300,15 +385,47 @@ def ident(line):
     return parts[2] if len(parts) > 2 else None
 
 
-primary = load(sys.argv[1])
-seen = {ident(line) for line in primary}
-merged = list(primary)
-for line in load(sys.argv[2]):
+def simple_class(key):
+    return key.split("#", 1)[0].rsplit(".", 1)[-1] if key else ""
+
+
+# Classes the gold test patch touches. Pass A is the graded observation for
+# these and must never be overwritten -- that is the f2p/n2p signal itself.
+graded = {c for c in sys.argv[3].split(",") if c} if len(sys.argv) > 3 else set()
+
+pass_a = load(sys.argv[1])
+pass_b = load(sys.argv[2])
+
+merged = {}
+order = []
+for line in pass_a:
     key = ident(line)
-    if key not in seen:
-        seen.add(key)
-        merged.append(line)
-sys.stdout.write("".join(line + "\n" for line in merged))
+    if key is None:
+        continue
+    if key not in merged:
+        order.append(key)
+    merged[key] = line
+
+# Pass B is a clean re-run at base-commit state with the gold test patch
+# reverted, so it is the *correct* observation for every class the patch does
+# not touch. Pass A's view of those is contaminated: when the gold test fails
+# to compile, javac stops emitting classes partway through the module and the
+# module's other tests then die on NoClassDefFoundError for helpers that were
+# never built. Measured on pr-10730: ExtensionLoaderTest reported 39 FAILED / 9
+# PASSED in pass A and 48 PASSED in pass B and in the fix stage -- keeping pass
+# A produced 128 bogus FAIL -> PASS transitions, none of them in a graded class.
+#
+# This overwrites rather than only filling gaps. Nothing is invented: every
+# line written here was observed by a real Surefire run.
+for line in pass_b:
+    key = ident(line)
+    if key is None or simple_class(key) in graded:
+        continue
+    if key not in merged:
+        order.append(key)
+    merged[key] = line
+
+sys.stdout.write("".join(merged[k] + "\n" for k in order))
 '''
 
 _STAGE_TESTS = "/home/stage.tests"
@@ -326,7 +443,11 @@ _COMPILE_ERROR_RE = r'^\[ERROR\] .*/src/test/.*\.java:\[[0-9]+,[0-9]+\]'
 
 def _graded_body() -> str:
     """Single-pass stage: run, harvest, print. Used by run.sh and fix-run.sh."""
-    return f"{_MVN_BASE} $MVN_PL\n" + _emit_to(_STAGE_TESTS) + f"cat {_STAGE_TESTS}\n"
+    return (
+        f"{_MVN_BASE} $MVN_PL $MVN_EXCLUDES\n"
+        + _emit_to(_STAGE_TESTS)
+        + f"cat {_STAGE_TESTS}\n"
+    )
 
 
 def _test_stage_body(pr: PullRequest) -> str:
@@ -356,10 +477,19 @@ def _test_stage_body(pr: PullRequest) -> str:
     test stage that was already clean costs precisely what it costs today.
     """
     paths = _patch_paths(pr.test_patch)
+    graded_classes = ",".join(
+        sorted(
+            {
+                os.path.basename(path)[: -len(".java")]
+                for path in paths
+                if path.endswith(".java")
+            }
+        )
+    )
     body = (
         "git apply --whitespace=nowarn /home/test.patch\n\n"
         "# ---- pass A: the graded run, gold test patch applied.\n"
-        f"{_MVN_BASE} $MVN_PL 2>&1 | tee {_PASS_A_LOG}\n"
+        f"{_MVN_BASE} $MVN_PL $MVN_EXCLUDES 2>&1 | tee {_PASS_A_LOG}\n"
         + _emit_to(_PASS_A_TESTS)
     )
 
@@ -377,7 +507,7 @@ def _test_stage_body(pr: PullRequest) -> str:
             '      rm -f "$path"\n'
             "    fi\n"
             "  done\n"
-            f"  {_MVN_BASE} $MVN_PL\n"
+            f"  {_MVN_BASE} $MVN_PL $MVN_EXCLUDES\n"
             # Not indented: a quoted heredoc's terminator must sit at column 0,
             # and indenting the body would break the Python inside it too.
             + _emit_to(_PASS_B_TESTS).strip()
@@ -385,7 +515,8 @@ def _test_stage_body(pr: PullRequest) -> str:
         )
 
     body += (
-        f"\npython3 - {_PASS_A_TESTS} {_PASS_B_TESTS} <<'MERGE_TESTCASES'\n"
+        f"\npython3 - {_PASS_A_TESTS} {_PASS_B_TESTS} {shlex.quote(graded_classes)}"
+        + " <<'MERGE_TESTCASES'\n"
         + _MERGE_PY.strip()
         + "\nMERGE_TESTCASES\n"
     )
@@ -396,12 +527,21 @@ _SCRIPT_PREAMBLE = """#!/bin/bash
 set -eo pipefail
 
 export CI=true
+export LC_ALL=C.UTF-8
 export MAVEN_OPTS="-Xmx2g -XX:+UseParallelGC"
+# The base image ships both JDKs; the era this PR belongs to picks one. The
+# toolchain itself is installed by prepare.sh at image-build time, not by the
+# base, so these paths exist in the PR layer.
+export JAVA_HOME=/usr/lib/jvm/java-{jdk}-openjdk
+export PATH="$JAVA_HOME/bin:$PATH"
 
 cd /home/{repo}
 # Written by prepare.sh at image-build time; absent means the image is broken,
 # and failing here beats silently building the whole 40-module reactor.
 MVN_PL="$(cat /home/mvn_pl.txt)"
+# Surefire negations for suites that need a live ZooKeeper. Empty for PRs whose
+# reactor selection does not pull them in. See _mvn_excludes().
+MVN_EXCLUDES="{excludes}"
 """
 
 
@@ -437,46 +577,64 @@ class DubboImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        jdk = _jdk_major(self.pr)
+        # The standard requires a base that stops at the clone: no checkout, no
+        # history stripping, nothing between `RUN git clone` and CMD.
+        #
+        # DockerfileEnhancer.enhance() would break that. It force-appends
+        # Image._HARDENING_BLOCK to any base containing the substring
+        # "git clone" (_inject_final_sanitize), and the only escapes are its
+        # sentinel marker or a non-standard clone spelling -- both of which put
+        # something in the base that does not belong there.
+        #
+        # enhance() returns the Dockerfile untouched when it already carries the
+        # syntax directive:
+        #     if cls.SYNTAX_DIRECTIVE in raw:
+        #         return raw
+        # so this method emits the directive itself and takes responsibility for
+        # the infrastructure block. That block is *generated by the harness*,
+        # never transcribed, so the proxy ARGs, CA symlink farm, OCI labels and
+        # the REPO_URL / BASE_COMMIT ARGs cannot drift from what the pipeline
+        # expects. build_dataset.py passes REPO_URL and BASE_COMMIT as build
+        # args to every base image (isinstance(dependency(), str)), which is why
+        # both must remain declared.
+        #
+        # Hardening lives in the PR Dockerfile, after prepare.sh.
+        infra = DockerfileEnhancer._infrastructure_block(self, image_name, True)
 
-        # `git -C /home clone`, not `git clone`, and deliberately so. Both
-        # DockerfileEnhancer._standardize_repo_fetch (regex `^RUN git clone ...`)
-        # and _inject_final_sanitize (substring "git clone") key on the plain
-        # spelling; either one firing would append `git checkout ${BASE_COMMIT}`
-        # and the scrub to this image, pinning a base that five PRs share and
-        # putting the hardening in the wrong file. REPO_URL is the ARG the
-        # enhancer declares and build_dataset passes.
-        return f"""FROM {image_name}
+        # No `_jdk_major(self.pr)` here on purpose. image_tag() is the constant
+        # "base", so build_dataset.py builds this image exactly once (it skips
+        # any image whose full name already exists, build_dataset.py:610) and
+        # whichever PR won the race would otherwise bake *its* JDK into an image
+        # the whole dataset shares. This dataset spans _JDK17_MIN_PR -- pr-3639
+        # needs JDK 8 (42/42 pass; JDK 17 fails the same suite) while
+        # 7778..10730 need JDK 17 -- so both are installed and the PR layer
+        # selects one via JAVA_HOME. That keeps the image PR-independent as its
+        # tag claims, and preserves one repo config == one base Dockerfile.
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+
+FROM {image_name}
+
+{infra}
 
 {self.global_env}
 
 WORKDIR /home/
+
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     ca-certificates \\
     curl \\
     fontconfig \\
     git \\
-    openjdk-{jdk}-jdk \\
+    openjdk-8-jdk \\
+    openjdk-17-jdk \\
     python3 \\
     tar \\
     wget \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN ln -s /usr/lib/jvm/java-{jdk}-openjdk-$(dpkg --print-architecture) /usr/lib/jvm/java-{jdk}-openjdk
-
-RUN wget -q https://archive.apache.org/dist/maven/maven-3/{_MAVEN_VERSION}/binaries/apache-maven-{_MAVEN_VERSION}-bin.tar.gz -O /tmp/maven.tar.gz && \\
-    tar xzf /tmp/maven.tar.gz -C /opt && \\
-    ln -sf /opt/apache-maven-{_MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn && \\
-    rm /tmp/maven.tar.gz
-
-ENV JAVA_HOME=/usr/lib/jvm/java-{jdk}-openjdk \\
-    LC_ALL=C.UTF-8 \\
-    MAVEN_HOME=/opt/apache-maven-{_MAVEN_VERSION} \\
-    MAVEN_OPTS="-Xmx2g -XX:+UseParallelGC"
-
 {self.clear_env}
 
-RUN git -C /home clone "${{REPO_URL}}" {self.pr.repo}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
 CMD ["/bin/bash"]
 """
@@ -510,12 +668,23 @@ class DubboImageDefault(Image):
         )
         return (
             _PREPARE_SH.replace("__REPO__", self.pr.repo)
+            .replace("__SHA__", self.pr.base.sha)
+            .replace("__SKIPFLAGS__", _SKIP_FLAGS)
+            .replace("__MVNVER__", _MAVEN_VERSION)
+            .replace(
+                "__JAVA_HOME__",
+                f"/usr/lib/jvm/java-{_jdk_major(self.pr)}-openjdk",
+            )
             .replace("__RESOLVER__", resolver.strip())
             .replace("__WARMUP__", _MVN_WARMUP)
         )
 
     def files(self) -> list[File]:
-        preamble = _SCRIPT_PREAMBLE.format(repo=self.pr.repo)
+        preamble = _SCRIPT_PREAMBLE.format(
+            repo=self.pr.repo,
+            jdk=_jdk_major(self.pr),
+            excludes=_mvn_excludes(self.pr),
+        )
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
@@ -561,10 +730,28 @@ exit 0
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        harden_commands = _HARDEN_BLOCK.format(
-            repo=self.pr.repo, sha=self.pr.base.sha
+        # Referenced from the harness, never pasted, so the four integrity
+        # asserts cannot drift from what the pipeline expects. It expands
+        # ${BASE_COMMIT}, which build_dataset.py passes only to base images
+        # (isinstance(dependency(), str)) -- a PR layer receives no build args,
+        # so the ARG below carries a literal default.
+        # Sourced from the harness, never transcribed, so the four integrity
+        # asserts cannot drift. ${BASE_COMMIT} is interpolated to the literal SHA
+        # because build_dataset.py passes build args only to base images
+        # (isinstance(dependency(), str)) -- a PR layer receives none, so the
+        # variable would expand to empty and every assert would pass vacuously.
+        harden_commands = (
+            "# Git stripping / hardening. Pins the tree to the base commit and\n"
+            "# reduces the repository to exactly that history, then asserts the\n"
+            "# four invariants: HEAD == base commit, no residual refs, no remotes,\n"
+            "# no unreachable objects.\n"
+            + Image._HARDENING_BLOCK.replace("${BASE_COMMIT}", self.pr.base.sha)
         )
 
+        # The base's last WORKDIR is /home/ (the standard stops the base at the
+        # clone), so the hardening RUN needs the repo root set here. prepare.sh
+        # cds for itself and does not rely on it.
+        harden_workdir = f"WORKDIR /home/{self.pr.repo}"
         prepare_commands = "RUN bash /home/prepare.sh"
         proxy_setup = ""
         proxy_cleanup = ""
@@ -615,12 +802,21 @@ exit 0
                     RUN sed -i '/<proxies>/,/<\\/proxies>/d' ~/.m2/settings.xml
                 """
                 )
+        # Order is fixed by the standard: FROM, ARG, COPYs, prepare.sh, and
+        # only then the hardening. prepare.sh does the checkout and installs at
+        # that commit; stripping history before it ran would leave nothing to
+        # check out.
+        # Order per the standard: FROM, the seven COPYs, WORKDIR, the hardening
+        # and submodule scrub, then prepare.sh. No CMD -- it is inherited from
+        # the base and never consulted anyway: docker_util.run() passes the
+        # command explicitly to containers.run(image=..., command=...).
         sections = [f"FROM {name}:{tag}"]
         for part in (
             self.global_env,
-            harden_commands,
             proxy_setup,
             copy_commands,
+            harden_workdir,
+            harden_commands,
             prepare_commands,
             proxy_cleanup,
             self.clear_env,
