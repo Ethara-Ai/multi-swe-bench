@@ -41,6 +41,7 @@ from multi_swe_bench.harness.repos.java.smallrye import *
 from multi_swe_bench.harness.repos.java.spotbugs import *
 from multi_swe_bench.harness.repos.java.spring_cloud import *
 from multi_swe_bench.harness.repos.java.springprojects import *
+from multi_swe_bench.harness.repos.java.strimzi import *
 from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe import *
 from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe_5927_to_5927 import *
 from multi_swe_bench.harness.repos.java.termux import *
@@ -89,6 +90,6 @@ from multi_swe_bench.harness.repos.java.thingsboard import *
 from multi_swe_bench.harness.repos.java.A248 import *
 # from multi_swe_bench.harness.repos.java.mercedes_benz import *
 from multi_swe_bench.harness.repos.java.selenide import *
-from multi_swe_bench.harness.repos.java.brarcher import *  
+from multi_swe_bench.harness.repos.java.brarcher import *
 from multi_swe_bench.harness.repos.java.tlaplus import *
 from multi_swe_bench.harness.repos.java.react_native_camera import *
