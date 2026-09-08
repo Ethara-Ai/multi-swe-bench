@@ -354,7 +354,11 @@ bash /home/rebuild_extractor.sh
 """
 
 
-@Instance.register("TeamNewPipe", "NewPipe")
+# Registration removed: this dataset's rows carry an empty number_interval, so
+# the key "TeamNewPipe/NewPipe" resolves here for EVERY PR, and only one class
+# can own it. NewPipe_dispatcher.py now holds that key and routes by PR number
+# to the JDK 8 / JDK 17 era configs. This module is left intact but inert.
+# @Instance.register("TeamNewPipe", "NewPipe")
 class NewPipe(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
