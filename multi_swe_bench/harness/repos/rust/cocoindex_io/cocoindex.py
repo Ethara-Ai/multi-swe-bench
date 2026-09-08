@@ -1,7 +1,7 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -52,36 +52,91 @@ class ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
+        """Level 1: toolchain + source base image, SHARED by every PR.
+
+        This Dockerfile is written out IN FULL, starting with the
+        `# syntax=docker/dockerfile:1.6` directive. That directive is the
+        documented enhancer opt-out: DockerfileEnhancer.enhance() returns the
+        content verbatim the moment it sees it (image.py: `if
+        cls.SYNTAX_DIRECTIVE in raw: return raw`).
+
+        Taking the opt-out is what lets a SHARED base clone the repository at
+        all. Without it, _standardize_repo_fetch() rewrites the plain `git
+        clone ... /home/<repo>` line into the `${REPO_URL}` / `${BASE_COMMIT}`
+        form followed by the full Image._HARDENING_BLOCK -- which force-pins
+        this one shared image to a single commit and deletes every other ref.
+        That is exactly what used to happen here: the base landed on whichever
+        PR happened to build first, and the other four then had to `git fetch`
+        their own base commit back in prepare.sh to make `git checkout` work.
+
+        So: clone here (once, full history, light hardening only); pin to the
+        PR's commit and run the canonical hardening per-PR in ImageDefault's
+        prepare.sh.
+
+        The infrastructure block (ARG TARGETARCH / REPO_URL / BASE_COMMIT, the
+        proxy ARGs, the ENV block, the ethara LABEL and the cert symlinks) is
+        taken straight from DockerfileEnhancer._infrastructure_block rather
+        than hand-copied, so it cannot drift out of sync with the reference
+        format the enhancer emits for every other image.
+        """
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            # Keep the bare `git clone "${REPO_URL}" /home/<repo>` form so the
+            # reference-format marker still matches. Full history is retained
+            # deliberately -- every PR checks out its own commit from it.
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        infra = DockerfileEnhancer._infrastructure_block(self, image_name).rstrip("\n")
 
-{self.global_env}
+        # Light base hardening ONLY: drop the origin remote so the image
+        # carries no upstream to re-fetch from, and stop submodule recursion.
+        # The canonical Image._HARDENING_BLOCK (detach at ${BASE_COMMIT},
+        # delete every ref, expire reflog, gc) deliberately does NOT run here
+        # -- this image is shared, so it must retain full history for every
+        # PR's checkout.
+        light_hardening = (
+            "RUN git remote remove origin 2>/dev/null || true; \\\n"
+            "    git config --local fetch.recurseSubmodules false; \\\n"
+            "    git config --local gc.auto 0"
+        )
 
-WORKDIR /home/
+        sections = [
+            DockerfileEnhancer.SYNTAX_DIRECTIVE,
+            f"FROM {image_name}",
+            infra,
+        ]
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates build-essential cmake curl pkg-config libssl-dev \\
-    && rm -rf /var/lib/apt/lists/*
+        if self.global_env:
+            sections.append(self.global_env)
 
-ENV RUSTUP_HOME=/usr/local/rustup \\
-    CARGO_HOME=/usr/local/cargo \\
-    PATH=/usr/local/cargo/bin:$PATH
-COPY --from={RUST_IMAGE} /usr/local/rustup /usr/local/rustup
-COPY --from={RUST_IMAGE} /usr/local/cargo  /usr/local/cargo
+        sections.append("WORKDIR /home/")
+        sections.append(
+            "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+            "    git ca-certificates build-essential cmake curl pkg-config libssl-dev \\\n"
+            "    && rm -rf /var/lib/apt/lists/*"
+        )
+        sections.append(
+            "ENV RUSTUP_HOME=/usr/local/rustup \\\n"
+            "    CARGO_HOME=/usr/local/cargo \\\n"
+            "    PATH=/usr/local/cargo/bin:$PATH\n"
+            f"COPY --from={RUST_IMAGE} /usr/local/rustup /usr/local/rustup\n"
+            f"COPY --from={RUST_IMAGE} /usr/local/cargo  /usr/local/cargo"
+        )
+        sections.append(code)
+        sections.append(f"WORKDIR /home/{self.pr.repo}")
+        sections.append(light_hardening)
 
-{code}
+        if self.clear_env:
+            sections.append(self.clear_env)
 
-{self.clear_env}
+        sections.append('CMD ["/bin/bash"]')
 
-"""
+        return "\n\n".join(sections) + "\n"
 
 
 class ImageDefault(Image):
