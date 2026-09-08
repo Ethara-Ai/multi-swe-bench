@@ -27,22 +27,28 @@ _ERA_ENV = """ENV GOTOOLCHAIN=auto"""
 # Image._get_apt_update_command() applies, keyed off reachability rather than
 # the fixed DEPRECATED_DEBIAN_IMAGES list (which does not name golang tags).
 _APT_INSTALL = (
-    "RUN { apt-get update 2>/dev/null || "
-    "{ sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && "
-    "sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && "
-    "sed -i '/-updates/d' /etc/apt/sources.list && "
-    "apt-get update; }; } && \\\n"
-    "    apt-get install -y --no-install-recommends \\\n"
-    "    ca-certificates \\\n"
-    "    curl \\\n"
-    "    build-essential \\\n"
-    "    git \\\n"
-    "    gnupg \\\n"
-    "    make \\\n"
-    "    python3 \\\n"
-    "    sudo \\\n"
-    "    wget \\\n"
-    "    && rm -rf /var/lib/apt/lists/*"
+    # Debian EOL handling, two distinct failure modes:
+    #   * buster/stretch  -- mirrors retired, so `apt-get update` itself fails.
+    #   * bullseye        -- metadata is still served from deb.debian.org, so
+    #     `apt-get update` SUCCEEDS, but individual .deb files have been pruned
+    #     from the pool and `apt-get install` dies with 404 Not Found.
+    # Keying the archive.debian.org rewrite off `update` alone (the previous
+    # form) therefore never fired for bullseye. Retrying the *install* after the
+    # rewrite covers both, and is a no-op on still-supported releases
+    # (bookworm/trixie) where the first install succeeds.
+    "RUN _pkgs='ca-certificates curl build-essential git gnupg make python3 sudo wget'; \\\n"
+    "    apt-get update 2>/dev/null || true; \\\n"
+    "    apt-get install -y --no-install-recommends $_pkgs || { \\\n"
+    "        for _f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \\\n"
+    "            [ -f \"$_f\" ] || continue; \\\n"
+    "            sed -i -e 's|deb.debian.org/debian|archive.debian.org/debian|g' \\\n"
+    "                   -e 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' \\\n"
+    "                   -e '/-updates/d' \"$_f\"; \\\n"
+    "        done; \\\n"
+    "        apt-get -o Acquire::Check-Valid-Until=false update; \\\n"
+    "        apt-get install -y --no-install-recommends $_pkgs; \\\n"
+    "    }; \\\n"
+    "    rm -rf /var/lib/apt/lists/*"
 )
 
 
@@ -295,6 +301,32 @@ go test -v -count=1 -timeout 15m $PKGS
 
 ARG BASE_COMMIT="{self.pr.base.sha}"
 ENV BASE_COMMIT=${{BASE_COMMIT}}
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 {self.global_env}
 
