@@ -19,9 +19,74 @@ records, so routing falls back to `{org}/{repo}`).
 import re
 from typing import Optional
 
-from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
+from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+# ---------------------------------------------------------------------------
+# MITM proxy / CA-cert scaffolding -- INLINED HERE ON PURPOSE
+# ---------------------------------------------------------------------------
+# Both fastmcp images opt out of DockerfileEnhancer auto-injection:
+#   * FastmcpImageBase  -- `# syntax` directive present  -> enhance() returns raw
+#   * FastmcpImageDefault -- dependency() returns an Image -> enhance() returns raw
+# so neither would ever receive image.py's injected MITM block. Per manager
+# instruction these constants are DEFINED LOCALLY (not imported from
+# DockerfileEnhancer) so this registry file is self-contained and ships to the
+# trajectory team without depending on image.py's internals.
+#
+# The text below is byte-identical to image.py's DockerfileEnhancer._PROXY_ARGS
+# / _ENV_BLOCK / _CERT_SYMLINKS / _MITM_MOUNT -- keep it that way if image.py
+# ever changes.
+#
+# Passthrough by default: every proxy ARG defaults to "" and the CA mount is
+# `required=0`, so a plain `docker build` behaves exactly as before. To route a
+# build through a MITM proxy:
+#   docker build --build-arg http_proxy=http://<host>:<port> \
+#                --build-arg https_proxy=http://<host>:<port> \
+#                --secret id=mitm_ca,src=<ca.crt> .
+
+_MITM_PROXY_ARGS = (
+    'ARG http_proxy=""\n'
+    'ARG https_proxy=""\n'
+    'ARG HTTP_PROXY=""\n'
+    'ARG HTTPS_PROXY=""\n'
+    'ARG no_proxy="localhost,127.0.0.1,::1"\n'
+    'ARG NO_PROXY="localhost,127.0.0.1,::1"\n'
+    'ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"'
+)
+
+_MITM_ENV_BLOCK = (
+    "ENV DEBIAN_FRONTEND=noninteractive \\\n"
+    "    LANG=C.UTF-8 \\\n"
+    "    TZ=UTC \\\n"
+    "    http_proxy=${http_proxy} \\\n"
+    "    https_proxy=${https_proxy} \\\n"
+    "    HTTP_PROXY=${HTTP_PROXY} \\\n"
+    "    HTTPS_PROXY=${HTTPS_PROXY} \\\n"
+    "    no_proxy=${no_proxy} \\\n"
+    "    NO_PROXY=${NO_PROXY} \\\n"
+    "    SSL_CERT_FILE=${CA_CERT_PATH} \\\n"
+    "    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\\n"
+    "    CURL_CA_BUNDLE=${CA_CERT_PATH}"
+)
+
+_MITM_CERT_SYMLINKS = (
+    "RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\\n"
+    "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\\n"
+    "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\\n"
+    "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\\n"
+    "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\\n"
+    "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\\n"
+    "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt"
+)
+
+_MITM_CA_MOUNT = (
+    "RUN --mount=type=secret,id=mitm_ca,required=0 \\\n"
+    "    if [ -f /run/secrets/mitm_ca ]; then \\\n"
+    "        cp /run/secrets/mitm_ca /usr/local/share/ca-certificates/mitm-ca.crt && update-ca-certificates; \\\n"
+    "    fi"
+)
 
 
 class FastmcpImageBase(Image):
@@ -60,20 +125,20 @@ class FastmcpImageBase(Image):
         # tree". The base keeps full history; the strict anti-reward-hack
         # hardening runs per-PR (see FastmcpImageDefault).
         # `# syntax` opts this base out of DockerfileEnhancer auto-injection, so the
-        # canonical MITM scaffolding (image.py: _PROXY_ARGS + _ENV_BLOCK proxy/cert
-        # ENV + _CERT_SYMLINKS) is added BY HAND here, verbatim from the same
-        # constants the enhancer would inject (gvisor/rqlite pattern). The PR layer
-        # FROMs this base and inherits its proxy ENV + cert symlinks. fastmcp's own
-        # LC_ALL / PIP / uv ENV are kept as a separate ENV line (not in _ENV_BLOCK).
+        # MITM scaffolding is added BY HAND here from this module's own
+        # _MITM_* constants (byte-identical to image.py's, but NOT imported -- see
+        # the module header). Order matters: ARGs -> proxy/cert ENV -> LABEL ->
+        # cert symlinks -> apt (ca-certificates) -> MITM CA install. fastmcp's own
+        # LC_ALL / PIP / uv ENV stay on a separate ENV line.
         return f"""# syntax=docker/dockerfile:1.6
 FROM python:3.11-slim
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
-{DockerfileEnhancer._PROXY_ARGS}
+{_MITM_PROXY_ARGS}
 
-{DockerfileEnhancer._ENV_BLOCK}
+{_MITM_ENV_BLOCK}
 ENV LC_ALL=C.UTF-8 \\
     PIP_DISABLE_PIP_VERSION_CHECK=1 \\
     UV_LINK_MODE=copy
@@ -83,12 +148,14 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
 
-{DockerfileEnhancer._CERT_SYMLINKS}
+{_MITM_CERT_SYMLINKS}
 
 WORKDIR /home/
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git curl ca-certificates build-essential \\
     && rm -rf /var/lib/apt/lists/*
+
+{_MITM_CA_MOUNT}
 
 # uv pinned (not `latest`): the resolver version decides the dependency set, so
 # an unpinned uv makes rebuilds non-reproducible. Verified with uv 0.11.29.
@@ -204,8 +271,20 @@ uv run --frozen pytest tests -v -p no:cacheprovider 2>&1 \\
             "${BASE_COMMIT}", self.pr.base.sha
         ).rstrip("\n")
 
+        # MITM is re-declared in the PR layer, not just inherited: ARG values do
+        # NOT cross image boundaries, so without these the PR build would ignore
+        # `--build-arg http_proxy=...` and prepare.sh's `uv sync` would bypass the
+        # proxy. Re-running the CA mount + symlinks is idempotent.
         return f"""# syntax=docker/dockerfile:1.6
 FROM {dep.image_name()}:{dep.image_tag()}
+
+{_MITM_PROXY_ARGS}
+
+{_MITM_ENV_BLOCK}
+
+{_MITM_CA_MOUNT}
+
+{_MITM_CERT_SYMLINKS}
 {self.global_env}
 COPY fix.patch /home/fix.patch
 COPY test.patch /home/test.patch
@@ -386,4 +465,36 @@ for _ni in _BUNDLE_NIS_FASTMCP:
     Instance.register("PrefectHQ", _ni)(Fastmcp)
 
 for _ni in _BUNDLE_NIS_FASTMCP_UNRESOLVED:
+    Instance.register("PrefectHQ", _ni)(Fastmcp)
+
+
+# === PIPELINE 11b/11c -- SHIPPED delivery set (shipable_final.jsonl) =========
+# The 17 bundles actually delivered to the trajectory team. Their harness calls
+# Instance.create() -> "PrefectHQ/{number_interval}", so each of these MUST be a
+# registered routing key. Every key below is also present in
+# _BUNDLE_NIS_FASTMCP above (superset); this list is the authoritative
+# delivery scope and is what §11c verifies against the JSONL.
+#   #keys == #instances == 17, 0 duplicates, sum(PRs across keys) == 179
+# Data-derived -- regenerate whenever the shipped JSONL changes.
+_BUNDLE_NIS_FASTMCP_SHIPPED = [
+    "115-136-137-138-140-142-143-144-145-147",
+    "177-200-203-206-214-215-216-217-218",
+    "237-260-264-278-279-283-284-285-286-287",
+    "242-243-246-248",
+    "249-252-253-254-255-256",
+    "290-291-293-294-298-299-300-301-302-303-308-309",
+    "306-338-341-342",
+    "310-312-314-315-316-317-323-325",
+    "408-413-424-427-432-434-437-440-447-448-449-450-452-454-455-456",
+    "597-605-607-609-610-615-620-623-624-625",
+    "731-734-737-739-747-749-751-752-753-754",
+    "794-800-802-803-804-806-808-809-810-819-820-821-833-835-836",
+    "927-929-935-938-939-947-949-952-953-954-957",
+    "1017-1018-1022-1027-1028-1030-1031-1033-1034-1035-1038-1041-1042-1045",
+    "1103-1105-1106-1107-1108-1112-1119-1122-1123-1124-1125-1126",
+    "1109-1127-1128-1129-1131-1135-1141-1144-1147-1148-1149-1153-1164-1165-1171-1178-1182-1183-1185-1186-1187-1188",
+    "1351-1375-1380-1382-1383-1384",
+]
+
+for _ni in _BUNDLE_NIS_FASTMCP_SHIPPED:
     Instance.register("PrefectHQ", _ni)(Fastmcp)

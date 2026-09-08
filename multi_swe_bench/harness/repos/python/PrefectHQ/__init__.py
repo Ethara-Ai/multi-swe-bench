@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.python.PrefectHQ.fastmcp import *
 from multi_swe_bench.harness.repos.python.PrefectHQ.prefect_18410_to_18363 import *
 from multi_swe_bench.harness.repos.python.PrefectHQ.prefect_18353_to_17954 import *
 from multi_swe_bench.harness.repos.python.PrefectHQ.prefect_4462_to_3893 import *
