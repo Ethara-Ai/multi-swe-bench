@@ -420,4 +420,4 @@ from multi_swe_bench.harness.repos.python.stan_dev import *
 from multi_swe_bench.harness.repos.python.strawberry_graphql import *
 from multi_swe_bench.harness.repos.python.OpenCyphal import *
 from multi_swe_bench.harness.repos.python.openforcefield import *
-from multi_swe_bench.harness.repos.python.vllm_project import *
+from multi_swe_bench.harness.repos.python.vllm_project import *from multi_swe_bench.harness.repos.python.pwndbg import *
