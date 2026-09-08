@@ -48,11 +48,14 @@ class ScrapyImageBase(Image):
         return PY_IMAGE
 
     def image_tag(self) -> str:
-        nums = _PR_NUMBERS or {self.pr.number}
-        return f"base-{min(nums)}-{max(nums)}"
+        # ONE shared base named simply "base". The base is a full-history clone (the
+        # `# syntax=docker/dockerfile:1.6` directive makes DockerfileEnhancer skip the
+        # per-commit checkout+scrub), so a single constant tag serves every PR in the
+        # run - no need for the old min-max-of-_PR_NUMBERS naming.
+        return "base"
 
     def workdir(self) -> str:
-        return self.image_tag()
+        return "base"
 
     def files(self) -> list:
         return []
