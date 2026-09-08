@@ -1,85 +1,101 @@
-"""Dispatcher for babel/babel -- routes a PR number to its era config.
+import importlib
+from typing import Optional, Union
 
-Why a dispatcher is needed
---------------------------
-The raw dataset carries no ``number_interval`` and no ``tag``, so
-``Instance.create`` (instance.py:40-51) resolves the registration key as
-``org/repo``, i.e. ``babel/babel``. Every existing babel era registers under a
-*different* key -- ``babel/babel_classic_jest``, ``babel/12695``,
-``babel/13905``, ``babel/16692``, ``babel/13214-13229-13294``,
-``babel/babel_classic_mocha``, ``babel/babel_npm_mocha`` -- and none of them is
-``babel/babel``. Without this class every instance raises
-``ValueError: Instance 'babel/babel' is not registered`` and is skipped.
-
-Why the routing table is deliberately narrow
---------------------------------------------
-Babel's era ranges **overlap**, because the project maintained ``main``, ``7.x``
-and ``next-8-dev`` concurrently::
-
-    Era 1  npm_mocha      #319   - #5427
-    Era 2  classic_mocha  #4892  - #7450     overlaps era 1
-    Era 3  classic_jest   #7358  - #11973
-    Era 4  berry_jest     #10853 - #13727    overlaps era 3
-    Era 5  yarn3_jest     #11554 - #16101    overlaps eras 3 and 4
-    Era 6  yarn4_jest     #15959 - #17938    overlaps era 5
-
-So a PR number alone does **not** determine the toolchain: #11000 could be
-yarn-classic+jest on one branch or yarn-berry on another. Only the base commit
-answers it -- the presence of ``.yarnrc.yml``, a ``packageManager`` field, or
-``mocha`` vs ``jest`` in devDependencies.
-
-This table therefore routes only the interval that was actually verified
-per-commit, and refuses everything else rather than guessing. Extending it means
-doing the same check for the new range: read ``package.json`` and ``.yarnrc.yml``
-at each base commit, confirm which era they match, then add an entry.
-
-What was verified for 7358-10852
---------------------------------
-All five PRs in the current dataset (10198, 10217, 10447, 10599, 10680) were
-checked at their base commits and agree on every marker::
-
-    jest ^24.8.0 / ^24.9.0     yarn.lock v1, no .yarnrc.yml
-    no packageManager field    engines.node >= 6.9.0 < 13.0.0 / < 14.0.0
-    scripts.test = make test   upstream CI: `make -j test-ci`, node_js: "12"
-
-which is exactly era 3 (``babel_classic_jest``). The upper bound is set to
-**10852**, one below where era 4 begins, so this dispatcher can never route a PR
-into the ambiguous era-3/era-4 overlap.
-"""
-
-from typing import Optional
-
-from multi_swe_bench.harness.image import Config, Image
+from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# NOTE: the era-3 Instance class is named `babel_classic_jest` -- the same
-# identifier as its module -- so this import shadows the module name locally.
-# That is fine here (only the class is needed) but is why the import is aliased.
-from multi_swe_bench.harness.repos.typescript.babel.babel_classic_jest import (
-    babel_classic_jest as BabelClassicJestInstance,
-)
+_ROOT_IMAGE = "node:12-buster"
+_NODE8_IMAGE = "node:8-slim"
+_NODE_MAJOR = "8"
+_SHARED_BASE_TAG = "base"
 
-# (low, high, cls, label) -- inclusive bounds. Only ranges whose toolchain was
-# confirmed at the base commit appear here; see the module docstring.
 _ERAS = [
-    (7358, 10852, BabelClassicJestInstance, "babel_classic_jest"),
+    (4892, 7357, "babel_classic_mocha"),
+    (7358, 10852, "babel_classic_jest"),
 ]
 
 
+class BabelSharedImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return _ROOT_IMAGE
+
+    def image_tag(self) -> str:
+        return _SHARED_BASE_TAG
+
+    def workdir(self) -> str:
+        return _SHARED_BASE_TAG
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        sections = [f"FROM {image_name}"]
+        if self.global_env:
+            sections.append(self.global_env)
+        sections.append("WORKDIR /home/")
+        sections.append(
+            "RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
+            "    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \\\n"
+            "    sed -i '/buster-updates/d' /etc/apt/sources.list && \\\n"
+            "    apt-get -o Acquire::Check-Valid-Until=false update && \\\n"
+            "    apt-get install -y --no-install-recommends --allow-unauthenticated \\\n"
+            "    ca-certificates \\\n"
+            "    curl \\\n"
+            "    git \\\n"
+            "    make \\\n"
+            "    python \\\n"
+            "    python3 \\\n"
+            "    xz-utils && \\\n"
+            "    rm -rf /var/lib/apt/lists/*"
+        )
+        sections.append(f'RUN git -C /home clone "${{REPO_URL}}" {self.pr.repo}')
+        sections.append(
+            f"COPY --from={_NODE8_IMAGE} /usr/local/ /usr/local/\n"
+            f"COPY --from={_NODE8_IMAGE} /opt/ /opt/"
+        )
+        sections.append(
+            "RUN set -eux; \\\n"
+            f'    test "$(node -p "process.versions.node.split(\'.\')[0]")" = "{_NODE_MAJOR}"; \\\n'
+            "    command -v yarn; \\\n"
+            f"    test -d /home/{self.pr.repo}/.git; \\\n"
+            f"    test -f /home/{self.pr.repo}/package.json"
+        )
+        if self.clear_env:
+            sections.append(self.clear_env)
+        sections.append('CMD ["/bin/bash"]')
+        return "\n\n".join(sections) + "\n"
+
+
+def _load_era(label: str):
+    module = importlib.import_module(
+        f"multi_swe_bench.harness.repos.typescript.babel.{label}"
+    )
+    return getattr(module, label)
+
+
 def select_era(number: int):
-    """Return the era class whose interval contains ``number``.
-
-    Raises ``ValueError`` naming the number, the configured intervals, and the
-    reason a wider table would be unsafe -- babel's eras overlap, so routing by
-    PR number outside a verified range can silently pick the wrong toolchain and
-    grade against a runner the repo was not using on that branch.
-    """
-    for low, high, cls, _label in _ERAS:
+    for low, high, label in _ERAS:
         if low <= number <= high:
-            return cls
+            return _load_era(label)
 
-    known = ", ".join(f"{low}-{high}" for low, high, _c, _l in _ERAS)
+    known = ", ".join(f"{low}-{high}" for low, high, _l in _ERAS)
     raise ValueError(
         f"babel/babel PR {number} falls outside every verified era ({known}). "
         f"Babel's era ranges overlap (era 3 is 7358-11973, era 4 is 10853-13727, "
@@ -93,14 +109,6 @@ def select_era(number: int):
 
 @Instance.register("babel", "babel")
 class BABEL(Instance):
-    """Thin forwarder to the era config that owns this PR number.
-
-    Holds no build logic and duplicates none: every method delegates, so an era
-    can change without this file moving. A dataset regenerated with
-    ``number_interval`` set reaches the era classes directly and bypasses this
-    class entirely, so keeping it costs nothing.
-    """
-
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

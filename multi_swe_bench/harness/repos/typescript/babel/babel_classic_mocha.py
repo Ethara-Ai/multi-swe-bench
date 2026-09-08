@@ -1,21 +1,227 @@
 import re
-from typing import Optional, Union
 import textwrap
+from typing import Optional, Union
+
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.typescript.babel.babel_dispatcher import (
+    BabelSharedImageBase,
+)
+
+_BASE_TAG = "base-classic-mocha"
+_NODE_MAJOR = "8"
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+_STAGE_TESTS = "/home/msweb-mocha.tests"
+_REPORTER_JS = "/home/msweb_mocha_reporter.js"
+
+_TESTCASE_RE = re.compile(r"^TESTCASE\s+(PASSED|FAILED|SKIPPED)\s+(\S.*?)\s*$")
 
 
-# Era 2: yarn classic + lerna + mocha, node:8-slim (Debian Stretch)
-# yarn.lock v1 format, lerna.json present, mocha in devDeps
-# PRs #4892-#7450 (master, 7.0 branch)
-# Test output (mocha --reporter dot):
-#   ․․․․  (dots for individual passes)
-#   N passing (Xs)
-#   N pending
-#   N failing
-#   1) suite name test name:
-#      Error: message
+def _normalise_identity(name: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\x20-\x7e]", " ", name)).strip()
+
+
+_HARDEN_BLOCK = """WORKDIR /home/{repo}
+
+RUN set -eux; \\
+    git checkout --detach {sha}; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    test "$(git rev-parse HEAD)" = "{sha}"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+"""
+
+_CHECK_GIT_CHANGES_SH = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+"""
+
+_REPORTER_SRC = r"""var fs = require('fs');
+
+var OUT = process.env.MSWEB_MOCHA_OUT || '/home/msweb-mocha.tests';
+var lines = [];
+
+var PREFIX = '__PREFIX__';
+
+function ident(test) {
+  var name = '';
+  try {
+    name = test.fullTitle ? test.fullTitle() : (test.title || '');
+  } catch (e) {
+    name = test.title || '';
+  }
+  var file = '';
+  try {
+    file = test && test.file ? String(test.file) : '';
+    if (!file && test && test.parent && test.parent.file) {
+      file = String(test.parent.file);
+    }
+  } catch (e) {
+    file = '';
+  }
+  if (file) {
+    file = file.replace(/\\/g, '/');
+    var at = file.indexOf(PREFIX);
+    file = at !== -1 ? file.slice(at + PREFIX.length) : file.replace(/^\/+/, '');
+    name = file + '::' + name;
+  }
+  name = String(name).replace(/[^\x20-\x7e]/g, ' ').replace(/\s+/g, ' ');
+  return name.replace(/^\s+|\s+$/g, '');
+}
+
+function record(status, test) {
+  var name = ident(test);
+  if (!name) {
+    var file = test && test.file ? String(test.file) : '';
+    name = (file || 'unknown') + '::<uncaught error outside test suite>';
+  }
+  lines.push('TESTCASE ' + status + ' ' + name);
+}
+
+function flush() {
+  try {
+    fs.writeFileSync(OUT, lines.length ? lines.join('\n') + '\n' : '');
+  } catch (e) {
+    process.stderr.write('msweb reporter: ' + e.message + '\n');
+  }
+}
+
+module.exports = function (runner) {
+  runner.on('pass', function (test) {
+    record('PASSED', test);
+  });
+  runner.on('fail', function (test) {
+    record('FAILED', test);
+  });
+  runner.on('pending', function (test) {
+    record('SKIPPED', test);
+  });
+  runner.on('end', flush);
+  process.on('exit', flush);
+};
+"""
+
+_PREPARE_SH = """#!/bin/bash
+set -e
+
+export CI=true
+export NODE_ENV=test
+export BABEL_ENV=test
+
+cd /home/__REPO__
+git reset --hard
+bash /home/check_git_changes.sh
+
+yarn install --ignore-engines || yarn --ignore-engines || true
+
+if [ -f node_modules/.bin/lerna ]; then
+    ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
+fi
+
+make build || true
+make test-clean || true
+
+git checkout -- . 2>/dev/null || true
+git clean -fd 2>/dev/null || true
+
+node -e "require.resolve('mocha')"
+node -e "require.resolve('babel-register')"
+test -f Makefile
+test -f node_modules/mocha/bin/_mocha
+test -f scripts/_get-test-directories.sh
+test -f test/mocha.opts
+test -f __REPORTER__
+
+bash /home/check_git_changes.sh
+""".replace("__REPORTER__", _REPORTER_JS)
+
+_SCRIPT_PREAMBLE = """#!/bin/bash
+set -eo pipefail
+
+export CI=true
+export NODE_ENV=test
+export BABEL_ENV=test
+export FORCE_COLOR=0
+
+cd /home/{repo}
+test -f node_modules/mocha/bin/_mocha
+"""
+
+_GRADED_BODY = """
+if git status --porcelain -uall | grep -qE 'package[.]json$'; then
+    echo "applied patch changed a package.json; re-bootstrapping workspace"
+    if [ -f node_modules/.bin/lerna ]; then
+        ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
+    fi
+fi
+
+make build || true
+
+rm -f __TESTS__
+mocha_status=0
+MSWEB_MOCHA_OUT=__TESTS__ node node_modules/mocha/bin/_mocha \\
+    $(sh scripts/_get-test-directories.sh) \\
+    --opts test/mocha.opts \\
+    --reporter __REPORTER__ || mocha_status=$?
+
+if [ ! -s __TESTS__ ]; then
+    echo "full-suite run reported nothing; retrying per test directory"
+    : > __TESTS__
+    for d in $(sh scripts/_get-test-directories.sh); do
+        rm -f __PART__
+        MSWEB_MOCHA_OUT=__PART__ node node_modules/mocha/bin/_mocha \\
+            "$d" \\
+            --opts test/mocha.opts \\
+            --reporter __REPORTER__ > /dev/null 2>&1 || true
+        if [ -s __PART__ ]; then
+            cat __PART__ >> __TESTS__
+        else
+            echo "  no results from $d" >&2
+        fi
+    done
+fi
+
+echo "##### MSWEB-MOCHA-EXIT: $mocha_status"
+cat __TESTS__ 2>/dev/null || true
+make test-clean || true
+""".replace("__TESTS__", _STAGE_TESTS).replace("__PART__", "/home/msweb-mocha.part").replace("__REPORTER__", _REPORTER_JS)
 
 
 class BabelClassicMochaImageBase(Image):
@@ -32,13 +238,13 @@ class BabelClassicMochaImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "node:8-slim"
+        return BabelSharedImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
-        return "base-classic-mocha"
+        return _BASE_TAG
 
     def workdir(self) -> str:
-        return "base-classic-mocha"
+        return _BASE_TAG
 
     def files(self) -> list[File]:
         return []
@@ -48,24 +254,20 @@ class BabelClassicMochaImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        apt_cmd = ("RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
-                   "    sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list && \\\n"
-                   "    sed -i '/stretch-updates/d' /etc/apt/sources.list && \\\n"
-                   "    apt-get update && apt-get install -y --no-install-recommends --allow-unauthenticated git make python && rm -rf /var/lib/apt/lists/*")
-        parts = [f"FROM {image_name}"]
+        sections = [f"FROM {image_name}"]
         if self.global_env:
-            parts.append(self.global_env)
-        parts.append("WORKDIR /home/")
-        parts.append(apt_cmd)
-        parts.append(code)
+            sections.append(self.global_env)
+        sections.append("WORKDIR /home/")
+        sections.append(
+            "RUN set -eux; \\\n"
+            f'    test "$(node -p "process.versions.node.split(\'.\')[0]")" = "{_NODE_MAJOR}"; \\\n'
+            "    command -v yarn; \\\n"
+            f"    test -d /home/{self.pr.repo}/.git"
+        )
         if self.clear_env:
-            parts.append(self.clear_env)
-        return "\n".join(parts) + "\n"
+            sections.append(self.clear_env)
+        sections.append('CMD ["/bin/bash"]')
+        return "\n\n".join(sections) + "\n"
 
 
 class BabelClassicMochaImageDefault(Image):
@@ -91,101 +293,31 @@ class BabelClassicMochaImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        preamble = _SCRIPT_PREAMBLE.format(repo=self.pr.repo)
         return [
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
             File(
                 ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
+                "msweb_mocha_reporter.js",
+                _REPORTER_SRC.replace("__PREFIX__", f"/home/{self.pr.repo}/"),
             ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-yarn --ignore-engines || true
-if [ -f node_modules/.bin/lerna ]; then
-    ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
-fi
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -e
-cd /home/{pr.repo}
-yarn --ignore-engines || true
-if [ -f node_modules/.bin/lerna ]; then
-    ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
-fi
-make build || true
-./scripts/test.sh 2>&1 || true
-""".format(pr=self.pr),
-            ),
+            File(".", "prepare.sh", _PREPARE_SH.replace("__REPO__", self.pr.repo)),
+            File(".", "run.sh", preamble + _GRADED_BODY),
             File(
                 ".",
                 "test-run.sh",
-                """#!/bin/bash
-set -e
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-yarn --ignore-engines || true
-if [ -f node_modules/.bin/lerna ]; then
-    ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
-fi
-make build || true
-./scripts/test.sh 2>&1 || true
-
-""".format(pr=self.pr),
+                preamble
+                + "git apply --whitespace=nowarn /home/test.patch\n"
+                + _GRADED_BODY,
             ),
             File(
                 ".",
                 "fix-run.sh",
-                """#!/bin/bash
-set -e
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-yarn --ignore-engines || true
-if [ -f node_modules/.bin/lerna ]; then
-    ./node_modules/.bin/lerna bootstrap -- --ignore-engines || true
-fi
-make build || true
-./scripts/test.sh 2>&1 || true
-
-""".format(pr=self.pr),
+                preamble
+                + "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
+                + _GRADED_BODY,
             ),
         ]
 
@@ -197,6 +329,10 @@ make build || true
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
+
+        harden_commands = _HARDEN_BLOCK.format(
+            repo=self.pr.repo, sha=self.pr.base.sha
+        )
 
         prepare_commands = "RUN bash /home/prepare.sh"
         proxy_setup = ""
@@ -231,18 +367,20 @@ make build || true
                     RUN rm -f $HOME/.npmrc
                 """
                 )
-        parts = [f"FROM {name}:{tag}"]
-        if self.global_env:
-            parts.append(self.global_env)
-        if proxy_setup:
-            parts.append(proxy_setup)
-        parts.append(copy_commands)
-        parts.append(prepare_commands)
-        if proxy_cleanup:
-            parts.append(proxy_cleanup)
-        if self.clear_env:
-            parts.append(self.clear_env)
-        return "\n".join(parts) + "\n"
+
+        sections = [f"FROM {name}:{tag}"]
+        for part in (
+            self.global_env,
+            harden_commands,
+            proxy_setup,
+            copy_commands,
+            prepare_commands,
+            proxy_cleanup,
+            self.clear_env,
+        ):
+            if part.strip():
+                sections.append(part.strip())
+        return "\n\n".join(sections) + "\n"
 
 
 @Instance.register("babel", "babel_classic_mocha")
@@ -262,53 +400,69 @@ class babel_classic_mocha(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        # Mocha dot reporter: failures listed as "N) suite/test name:"
-        # Passes are only dots — generate synthetic names from summary count
-        fail_re = re.compile(r"^\s+(\d+)\)\s+(.+?)\s*:?\s*$")
-        passing_re = re.compile(r"^\s+(\d+)\s+passing")
-        pending_re = re.compile(r"^\s+(\d+)\s+pending")
+        clean_log = _ANSI_ESCAPE.sub("", test_log or "").replace("\r", "")
 
-        pass_count = 0
-        skip_count = 0
+        for line in clean_log.split("\n"):
+            case = _TESTCASE_RE.match(line)
+            if not case:
+                continue
+            status, name = case.group(1), _normalise_identity(case.group(2))
+            if not name:
+                continue
+            if status == "FAILED":
+                failed_tests.add(name)
+            elif status == "SKIPPED":
+                skipped_tests.add(name)
+            else:
+                passed_tests.add(name)
 
-        for line in test_log.splitlines():
-            m = fail_re.match(line)
-            if m:
-                failed_tests.add(m.group(2).strip())
+        if not (passed_tests or failed_tests or skipped_tests):
+            fail_re = re.compile(r"^\s+(\d+)\)\s+(.+?)\s*:?\s*$")
+            passing_re = re.compile(r"^\s+(\d+)\s+passing")
+            pending_re = re.compile(r"^\s+(\d+)\s+pending")
 
-            m = passing_re.match(line)
-            if m:
-                pass_count = int(m.group(1))
+            pass_count = 0
+            skip_count = 0
 
-            m = pending_re.match(line)
-            if m:
-                skip_count = int(m.group(1))
+            for line in clean_log.split("\n"):
+                m = fail_re.match(line)
+                if m:
+                    failed_tests.add(_normalise_identity(m.group(2)))
 
-        for i in range(pass_count):
-            passed_tests.add(f"test_pass_{i+1}")
+                m = passing_re.match(line)
+                if m:
+                    pass_count = int(m.group(1))
 
-        for i in range(skip_count):
-            skipped_tests.add(f"test_pending_{i+1}")
+                m = pending_re.match(line)
+                if m:
+                    skip_count = int(m.group(1))
+
+            for i in range(pass_count):
+                passed_tests.add(f"test_pass_{i + 1}")
+
+            for i in range(skip_count):
+                skipped_tests.add(f"test_pending_{i + 1}")
+
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
