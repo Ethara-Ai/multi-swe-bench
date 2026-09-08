@@ -81,6 +81,46 @@ fi
 # results this stage actually produced.
 find . -type d -name surefire-reports -prune -exec rm -rf {} + 2>/dev/null || true
 
+# The test methods the gold test patch adds or modifies, for one class, read out
+# of /home/test.patch. Decided per HUNK, because the two available signals mean
+# different things:
+#   * a hunk that ADDS a method declaration credits the added declarations only.
+#     git names the PRECEDING method in the hunk header when new code is appended
+#     at the end of a class, so trusting the header there would credit an
+#     innocent neighbour -- PR 4752 appends testFormat2Duration to DateUtilsTest
+#     under a header that reads "public void getCurrentTimeStamp() {".
+#   * a hunk that only edits a BODY has no added declaration, so the header's
+#     enclosing method IS the right answer -- PR 4959 edits testBuildArgs in
+#     place, PR 4817 has the same shape.
+# Lifecycle methods are dropped: @Before/@After are not test cases, so a
+# synthetic result for one would be an id no stage can ever match.
+_gold_methods() {
+    awk -v tag="/$1.java b/" '
+        function mname(s,   m) {
+            if (match(s, /(public|protected)[ \t]+void[ \t]+[A-Za-z0-9_]+[ \t]*\(/)) {
+                m = substr(s, RSTART, RLENGTH)
+                sub(/.*void[ \t]+/, "", m)
+                sub(/[ \t]*\(.*/, "", m)
+                return m
+            }
+            return ""
+        }
+        function flush(   i) {
+            if (nadd > 0) { for (i = 1; i <= nadd; i++) print addl[i] }
+            else if (ctx != "") { print ctx }
+            nadd = 0; ctx = ""
+        }
+        index($0, "diff --git ") == 1 { flush(); inf = (index($0, tag) > 0); next }
+        !inf { next }
+        index($0, "@@") == 1 { flush(); h = $0; sub(/^@@[^@]*@@[ \t]*/, "", h); ctx = mname(h); next }
+        index($0, "+") == 1 { m = mname($0); if (m != "") { addl[++nadd] = m } next }
+        END { flush() }
+    ' /home/test.patch \
+        | sort -u \
+        | grep -Ev '^(setUp|setup|tearDown|teardown|before|after|init|initMocks)$' || true
+}
+
+DROPPED=""
 for _attempt in 1 2 3 4 5; do
     if _out="$(@@MVN_TIMEOUT@@ mvn @@MVN_FLAGS@@ test-compile -pl "$SEL" -am 2>&1)"; then
         break
@@ -91,12 +131,58 @@ for _attempt in 1 2 3 4 5; do
     if [ -z "$_bad" ]; then break; fi
     echo "DROPPED_UNCOMPILABLE_TEST_SOURCES (attempt $_attempt):"
     printf '%s\n' "$_bad" | sed 's/^/  /'
+    # Keep the javac diagnostics. `_out` is a command substitution, so without
+    # this the reason a gold test failed to compile never reaches the stage log
+    # and the drop is undiagnosable after the fact.
+    printf '%s\n' "$_bad" | while IFS= read -r _l; do
+        [ -n "$_l" ] || continue
+        echo "COMPILE_ERRORS_FOR $_l"
+        printf '%s\n' "$_out" | grep -F "$_l" | head -20 | sed 's/^/    /'
+    done
+    DROPPED="$DROPPED $_bad"
     printf '%s\n' "$_bad" | xargs -r rm -f
 done
 
 @@MVN_TIMEOUT@@ mvn @@MVN_FLAGS@@ test -pl "$SEL" -am -Dtest="$CLASSES" || true
 
 find . -path '*/surefire-reports/TEST-*.xml' -exec cat {} + 2>/dev/null || true
+
+# A GOLD test source that does not compile is a FAILING test, not an absent one.
+# Deleting it and reporting nothing turns the fail-to-pass signal into NONE, and
+# report.py's classifier then reads NONE + run=PASS as "was passing at baseline,
+# hidden by the test patch" and files it under p2p. That is what emptied f2p for
+# PRs 3235 and 4959 while still reporting valid=true, because check 3 accepts
+# NONE != PASS as "fixed something".
+#
+# So emit surefire-shaped XML marking the patch-touched methods of every dropped
+# GOLD class as failures. parse_surefire_xml() reads <failure> the same way it
+# reads a real one, and report.py routes test=FAIL straight to f2p with no
+# change needed there.
+#
+# Scoped to $CLASSES -- the classes the gold patch names. Collateral test files
+# that fail to compile are still dropped silently; they are not the signal.
+# Emission is uniform across the three stages by design: at baseline the gold
+# file is unmodified and compiles, so nothing is dropped and nothing is emitted.
+for _f in $DROPPED; do
+    _cls="$(basename "$_f" .java)"
+    case ",$CLASSES," in
+        *",$_cls,"*) ;;
+        *) continue ;;
+    esac
+    # Package from the path, not the file -- the file is gone by now.
+    _pkg="$(printf '%s' "$_f" | sed -E 's#^.*/src/test/java/##; s#/[^/]*$##; s#/#.#g')"
+    _methods="$(_gold_methods "$_cls")"
+    if [ -z "$_methods" ]; then
+        echo "SYNTHETIC_FAILURES_SKIPPED $_pkg.$_cls (no patch-touched method found)"
+        continue
+    fi
+    echo "SYNTHESIZED_COMPILE_FAILURES $_pkg.$_cls"
+    echo "<testsuite name=\"$_pkg.$_cls\">"
+    for _m in $_methods; do
+        echo "  <testcase name=\"$_m\" classname=\"$_pkg.$_cls\"><failure type=\"CompilationFailure\">gold test source did not compile at this stage</failure></testcase>"
+    done
+    echo "</testsuite>"
+done
 """
 
 _APPLY_TEST_PATCH = """\
@@ -204,8 +290,11 @@ def parse_surefire_xml(test_log: str) -> TestResult:
 
 
 class DolphinSchedulerImageBase(Image):
-    """Shared era base. Owns the toolchain, the clone, the pin to BASE_COMMIT and
-    the FULL history scrub (rule 8)."""
+    """Shared base: toolchain + services + a bare clone.
+
+    Commit-agnostic on purpose, so one `base` tag serves every PR in the dataset
+    regardless of which branch its base.sha sits on. The checkout and the history
+    scrub live in the per-PR layer."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -391,9 +480,25 @@ class DolphinSchedulerImageBase(Image):
             postgres_setup,
             code,
             "WORKDIR /home/%s" % self.pr.repo,
-            "RUN git reset --hard",
-            "RUN git checkout ${BASE_COMMIT}",
-            Image._HARDENING_BLOCK.rstrip("\n"),
+            # Deliberately NO `git checkout ${BASE_COMMIT}` and NO hardening here.
+            # One `base` tag is shared by every PR in the dataset, but each PR has
+            # its own base.sha -- and this dataset spans four branches (dev-1.2.1,
+            # dev, 1.3.3-release, alert_plugin_design). Pinning here and running
+            # _HARDENING_BLOCK's `git gc --prune=now` would delete every commit not
+            # an ancestor of whichever sha happened to be built first, forcing each
+            # PR to re-fetch its own commit over the network at build time.
+            #
+            # The checkout and the full scrub belong to the per-PR layer instead
+            # (see DolphinSchedulerImageDefault.dockerfile), which prunes to THAT
+            # PR's sha and, because it runs last, leaves no `origin` remote in the
+            # shipped image. The old layout hardened here and then had prepare.sh
+            # re-add origin and fetch, so the delivered image still had a live
+            # remote an agent could read the fix commit from.
+            #
+            # ARG BASE_COMMIT stays declared above: build_dataset.py always passes
+            # it as a build arg, and an undeclared one would warn. It is simply
+            # unused now, which is what makes this base commit-agnostic and
+            # genuinely shareable.
             'CMD ["/bin/bash"]',
         ]
 
@@ -407,7 +512,7 @@ class DolphinSchedulerImageBase(Image):
 
 
 class DolphinSchedulerImageDefault(Image):
-    """Per-PR layer. COPY lines and one `RUN bash /home/prepare.sh` (rule 8)."""
+    """Per-PR layer: checkout of this PR's base.sha, prepare.sh, then the scrub."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -437,23 +542,18 @@ set -e
 # ---------------------------------------------------------------- services
 @@SERVICES_START@@
 
-# ------------------------------------------------------- pin to BASE_COMMIT
+# ---------------------------------------------------------------- worktree state
 #
-# The shared base image was pruned (git gc) down to a single BASE_COMMIT's
-# ancestry by its own hardening block, so THIS PR's commit may be absent.
-# Re-attach the remote and fetch the exact sha before the checkout, so one base
-# can serve every PR. That is the mechanism that lets the base carry the full
-# scrub instead of splitting it.
+# No checkout and no fetch here any more. The per-PR image layer checks out
+# BASE_COMMIT before this script runs, and the shared base is no longer pruned,
+# so every PR's commit is already in the cloned history -- including the ones on
+# dev-1.2.1 and alert_plugin_design, which a BASE_COMMIT-pinned base used to
+# prune away and then have to re-fetch over the network per PR.
 #
-# For this dataset the base pins to PR 4267 (the highest number, built first --
-# rule 7). 4142 and 4111 are ancestors of it and survive the prune, so their
-# fetch is a no-op. 4063 and 4165 are on the other chain and genuinely need it.
+# Nothing re-adds `origin` either. The hardening block in the per-PR layer runs
+# after this script and removes it, so the delivered image has no remote to read
+# the fix commit from.
 cd @@REPO_DIR@@
-git reset --hard
-bash /home/check_git_changes.sh
-git remote add origin @@REPO_URL@@ 2>/dev/null || true
-git fetch --depth=1 origin @@SHA@@ 2>/dev/null || git fetch origin 2>/dev/null || true
-git checkout @@SHA@@
 bash /home/check_git_changes.sh
 
 # ------------------------------------------------------------- dependencies
@@ -469,9 +569,30 @@ su postgres -c "psql -v ON_ERROR_STOP=1 -f /tmp/ds_role.sql" || true
 su postgres -c "createdb -O test dolphinscheduler" || true
 rm -f /tmp/ds_role.sql
 
-if [ -f sql/dolphinscheduler-postgre.sql ]; then
+# The schema file changed spelling mid-history: 1.2.x through 1.3.4 ship
+# sql/dolphinscheduler-postgre.sql, 1.3.5+ ship sql/dolphinscheduler_postgre.sql.
+# Read it out of the checked-out tree rather than pinning one spelling, so a
+# regenerated dataset covering a different era needs no edit here.
+#
+# Not cosmetic. A silently missing schema makes every DAO mapper test fail with
+# `relation "t_ds_user" does not exist` at ALL THREE stages, which the classifier
+# reads as a genuinely always-failing test rather than a broken fixture -- that
+# is what emptied PR 5070's f2p and n2p buckets while still reporting valid=true.
+DS_SCHEMA=""
+for _f in sql/dolphinscheduler-postgre.sql sql/dolphinscheduler_postgre.sql; do
+    if [ -f "$_f" ]; then DS_SCHEMA="$_f"; break; fi
+done
+if [ -z "$DS_SCHEMA" ]; then
+    DS_SCHEMA="$(ls sql/dolphinscheduler[-_]postgre*.sql 2>/dev/null | head -n 1)"
+fi
+if [ -n "$DS_SCHEMA" ]; then
+    echo "prepare.sh: loading postgres schema from $DS_SCHEMA"
     PGPASSWORD=test psql -h 127.0.0.1 -U test -d dolphinscheduler \\
-        -f sql/dolphinscheduler-postgre.sql >/dev/null 2>&1 || true
+        -f "$DS_SCHEMA" > /tmp/ds_schema.log 2>&1 || true
+    DS_TABLES="$(PGPASSWORD=test psql -h 127.0.0.1 -U test -d dolphinscheduler -tAc "select count(*) from information_schema.tables where table_name like 't_ds_%'" 2>/dev/null | tr -d '[:space:]')"
+    echo "prepare.sh: t_ds_* tables now present: ${DS_TABLES:-0}"
+else
+    echo "prepare.sh: WARNING no sql/dolphinscheduler*postgre*.sql found; DAO tests will fail"
 fi
 
 # --------------------------------------------------------- Maven cache warmup
@@ -579,16 +700,32 @@ cd @@REPO_DIR@@
         name = image.image_name()
         tag = image.image_tag()
 
-        # Rule 8: COPY lines only, one per line, then the single prepare.sh RUN.
-        # No ARG, no ENV, no WORKDIR (inherited from the base, which ends in
-        # /home/<repo>), no git command, no scrub, no CMD (inherited).
         copy_commands = "\n".join("COPY %s /home/" % f.name for f in self.files())
 
-        return "FROM %s:%s\n\n%s\n\nRUN bash /home/prepare.sh\n" % (
-            name,
-            tag,
+        # This layer chains to a base *Image* (not a str), so DockerfileEnhancer
+        # returns it verbatim and injects nothing -- the checkout and the scrub
+        # have to be written out here.
+        #
+        # Order is load-bearing. BASE_COMMIT is pinned to THIS PR's base.sha, so
+        # _HARDENING_BLOCK's `git gc --prune=now` reduces the full history the
+        # shared base carries down to this one commit's ancestry, and its asserts
+        # (`git rev-list --all --count` == `git rev-list HEAD --count`, no refs,
+        # no remotes) hold. Running it AFTER prepare.sh matters twice over: the
+        # Maven warmup needs a working tree at the fix-patched state, and the
+        # block's `git remote remove origin` is what guarantees the delivered
+        # image cannot fetch the fix commit. No CMD -- inherited from the base.
+        sections = [
+            "FROM %s:%s" % (name, tag),
+            'ARG BASE_COMMIT="%s"' % self.pr.base.sha,
+            self.global_env,
+            "WORKDIR /home/%s" % self.pr.repo,
+            "RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}",
             copy_commands,
-        )
+            "RUN bash /home/prepare.sh",
+            Image._HARDENING_BLOCK.rstrip("\n"),
+            self.clear_env,
+        ]
+        return "\n\n".join(s for s in sections if s) + "\n"
 
 
 @Instance.register("apache", "dolphinscheduler")
