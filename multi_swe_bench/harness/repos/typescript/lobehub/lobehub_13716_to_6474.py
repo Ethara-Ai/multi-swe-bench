@@ -6,6 +6,11 @@ from typing import Union
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.repos.typescript.lobehub.lobehub_6452_to_71 import (
+    _CHECK_GIT_CHANGES_SH,
+    _NL,
+    LobeHubImageBase,
+)
 
 
 def _clean_test_name(name: str) -> str:
@@ -19,60 +24,6 @@ def _clean_test_name(name: str) -> str:
     # Strip parenthesized timing: (75ms), (150 ms), (8.954 s)
     name = re.sub(r"\s+\(\d+(?:\.\d+)?\s*m?s\)\s*$", "", name)
     return name.strip()
-
-
-class LobeHubImageBaseLate(Image):
-    """Base image for lobehub late era (PRs 6474-13716, pnpm monorepo)."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:20-bookworm"
-
-    def image_tag(self) -> str:
-        return "base-late"
-
-    def workdir(self) -> str:
-        return "base-late"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        # Toolchain-only base: deliberately does NOT clone the repo. A single
-        # ``base-late`` tag is shared by every PR in this era, but each PR has a
-        # different ``base.sha``. Cloning here would let DockerfileEnhancer
-        # (which processes string-dependency images like this one) rewrite the
-        # hardcoded clone into a ``git checkout ${BASE_COMMIT}`` + hardening
-        # sequence pinned to whichever PR triggered the shared base build,
-        # pruning every other PR's commit out of git history and breaking them.
-        # The clone + checkout + hardening happen per-PR in
-        # ``LobeHubImageDefaultLate`` instead. With no clone/COPY line here, the
-        # enhancer leaves this base untouched apart from its infra block.
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-RUN apt-get update && apt-get install -y --no-install-recommends git libvips-dev && rm -rf /var/lib/apt/lists/*
-
-{self.clear_env}
-
-"""
 
 
 class LobeHubImageDefaultLate(Image):
@@ -91,7 +42,7 @@ class LobeHubImageDefaultLate(Image):
         return self._config
 
     def dependency(self) -> Union[str, Image]:
-        return LobeHubImageBaseLate(self.pr, self.config)
+        return LobeHubImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -103,6 +54,7 @@ class LobeHubImageDefaultLate(Image):
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
             File(
                 ".",
                 "prepare.sh",
@@ -227,21 +179,24 @@ done
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
+        global_env = f"{_NL}{self.global_env}{_NL}" if self.global_env else ""
+        clear_env = f"{_NL}{self.clear_env}{_NL}" if self.clear_env else ""
+
+        # The repo is cloned once in the shared base image, so this layer does
+        # NOT clone (and needs no ``REPO_URL``): it only checks out this PR's
+        # commit in the inherited working tree.
+        #
         # This per-PR image chains to a base *Image* (not a string), so
         # DockerfileEnhancer returns this dockerfile verbatim and does NOT
-        # auto-inject git-history hardening. We therefore clone, check out
-        # ``${BASE_COMMIT}``, and apply ``Image._HARDENING_BLOCK`` manually so
+        # auto-inject git-history hardening. We therefore check out
+        # ``${BASE_COMMIT}`` and apply ``Image._HARDENING_BLOCK`` manually so
         # the fix / future commits cannot be read out of git history (reward
-        # hacking). ``BASE_COMMIT`` is pinned to *this* PR's ``base.sha``.
+        # hacking). ``BASE_COMMIT`` is pinned to *this* PR's ``base.sha``, which
+        # also prunes the full history inherited from the shared base.
         return f"""FROM {name}:{tag}
 
-ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 ARG BASE_COMMIT="{self.pr.base.sha}"
-
-{self.global_env}
-
-RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
-
+{global_env}
 WORKDIR /home/{self.pr.repo}
 
 RUN git reset --hard
@@ -250,12 +205,7 @@ RUN git checkout ${{BASE_COMMIT}}
 {copy_commands}
 RUN bash /home/prepare.sh
 
-{Image._HARDENING_BLOCK}
-
-{self.clear_env}
-
-CMD ["/bin/bash"]
-"""
+{Image._HARDENING_BLOCK}{clear_env}"""
 
 
 @Instance.register("lobehub", "lobehub_13716_to_6474")
