@@ -212,11 +212,14 @@ exit 0
             File(
                 ".",
                 "prepare.sh",
-                # Dependency setup only. The commit pin and the history strip are
-                # Dockerfile RUN layers above, not part of this script.
+                # PR-specific setup: recover the base commit, pin the tree to it,
+                # then install dependencies. The history strip stays a Dockerfile
+                # RUN layer (it is image hardening, not per-PR setup).
                 """set -e
 ###ACTION_DELIMITER###
-cd /home/{pr.repo} && git reset --hard && bash /home/check_git_changes.sh
+cd /home/{pr.repo} && (git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null || git fetch --no-tags --depth=2147483647 origin {pr.base.sha} || git fetch --no-tags origin "+refs/pull/{pr.number}/head:refs/remotes/origin/pr-{pr.number}")
+###ACTION_DELIMITER###
+cd /home/{pr.repo} && git reset --hard && git checkout {pr.base.sha} && bash /home/check_git_changes.sh
 ###ACTION_DELIMITER###
 cd /home/{pr.repo} && (pip install torch==1.13.1 torchvision==0.14.1 --index-url https://download.pytorch.org/whl/cpu || pip install torch==1.13.1 torchvision==0.14.1) || true
 ###ACTION_DELIMITER###
@@ -283,13 +286,11 @@ fi
 {copy_commands}
 WORKDIR /home/{repo}
 
-# Recover the base commit when upstream deleted the branch it lived on
-# (ignite #1005 is based on `idist`, since removed). GitHub still serves such a
-# commit by SHA and via refs/pull/<N>/head. The cat-file guard makes this a
-# no-op when the clone already contains it.
-RUN git cat-file -e {sha}^{{commit}} 2>/dev/null \\
-    || git fetch --no-tags --depth=2147483647 origin {sha} \\
-    || git fetch --no-tags origin "+refs/pull/{num}/head:refs/remotes/origin/pr-{num}"
+# prepare.sh runs FIRST: it recovers the base commit (needed when upstream
+# deleted the branch it lived on, e.g. ignite #1005 on `idist`) and pins the
+# tree to it. The strip below then reduces history to that commit -- it must
+# run after, because it removes `origin` and so cannot fetch anything itself.
+RUN bash /home/prepare.sh
 
 # Git stripping / hardening. Pins the tree to the base commit and reduces the
 # repository to exactly that history, then asserts the four invariants:
@@ -324,8 +325,6 @@ RUN if [ -f .gitmodules ]; then \\
             rm -f .git/objects/info/alternates; \\
         '; \\
     fi
-
-RUN bash /home/prepare.sh
 """
 
 
