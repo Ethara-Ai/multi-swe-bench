@@ -32,8 +32,93 @@ _BAZEL_VERSION_MAP = {
 
 
 def _bazel_version_for_pr(pr_number: int) -> str:
-    """Return the USE_BAZEL_VERSION for a given Era 1 PR number."""
-    return _BAZEL_VERSION_MAP.get(pr_number, "6.3.0")
+    """Return the USE_BAZEL_VERSION for a given Era 1 PR number.
+
+    The keys of _BAZEL_VERSION_MAP are era BOUNDARIES, not individual PRs, so the
+    lookup has to find the greatest key <= pr_number. It previously used
+    `.get(pr_number, "6.3.0")`, an exact match, which silently returned the 6.3.0
+    default for every PR that was not itself a boundary. That is almost all of them:
+    for #13705, #15217, #15218, #15816 and #15824 it produced 6.3.0 instead of
+    4.1.0, 5.1.1, 5.1.1, 5.2.0 and 5.2.0 respectively - Bazel versions one to two
+    years newer than the commits they build, which those trees cannot be built with.
+
+    The class docstring already describes the intent ("based on the closest git tag
+    reachable from each base commit"); only the implementation was wrong.
+    """
+    lower = [k for k in _BAZEL_VERSION_MAP if k <= pr_number]
+    if not lower:
+        return "6.3.0"
+    return _BAZEL_VERSION_MAP[max(lower)]
+
+
+_SHELL_TEST_FILE_RE = re.compile(r"^\+\+\+ b/(src/test/shell/\S+?)\.sh$", re.M)
+
+
+def _shell_targets_from_patch(*patches: str) -> list[str]:
+    """Map each touched `src/test/shell/**/foo.sh` file to `//src/test/shell/**:foo`.
+
+    Bazel names an sh_test after the stem of its script, so this reconstructs the
+    single target a patched shell file belongs to instead of its whole package.
+    """
+    out: list[str] = []
+    for patch in patches:
+        if not patch:
+            continue
+        for m in _SHELL_TEST_FILE_RE.finditer(patch):
+            pkg, _, stem = m.group(1).rpartition("/")
+            target = f"//{pkg}:{stem}"
+            if target not in out:
+                out.append(target)
+    return out
+
+
+def _filter_test_targets(targets: str, *patches: str) -> str:
+    """Keep only things `bazel test` can actually run, at a runnable size.
+
+    extract_test_targets() derives packages from the paths a patch touches, which
+    yields three kinds of junk on this dataset:
+
+      * `//src/main/...` packages - emitted when a PR's test_patch also edits
+        production sources (#15217 does; 3 of its 7 targets were under src/main).
+        There are no test rules there.
+      * explicit file targets such as
+        `//src/test/.../manifestmerge:AndroidManifest` (#15824), derived from an XML
+        fixture. `bazel test` on a non-test target is an error.
+      * whole `//src/test/shell/...` packages. #15217 patches one shell file,
+        `src/test/shell/bazel/bazel_rules_test.sh`, but its package declares 60+
+        targets, most of them nested-Bazel integration and coverage suites
+        (bazel_example_test, cc_integration_test, the bazel_coverage_* family)
+        that have nothing to do with the PR. Running the package wrote ~30GB of
+        nested Bazel output bases, timed out target after target, and faulted the
+        Docker daemon twice. Bazel names an sh_test after its script stem, so the
+        package is replaced by the specific target(s) the patch touches.
+
+    All three are dropped. Because the graded command ends in `|| true`, an erroring
+    target would not fail the stage - it would quietly reduce the collected tests,
+    and report.py treats a stage with zero results as vacuously satisfying its
+    "fix something" check. Filtering keeps that from happening silently.
+
+    #15217 still contributes a genuine new test after this narrowing:
+    StarlarkTestingModuleTest.testStarlarkRulePropagatesTestEnvironmentProviderWithInheritedEnv,
+    in //src/test/java/com/google/devtools/build/lib/rules/test/..., so the reward
+    buckets do not depend on the shell suite resolving.
+
+    If filtering removes everything, fall back to the whole test tree rather than
+    running `bazel test` with no targets.
+    """
+    kept: list[str] = []
+    saw_shell = False
+    for t in targets.split():
+        if not t.startswith("//src/test/"):
+            continue
+        if t.startswith("//src/test/shell/"):
+            saw_shell = True
+            continue
+        if t.endswith("/..."):
+            kept.append(t)
+    if saw_shell:
+        kept.extend(_shell_targets_from_patch(*patches))
+    return " ".join(kept) if kept else "//src/test/..."
 
 
 class BazelEra1ImageBase(Image):
@@ -298,7 +383,11 @@ class BazelEra1(Instance):
     def _BAZEL_TEST_CMD(self) -> str:
         # Scope to only the test targets the PR touches (fast); fall back to the
         # full tree only when nothing can be derived.
-        targets = extract_test_targets(self.pr.test_patch, self.pr.fix_patch)
+        targets = _filter_test_targets(
+            extract_test_targets(self.pr.test_patch, self.pr.fix_patch),
+            self.pr.test_patch,
+            self.pr.fix_patch,
+        )
         return (
             f"export USE_BAZEL_VERSION={self._bazel_version} ; "
             f"bazel --output_user_root=/tmp/bazel-output test {targets} "
@@ -368,6 +457,20 @@ class BazelEra1(Instance):
             //path/to:TargetName  FAILED in 2.3s
             //path/to:TargetName  TIMEOUT in 300.0s
             //path/to:TargetName  FLAKY, failed in 1 out of 2 in 3.4s
+            //path/to:TargetName  FAILED TO BUILD
+
+        Note the last form carries no "in <n>s" suffix, so it needs its own
+        pattern. It is emitted when a target cannot compile - which is exactly
+        what a test patch does to a target whose new test calls a symbol the fix
+        patch has not introduced yet. #15218 is that case: its test stage prints
+        `RepositoryTests FAILED TO BUILD` ("cannot find symbol: class ArFunction")
+        because ArFunction arrives with the fix.
+
+        Without this pattern the target matched nothing and simply vanished from
+        the test stage. report.py then saw run=PASS, test=NONE, fix=PASS and filed
+        it as p2p, leaving #15218 with an empty f2p/n2p/s2p and no reward tests at
+        all, despite a textbook fail-to-pass transition. A build failure is a test
+        failure for bucketing purposes, so it counts as failed.
         """
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
@@ -381,6 +484,7 @@ class BazelEra1(Instance):
         re_timeout = re.compile(r"^(//\S+)\s+TIMEOUT\s+in\s+[\d.]+s", re.MULTILINE)
         re_flaky = re.compile(r"^(//\S+)\s+FLAKY", re.MULTILINE)
         re_no_status = re.compile(r"^(//\S+)\s+NO STATUS", re.MULTILINE)
+        re_failed_build = re.compile(r"^(//\S+)\s+FAILED TO BUILD", re.MULTILINE)
 
         for match in re_passed.finditer(test_log):
             passed_tests.add(match.group(1))
@@ -392,6 +496,9 @@ class BazelEra1(Instance):
             failed_tests.add(match.group(1))
 
         for match in re_flaky.finditer(test_log):
+            failed_tests.add(match.group(1))
+
+        for match in re_failed_build.finditer(test_log):
             failed_tests.add(match.group(1))
 
         for match in re_no_status.finditer(test_log):
