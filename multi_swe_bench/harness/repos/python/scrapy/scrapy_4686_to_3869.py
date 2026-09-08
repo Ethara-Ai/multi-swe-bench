@@ -5,16 +5,27 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-PY_IMAGE = "python:2.7.18"
+# python:3.8 — all 10 PRs (3869-4686) are scrapy ~1.8-2.4 era, python_requires >=3.5(.2),
+# Twisted>=17.9.0. Verified in Docker: 3.8 installs + imports scrapy for the oldest (3869 ->
+# scrapy 1.8.0) and newest (4686). python:2.7 (the old value) is wrong for this py3-only era.
+PY_IMAGE = "python:3.8"
 _BASE_APT = "libxml2-dev libxslt1-dev libssl-dev libffi-dev zlib1g-dev"
 
 _PR_NUMBERS: set = set()
 
+# Era-pinned install. `pip install -e .` alone pulls the LATEST Twisted (25.x), which removed
+# APIs scrapy 2.x used -> ~40-57 pytest collection errors (verified in Docker). Pinning the
+# Twisted/TLS stack to the 2020 era (Twisted 20.3.0 / pyOpenSSL 20.0.1 / cryptography 3.3.2 /
+# service_identity 18.1.0) fixes the core breakage. Pillow (image pipelines: test_pipeline_files/
+# _media, pr-3961/4686), boto3+botocore+boto (S3 feedexport: test_feedexport, pr-4434) and the
+# usual test extras are added so those PRs' TARGET test files collect. pytest 6.2.5 + pytest-twisted
+# match the era. testfixtures/jmespath/mock are pulled by various tests.
 _PIP_STEPS = [
-    'pip install --no-cache-dir "pip<21" "setuptools<45" "wheel<0.38"',
+    'pip install --no-cache-dir "pip<24" "setuptools<60" wheel',
     'pip install --no-cache-dir -e .',
-    'pip install --no-cache-dir "pytest==4.6.11" "pytest-timeout==1.4.2" "mock<4" "testfixtures<6.10" jmespath',
-    'pip install --no-cache-dir "boto==2.49.0" "botocore==1.12.253"',
+    'pip install --no-cache-dir "Twisted==20.3.0" "pyOpenSSL==20.0.1" "cryptography==3.3.2" "service_identity==18.1.0"',
+    'pip install --no-cache-dir "pytest==6.2.5" "pytest-timeout==1.4.2" "pytest-twisted==1.13.4"',
+    'pip install --no-cache-dir Pillow "boto3" "botocore" "boto==2.49.0" "testfixtures<6.10" jmespath "mock<4"',
 ]
 
 _TEST_CMD = "pytest tests -v --continue-on-collection-errors --timeout=120"
@@ -96,13 +107,8 @@ RUN set -eux; \\
     ln -sf ${{CA_CERT_PATH}} /etc/ssl/certs/ca-bundle.crt
 
 RUN set -eux; \\
-    sed -i -e 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' \\
-           -e 's|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' \\
-           -e 's|http://deb.debian.org/debian-security|http://archive.debian.org/debian-security|g' \\
-           /etc/apt/sources.list; \\
-    sed -i '/buster-updates/d' /etc/apt/sources.list; \\
-    apt-get -o Acquire::Check-Valid-Until=false update; \\
-    apt-get install -y --no-install-recommends {_BASE_APT}; \\
+    apt-get update; \\
+    apt-get install -y --no-install-recommends git {_BASE_APT}; \\
     rm -rf /var/lib/apt/lists/*
 
 RUN git clone "${{REPO_URL}}" /home/{repo}
