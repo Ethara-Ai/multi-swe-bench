@@ -235,13 +235,40 @@ msb_install > /dev/null 2>&1 || true
 # Scoping to the installed set also means no collection errors: a package that was never
 # installed is never collected.
 TARGETS=""
-for d in $(msb_install_dirs); do
+for d in $(cat /home/packages_under_test.txt 2>/dev/null); do
     [ -d "$d/tests" ] && TARGETS="$TARGETS $d/tests"
 done
+# Grade ONLY the packages this PR's test patch touches, not every installed core package.
+# Running unrelated core suites (e.g. opentelemetry-sdk for an opentelemetry-api PR) drags
+# their flaky/timing tests into the verdict: pr-1134 (api, SpanContext immutability) was
+# invalidated by sdk's flaky test_batch_span_processor_many_spans, and pr-1285 by an sdk
+# test mutating a global attribute limit. The f2p/n2p that decide resolution live in the
+# touched package's own tests, so this stays complete while removing cross-package noise.
+# Fallback to the installed set only if the patch named no package under test.
+if [ -z "$TARGETS" ]; then
+    for d in $(msb_install_dirs); do
+        [ -d "$d/tests" ] && TARGETS="$TARGETS $d/tests"
+    done
+fi
 echo "pytest targets: ${TARGETS}"
 
-python -m pytest ${TARGETS} -p conftest_report --import-mode=importlib --continue-on-collection-errors
-pytest_rc=$?
+# Run each target package's tests in its OWN pytest process, then aggregate the per-test
+# TSVs. A single combined session lets one package's tests mutate global state that another
+# package's tests then read -- e.g. an opentelemetry-sdk test lowers the global attribute
+# value-length limit, so a later opentelemetry-exporter-zipkin test finds its 500-char tag
+# already dropped and asserts KeyError (pr-1285). Every test still runs and still counts
+# (p2p is unchanged); they simply no longer share a process. The same treatment runs in all
+# three acts, so the cross-act comparison stays valid.
+: > "$PYTEST_REPORT_FILE"
+pytest_rc=0
+for t in ${TARGETS}; do
+    part="/tmp/pytest_part.tsv"
+    rm -f "$part"
+    PYTEST_REPORT_FILE="$part" python -m pytest "$t" -p conftest_report --import-mode=importlib --continue-on-collection-errors
+    rc=$?
+    [ "$rc" -gt "$pytest_rc" ] && pytest_rc="$rc"
+    [ -f "$part" ] && cat "$part" >> "$PYTEST_REPORT_FILE"
+done
 echo "pytest exit=${pytest_rc}"
 echo "----- per-test results -----"
 python /home/pytest_test_report.py "$PYTEST_REPORT_FILE"
@@ -346,9 +373,9 @@ _INSTALL_SET_SH = r"""#!/bin/bash
 # fails - so deps sit between core and the packages under test.
 
 msb_core_dirs() {
-    { find . -mindepth 2 -maxdepth 2 -name setup.py -printf '%h\n'
-      find ./tests -mindepth 2 -maxdepth 2 -name setup.py -printf '%h\n' 2>/dev/null
-    } | sed 's|^\./||' | sort > /home/core_dirs.txt
+    { find . -mindepth 2 -maxdepth 2 \( -name setup.py -o -name pyproject.toml \) -printf '%h\n'
+      find ./tests -mindepth 2 -maxdepth 2 \( -name setup.py -o -name pyproject.toml \) -printf '%h\n' 2>/dev/null
+    } | sed 's|^\./||' | grep -vE '(^|/)opentelemetry-distro$' | sort -u > /home/core_dirs.txt
     [ -f /home/dep_dirs.txt ] || : > /home/dep_dirs.txt
 }
 
@@ -395,8 +422,24 @@ msb_constraints() {
 # is what `eachdist develop` does, and it drags in opentelemetry-ext-celery, whose
 # celery~=4.0 pin resolves to wheels with metadata no current resolver parses.
 msb_install() {
-    local attempt miss dir args
+    local attempt miss dir args predeps
+    # Old grpcio (pulled in by 2020-2021 era exporters such as opencensus, otlp and
+    # zipkin's grpc paths) ships a Cython .pyx that Cython 3.x cannot compile, and its
+    # setup.py fetches the newest Cython into .eggs unless one is already importable. Pin
+    # cython<3 up front so that legacy source build succeeds. Harmless for modern PRs:
+    # their own packages are pure-Python and modern grpcio installs from an arm64 wheel.
+    python -m pip install --no-cache-dir "cython<3" > /tmp/msb_cython.log 2>&1 || true
     for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        # Prepass: install every in-repo package code-only (--no-deps), order-independent,
+        # so all local .dev versions (e.g. opentelemetry-semantic-conventions==X.dev) are
+        # present before any cross-package pin is resolved. Without this, a package whose
+        # editable dir is handed to pip after its dependent sends pip to PyPI for a .dev
+        # version that was never published, and the install loops until it gives up.
+        predeps=""
+        for dir in $(msb_install_dirs); do
+            [ -d "$dir" ] && predeps="$predeps -e ./$dir"
+        done
+        [ -n "$predeps" ] && python -m pip install --no-cache-dir --no-deps $predeps > /tmp/msb_prepass.log 2>&1 || true
         args=""
         for dir in $(msb_install_dirs); do
             [ -d "$dir" ] && args="$args -e ./$dir[test]"
@@ -437,8 +480,8 @@ msb_install() {
         miss=$(grep -oE 'No matching distribution found for [A-Za-z0-9_.-]+' /tmp/msb_install.log \
                | tail -1 | awk '{print $NF}' | sed 's/==.*//')
         [ -n "$miss" ] || break
-        dir=$(grep -rlE "^[[:space:]]*name[[:space:]]*=[[:space:]]*$miss[[:space:]]*$" \
-              --include=setup.cfg . 2>/dev/null | head -1)
+        dir=$(grep -rlE "^[[:space:]]*name[[:space:]]*=[[:space:]]*[\"']?$miss[\"']?[[:space:]]*$" \
+              --include=setup.cfg --include=pyproject.toml . 2>/dev/null | head -1)
         [ -n "$dir" ] || break
         dir=$(dirname "$dir" | sed 's|^\./||')
         echo "install: pass $attempt needs $miss -> adding $dir"
@@ -488,6 +531,12 @@ DATE, OUT = sys.argv[1], sys.argv[2]
 DIRS = sys.argv[3:]
 UA = {"User-Agent": "multi-swe-bench opentelemetry-python image build"}
 
+# grpcio is never era-pinned: its 2020-2021 releases have no arm64 wheel and their C
+# extension does not compile against bookworm's toolchain (cython 3 rejects cygrpc.pyx;
+# older cython gets further but gcc then fails). A modern grpcio installs from an arm64
+# wheel and stays API-compatible with the era exporters (opencensus/otlp) that import it.
+_NO_PIN = {"grpcio"}
+
 
 def requirement_names(pkg_dir):
     """Distribution names this package declares, from setup.cfg."""
@@ -513,7 +562,7 @@ def requirement_names(pkg_dir):
                 continue
             name = re.split(r"[<>=!~\[; ]", line, 1)[0].strip()
             # in-repo packages are installed from the tree; never constrain them
-            if name and not name.startswith("opentelemetry"):
+            if name and not name.startswith("opentelemetry") and name not in _NO_PIN:
                 names.add(name)
     return names
 
@@ -536,7 +585,7 @@ def requires_of(name, version):
         if "extra ==" in spec:
             continue
         dep = re.split(r"[<>=!~\[;( ]", spec.strip(), 1)[0].strip()
-        if dep and not dep.startswith("opentelemetry"):
+        if dep and not dep.startswith("opentelemetry") and dep not in _NO_PIN:
             out.add(dep)
     return out
 
@@ -579,6 +628,17 @@ def main():
     frontier = set()
     for d in DIRS:
         frontier |= requirement_names(d)
+    # protobuf reaches the tests through the in-repo opentelemetry-proto, so setup.cfg
+    # never names it and it escapes era pinning. For PRE-3.20 eras this is fatal: pip
+    # installs today's protobuf (5.x), whose runtime rejects the *_pb2.py generated by an
+    # era protoc, and the zipkin/otlp tests die at import ("Descriptors cannot be created
+    # directly"). So seed it ONLY for old commits, where newest_before() pins it below the
+    # 3.20 break. Modern PRs (2022+) ship generated code that matches current protobuf and
+    # declare their own protobuf floor, so pinning it there only manufactures a version
+    # clash -- leave protobuf to the resolver. DATE-adaptive, not a written-down version.
+    if DATE < "2022-01-01":
+        frontier |= {"protobuf"}
+    frontier -= _NO_PIN
     if not frontier:
         open(OUT, "w").close()
         print("era: nothing to constrain")
