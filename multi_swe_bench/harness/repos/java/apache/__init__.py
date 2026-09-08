@@ -1,5 +1,6 @@
 from multi_swe_bench.harness.repos.java.apache.druid_0_to_16976 import *
 from multi_swe_bench.harness.repos.java.apache.druid_890_to_2209 import *
+from multi_swe_bench.harness.repos.java.apache.druid_3284_to_2285 import *
 from multi_swe_bench.harness.repos.java.apache.druid_16977_to_18789 import *
 from multi_swe_bench.harness.repos.java.apache.druid_18790_to_99999 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler import *

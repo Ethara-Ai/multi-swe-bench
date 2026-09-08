@@ -8,14 +8,24 @@ pre-Apache ``io.druid`` era -- Druid ``0.7.0-SNAPSHOT`` to ``0.9.0-SNAPSHOT``.
 
 Registration
 ------------
-Every entry in that JSONL carries ``number_interval == ""`` and ``tag == ""``,
-so ``Instance.create()`` (instance.py:40-51) builds the lookup key
-``"apache/druid"``.  The first decorator is therefore the one the current
-dataset actually resolves through.  The second decorator registers the
-interval key that matches this file's stem, so the same config keeps working
-unchanged if ``number_interval`` is later stamped onto the dataset -- the
-pattern used by ``python/secdev/scapy_3811_to_3810.py`` and
-``python/sourmash_bio/sourmash_1186_to_503.py``.
+This config is reached ONLY through its interval key, ``apache/druid_890_to_2209``,
+so a dataset for this range must carry ``number_interval: "druid_890_to_2209"``
+on every row.
+
+It used to register the plain ``apache/druid`` key as well -- the key
+``Instance.create()`` (instance.py:41-49) builds for a row with
+``number_interval == ""`` and ``tag == ""``.  That registration moved to
+``druid_3284_to_2285.py`` on 2026-09-07, when a new dataset for PRs #2285-#3284
+arrived: two classes registering one key means the winner is decided by import
+order in ``apache/__init__.py``, and the unstamped 2285-3284 rows were silently
+resolving to THIS config, whose PR range they sit entirely outside of.
+
+Note the ``_890_to_2209`` stem does not produce a usable interval either way.
+``build_interval_index`` (validate_dataset) and ``run_parallel_eval``'s enrich
+script both parse a range key as ``_(?P<hi>\\d+)_to_(?P<lo>\\d+)`` and index it as
+``lo..hi``, so this stem indexes as the empty interval 2209..890 and never
+matches by number.  The exact-key path is what makes it work; a hi-then-lo stem
+(as in ``druid_3284_to_2285``) is what makes number-based lookup work.
 
 Relationship to the sibling druid configs
 -----------------------------------------
@@ -694,7 +704,6 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
         return "\n\n".join(b for b in blocks if b) + "\n"
 
 
-@Instance.register("apache", "druid")
 @Instance.register("apache", "druid_890_to_2209")
 class DRUID_890_TO_2209(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
