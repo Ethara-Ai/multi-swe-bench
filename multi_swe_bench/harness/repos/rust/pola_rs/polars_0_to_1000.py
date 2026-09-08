@@ -517,8 +517,20 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates cmake curl git pkg-config \
+# Debian bullseye's live mirrors rotate: bullseye-security drops old .deb files
+# from the pool the moment a new revision is uploaded, so `apt-get install git`
+# 404s intermittently on whichever pinned version the current Packages index still
+# names. snapshot.debian.org keeps every published .deb forever - pointing sources
+# there freezes the archive at a known-good date and eliminates the rot entirely.
+# The date is deliberately several months back so the snapshot has settled.
+RUN printf '%s\n' \
+        'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20250801T000000Z bullseye main' \
+        'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20250801T000000Z bullseye-security main' \
+        'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20250801T000000Z bullseye-updates main' \
+        > /etc/apt/sources.list \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates cmake curl git pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 {fetch}
@@ -692,6 +704,22 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \\
 # the hardening block asserts HEAD, refs and remotes - never working-tree cleanliness - so it
 # survives the `git checkout --detach` exactly the way the venv does.
 cd /home/{repo}
+
+# Pin jsonpath_lib to pre-rename commit (upstream branch tip renamed Feb 2024).
+# Committer date preserved to base commit's date so PIN_SCRIPT still reads the correct cutoff.
+JSONPATH_PIN=bf901857f3da5c1117b233e0d4bda7d8771294f5
+_files=$(grep -rlE 'branch[[:space:]]*=[[:space:]]*"improve_compiled"' --include=Cargo.toml . 2>/dev/null || true)
+_a2=$(grep -rlE 'ritchie46/arrow2' --include=Cargo.toml . 2>/dev/null || true)
+if [ -n "$_files" ] || [ -n "$_a2" ]; then
+  _BASE_DATE=$(git show -s --format=%cI HEAD)
+  [ -n "$_files" ] && echo "$_files" | xargs sed -i -E "s|branch[[:space:]]*=[[:space:]]*\\"improve_compiled\\"|rev = \\"$JSONPATH_PIN\\"|g"
+  [ -n "$_a2" ] && echo "$_a2" | xargs sed -i -E 's|(ritchie46/arrow2"[^}}]*)branch[[:space:]]*=[[:space:]]*"dev"|\\1rev = "4bb32375520fbd974b98028cec37ada969a1996c"|g'
+  GIT_COMMITTER_DATE="$_BASE_DATE" \
+    git -c user.email=harness@local -c user.name=harness commit --date="$_BASE_DATE" -aq -m "harness: pin git deps"
+  [ -n "$_files" ] && echo "jsonpath pinned in: $_files (committer date=$_BASE_DATE)"
+  [ -n "$_a2" ] && echo "arrow2 pinned in: $_a2"
+fi
+
 cargo generate-lockfile
 python3 - "$(git show -s --format=%cI HEAD | cut -c1-10)" /home/{repo} <<'PIN_TO_COMMIT_DATE_EOF'
 {PIN_SCRIPT}
@@ -701,7 +729,7 @@ PIN_TO_COMMIT_DATE_EOF
 # hardening block's `git checkout --detach` and is still there for every graded stage.
 cd /home/{repo}/py-polars
 python -m venv venv
-python -m pip install --upgrade pip || true
+python -m pip install --upgrade 'pip<23' || true
 
 # Dependencies come from the repo's own file, so maturin 0.8.1 / 0.9.4 / 0.11.0 each arrive
 # with the commit that pins them without this config naming any of the three.
@@ -768,10 +796,15 @@ set -euo pipefail
 
 {env}
 
-cd /home/{repo}/py-polars
+# Re-apply jsonpath pin (hardening block's `git checkout` undoes prepare.sh's commit).
+cd /home/{repo}
+_files=$(grep -rlE 'branch[[:space:]]*=[[:space:]]*"improve_compiled"' --include=Cargo.toml . 2>/dev/null || true)
+[ -n "$_files" ] && echo "$_files" | xargs sed -i -E 's|branch[[:space:]]*=[[:space:]]*"improve_compiled"|rev = "bf901857f3da5c1117b233e0d4bda7d8771294f5"|g'
+# Pin ritchie46/arrow2 branch=dev to pre-drift commit (branch tip has moved to v0.18 requiring hashbrown ^0.14).
+_a2=$(grep -rlE 'ritchie46/arrow2' --include=Cargo.toml . 2>/dev/null || true)
+[ -n "$_a2" ] && echo "$_a2" | xargs sed -i -E 's|(ritchie46/arrow2"[^}}]*)branch[[:space:]]*=[[:space:]]*"dev"|\1rev = "4bb32375520fbd974b98028cec37ada969a1996c"|g'
 
-# Rebuilt in every stage, not just prepare.sh: each stage's patch changes Rust source that the
-# Python tests import through the compiled extension.
+cd /home/{repo}/py-polars
 {MATURIN_BUILD}
 {PYTEST_CMD}
 """,
@@ -787,6 +820,11 @@ set -euo pipefail
 
 cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch
+_files=$(grep -rlE 'branch[[:space:]]*=[[:space:]]*"improve_compiled"' --include=Cargo.toml . 2>/dev/null || true)
+[ -n "$_files" ] && echo "$_files" | xargs sed -i -E 's|branch[[:space:]]*=[[:space:]]*"improve_compiled"|rev = "bf901857f3da5c1117b233e0d4bda7d8771294f5"|g'
+# Pin ritchie46/arrow2 branch=dev to pre-drift commit (branch tip has moved to v0.18 requiring hashbrown ^0.14).
+_a2=$(grep -rlE 'ritchie46/arrow2' --include=Cargo.toml . 2>/dev/null || true)
+[ -n "$_a2" ] && echo "$_a2" | xargs sed -i -E 's|(ritchie46/arrow2"[^}}]*)branch[[:space:]]*=[[:space:]]*"dev"|\1rev = "4bb32375520fbd974b98028cec37ada969a1996c"|g'
 
 cd /home/{repo}/py-polars
 {MATURIN_BUILD}
@@ -805,6 +843,11 @@ set -euo pipefail
 cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch
 git apply --whitespace=nowarn /home/fix.patch
+_files=$(grep -rlE 'branch[[:space:]]*=[[:space:]]*"improve_compiled"' --include=Cargo.toml . 2>/dev/null || true)
+[ -n "$_files" ] && echo "$_files" | xargs sed -i -E 's|branch[[:space:]]*=[[:space:]]*"improve_compiled"|rev = "bf901857f3da5c1117b233e0d4bda7d8771294f5"|g'
+# Pin ritchie46/arrow2 branch=dev to pre-drift commit (branch tip has moved to v0.18 requiring hashbrown ^0.14).
+_a2=$(grep -rlE 'ritchie46/arrow2' --include=Cargo.toml . 2>/dev/null || true)
+[ -n "$_a2" ] && echo "$_a2" | xargs sed -i -E 's|(ritchie46/arrow2"[^}}]*)branch[[:space:]]*=[[:space:]]*"dev"|\1rev = "4bb32375520fbd974b98028cec37ada969a1996c"|g'
 
 cd /home/{repo}/py-polars
 {MATURIN_BUILD}

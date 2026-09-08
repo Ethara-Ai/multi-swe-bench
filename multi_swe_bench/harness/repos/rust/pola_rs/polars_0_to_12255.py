@@ -104,23 +104,16 @@ class PolarsEarlyImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "python:3.11-slim-bullseye"
+        return "python:3.11-slim-bookworm"
 
     def image_tag(self) -> str:
-        # `base-pr-<N>` - the literal form the Dockerfile QC expects. Per-PR, not a tag
-        # shared across the era: dependency() returns a plain string, so DockerfileEnhancer
-        # always rewrites this file, and _standardize_repo_fetch turns the clone line below
-        # into `git clone ${REPO_URL}` + `git checkout ${BASE_COMMIT}` plus a hardening block
-        # that detaches at that one commit. A shared tag would let whichever PR built first
-        # pin the commit for all the others.
-        #
-        # No era qualifier is needed for uniqueness (Check 2F): a PR routes to exactly ONE era,
-        # and the tag embeds that PR number, so this era and the late era
-        # (polars_12256_to_99999, tag "base-late") can never mint the same tag.
-        return f"base-pr-{self.pr.number}"
+        # Shared base across all PRs in this era. Hardening moved to the PR Dockerfile per the
+        # new rules, so the base image no longer pins {pr.base.sha} and can be reused by every
+        # PR. apt + rustup + git clone are era-invariant, so one base build serves all 10 PRs.
+        return "base"
 
     def workdir(self) -> str:
-        return self.image_tag()
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -159,9 +152,47 @@ class PolarsEarlyImageBase(Image):
         # repos/rust/ instance and the toolchain is downloaded once per base image instead of
         # on every PR-image rebuild.
         return f"""\
+# syntax=docker/dockerfile:1.6
+
 FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 WORKDIR /home/
 
@@ -174,10 +205,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \\
     && /root/.cargo/bin/rustc --version \\
     && /root/.cargo/bin/cargo --version
 
-{code}
+RUN git -C /home clone "${{REPO_URL}}" {self.pr.repo}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -243,15 +273,9 @@ set -e
 rustc --version
 cargo --version
 
-cd /home/{pr.repo}
-git reset --hard
-# Assert the reset actually produced a clean tree rather than assuming it did. A stray modified
-# file would flow into all three graded stages and corrupt the comparison with nothing in the
-# log to explain why.
-bash /home/check_git_changes.sh
-
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
+# Git reset/checkout to {pr.base.sha} + clean-tree assertions are handled in the PR Dockerfile
+# hardening RUN block before this script runs. This script assumes HEAD == {pr.base.sha} and
+# a clean working tree on entry.
 
 # The venv lives where SHELL_ENV's VIRTUAL_ENV points, inside py-polars, matching the layout
 # the project's own Makefile creates. It is gitignored, so it survives the `git reset --hard`
@@ -278,7 +302,7 @@ warm() {{
   fi
 }}
 
-warm deps 1800 "pip install --upgrade pip && pip install -r requirements-dev.txt"
+warm deps 1800 "pip install --upgrade 'pip<23' && pip install -r $(test -f requirements-dev.txt && echo requirements-dev.txt || echo build.requirements.txt)"
 
 # Compiling polars is the expensive step by a wide margin, which is exactly why it is done here
 # rather than left to the first graded stage: the target/ directory it fills makes each stage's
@@ -300,6 +324,11 @@ python -c "import polars; print('polars', polars.__version__)"
 # entire warm-up this script just paid for. Nothing tracked is left modified - the build writes
 # only into those two ignored directories - which is what the assertion below confirms.
 cd /home/{pr.repo}
+# Older polars .gitignore covers target/ and wheels/ but NOT venv/, so the warm-up venv would
+# show as untracked and trip check_git_changes.sh. Add both under .git/info/exclude (local,
+# non-tracked) so `git status --porcelain` treats them as ignored on all covered commits.
+grep -qxF 'py-polars/venv/' .git/info/exclude 2>/dev/null || echo 'py-polars/venv/' >> .git/info/exclude
+grep -qxF 'py-polars/wheels/' .git/info/exclude 2>/dev/null || echo 'py-polars/wheels/' >> .git/info/exclude
 git reset --hard
 bash /home/check_git_changes.sh
 """.format(pr=self.pr, shell_env=SHELL_ENV, maturin=MATURIN_BUILD),
@@ -375,7 +404,37 @@ FROM {dep.image_name()}:{dep.image_tag()}
 
 {self.global_env}
 
-{copy_commands}RUN bash /home/prepare.sh
+{copy_commands}RUN cd /home/{self.pr.repo} && \\
+    git reset --hard && \\
+    git clean -fd && \\
+    git checkout --detach {self.pr.base.sha} && \\
+    (git remote remove origin 2>/dev/null || true) && \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d && \\
+    git reflog expire --expire=now --all && \\
+    git reflog expire --expire-unreachable=now --all && \\
+    git gc --prune=now --aggressive && \\
+    git repack -a -d -l --quiet && \\
+    rm -f .git/objects/info/alternates && \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse {self.pr.base.sha})" && \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)" && \\
+    test -z "$(git remote)"
+
+RUN if [ -f /home/{self.pr.repo}/.gitmodules ]; then \\
+      cd /home/{self.pr.repo} && \\
+      git submodule foreach --recursive ' \\
+        git checkout --detach HEAD; \\
+        git remote remove origin 2>/dev/null || true; \\
+        git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+            | xargs -r -n1 git update-ref -d; \\
+        git reflog expire --expire=now --all; \\
+        git reflog expire --expire-unreachable=now --all; \\
+        git gc --prune=now --aggressive; \\
+        rm -f .git/objects/info/alternates \\
+      '; \\
+    fi
+
+RUN bash /home/prepare.sh
 
 {self.clear_env}
 
@@ -509,3 +568,12 @@ class POLARS_0_TO_12255(Instance):
 
     def parse_log(self, test_log: str) -> TestResult:
         return parse_pytest_log(test_log)
+
+
+# NOTE: Override REMOVED. The 12255 harness has no PIN_SCRIPT / walk_back scaffolding,
+# so PRs whose base commit predates the root Cargo.lock (added in polars #12256) cannot
+# compile - cargo resolves caret ranges against today's crates.io and picks post-2022
+# releases that fail on the pinned 2022-era nightly. polars_0_to_1000 already carries
+# that scaffolding and was explicitly designed so "a sixth PR added to this range needs
+# no edit here". Letting its "polars" registration win routes pre-Cargo.lock PRs there.
+# Instance.register("pola-rs", "polars")(POLARS_0_TO_12255)
