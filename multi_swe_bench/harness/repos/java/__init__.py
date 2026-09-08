@@ -6,7 +6,6 @@ from multi_swe_bench.harness.repos.java.alibaba_canal import *
 from multi_swe_bench.harness.repos.java.apache import *
 from multi_swe_bench.harness.repos.java.bazelbuild import *
 from multi_swe_bench.harness.repos.java.binarywang import *
-from multi_swe_bench.harness.repos.java.bitrich_info import *
 from multi_swe_bench.harness.repos.java.cambridge_cares import *
 from multi_swe_bench.harness.repos.java.carlspring import *
 from multi_swe_bench.harness.repos.java.checkstyle import *
@@ -27,7 +26,6 @@ from multi_swe_bench.harness.repos.java.keycloak import *
 from multi_swe_bench.harness.repos.java.libgdx import *
 from multi_swe_bench.harness.repos.java.marcinadd import *
 from multi_swe_bench.harness.repos.java.microcks import *
-from multi_swe_bench.harness.repos.java.medic import *
 from multi_swe_bench.harness.repos.java.micronautprojects import *
 from multi_swe_bench.harness.repos.java.mockito import *
 from multi_swe_bench.harness.repos.java.mybatis import *
