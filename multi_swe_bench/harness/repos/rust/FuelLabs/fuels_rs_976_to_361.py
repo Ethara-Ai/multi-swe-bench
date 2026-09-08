@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -51,14 +51,25 @@ class _ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git "
-                f"/home/{self.pr.repo}"
-            )
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 {self.global_env}
 
@@ -66,12 +77,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+RUN if [ "$(dpkg --print-architecture)" != "amd64" ]; then \\
+        dpkg --add-architecture amd64 && apt-get update && \\
+        apt-get install -y --no-install-recommends \\
+            libc6:amd64 libgcc-s1:amd64 zlib1g:amd64 && \\
+        rm -rf /var/lib/apt/lists/*; \\
+    fi
+
 WORKDIR /home/
 
 {code}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -145,10 +164,8 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# Extract forc version from CI env var.
 FORC_VERSION=$(grep 'FORC_VERSION:' .github/workflows/ci.yml | head -1 | sed 's/.*: *//' | tr -d ' "'"'"'')
 
-# fuel-core as a CI binary appeared from ~PR #432; older PRs have it as Cargo dep only.
 FUEL_CORE_VERSION=$(grep 'FUEL_CORE_VERSION:' .github/workflows/ci.yml | head -1 | sed 's/.*: *//' | tr -d ' "'"'"'' || true)
 
 ARCH="$(dpkg --print-architecture)"
@@ -180,10 +197,18 @@ if command -v forc >/dev/null 2>&1; then
     elif [ -f "packages/fuels/Forc.toml" ]; then
         forc build --path packages/fuels || true
     else
-        # Fallback: build individual Sway test projects scattered in subdirs.
         find . -path '*/tests/*' -name 'Forc.toml' -print0 2>/dev/null | while IFS= read -r -d '' forc_toml; do
             forc build --path "$(dirname "$forc_toml")" || true
         done
+    fi
+fi
+
+cargo generate-lockfile || true
+if [ -n "$FUEL_CORE_VERSION" ]; then
+    if cargo metadata --format-version=1 2>/dev/null | grep -q '"name":"fuel-core-client"'; then
+        cargo update -p fuel-core-client --precise "$FUEL_CORE_VERSION" || true
+    else
+        cargo update -p fuel-gql-client --precise "$FUEL_CORE_VERSION" || true
     fi
 fi
 
@@ -199,7 +224,6 @@ set -eo pipefail
 
 cd /home/{pr.repo}
 
-# Rebuild Sway artifacts in case source changed.
 if command -v forc >/dev/null 2>&1; then
     if [ -f "scripts/build-test-projects/Cargo.toml" ]; then
         cargo run -p build-test-projects || true
@@ -212,7 +236,21 @@ if command -v forc >/dev/null 2>&1; then
     fi
 fi
 
-cargo test --workspace --no-fail-fast
+out=$(cargo test --workspace --no-fail-fast 2>&1) || true
+printf '%s' "$out" > /tmp/cargo_test_out.txt
+if grep -qE '^test .+ [.][.][.] ' /tmp/cargo_test_out.txt; then
+    echo "$out"
+else
+    echo "$out"
+    cargo build --tests --workspace --keep-going --message-format=json > /tmp/build.json 2> /tmp/build.err || true
+    cat /tmp/build.err
+    grep '"executable":"' /tmp/build.json | while IFS= read -r line; do
+        exe=$(printf '%s' "$line" | grep -o '"executable":"[^"]*"' | sed 's/.*:"//;s/"$//')
+        man=$(printf '%s' "$line" | grep -o '"manifest_path":"[^"]*"' | sed 's/.*:"//;s/"$//')
+        [ -x "$exe" ] || continue
+        ( cd "$(dirname "$man")" && "$exe" 2>/dev/null ) || true
+    done || true
+fi
 
 """.format(pr=self.pr),
             ),
@@ -225,7 +263,6 @@ set -eo pipefail
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
 
-# Rebuild Sway artifacts after applying test patch.
 if command -v forc >/dev/null 2>&1; then
     if [ -f "scripts/build-test-projects/Cargo.toml" ]; then
         cargo run -p build-test-projects || true
@@ -238,7 +275,21 @@ if command -v forc >/dev/null 2>&1; then
     fi
 fi
 
-cargo test --workspace --no-fail-fast
+out=$(cargo test --workspace --no-fail-fast 2>&1) || true
+printf '%s' "$out" > /tmp/cargo_test_out.txt
+if grep -qE '^test .+ [.][.][.] ' /tmp/cargo_test_out.txt; then
+    echo "$out"
+else
+    echo "$out"
+    cargo build --tests --workspace --keep-going --message-format=json > /tmp/build.json 2> /tmp/build.err || true
+    cat /tmp/build.err
+    grep '"executable":"' /tmp/build.json | while IFS= read -r line; do
+        exe=$(printf '%s' "$line" | grep -o '"executable":"[^"]*"' | sed 's/.*:"//;s/"$//')
+        man=$(printf '%s' "$line" | grep -o '"manifest_path":"[^"]*"' | sed 's/.*:"//;s/"$//')
+        [ -x "$exe" ] || continue
+        ( cd "$(dirname "$man")" && "$exe" 2>/dev/null ) || true
+    done || true
+fi
 
 """.format(pr=self.pr),
             ),
@@ -251,7 +302,6 @@ set -eo pipefail
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
-# Rebuild Sway artifacts after applying patches.
 if command -v forc >/dev/null 2>&1; then
     if [ -f "scripts/build-test-projects/Cargo.toml" ]; then
         cargo run -p build-test-projects || true
@@ -264,7 +314,21 @@ if command -v forc >/dev/null 2>&1; then
     fi
 fi
 
-cargo test --workspace --no-fail-fast
+out=$(cargo test --workspace --no-fail-fast 2>&1) || true
+printf '%s' "$out" > /tmp/cargo_test_out.txt
+if grep -qE '^test .+ [.][.][.] ' /tmp/cargo_test_out.txt; then
+    echo "$out"
+else
+    echo "$out"
+    cargo build --tests --workspace --keep-going --message-format=json > /tmp/build.json 2> /tmp/build.err || true
+    cat /tmp/build.err
+    grep '"executable":"' /tmp/build.json | while IFS= read -r line; do
+        exe=$(printf '%s' "$line" | grep -o '"executable":"[^"]*"' | sed 's/.*:"//;s/"$//')
+        man=$(printf '%s' "$line" | grep -o '"manifest_path":"[^"]*"' | sed 's/.*:"//;s/"$//')
+        [ -x "$exe" ] || continue
+        ( cd "$(dirname "$man")" && "$exe" 2>/dev/null ) || true
+    done || true
+fi
 
 """.format(pr=self.pr),
             ),
@@ -281,17 +345,27 @@ cargo test --workspace --no-fail-fast
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
 {prepare_commands}
 
 {self.clear_env}
 
 """
+
+
+_DOC_TEST = re.compile(r"\.rs - .*\(line \d+\)")
 
 
 def _parse_cargo_test_log(test_log: str) -> TestResult:
@@ -301,12 +375,15 @@ def _parse_cargo_test_log(test_log: str) -> TestResult:
     failed_tests: set[str] = set()
     skipped_tests: set[str] = set()
 
-    re_pass_tests = [re.compile(r"test (\S+) \.\.\. ok")]
-    re_fail_tests = [re.compile(r"test (\S+) \.\.\. FAILED")]
-    re_skip_tests = [re.compile(r"test (\S+) \.\.\. ignored")]
+    re_pass_tests = [re.compile(r"^test (.+) \.\.\. ok$")]
+    re_fail_tests = [re.compile(r"^test (.+) \.\.\. FAILED$")]
+    re_skip_tests = [re.compile(r"^test (.+) \.\.\. ignored")]
 
     for line in test_log.splitlines():
         line = line.strip()
+
+        if _DOC_TEST.search(line):
+            continue
 
         for re_pass in re_pass_tests:
             match = re_pass.match(line)
@@ -372,3 +449,20 @@ class _FuelsRsInstanceBase(Instance):
 @Instance.register("FuelLabs", "fuels_rs_976_to_361")
 class FuelsRs976To361(_FuelsRsInstanceBase):
     pass
+
+
+@Instance.register("FuelLabs", "fuels-rs")
+def _fuels_rs_for_pr(pr: PullRequest, config: Config, *args, **kwargs) -> Instance:
+    from multi_swe_bench.harness.repos.rust.FuelLabs.fuels_rs import FuelsRs
+    from multi_swe_bench.harness.repos.rust.FuelLabs.fuels_rs_347_to_83 import (
+        FuelsRs347To83,
+    )
+
+    if pr.number <= 347:
+        era = FuelsRs347To83
+    elif pr.number <= 976:
+        era = FuelsRs976To361
+    else:
+        era = FuelsRs
+
+    return era(pr, config, *args, **kwargs)
