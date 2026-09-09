@@ -252,3 +252,4 @@ from multi_swe_bench.harness.repos.typescript.FreezingMoon import *
 from multi_swe_bench.harness.repos.typescript.mattermost import *
 from multi_swe_bench.harness.repos.typescript.azu import *
 from multi_swe_bench.harness.repos.typescript.Swatinem import *
+from multi_swe_bench.harness.repos.typescript.OpenHands import *
