@@ -96,3 +96,4 @@ from multi_swe_bench.harness.repos.rust.ruma import *
 from multi_swe_bench.harness.repos.rust.openmls import *
 from multi_swe_bench.harness.repos.rust.cxlinux_ai import *
 from multi_swe_bench.harness.repos.rust.filecoin_project import *
+from multi_swe_bench.harness.repos.rust.pnpm import *

@@ -181,3 +181,4 @@ from multi_swe_bench.harness.repos.javascript.mac_s_g import *
 from multi_swe_bench.harness.repos.javascript.medic import *
 from multi_swe_bench.harness.repos.javascript.dbader import *
 from multi_swe_bench.harness.repos.javascript.React95 import *
+from multi_swe_bench.harness.repos.javascript.moleculerjs import *
