@@ -7,4 +7,5 @@ from multi_swe_bench.harness.repos.typescript.jestjs.jest_12912_to_7792 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_14309_to_12922 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_15447_to_14070 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_15831_to_15461 import *
+from multi_swe_bench.harness.repos.typescript.jestjs.jest_6008_to_4614 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_4506_to_3217 import *
