@@ -58,11 +58,11 @@ class ImageBase(Image):
         return "mswebench"
 
     # One base per ERA, not per PR. ImageBase no longer checks out BASE_COMMIT
-    # (that moved to ImageDefault), so every PR in 1557..1756 renders an identical
+    # (that moved to ImageDefault), so every PR in 1239..1556 renders an identical
     # base Dockerfile. Tagging per-PR built and stored one copy of one image per PR;
     # Image.__eq__/__hash__ key on image_full_name(), so a shared tag collapses
     # them to a single build.
-    ERA_TAG = "base-1756-to-1557"
+    ERA_TAG = "base-1556-to-1239"
 
     def image_tag(self) -> str:
         return self.ERA_TAG
@@ -340,8 +340,8 @@ RUN if [ -f .gitmodules ]; then \\
 """
 
 
-@Instance.register("pytorch", "ignite_1756_to_1557")
-class IGNITE_1756_TO_1557(Instance):
+@Instance.register("pytorch", "ignite_1556_to_1239")
+class IGNITE_1556_TO_1239(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

@@ -215,13 +215,25 @@ exit 0
                 # PR-specific setup: recover the base commit, pin the tree to it,
                 # then install dependencies. The history strip stays a Dockerfile
                 # RUN layer (it is image hardening, not per-PR setup).
+                # torch is pinned to the `+cpu` local version and the CPU index
+                # is paired with PyPI as an extra index. Without `--extra-index-url`
+                # the CPU-index install fails (that index carries no `flit_core`,
+                # so building `typing_extensions` from it errors), and without
+                # `+cpu` a retry against plain PyPI silently resolves the CUDA
+                # build -- ~10GB of nvidia-* wheels these CPU-only tests never
+                # load, which took each PR image from ~2.5GB to 12.6GB.
+                # Arch split: the `+cpu` local version exists only for
+                # x86_64/win_amd64. On aarch64 the plain wheel is already the
+                # CPU build (1.13.1 shipped no CUDA aarch64), so dropping the
+                # suffix there costs nothing and is the only way the arm64 leg
+                # of a multi-arch build can resolve torch at all.
                 """set -e
 ###ACTION_DELIMITER###
 cd /home/{pr.repo} && (git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null || git fetch --no-tags --depth=2147483647 origin {pr.base.sha} || git fetch --no-tags origin "+refs/pull/{pr.number}/head:refs/remotes/origin/pr-{pr.number}")
 ###ACTION_DELIMITER###
 cd /home/{pr.repo} && git reset --hard && git checkout {pr.base.sha} && bash /home/check_git_changes.sh
 ###ACTION_DELIMITER###
-cd /home/{pr.repo} && (pip install torch==1.13.1 torchvision==0.14.1 --index-url https://download.pytorch.org/whl/cpu || pip install torch==1.13.1 torchvision==0.14.1) || true
+cd /home/{pr.repo} && if [ "$(uname -m)" = "x86_64" ]; then TORCH_PKGS="torch==1.13.1+cpu torchvision==0.14.1+cpu"; else TORCH_PKGS="torch==1.13.1 torchvision==0.14.1"; fi && pip install $TORCH_PKGS --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 ###ACTION_DELIMITER###
 cd /home/{pr.repo} && pip install -r requirements-dev.txt || true
 ###ACTION_DELIMITER###

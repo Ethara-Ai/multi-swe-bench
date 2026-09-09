@@ -1,13 +1,41 @@
 import re
-import json
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+# The graded test command, identical in all three run scripts (QC item P7).
+# `--continue-on-collection-errors`: a test.patch that imports a module the fix
+# has not created yet raises a collection error, and pytest otherwise aborts the
+# ENTIRE suite -- destroying the test-stage signal for all ~500 tests.
+# `--deselect .../test_timing.py::test_timer`: that test sleeps 0.2s and asserts
+# elapsed wall-clock within tolerance. It is unrelated to every patch in this era
+# and flakes on loaded hosts. Left in, it invalidates otherwise-good instances
+# and can fabricate spurious f2p entries for PRs whose patches never touch it.
+TEST_CMD = (
+    "pytest -v --continue-on-collection-errors "
+    "--deselect tests/ignite/handlers/test_timing.py::test_timer tests/"
+)
 
-class ImageDefault(Image):
+
+class ImageBase(Image):
+    """Environment-only base image.
+
+    Per project convention this image stops at the `git clone`: it establishes
+    the runtime, the proxy/TLS trust and the toolchain, clones the repo, and
+    ends. It does NOT check out the base commit and does NOT strip git history --
+    both of those are PR-specific and live in ImageDefault's Dockerfile.
+
+    The Dockerfile is emitted complete, including the BuildKit syntax directive.
+    That is deliberate: DockerfileEnhancer.enhance() returns the Dockerfile
+    untouched when it already carries the directive (image.py:317), which is what
+    keeps the enhancer from appending its own history-scrub block here. Because
+    the enhancer is bypassed, this method must itself provide everything the
+    enhancer would normally add -- ARGs, the proxy/TLS ENV block, OCI labels and
+    the CA-cert symlink farm -- and it does.
+    """
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -21,10 +49,123 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "python:3.9-slim"
+        # Pinned to the Debian release, not just the Python minor: the bare
+        # `python:3.9-slim` tag floated to Debian 13 "trixie" during development,
+        # which dropped `libgl1-mesa-glx` and broke the build.
+        return "python:3.9-slim-bookworm"
 
     def image_prefix(self) -> str:
-        return "envagent"
+        return "mswebench"
+
+    # One base per ERA, not per PR. ImageBase no longer checks out BASE_COMMIT
+    # (that moved to ImageDefault), so every PR in 1105..1238 renders an identical
+    # base Dockerfile. Tagging per-PR built and stored one copy of one image per PR;
+    # Image.__eq__/__hash__ key on image_full_name(), so a shared tag collapses
+    # them to a single build.
+    ERA_TAG = "base-1238-to-1105"
+
+    def image_tag(self) -> str:
+        return self.ERA_TAG
+
+    def workdir(self) -> str:
+        return self.ERA_TAG
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        org, repo = self.pr.org, self.pr.repo
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {self.dependency()}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+WORKDIR /home/
+
+# python:3.9-slim-bookworm ships no git and no toolchain; ignite's test
+# dependencies build C extensions, so build-essential is required here.
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git build-essential libgl1 libglib2.0-0 libgomp1 \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+CMD ["/bin/bash"]
+"""
+
+
+class ImageDefault(Image):
+    """PR-specific layer: patches, run scripts, commit pin and git hardening.
+
+    The base image deliberately stops at the clone, so everything that is
+    specific to THIS pull request happens here: recovering the base commit if
+    upstream deleted its branch, pinning the tree to that commit, and stripping
+    the git history down to it with integrity asserts.
+
+    The hardening is expressed as Dockerfile RUN layers -- not inside
+    prepare.sh -- so it is auditable in the image recipe itself.
+
+    Note the commit is interpolated literally rather than read from
+    ${BASE_COMMIT}: build_dataset.py only passes REPO_URL/BASE_COMMIT as build
+    args when dependency() is a string, i.e. for base images (build_dataset.py
+    :623-629). A PR image receives no build args, so ${BASE_COMMIT} would expand
+    to the empty string here.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return ImageBase(self.pr, self._config)
+
+    def image_prefix(self) -> str:
+        return "mswebench"
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -46,96 +187,157 @@ class ImageDefault(Image):
             ),
             File(
                 ".",
+                "check_git_changes.sh",
+                # Plain string, never .format()'ed -- the `|| { ...; }` brace
+                # group would otherwise be read as a format replacement field.
+                """#!/bin/bash
+# Assert the working tree is pristine. `git reset --hard` restores tracked files
+# but does NOT remove stray untracked ones, and the HEAD/refs asserts only prove
+# WHICH commit is checked out -- a dirty tree satisfies all of them.
+set -e
+
+git rev-parse --is-inside-work-tree > /dev/null 2>&1 \\
+    || { echo "check_git_changes: Not inside a git repository"; exit 1; }
+
+test -z "$(git status --porcelain)" || {
+    echo "check_git_changes: Uncommitted changes"
+    git status --porcelain | head -20
+    exit 1
+}
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+""",
+            ),
+            File(
+                ".",
                 "prepare.sh",
-                """ls -la
+                # PR-specific setup: recover the base commit, pin the tree to it,
+                # then install dependencies. The history strip stays a Dockerfile
+                # RUN layer (it is image hardening, not per-PR setup).
+                # torch is pinned to the `+cpu` local version and the CPU index
+                # is paired with PyPI as an extra index. Without `--extra-index-url`
+                # the CPU-index install fails (that index carries no `flit_core`,
+                # so building `typing_extensions` from it errors), and without
+                # `+cpu` a retry against plain PyPI silently resolves the CUDA
+                # build -- ~10GB of nvidia-* wheels these CPU-only tests never
+                # load, which took each PR image from ~2.5GB to 12.6GB.
+                # Arch split: the `+cpu` local version exists only for
+                # x86_64/win_amd64. On aarch64 the plain wheel is already the
+                # CPU build (1.13.1 shipped no CUDA aarch64), so dropping the
+                # suffix there costs nothing and is the only way the arm64 leg
+                # of a multi-arch build can resolve torch at all.
+                """set -e
 ###ACTION_DELIMITER###
-pip install -r requirements-dev.txt
+cd /home/{pr.repo} && (git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null || git fetch --no-tags --depth=2147483647 origin {pr.base.sha} || git fetch --no-tags origin "+refs/pull/{pr.number}/head:refs/remotes/origin/pr-{pr.number}")
 ###ACTION_DELIMITER###
-CI_PYTHON_VERSION=3.9 sh tests/run_cpu_tests.sh
+cd /home/{pr.repo} && git reset --hard && git checkout {pr.base.sha} && bash /home/check_git_changes.sh
 ###ACTION_DELIMITER###
-pip install torch
+cd /home/{pr.repo} && if [ "$(uname -m)" = "x86_64" ]; then TORCH_PKGS="torch==1.13.1+cpu torchvision==0.14.1+cpu"; else TORCH_PKGS="torch==1.13.1 torchvision==0.14.1"; fi && pip install $TORCH_PKGS --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 ###ACTION_DELIMITER###
-CI_PYTHON_VERSION=3.9 sh tests/run_cpu_tests.sh
+cd /home/{pr.repo} && pip install -r requirements-dev.txt || true
 ###ACTION_DELIMITER###
-echo 'CI_PYTHON_VERSION=3.9 sh tests/run_cpu_tests.sh' > test_commands.sh
+cd /home/{pr.repo} && pip install numpy==1.23.5 mock pytest pytest-cov scikit-learn scikit-image==0.18.3 tqdm tensorboardX matplotlib pandas neptune-client visdom==0.1.8.9 || true
 ###ACTION_DELIMITER###
-cat test_commands.sh""",
+cd /home/{pr.repo} && pip install -e . || true
+###ACTION_DELIMITER###
+cd /home/{pr.repo} && bash /home/check_git_changes.sh || true""".format(
+                    pr=self.pr
+                ),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-cd /home/{pr.repo}
-CI_PYTHON_VERSION=3.9 sh tests/run_cpu_tests.sh
+set -eo pipefail
+export CI=true
+cd /home/{repo}
+{cmd}
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, cmd=TEST_CMD),
             ),
             File(
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
+set -eo pipefail
+export CI=true
+cd /home/{repo}
+if ! git -C /home/{repo} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-CI_PYTHON_VERSION=3.9 sh tests/run_cpu_tests.sh
+{cmd}
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, cmd=TEST_CMD),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
+set -eo pipefail
+export CI=true
+cd /home/{repo}
+if ! git -C /home/{repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
-    exit 1  
+    exit 1
 fi
-CI_PYTHON_VERSION=3.9 sh tests/run_cpu_tests.sh
+{cmd}
 
-""".format(pr=self.pr),
+""".format(repo=self.pr.repo, cmd=TEST_CMD),
             ),
         ]
 
     def dockerfile(self) -> str:
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+        num = self.pr.number
+        copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
+        return f"""FROM {self.dependency().image_full_name()}
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
-
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
-
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/pytorch/ignite.git /home/ignite
-
-WORKDIR /home/ignite
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+WORKDIR /home/{repo}
+
+# prepare.sh runs FIRST: it recovers the base commit (needed when upstream
+# deleted the branch it lived on, e.g. ignite #1005 on `idist`) and pins the
+# tree to it. The strip below then reduces history to that commit -- it must
+# run after, because it removes `origin` and so cannot fetch anything itself.
+RUN bash /home/prepare.sh
+
+# Git stripping / hardening. Pins the tree to the base commit and reduces the
+# repository to exactly that history, then asserts the four invariants:
+# HEAD == base commit, no residual refs, no remotes, no unreachable objects.
+RUN set -eux; \\
+    git checkout --detach {sha}; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse {sha})"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
 """
-        return dockerfile_content.format(pr=self.pr)
 
 
 @Instance.register("pytorch", "ignite_1238_to_1105")
@@ -172,42 +374,45 @@ class IGNITE_1238_TO_1105(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
-        import re
-        import json
+        passed_tests: set[str] = set()  # Tests that passed successfully
+        failed_tests: set[str] = set()  # Tests that failed
+        skipped_tests: set[str] = set()  # Tests that were skipped
 
-        # Implement the log parsing logic here
-        # Robust regex to match test names and statuses (handles both formats)
-        test_pattern = re.compile(
-            r"(tests/[\w/-]+\.py::[\w_]+)\s+(PASSED|FAILED|SKIPPED)|(PASSED|FAILED|SKIPPED|ERROR)\s+(tests/[\w/-]+\.py::[\w_]+)",
-            re.IGNORECASE,
+        # Colour codes must be stripped before matching: pytest emits them
+        # whenever stdout is a TTY, and the swe-rex session is a pty.
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
+
+        # `pytest -v` progress lines carry every verdict, so read them rather
+        # than the short summary (which `-r` configuration can suppress).
+        # `[^\n]*?` absorbs a skip reason (`SKIPPED (no cuda) [ 50%]`), and
+        # horizontal-only whitespace keeps every match on a single line.
+        execution_pattern = re.compile(
+            r"^(tests/\S+)[^\S\n]+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b[^\n]*?\[\s*\d+%\s*\]",
+            re.MULTILINE,
         )
-        test_status = {}
-        for match in test_pattern.finditer(log):
-            # Extract test name and status from either format
-            if match.group(1) and match.group(2):
-                test_name = match.group(1)
-                status = match.group(2).upper()
-            else:
-                test_name = match.group(4)
-                status = match.group(3).upper()
-            # Track the latest status for each test
-            test_status[test_name] = status
-        # Populate sets based on the latest status
-        for test, status in test_status.items():
-            if status == "PASSED":
-                passed_tests.add(test)
+        # Short-summary lines, as a fallback for verdicts the progress line missed.
+        summary_pattern = re.compile(
+            r"^(FAILED|ERROR)[^\S\n]+(tests/\S+?)(?:[^\S\n]+-.*)?$", re.MULTILINE
+        )
+
+        for match in execution_pattern.finditer(log):
+            test_name, status = match.group(1), match.group(2)
+            if status in ("PASSED", "XPASS"):
+                passed_tests.add(test_name)
             elif status in ("FAILED", "ERROR"):
-                failed_tests.add(test)
-            elif status == "SKIPPED":
-                skipped_tests.add(test)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
+                failed_tests.add(test_name)
+            elif status in ("SKIPPED", "XFAIL"):
+                skipped_tests.add(test_name)
+
+        for match in summary_pattern.finditer(log):
+            failed_tests.add(match.group(2))
+
+        # TestResult.__post_init__ requires the three sets to be pairwise
+        # disjoint. A rerun/flaky test reported twice would otherwise raise
+        # ValueError and abort the whole instance.
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
