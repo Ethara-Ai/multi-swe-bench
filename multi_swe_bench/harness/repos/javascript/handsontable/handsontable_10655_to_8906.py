@@ -8,7 +8,6 @@ from multi_swe_bench.harness.repos.javascript.handsontable.handsontable import (
     APPLY_TEST,
     CHECK_GIT_CHANGES,
     CHECKOUT,
-    HARDENING,
     ImageBase,
     ORG,
     PUPPETEER_PREFLIGHT,
@@ -75,7 +74,6 @@ export PHANTOMJS_PLATFORM=linux
 export PHANTOMJS_ARCH=x64
 {CHECKOUT}
 bash /home/check_git_changes.sh
-{HARDENING}
 npm ci --legacy-peer-deps
 {_WORKSPACE}
 {RUNNER_PATCH}
@@ -116,7 +114,7 @@ cd /home/{REPO}
         ]
 
     def dockerfile(self) -> str:
-        return pr_dockerfile(self)
+        return pr_dockerfile(self, harden=True)
 
 
 @Instance.register(ORG, _ERA)

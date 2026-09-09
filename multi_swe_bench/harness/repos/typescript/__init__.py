@@ -249,4 +249,6 @@ from multi_swe_bench.harness.repos.typescript.hoppscotch import *
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo.oh_my_claudecode import *
 from multi_swe_bench.harness.repos.typescript.will_stone import *
 from multi_swe_bench.harness.repos.typescript.FreezingMoon import *
-
+from multi_swe_bench.harness.repos.typescript.mattermost import *
+from multi_swe_bench.harness.repos.typescript.azu import *
+from multi_swe_bench.harness.repos.typescript.Swatinem import *

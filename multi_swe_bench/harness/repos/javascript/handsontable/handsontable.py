@@ -253,14 +253,42 @@ def base_dockerfile(image: Image, extra_packages: list[str], extra_env: str = ""
     if extra_env:
         sections.append(extra_env)
 
-    sections.append(f'RUN git clone "${{REPO_URL}}" /home/{REPO}')
+    # A plain `git clone` of this repo is ~790MB in one pack and proved fragile
+    # in-container: the transfer stalled and died in `index-pack` after 80min
+    # (exit 128), taking the whole build with it. Harden it rather than shrink
+    # history -- the PR layers check out arbitrary base commits and the hardening
+    # block runs `git gc`, so a shallow or blob-filtered clone is not safe here.
+    #   * compression 0 + a large postBuffer keeps the pack streaming steadily
+    #   * low-speed abort turns an indefinite hang into a fast, retryable failure
+    #   * three attempts, cleaning up the partial clone between each
+    #   * a final assert so a silent partial clone can never reach the PR layers
+    sections.append(
+        f'RUN set -eux; \\\n'
+        f'    git config --global core.compression 0; \\\n'
+        f'    git config --global http.postBuffer 1048576000; \\\n'
+        f'    git config --global http.lowSpeedLimit 1000; \\\n'
+        f'    git config --global http.lowSpeedTime 120; \\\n'
+        f'    for i in 1 2 3; do \\\n'
+        f'        git clone "${{REPO_URL}}" /home/{REPO} && break; \\\n'
+        f'        echo "clone attempt $i failed; retrying" >&2; \\\n'
+        f'        rm -rf /home/{REPO}; \\\n'
+        f'    done; \\\n'
+        f'    git -C /home/{REPO} rev-parse --verify HEAD; \\\n'
+        f'    test "$(git -C /home/{REPO} rev-list --all --count)" -gt 10000'
+    )
     sections.append(f"WORKDIR /home/{REPO}")
     sections.append('CMD ["/bin/bash"]')
 
     return "\n\n".join(sections) + "\n"
 
 
-def pr_dockerfile(image: Image) -> str:
+def pr_dockerfile(image: Image, harden: bool = False) -> str:
+    """Render the PR layer on top of the shared era base.
+
+    ``harden=True`` emits the git detach/scrub/assert block as Dockerfile RUN
+    steps instead of leaving it to ``prepare.sh``. It is opt-in per era so the
+    eras processed in earlier phases keep byte-identical Dockerfiles.
+    """
     base = image.dependency()
 
     sections = [f"FROM {base.image_full_name()}"]
@@ -280,6 +308,26 @@ def pr_dockerfile(image: Image) -> str:
     copy_commands = "".join(f"COPY {file.name} /home/\n" for file in image.files())
     if copy_commands:
         sections.append(copy_commands.rstrip("\n"))
+
+    if harden:
+        # Some PR base commits are unreachable from any ref upstream (the base
+        # branch was force-pushed after collection). `git clone` in the era base
+        # therefore does not carry them, and the canonical checkout below would
+        # fail with "reference is not a tree". GitHub still serves such objects
+        # by explicit SHA, so fetch on demand first. The guard keeps this a no-op
+        # (and offline-safe) whenever the commit is already present, so the
+        # common path is unchanged. No --depth: a shallow boundary here would
+        # break the `git gc --prune=now --aggressive` inside the hardening block.
+        sections.append(
+            'RUN set -eux; \\\n'
+            '    git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null \\\n'
+            '    || git fetch --no-tags origin "${BASE_COMMIT}"; \\\n'
+            '    git cat-file -e "${BASE_COMMIT}^{commit}"'
+        )
+
+        # WORKDIR is /home/<repo> (set by the base image), and BASE_COMMIT is an
+        # ENV a few lines up, so the canonical block runs as-is here.
+        sections.append(Image._HARDENING_BLOCK.strip("\n"))
 
     sections.append("RUN bash /home/prepare.sh")
 
@@ -407,7 +455,17 @@ LAUNCH_TIMEOUT_MS = 120000
 RUNNER_PATCH = f"""{RUNNER_PATH}
 sed -i -E 's/isVerbose: *(false|verboseReporting)/isVerbose: true/' "$RUNNER"
 sed -i -E "s/'--no-sandbox'/'--no-sandbox', '--disable-dev-shm-usage'/" "$RUNNER"
-sed -i -E 's/const DEFAULT_INACTIVITY_TIMEOUT = [0-9]+;/const DEFAULT_INACTIVITY_TIMEOUT = {LAUNCH_TIMEOUT_MS};/' "$RUNNER"
+# The runner was refactored inside this era: older base commits declare
+# `const DEFAULT_INACTIVITY_TIMEOUT = <n>;` and pass it as `timeout:` to
+# puppeteer.launch, while newer ones dropped both and rely on puppeteer's
+# 30s default. Patch whichever shape is present so every base commit ends up
+# with an explicit {LAUNCH_TIMEOUT_MS}ms launch timeout.
+if grep -qE 'DEFAULT_INACTIVITY_TIMEOUT *= *[0-9]+;' "$RUNNER"; then
+    sed -i -E 's/const DEFAULT_INACTIVITY_TIMEOUT = [0-9]+;/const DEFAULT_INACTIVITY_TIMEOUT = {LAUNCH_TIMEOUT_MS};/' "$RUNNER"
+else
+    # No constant and no `timeout:` key -- inject one into puppeteer.launch({{ ... }}).
+    sed -i -E 's/(puppeteer\\.launch\\(\\{{)/\\1\\n    timeout: {LAUNCH_TIMEOUT_MS},/' "$RUNNER"
+fi
 if ! grep -q 'isVerbose: true' "$RUNNER"; then
     echo "Error: could not switch the jasmine reporter to verbose in ${{RUNNER}}" >&2
     exit 1
@@ -416,7 +474,7 @@ if ! grep -q -- '--disable-dev-shm-usage' "$RUNNER"; then
     echo "Error: could not add --disable-dev-shm-usage to ${{RUNNER}}" >&2
     exit 1
 fi
-if ! grep -q 'const DEFAULT_INACTIVITY_TIMEOUT = {LAUNCH_TIMEOUT_MS};' "$RUNNER"; then
+if ! grep -qE '(DEFAULT_INACTIVITY_TIMEOUT = {LAUNCH_TIMEOUT_MS};|timeout: {LAUNCH_TIMEOUT_MS},)' "$RUNNER"; then
     echo "Error: could not raise the chrome launch timeout in ${{RUNNER}}" >&2
     exit 1
 fi"""
@@ -449,7 +507,7 @@ if ! grep -q -- '--disable-dev-shm-usage' "$RUNNER"; then
     echo "Error: ${{RUNNER}} is missing --disable-dev-shm-usage" >&2
     exit 1
 fi
-if ! grep -q 'const DEFAULT_INACTIVITY_TIMEOUT = {LAUNCH_TIMEOUT_MS};' "$RUNNER"; then
+if ! grep -qE '(DEFAULT_INACTIVITY_TIMEOUT = {LAUNCH_TIMEOUT_MS};|timeout: {LAUNCH_TIMEOUT_MS},)' "$RUNNER"; then
     echo "Error: ${{RUNNER}} still has the stock chrome launch timeout" >&2
     exit 1
 fi"""

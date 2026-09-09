@@ -2,3 +2,4 @@ from multi_swe_bench.harness.repos.golang.mattermost.mattermost_0_to_21999 impor
 from multi_swe_bench.harness.repos.golang.mattermost.mattermost_go_22000_to_99999 import *
 from multi_swe_bench.harness.repos.golang.mattermost.mattermost_plugin_mscalendar import *
 from multi_swe_bench.harness.repos.golang.mattermost.mattermost_plugin_zoom import *
+from multi_swe_bench.harness.repos.golang.mattermost.mattermost import *
