@@ -16,6 +16,7 @@ from multi_swe_bench.harness.repos.rust.clap_rs import *
 from multi_swe_bench.harness.repos.rust.cocogitto import *
 from multi_swe_bench.harness.repos.rust.cocoindex_io import *
 from multi_swe_bench.harness.repos.rust.dandavison import *
+from multi_swe_bench.harness.repos.rust.denoland import *
 from multi_swe_bench.harness.repos.rust.dtolnay import *
 from multi_swe_bench.harness.repos.rust.fedimint import *
 from multi_swe_bench.harness.repos.rust.fjall_rs import *
