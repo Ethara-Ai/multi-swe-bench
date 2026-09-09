@@ -72,15 +72,18 @@ _SLS_CERT_SYMLINKS = "\n".join(
 # Build-time MITM CA install. Latent in image.py; wired in here so a CA passed
 # as `docker build --secret id=mitm_ca,src=<ca.crt>` lands in the trust store.
 # required=0 keeps the build working when no secret is supplied.
-_SLS_MITM_MOUNT = "\n".join(
-    [
-        "RUN --mount=type=secret,id=mitm_ca,required=0 \\",
-        "    if [ -f /run/secrets/mitm_ca ]; then \\",
-        "        cp /run/secrets/mitm_ca "
-        "/usr/local/share/ca-certificates/mitm-ca.crt && update-ca-certificates; \\",
-        "    fi",
-    ]
-)
+# DISABLED: `RUN --mount=type=secret` is a BuildKit-only directive. The harness
+# builds single-platform images through the docker-py SDK, which has NO BuildKit
+# support, so the `# syntax=docker/dockerfile:1.6` line above is treated as a
+# plain comment and the build dies at that step:
+#     Docker build error: the --mount option requires BuildKit
+# That failed the base image and, with it, all 10 serverless instances.
+#
+# The mount was optional to begin with (required=0 -- it only installs a CA when
+# `docker build --secret id=mitm_ca,...` supplies one, which this pipeline never
+# does), so dropping it changes nothing functionally. Restore it only if the
+# build path moves to buildx for single-platform images too.
+_SLS_MITM_MOUNT = ""
 
 
 def _sls_infrastructure_block(pr, base_img: str) -> str:
