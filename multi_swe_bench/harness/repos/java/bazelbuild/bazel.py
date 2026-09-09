@@ -1,345 +1,123 @@
 import re
-import textwrap
-from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+DATASET_PR_MIN = 15844
+DATASET_PR_MAX = 16680
+BASE_TAG = f"base-pr-{DATASET_PR_MIN}-{DATASET_PR_MAX}"
+BAZELISK_VERSION = "v1.25.0"
+DEFAULT_TEST_TARGETS = "//src/test/..."
+BUILD_FILES = ("BUILD", "BUILD.bazel")
 
-class BazelImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
+BASE_DOCKERFILE = """# syntax=docker/dockerfile:1.6
 
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
+FROM {base_image}
 
-    @property
-    def config(self) -> Config:
-        return self._config
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:22.04"
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
-    def image_tag(self) -> str:
-        # Tagged `base-pr-<number>`, not a shared `base`. Because dependency()
-        # returns a *string*, DockerfileEnhancer owns this file and rewrites the
-        # clone below into clone + `git checkout ${BASE_COMMIT}` + the history
-        # scrub, which bakes ONE base commit into the image. A shared `base` tag
-        # would therefore stay pinned to whichever PR built it first, and every
-        # later PR whose base commit is unreachable from that sha would die in
-        # the scrub's `rev-parse HEAD` assertion (R4, R10). It is also what the
-        # Dockerfile QC contract requires, so the PR layer can inherit
-        # `mswebench/<org>_m_<repo>:base-pr-<N>` (P1). Costs one base image per
-        # PR instead of one per repo; deliberate.
-        return f"base-pr-{self.pr.number}"
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
 
-    def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
-    def files(self) -> list[File]:
-        return []
-
-    def _get_jdk_version(self) -> str:
-        ref = self.pr.base.ref
-        if ref == "master":
-            return "21"
-
-        m = re.match(r"release-(\d+)\.", ref)
-        if m:
-            major = int(m.group(1))
-            if major >= 8:
-                return "21"
-            elif major >= 7:
-                return "17"
-            else:
-                return "11"
-
-        return "21"
-
-    def _get_bazelisk_setup(self) -> str:
-        return textwrap.dedent("""\
-            RUN ARCH=$(dpkg --print-architecture) \\
-                && curl -fSsL -o /usr/local/bin/bazel https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${ARCH} \\
-                && chmod +x /usr/local/bin/bazel""")
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        jdk_version = self._get_jdk_version()
-        bazelisk_setup = self._get_bazelisk_setup()
-
-        # The emitted text below carries NO comments on purpose. The rendered
-        # base Dockerfile is a client-facing artifact reviewed against a fixed
-        # reference layout, and that reference is bare instructions only, so
-        # every explanation lives here in the config instead of being baked into
-        # the artifact. Section order matches that reference exactly:
-        #
-        #   syntax -> FROM -> ARGs -> ENV -> LABEL -> CA farm   (all injected by
-        #   DockerfileEnhancer) -> WORKDIR /home/ -> apt -> JDK symlink ->
-        #   bazelisk -> user+chown -> USER -> clone -> WORKDIR repo ->
-        #   reset/checkout -> history scrub -> submodule scrub -> CMD
-        #
-        # Only two slots are ours, and each is the per-language slot the QC
-        # appendix allows for a Java/bare-OS base:
-        #
-        # 1. NO ENV instruction at all. The reference layout carries exactly one
-        #    ENV block -- the one DockerfileEnhancer injects -- and this file adds
-        #    none, so the rendered base matches it instruction for instruction.
-        #    JAVA_HOME and LC_ALL are still set, but as exports in prepare.sh and
-        #    the three run scripts, which is where they are actually consumed:
-        #    nothing in THIS image ever runs Java. The base only apt-installs,
-        #    symlinks the JDK path, downloads bazelisk and clones. Every java and
-        #    bazel invocation happens later, in the PR layer's prepare.sh and in
-        #    the graded stages, and an export in those scripts reaches bazel and
-        #    its children exactly as an inherited ENV would. Behaviour identical,
-        #    one fewer instruction in the artifact.
-        # 2. The apt line. ca-certificates is listed explicitly rather than
-        #    relied on as a transitive dependency of curl, because D10 treats
-        #    git + ca-certificates as the CRITICAL minimum and a bare ubuntu base
-        #    guarantees neither. The rest is the toolchain this repo needs: JDK to
-        #    compile, build-essential for Bazel's native bits, zip/unzip for its
-        #    embedded tooling, python3 for the build scripts.
-        #
-        #    `file` is not optional and is easy to miss, because nothing fails to
-        #    build without it -- a test fails, several layers down, with output
-        #    that looks like a broken assertion rather than a missing package.
-        #    Bazel's own test runner shells out to it to fill the mime column of
-        #    the undeclared-outputs manifest (tools/test/test-setup.sh:331):
-        #
-        #        file_type="$(file -L -b --mime-type "$undeclared_output" || ...)"
-        #
-        #    With `file` absent that column comes out empty, so the manifest reads
-        #        deeply/nested/index.html	16
-        #    instead of
-        #        deeply/nested/index.html	16	text/html
-        #    and //src/test/shell/bazel:bazel_test_test fails two cases,
-        #    test_undeclared_outputs_are_zipped and _are_not_zipped, in 2 of its 3
-        #    shards. That failure reproduces identically at the run and fix
-        #    stages, so it never touched the f2p signal -- it just meant the fix
-        #    stage could never report a clean pass. Measured: with `file`
-        #    installed the same target goes to PASSED in 20.7s.
-        # 3. bazeluser. Bazel refuses to run as root, so the build user is
-        #    created, handed /home/, and switched to BEFORE the clone. That
-        #    ordering is load-bearing:
-        #    DockerfileEnhancer._standardize_repo_fetch replaces the clone line
-        #    with clone + WORKDIR + reset + checkout ${BASE_COMMIT} + the
-        #    history-scrub block + CMD ["/bin/bash"], so anything emitted after
-        #    the clone lands after that CMD. The chown and USER switch used to
-        #    sit there, leaving the rendered base ending on a stray RUN/USER pair
-        #    instead of the CMD the contract requires (D16, D17). Going first
-        #    also means clone, checkout and scrub all run as bazeluser inside a
-        #    bazeluser-owned tree, so git never raises "detected dubious
-        #    ownership" (R13) and no safe.directory workaround is needed.
-        #
-        # The clone must stay the LAST thing this method emits.
-        return f"""FROM {image_name}
-
-{self.global_env}
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y \\
-    git ca-certificates curl openjdk-{jdk_version}-jdk build-essential zip unzip python3 file \\
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    git \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN ln -sf /usr/lib/jvm/java-{jdk_version}-openjdk-$(dpkg --print-architecture) /usr/lib/jvm/java-{jdk_version}-openjdk
+{fetch}
 
-{bazelisk_setup}
+WORKDIR /home/{repo}
 
-RUN groupadd -r bazeluser && useradd -r -g bazeluser -m -d /home/bazeluser bazeluser \\
-    && chown -R bazeluser:bazeluser /home/
-
-USER bazeluser
-
-{code}
-
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
+PR_DOCKERFILE = """FROM {base}
 
-class BazelImageDefault(Image):
-    # No per-PR tables live here. Everything below is derived from the pull
-    # request itself — the patch contents, the base ref, and the checked-out
-    # tree — so a new PR needs no entry anywhere to be supported.
+ARG BASE_COMMIT="{sha}"
 
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
+{copy_commands}
+RUN bash /home/prepare.sh
 
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
 
-    @property
-    def config(self) -> Config:
-        return self._config
+RUN set -eux; \\
+    git checkout --detach "${{BASE_COMMIT}}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git config --local pack.threads 1; \\
+    git config --local pack.windowMemory 32m; \\
+    git config --local pack.packSizeLimit 128m; \\
+    git config --local pack.deltaCacheSize 32m; \\
+    git gc --prune=now; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
-    def dependency(self) -> Image | None:
-        return BazelImageBase(self.pr, self._config)
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git config --local pack.threads 1; \\
+            git config --local pack.windowMemory 32m; \\
+            git config --local pack.packSizeLimit 128m; \\
+            git config --local pack.deltaCacheSize 32m; \\
+            git gc --prune=now; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+"""
 
-    def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def _get_bazel_version_for_ref(self) -> str:
-        ref = self.pr.base.ref
-        m = re.match(r"release-(\d+)\.(\d+)\.(\d+)", ref)
-        if m:
-            return f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
-
-        m = re.match(r"release-(\d+)\.(\d+)", ref)
-        if m:
-            return f"{m.group(1)}.{m.group(2)}.0"
-
-        # Non-standard branches: try to extract version from branch name
-        m = re.search(r"(\d+)\.(\d+)\.(\d+)", ref)
-        if m:
-            return f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
-
-        return "last_green"
-
-    @staticmethod
-    def _find_build_dirs(*patches: str) -> set[str]:
-        dirs: set[str] = set()
-        for patch in patches:
-            for m in re.finditer(r"diff --git a/(.+?) b/(.+)", patch):
-                path = m.group(2)
-                basename = path.rsplit("/", 1)[-1] if "/" in path else path
-                if basename in ("BUILD", "BUILD.bazel"):
-                    pkg_dir = path.rsplit("/", 1)[0] if "/" in path else ""
-                    dirs.add(pkg_dir)
-        return dirs
-
-    @staticmethod
-    def _likely_subdir(pkg_dir: str, parent_dir: str, build_dirs: set[str]) -> bool:
-        if not parent_dir:
-            return False
-        if "/test/py/" in pkg_dir:
-            return True
-        if "/testdata/" in pkg_dir:
-            return True
-        if pkg_dir.endswith("/testdata"):
-            return True
-        if pkg_dir.endswith("/bin"):
-            return True
-        if parent_dir in build_dirs:
-            return True
-        return False
-
-    def _extract_test_targets(self) -> str:
-        all_build_dirs = self._find_build_dirs(self.pr.test_patch, self.pr.fix_patch)
-
-        test_files: list[str] = []
-        for m in re.finditer(r"diff --git a/(.+?) b/(.+)", self.pr.test_patch):
-            path = m.group(2)
-            basename = path.rsplit("/", 1)[-1] if "/" in path else path
-            if "/test/" not in path and "/javatests/" not in path:
-                continue
-            # Production sources also live under directories literally named
-            # "test" (e.g. src/main/java/.../analysis/test/TestStrategy.java).
-            # Those hold no test rules, so deriving a target from them only
-            # costs a build and an empty-pattern warning.
-            if path.startswith("src/main/"):
-                continue
-            if basename in ("BUILD", "BUILD.bazel"):
-                continue
-            test_files.append(path)
-
-        if not test_files:
-            return "//src/test/..."
-
-        targets: set[str] = set()
-
-        for path in test_files:
-            pkg_dir = path.rsplit("/", 1)[0] if "/" in path else ""
-            basename = path.rsplit("/", 1)[-1]
-            stem = basename.rsplit(".", 1)[0] if "." in basename else basename
-
-            if pkg_dir in all_build_dirs:
-                targets.add(f"//{pkg_dir}/...")
-                continue
-
-            parent = pkg_dir
-            found_parent_pkg = False
-            while "/" in parent:
-                parent = parent.rsplit("/", 1)[0]
-                if parent in all_build_dirs:
-                    targets.add(f"//{parent}:{stem}")
-                    found_parent_pkg = True
-                    break
-
-            if found_parent_pkg:
-                continue
-
-            parent_dir = pkg_dir.rsplit("/", 1)[0] if "/" in pkg_dir else ""
-            if self._likely_subdir(pkg_dir, parent_dir, all_build_dirs):
-                targets.add(f"//{parent_dir}:{stem}")
-            elif basename.endswith(".sh"):
-                # Shell tests are the one case where the package wildcard is
-                # never affordable: a single sh_test package here holds ~112
-                # targets, each bootstrapping a full Bazel from source, so
-                # expanding one touched script into `//pkg/...` costs hours and
-                # drowns the run in unrelated integration failures. sh_test
-                # targets are conventionally named for their script stem, so
-                # address the touched script directly instead.
-                targets.add(f"//{pkg_dir}:{stem}")
-            else:
-                targets.add(f"//{pkg_dir}/...")
-
-        if not targets:
-            return "//src/test/..."
-
-        return " ".join(sorted(targets))
-
-    def files(self) -> list[File]:
-        jdk_version = BazelImageBase(self.pr, self._config)._get_jdk_version()
-        test_targets = self._extract_test_targets()
-        bazel_version_pin = self._get_bazel_version_for_ref()
-
-        # The graded command, built ONCE and interpolated into all three run
-        # scripts, so they cannot drift apart (R3, P7).
-        #
-        # --build_event_json_file is the load-bearing addition. Bazel's terminal
-        # summary is TRUNCATED: TerminalTestResultNotifier.java hardcodes
-        #
-        #     @VisibleForTesting public static final int NUM_FAILED_TO_BUILD = 5;
-        #
-        # and prints "(Skipping other failed to build tests)" past it. No flag
-        # raises that cap. On this PR the test stage had SEVEN targets fail to
-        # build and the console named only five, so the two it dropped read as
-        # absent (NONE) instead of failed -- and one of them,
-        # StdoutInfoItemHandlerTest, is a genuine FAIL->PASS that was therefore
-        # mis-bucketed as p2p, under-reporting f2p by one. The Build Event
-        # Protocol is Bazel's machine-readable stream and is never truncated;
-        # measured on the same stage it reports all 7 targets.
-        #
-        # Emitting a compact digest rather than cat-ing the file: the raw BEP for
-        # this one command is ~568 KB of mostly progress events, which would
-        # bloat every stage log for no gain.
-        #
-        # targetCompleted carries build success and is what covers a target that
-        # never ran; testSummary carries the run status and is authoritative when
-        # present. setdefault on the former plus direct assignment on the latter
-        # gives testSummary precedence regardless of the order events arrive in.
-        #
-        # This also structurally kills the nested-Bazel phantom: the inner Bazel
-        # that //src/test/shell/bazel:bazel_test_test spawns writes no BEP of
-        # ours, so its scratch targets (//dir:test) can no longer leak into the
-        # results the way they did through the shared console stream.
-        bep_digest = """python3 - <<'PYEOF'
+BEP_DIGEST = """python3 - <<'PYEOF'
 import json
 status = {}
 try:
@@ -366,30 +144,7 @@ for label in sorted(status):
 print('===BEP END===')
 PYEOF"""
 
-        test_cmd = (
-            "rm -f /tmp/bep.json\n"
-            f"bazel test {test_targets}"
-            " --build_tests_only --test_output=errors --test_tag_filters=-manual"
-            " --test_timeout=600 --keep_going --jobs=6"
-            " --build_event_json_file=/tmp/bep.json 2>&1\n"
-            f"{bep_digest}"
-        )
-
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
+CHECK_GIT_CHANGES_SH = """#!/bin/bash
 set -e
 
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
@@ -405,144 +160,258 @@ fi
 echo "check_git_changes: No uncommitted changes"
 exit 0
 
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
+"""
+
+PREPARE_SH = """#!/bin/bash
 set -e
 
-# Set here rather than as ENV in the base image, so the rendered base Dockerfile
-# carries no ENV instruction of its own and matches the reference layout exactly.
-# This is the first place either variable is actually needed -- the base image
-# never runs java or bazel. An export reaches bazel and every child process it
-# spawns exactly as an inherited ENV would.
-export JAVA_HOME=/usr/lib/jvm/java-{jdk_version}-openjdk
-export LC_ALL=C.UTF-8
+apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    git \\
+    curl \\
+    build-essential \\
+    python3 \\
+    zip \\
+    unzip \\
+    file \\
+    openjdk-{jdk}-jdk \\
+    && rm -rf /var/lib/apt/lists/*
 
-cd /home/{pr.repo}
+ln -sf /usr/lib/jvm/java-{jdk}-openjdk-$(dpkg --print-architecture) /usr/lib/jvm/java-{jdk}-openjdk
+
+ARCH=$(dpkg --print-architecture)
+curl -fSsL -o /usr/local/bin/bazel https://github.com/bazelbuild/bazelisk/releases/download/{bazelisk}/bazelisk-linux-${{ARCH}}
+chmod +x /usr/local/bin/bazel
+
+export JAVA_HOME=/usr/lib/jvm/java-{jdk}-openjdk
+export LC_ALL=C.UTF-8
+export CI=true
+
+cd /home/{repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout {sha}
 bash /home/check_git_changes.sh
 
 if [ ! -f .bazelversion ]; then
   echo "{bazel_version}" > .bazelversion
 fi
 
-# Warm the Bazel cache into the image so each of the three run stages does not
-# recompile the tree from scratch. Never fatal: a cold cache only costs time.
 bazel version || true
-bazel build {test_targets} --noshow_progress 2>&1 || true
-""".format(pr=self.pr, bazel_version=bazel_version_pin, test_targets=test_targets, jdk_version=jdk_version),
-            ),
+bazel build {targets} --noshow_progress 2>&1 || true
+"""
+
+RUN_SH = """#!/bin/bash
+set -eo pipefail
+
+export JAVA_HOME=/usr/lib/jvm/java-{jdk}-openjdk
+export LC_ALL=C.UTF-8
+export CI=true
+
+cd /home/{repo}
+{patch}{test_cmd}
+"""
+
+PATCH_LINES = {
+    "run.sh": "",
+    "test-run.sh": "git apply --whitespace=nowarn /home/test.patch\n",
+    "fix-run.sh": "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n",
+}
+
+
+def _jdk_for_ref(ref: str) -> str:
+    m = re.match(r"release-(\d+)\.", ref)
+    if not m:
+        return "21"
+    major = int(m.group(1))
+    return "21" if major >= 8 else "17" if major >= 7 else "11"
+
+
+def _bazel_version_for_ref(ref: str) -> str:
+    m = re.match(r"release-(\d+)\.(\d+)(?:\.(\d+))?", ref) or re.search(
+        r"(\d+)\.(\d+)\.(\d+)", ref
+    )
+    if not m:
+        return "last_green"
+    return f"{m.group(1)}.{m.group(2)}.{m.group(3) or '0'}"
+
+
+class _BazelImage(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+
+class BazelImageBase(_BazelImage):
+    def dependency(self) -> str | Image:
+        return "ubuntu:22.04"
+
+    def image_tag(self) -> str:
+        return BASE_TAG
+
+    def workdir(self) -> str:
+        return BASE_TAG
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        base_image = self.dependency()
+        if isinstance(base_image, Image):
+            base_image = base_image.image_full_name()
+        repo = self.pr.repo
+        fetch = (
+            f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+            if self.config.need_clone
+            else f"COPY {repo} /home/{repo}"
+        )
+        return BASE_DOCKERFILE.format(
+            base_image=base_image,
+            org=self.pr.org,
+            repo=repo,
+            jdk=_jdk_for_ref(self.pr.base.ref),
+            bazelisk=BAZELISK_VERSION,
+            fetch=fetch,
+        )
+
+
+class BazelImageDefault(_BazelImage):
+    def dependency(self) -> Image | None:
+        return BazelImageBase(self.pr, self._config)
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    @staticmethod
+    def _diff_paths(*patches: str) -> list[str]:
+        return [
+            m.group(2)
+            for patch in patches
+            for m in re.finditer(r"diff --git a/(.+?) b/(.+)", patch)
+        ]
+
+    @classmethod
+    def _find_build_dirs(cls, *patches: str) -> set[str]:
+        return {
+            p.rsplit("/", 1)[0] if "/" in p else ""
+            for p in cls._diff_paths(*patches)
+            if (p.rsplit("/", 1)[-1] if "/" in p else p) in BUILD_FILES
+        }
+
+    @staticmethod
+    def _likely_subdir(pkg_dir: str, parent_dir: str, build_dirs: set[str]) -> bool:
+        return bool(parent_dir) and (
+            "/test/py/" in pkg_dir
+            or "/testdata/" in pkg_dir
+            or pkg_dir.endswith(("/testdata", "/bin"))
+            or parent_dir in build_dirs
+        )
+
+    def _extract_test_targets(self) -> str:
+        build_dirs = self._find_build_dirs(self.pr.test_patch, self.pr.fix_patch)
+        test_files = [
+            p
+            for p in self._diff_paths(self.pr.test_patch)
+            if ("/test/" in p or "/javatests/" in p)
+            and not p.startswith("src/main/")
+            and (p.rsplit("/", 1)[-1] if "/" in p else p) not in BUILD_FILES
+        ]
+        if not test_files:
+            return DEFAULT_TEST_TARGETS
+
+        targets: set[str] = set()
+        for path in test_files:
+            pkg_dir = path.rsplit("/", 1)[0] if "/" in path else ""
+            basename = path.rsplit("/", 1)[-1]
+            stem = basename.rsplit(".", 1)[0] if "." in basename else basename
+            if pkg_dir in build_dirs:
+                targets.add(f"//{pkg_dir}/...")
+                continue
+
+            parent, found = pkg_dir, False
+            while "/" in parent:
+                parent = parent.rsplit("/", 1)[0]
+                if parent in build_dirs:
+                    targets.add(f"//{parent}:{stem}")
+                    found = True
+                    break
+            if found:
+                continue
+
+            parent_dir = pkg_dir.rsplit("/", 1)[0] if "/" in pkg_dir else ""
+            if self._likely_subdir(pkg_dir, parent_dir, build_dirs):
+                targets.add(f"//{parent_dir}:{stem}")
+            elif basename.endswith(".sh"):
+                targets.add(f"//{pkg_dir}:{stem}")
+            else:
+                targets.add(f"//{pkg_dir}/...")
+        return " ".join(sorted(targets)) if targets else DEFAULT_TEST_TARGETS
+
+    def files(self) -> list[File]:
+        jdk = _jdk_for_ref(self.pr.base.ref)
+        targets = self._extract_test_targets()
+        repo = self.pr.repo
+        test_cmd = (
+            "rm -f /tmp/bep.json\n"
+            "bazel_rc=0\n"
+            f"bazel test {targets}"
+            " --build_tests_only --test_output=errors --test_tag_filters=-manual"
+            " --test_timeout=600 --keep_going --jobs=6"
+            " --build_event_json_file=/tmp/bep.json 2>&1 || bazel_rc=$?\n"
+            'echo "bazel exit code: $bazel_rc"\n'
+            f"{BEP_DIGEST}"
+        )
+        return [
+            File(".", "fix.patch", self.pr.fix_patch),
+            File(".", "test.patch", self.pr.test_patch),
+            File(".", "check_git_changes.sh", CHECK_GIT_CHANGES_SH),
             File(
                 ".",
-                "run.sh",
-                """#!/bin/bash
-set -o pipefail
-
-export JAVA_HOME=/usr/lib/jvm/java-{jdk_version}-openjdk
-export LC_ALL=C.UTF-8
-
-cd /home/{pr.repo}
-{test_cmd}
-exit 0
-""".format(pr=self.pr, test_cmd=test_cmd, jdk_version=jdk_version),
+                "prepare.sh",
+                PREPARE_SH.format(
+                    jdk=jdk,
+                    repo=repo,
+                    sha=self.pr.base.sha,
+                    bazel_version=_bazel_version_for_ref(self.pr.base.ref),
+                    targets=targets,
+                    bazelisk=BAZELISK_VERSION,
+                ),
             ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -o pipefail
-
-export JAVA_HOME=/usr/lib/jvm/java-{jdk_version}-openjdk
-export LC_ALL=C.UTF-8
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-{test_cmd}
-exit 0
-""".format(pr=self.pr, test_cmd=test_cmd, jdk_version=jdk_version),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -o pipefail
-
-export JAVA_HOME=/usr/lib/jvm/java-{jdk_version}-openjdk
-export LC_ALL=C.UTF-8
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-{test_cmd}
-exit 0
-""".format(pr=self.pr, test_cmd=test_cmd, jdk_version=jdk_version),
-            ),
+        ] + [
+            File(".", name, RUN_SH.format(jdk=jdk, repo=repo, patch=patch, test_cmd=test_cmd))
+            for name, patch in PATCH_LINES.items()
         ]
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-        proxy_setup = ""
-        proxy_cleanup = ""
-
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                RUN mkdir -p /home/{self.pr.repo} && \\
-                    cat > /home/{self.pr.repo}/.bazelrc.user <<'BAZELRC'
-startup --host_jvm_args=-Dhttp.proxyHost={proxy_host} --host_jvm_args=-Dhttp.proxyPort={proxy_port}
-startup --host_jvm_args=-Dhttps.proxyHost={proxy_host} --host_jvm_args=-Dhttps.proxyPort={proxy_port}
-BAZELRC
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    f"""
-                    RUN rm -f /home/{self.pr.repo}/.bazelrc.user
-                """
-                )
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{proxy_setup}
-
-{copy_commands}
-
-{prepare_commands}
-
-{proxy_cleanup}
-
-{self.clear_env}
-
-"""
+        copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
+        return PR_DOCKERFILE.format(
+            base=f"{image.image_name()}:{image.image_tag()}",
+            sha=self.pr.base.sha,
+            copy_commands=copy_commands,
+        )
 
 
 @Instance.register("bazelbuild", "bazel")
 class Bazel(Instance):
+    BEP_STATUSES = (
+        "FAILED TO BUILD|NO_STATUS|NO STATUS|PASSED|FAILED|TIMEOUT|FLAKY|INCOMPLETE|BUILT"
+    )
+    CONSOLE_STATUSES = "FAILED TO BUILD|NO STATUS|PASSED|FAILED|TIMEOUT|FLAKY|INCOMPLETE"
+    PASS_STATUSES = ("PASSED", "FLAKY")
+    FAIL_STATUSES = ("FAILED", "TIMEOUT", "INCOMPLETE", "FAILED TO BUILD")
+
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -552,163 +421,82 @@ class Bazel(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image | None:
         return BazelImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
-        if run_cmd:
-            return run_cmd
-
-        return "bash /home/run.sh"
+        return run_cmd or "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        if test_patch_run_cmd:
-            return test_patch_run_cmd
-
-        return "bash /home/test-run.sh"
+        return test_patch_run_cmd or "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        if fix_patch_run_cmd:
-            return fix_patch_run_cmd
+        return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
-        return "bash /home/fix-run.sh"
+    def _parse_bep(self, log: str) -> dict[str, str]:
+        block = re.search(r"===BEP BEGIN===\n(.*?)===BEP END===", log, re.DOTALL)
+        if not block:
+            return {}
+        pattern = re.compile(rf"^({self.BEP_STATUSES})\s+(//\S+)$")
+        status: dict[str, str] = {}
+        for line in block.group(1).splitlines():
+            m = pattern.match(line.strip())
+            if m and m.group(1) != "BUILT":
+                status[m.group(2)] = m.group(1).replace("NO_STATUS", "NO STATUS")
+        return status
 
-    def parse_log(self, test_log: str) -> TestResult:
-        target_status: dict[str, str] = {}
-
-        # Preferred source: the Build Event Protocol digest the run scripts emit
-        # between ===BEP BEGIN===/===BEP END===. Bazel's terminal summary caps the
-        # failed-to-build list at NUM_FAILED_TO_BUILD = 5 and prints "(Skipping
-        # other failed to build tests)", so on a stage where more than five
-        # targets fail to compile the console is provably incomplete -- the
-        # dropped names appear NOWHERE in the log and cannot be recovered from it.
-        # The BEP stream is not truncated.
-        #
-        # The console block below is kept as a fallback for any log captured
-        # before the scripts emitted BEP, so old logs still parse.
-        bep_block = re.search(
-            r"===BEP BEGIN===\n(.*?)===BEP END===", test_log, re.DOTALL
-        )
-        if bep_block:
-            re_bep = re.compile(
-                r"^(FAILED TO BUILD|NO_STATUS|NO STATUS|PASSED|FAILED|TIMEOUT|FLAKY|"
-                r"INCOMPLETE|BUILT)\s+(//\S+)$"
-            )
-            for line in bep_block.group(1).splitlines():
-                m = re_bep.match(line.strip())
-                if not m:
-                    continue
-                status, target = m.group(1), m.group(2)
-                if status == "BUILT":
-                    # Built but no testSummary: nothing was executed for it, so
-                    # it contributes no result rather than a false pass.
-                    continue
-                target_status[target] = status.replace("NO_STATUS", "NO STATUS")
-
-        # "FAILED TO BUILD" is how Bazel reports a test target whose sources do
-        # not compile — the normal shape of the test stage, where the gold tests
-        # reference an API the fix patch has not introduced yet. It carries no
-        # "in <n>s" duration, so the duration suffix has to stay optional or the
-        # target reads as absent (NONE) instead of failing, and a genuine f2p
-        # gets misclassified as p2p. Longest alternatives first.
-        # `... in <n> out of <m>` is the retry/flaky summary Bazel prints when a
-        # target ran more than once (`--flaky_test_attempts`, `--runs_per_test`):
-        #
-        #     //src/test/shell/bazel:bazel_test_test FAILED in 2 out of 3 in 107.8s
-        #
-        # Without this alternative the line does not match at all, so a target
-        # that genuinely FAILED is recorded as absent (NONE) rather than failed --
-        # a silently swallowed failure, which is what makes a real transition
-        # invisible (R3, R8). Optional and placed before the duration, because the
-        # plain single-run form has no such clause.
-        re_test_result = re.compile(
-            r"^(//\S+)\s+"
-            r"(?:\(cached\)\s+)?"
-            r"(FAILED TO BUILD|NO STATUS|PASSED|FAILED|TIMEOUT|FLAKY|INCOMPLETE)"
+    def _parse_console(self, log: str) -> dict[str, str]:
+        pattern = re.compile(
+            r"^(//\S+)\s+(?:\(cached\)\s+)?"
+            rf"({self.CONSOLE_STATUSES})"
             r"(?:,\s+passed\s+\d+/\d+)?"
             r"(?:\s+in\s+\d+\s+out\s+of\s+\d+)?"
             r"(?:\s+in\s+[\d.]+s)?\s*$",
             re.MULTILINE,
         )
+        status: dict[str, str] = {}
+        for m in pattern.finditer(log):
+            target = m.group(1)
+            if target.startswith("//src/") and status.get(target, "PASSED") == "PASSED":
+                status[target] = m.group(2)
+        return status
 
-        # Fallback only. Skipped entirely when the BEP digest was present, since
-        # the console stream is both truncated (NUM_FAILED_TO_BUILD) and polluted
-        # by nested Bazel servers, and mixing the two sources would let the weaker
-        # one overwrite the authoritative one.
-        for match in (
-            re_test_result.finditer(test_log) if not target_status else ()
-        ):
-            target = match.group(1)
+    @staticmethod
+    def _parse_junit(log: str) -> tuple[set[str], set[str], set[str]]:
+        passed, failed, skipped = set(), set(), set()
+        pattern = re.compile(
+            r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),"
+            r"\s*Skipped:\s*(\d+),\s*Time elapsed:\s*[\d.]+\s*s(?:ec)?"
+            r".*?(?:in\s+(\S+)|$)",
+            re.MULTILINE,
+        )
+        for m in pattern.finditer(log):
+            run, failures, errors, skips = (int(m.group(i)) for i in range(1, 5))
+            name = m.group(5) or f"test_suite_{m.start()}"
+            if failures or errors:
+                failed.add(name)
+            elif skips == run:
+                skipped.add(name)
+            elif run > 0:
+                passed.add(name)
+        return passed, failed, skipped
 
-            # Only this repo's own targets. Bazel's shell integration tests run a
-            # nested Bazel inside a scratch workspace, and that inner server
-            # prints its own result lines into our log:
-            #
-            #     //dir:test PASSED in 2.1s
-            #     //dir:test FAILED in 1 out of 2 in 0.0s
-            #
-            # `//dir:test` is not a target of this build -- it belongs to a
-            # throwaway workspace created by //src/test/shell/bazel:bazel_test_test.
-            # Counting it is wrong twice over: it invents a test id that does not
-            # exist in the repo, and it is nondeterministic, appearing 4 times in
-            # the run stage, 0 times in the test stage (the suite failed to build,
-            # so the shell test never ran) and 5 times with mixed statuses in the
-            # fix stage. That NONE at the test stage flanked by run=PASS and a
-            # possible fix=FAILED is precisely check()'s Rule 4 anomalous pattern,
-            # which rejects the whole report -- so leaving the phantom in makes a
-            # valid instance depend on which status the inner Bazel happened to
-            # print last. Every real target of this repo is rooted at //src/.
-            if not target.startswith("//src/"):
-                continue
-
-            status = match.group(2)
-
-            # Failure wins when one target reports more than once, instead of
-            # last-line-wins. Keeps the mapping order-independent, so the three
-            # stages cannot disagree merely because Bazel emitted the lines in a
-            # different order (R2, R3).
-            if target_status.get(target, "PASSED") != "PASSED":
-                continue
-            target_status[target] = status
-
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
-
-        for target, status in target_status.items():
-            if status in ("PASSED", "FLAKY"):
-                passed_tests.add(target)
-            elif status in ("FAILED", "TIMEOUT", "INCOMPLETE", "FAILED TO BUILD"):
-                failed_tests.add(target)
-            elif status == "NO STATUS":
-                skipped_tests.add(target)
-
-        if not passed_tests and not failed_tests:
-            re_junit = re.compile(
-                r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),"
-                r"\s*Skipped:\s*(\d+),\s*Time elapsed:\s*[\d.]+\s*s(?:ec)?"
-                r".*?(?:in\s+(\S+)|$)",
-                re.MULTILINE,
-            )
-            for match in re_junit.finditer(test_log):
-                tests_run = int(match.group(1))
-                failures = int(match.group(2))
-                errors = int(match.group(3))
-                skipped = int(match.group(4))
-                test_name = match.group(5) if match.group(5) else f"test_suite_{match.start()}"
-
-                if tests_run > 0 and failures == 0 and errors == 0 and skipped != tests_run:
-                    passed_tests.add(test_name)
-                elif failures > 0 or errors > 0:
-                    failed_tests.add(test_name)
-                elif skipped == tests_run:
-                    skipped_tests.add(test_name)
-
+    def parse_log(self, test_log: str) -> TestResult:
+        test_log = re.sub(r"\x1B\[[0-?9;]*[mK]", "", test_log)
+        status = self._parse_bep(test_log) or self._parse_console(test_log)
+        passed = {t for t, s in status.items() if s in self.PASS_STATUSES}
+        failed = {t for t, s in status.items() if s in self.FAIL_STATUSES}
+        skipped = {t for t, s in status.items() if s == "NO STATUS"}
+        if not passed and not failed:
+            passed, failed, skipped = self._parse_junit(test_log)
+        passed -= failed
+        skipped -= failed
+        passed -= skipped
         return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
+            passed_count=len(passed),
+            failed_count=len(failed),
+            skipped_count=len(skipped),
+            passed_tests=passed,
+            failed_tests=failed,
+            skipped_tests=skipped,
         )
