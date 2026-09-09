@@ -8,100 +8,104 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+_ANSI = re.compile(r"\[[0-9;]*[a-zA-Z]")
+_FILE = re.compile(r"^\s*(?:PASS|FAIL)\s+(\S+\.(?:js|jsx|ts|tsx))")
+_TEST = re.compile(r"^(\s*)([✓✔√]|[✕✗×])\s+(.+?)$")
+_SKIP_N = re.compile(r"^\s*[○◌]\s+skipped\s+(\d+)\s+tests?")
+_SKIP_1 = re.compile(r"^(\s*)[○◌]\s+(?:skipped\s+)?(.+?)$")
+_DESC = re.compile(r"^(\s{2,})([^\s✓✔√✕✗×○◌].*?)\s*$")
+_TIME = re.compile(r"\s*\(\d+(?:\.\d+)?\s*m?s\)\s*$")
+_PASS_MARKS = "✓✔√"
+
+
 def parse_jest_log(test_log: str) -> TestResult:
-    """Shared Jest parse_log for all ant-design era configs.
+    """Parse Jest --verbose output into file+describe qualified identities.
 
-    Handles both file-level (PASS/FAIL <path>) and test-level (✓/✕ <name>)
-    output from Jest verbose mode. Pattern derived from jestjs/jest.py
-    (authoritative Jest config) with ANSI stripping and set-based dedup
-    from remotion (gold standard infrastructure).
+    Jest prints one `PASS|FAIL <path>` header per suite, then that suite's
+    describe blocks and test lines, nested by indentation. Leaf names repeat
+    both across files and across describe blocks within one file (ant-design
+    has 12 such collisions in a single run), so an identity is only stable when
+    it carries the file AND the describe path -- otherwise distinct tests merge
+    into one set entry and appear to vanish between stages.
+
+    Skipped tests are reported only as an aggregate (`○ skipped N tests`) and
+    are never named, so they are counted via synthesised placeholders; they
+    carry no cross-stage meaning but keep the totals honest.
     """
-    passed_tests: set[str] = set()
-    failed_tests: set[str] = set()
-    skipped_tests: set[str] = set()
+    passed, failed, skipped = set(), set(), set()
+    seen: dict[str, int] = {}
+    clean = _ANSI.sub("", test_log)
 
-    # Strip ANSI escape codes
-    clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+    cur_file = ""
+    stack: list[tuple[int, str]] = []  # (indent, describe title)
 
-    # File-level patterns (PASS/FAIL <filepath>)
-    # Use \S+ because file paths never contain spaces, avoiding lazy/optional timing ambiguity
-    re_pass_file = re.compile(r"^PASS:?\s+(\S+)")
-    re_fail_file = re.compile(r"^FAIL:?\s+(\S+)")
-
-    # Test-level patterns (✓/✕ <test name>)
-    re_pass_check = re.compile(r"^\s*[✓✔]\s+(.+)$")
-    re_pass_timing = re.compile(r"[✓✔]\s+(.+?)\s+\(\d+\s*ms\)")
-    re_fail_cross = re.compile(r"^\s*[×✗✕]\s+(.+)$")
-    re_fail_timing = re.compile(r"[×✗✕]\s+(.+?)\s+\(\d+\s*ms\)")
-
-    # Skip patterns
-    re_skip_circle = re.compile(r"^\s*[○◌]\s+(.+)$")
-    re_skip_keyword = re.compile(r"SKIP:?\s+(.+?)\s")
-
-    for line in clean_log.splitlines():
-        # Pass — file-level
-        m = re_pass_file.match(line)
-        if m and m.group(1) not in failed_tests:
-            passed_tests.add(m.group(1))
-            continue
-
-        # Pass — test-level (timing first — strips timing suffix)
-        m = re_pass_timing.search(line)
-        if m and m.group(1) not in failed_tests:
-            passed_tests.add(m.group(1))
-            continue
-
-        # Pass — test-level (checkmark fallback — no timing)
-        m = re_pass_check.match(line)
-        if m and m.group(1) not in failed_tests:
-            passed_tests.add(m.group(1))
-            continue
-
-        # Fail — file-level
-        m = re_fail_file.match(line)
+    for line in clean.splitlines():
+        m = _FILE.match(line)
         if m:
-            failed_tests.add(m.group(1))
-            passed_tests.discard(m.group(1))
+            cur_file = m.group(1)
+            stack = []
             continue
 
-        # Fail — test-level (timing first — strips timing suffix)
-        m = re_fail_timing.search(line)
+        m = _SKIP_N.match(line)
         if m:
-            failed_tests.add(m.group(1))
-            passed_tests.discard(m.group(1))
+            for i in range(int(m.group(1))):
+                skipped.add(f"{cur_file}::<skipped {len(skipped) + 1}>")
             continue
 
-        # Fail — test-level (cross fallback — no timing)
-        m = re_fail_cross.match(line)
+        m = _TEST.match(line)
         if m:
-            failed_tests.add(m.group(1))
-            passed_tests.discard(m.group(1))
+            indent, mark, raw = len(m.group(1)), m.group(2), m.group(3)
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            path = " > ".join(t for _, t in stack)
+            name = _TIME.sub("", raw).strip()
+            ident = f"{cur_file}::{path} > {name}" if path else f"{cur_file}::{name}"
+            # A suite can legitimately run the same describe+name twice; a bare
+            # set would silently merge them and undercount against jest.
+            seen[ident] = seen.get(ident, 0) + 1
+            if seen[ident] > 1:
+                ident = f"{ident} #{seen[ident]}"
+            (passed if mark in _PASS_MARKS else failed).add(ident)
             continue
 
-        # Skip — circle symbol
-        m = re_skip_circle.match(line)
+        m = _SKIP_1.match(line)
         if m:
-            skipped_tests.add(m.group(1))
+            indent, raw = len(m.group(1)), m.group(2)
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            path = " > ".join(t for _, t in stack)
+            name = _TIME.sub("", raw).strip()
+            skipped.add(f"{cur_file}::{path} > {name}" if path else f"{cur_file}::{name}")
             continue
 
-        # Skip — keyword
-        m = re_skip_keyword.match(line)
-        if m:
-            skipped_tests.add(m.group(1))
-            continue
+        m = _DESC.match(line)
+        if m and cur_file:
+            indent, title = len(m.group(1)), m.group(2).strip()
+            if title and not title.startswith(("console.", "at ", "●", "✕", "✓")):
+                while stack and stack[-1][0] >= indent:
+                    stack.pop()
+                stack.append((indent, title))
 
-    # Final dedup: worst wins — sets must be mutually exclusive
-    passed_tests -= failed_tests
-    passed_tests -= skipped_tests
-    skipped_tests -= failed_tests
+    passed -= failed
+    skipped -= failed
+    skipped -= passed
+
+    # Jest never names tests skipped via a skipped suite -- only the trailing
+    # summary knows how many there were. Trust it and top up with placeholders
+    # so totals reconcile; skips carry no fail->pass signal either way.
+    m = re.search(r"^Tests:.*?(\d+) skipped", clean, re.M)
+    if m:
+        want = int(m.group(1))
+        while len(skipped) < want:
+            skipped.add(f"<skipped {len(skipped) + 1}>")
 
     return TestResult(
-        passed_count=len(passed_tests),
-        failed_count=len(failed_tests),
-        skipped_count=len(skipped_tests),
-        passed_tests=passed_tests,
-        failed_tests=failed_tests,
-        skipped_tests=skipped_tests,
+        passed_count=len(passed),
+        failed_count=len(failed),
+        skipped_count=len(skipped),
+        passed_tests=passed,
+        failed_tests=failed,
+        skipped_tests=skipped,
     )
 
 

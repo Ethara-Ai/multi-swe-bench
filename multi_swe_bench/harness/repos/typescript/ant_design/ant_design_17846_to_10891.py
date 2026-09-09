@@ -32,29 +32,74 @@ class AntDesignImageBase_ANT_DESIGN_17846_TO_10891(Image):
         return []
 
     def dockerfile(self) -> str:
+        """Environment and clone only.
+
+        Emits the BuildKit syntax directive itself, which makes
+        DockerfileEnhancer.enhance() return this file untouched (image.py:317).
+        That is deliberate -- it is what keeps the injected checkout and history
+        scrub out of the base -- and it is why the ARGs, ENV block, OCI labels
+        and CA-certificate symlink farm are written here rather than inherited.
+
+        The symlink farm precedes every network RUN, so the first HTTPS call
+        already trusts the proxy CA. BASE_COMMIT is declared because the harness
+        passes it, but deliberately unused: pinning happens in the PR layer.
+        """
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = (
-                f"RUN git clone https://github.com/"
-                f"{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-            )
+            code = f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}'
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
 
-{self.global_env}
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
 
 {code}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -219,9 +264,21 @@ npx jest --config .jest.js --no-cache --verbose || true
         ]
 
     def dockerfile(self) -> str:
+        """COPY, pin to the base commit, scrub history, then install deps.
+
+        This file is never touched by DockerfileEnhancer: enhance() returns the
+        raw text whenever dependency() is not a string (image.py:315), and a PR
+        image depends on the base Image. The same rule means the PR build gets no
+        BASE_COMMIT build-arg, which is why the SHA below is a literal taken from
+        self.pr.base.sha rather than ${{BASE_COMMIT}}.
+
+        The four `test` lines are the point of the scrub: HEAD is the base
+        commit, no refs survive, no remote survives, and no unreachable history
+        survives. Without them a mispinned or leaky image ships silently.
+        """
         image = self.dependency()
         if isinstance(image, str):
-            raise ValueError("AntDesignImageDefault_ANT_DESIGN_17846_TO_10891 dependency must be an Image")
+            raise ValueError("dependency must be an Image")
         name = image.image_name()
         tag = image.image_tag()
 
@@ -234,11 +291,42 @@ npx jest --config .jest.js --no-cache --verbose || true
 {self.global_env}
 
 {copy_commands}
+WORKDIR /home/{self.pr.repo}
+
+RUN set -eux; \\
+    git checkout --detach {self.pr.base.sha}; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse {self.pr.base.sha})"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
 
 RUN bash /home/prepare.sh
 
 {self.clear_env}
-
 """
 
 
