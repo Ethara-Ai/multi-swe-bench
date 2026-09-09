@@ -66,6 +66,7 @@ from multi_swe_bench.harness.repos.typescript.excalidraw import *
 from multi_swe_bench.harness.repos.typescript.Expensify import *
 from multi_swe_bench.harness.repos.typescript.facebook import *
 from multi_swe_bench.harness.repos.typescript.firecrawl import *
+from multi_swe_bench.harness.repos.typescript.freelensapp import *
 from multi_swe_bench.harness.repos.typescript.gdg_x import *
 from multi_swe_bench.harness.repos.typescript.giselles_ai import *
 from multi_swe_bench.harness.repos.typescript.gitcoinco import *
