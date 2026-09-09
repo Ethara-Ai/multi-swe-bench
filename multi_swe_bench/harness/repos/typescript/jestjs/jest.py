@@ -97,6 +97,12 @@ from multi_swe_bench.harness.pull_request import PullRequest
 # them and no per-package loop is needed.
 _NODE_BASE = "node:10-buster"
 
+# Era-2 (2016 npm/lerna era) lower PR bound. Imported by the jest_4506_to_3217
+# bucket, whose `number >= _ERA2_MIN_PR` predicate gates its patch-rebalancing;
+# 3217 is that bucket's low bound / era-2 start. Restored here after a jest.py
+# refactor dropped the constant while the bucket still imports it.
+_ERA2_MIN_PR = 3217
+
 # `--concurrency 1` is load-bearing, not a tuning knob.
 #
 # lerna bootstraps packages in parallel by default, and every worker shares one
