@@ -9,9 +9,11 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 NODE_IMAGE = "node:20.19.5"
 
+_PR_NUMBERS: set = {68241, 68748, 68929, 70615, 70617, 71233, 71323, 72267, 72448, 72847}
+
 TEST_CMD = (
     "TZ=utc node_modules/.bin/jest --ci --silent --json "
-    "--transformIgnorePatterns 'node_modules/(?!(?:@react-native|react-native|@react-navigation|@react-native-community|@react-native-firebase|@expo|expo|@rnmapbox|@onfido|@perf-profiler|@rock-js|native-base|nativewind|@expensify)/)' "
+    "--maxWorkers=4 --workerIdleMemoryLimit=1200MB "
     "--outputFile=/tmp/jest-results.json; "
     "node /home/jest-report.js /tmp/jest-results.json"
 )
@@ -138,43 +140,6 @@ exit 0
 """
 
 
-_STRIP_DEPS_JS = """const fs = require('fs');
-
-const DROP = ['react-native-flipper'];
-
-const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-for (const name of DROP) {
-    for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-        if (pkg[section]) delete pkg[section][name];
-    }
-}
-fs.writeFileSync('package.json', JSON.stringify(pkg, null, 4) + '\\n');
-
-const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
-if (lock.packages) {
-    const root = lock.packages[''] || {};
-    for (const name of DROP) {
-        for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-            if (root[section]) delete root[section][name];
-        }
-        delete lock.packages['node_modules/' + name];
-    }
-    for (const key of Object.keys(lock.packages)) {
-        const entry = lock.packages[key];
-        if (entry && entry.peerDependencies) {
-            for (const name of DROP) delete entry.peerDependencies[name];
-        }
-    }
-}
-if (lock.dependencies) {
-    for (const name of DROP) delete lock.dependencies[name];
-}
-fs.writeFileSync('package-lock.json', JSON.stringify(lock, null, 2) + '\\n');
-
-console.log('strip-unfetchable-deps: removed ' + DROP.join(', '));
-"""
-
-
 class ExpensifyAppImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -192,7 +157,8 @@ class ExpensifyAppImageBase(Image):
         return NODE_IMAGE
 
     def image_tag(self) -> str:
-        return "base"
+        nums = _PR_NUMBERS or {self.pr.number}
+        return f"base-{min(nums)}-{max(nums)}"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -289,7 +255,6 @@ class ExpensifyAppImageDefault(Image):
     def files(self) -> list[File]:
         jest_report_js = _JEST_REPORT_JS.replace("__PR_REPO__", self.pr.repo)
         apply_patch_sh = _APPLY_PATCH_SH
-        strip_deps_js = _STRIP_DEPS_JS
 
         prepare_sh = f"""#!/bin/bash
 set -e
@@ -303,13 +268,9 @@ cat > /home/apply_patch.sh <<'__APPLY_PATCH_EOF__'
 {apply_patch_sh}__APPLY_PATCH_EOF__
 chmod +x /home/apply_patch.sh
 
-cat > /tmp/strip-unfetchable-deps.js <<'__STRIP_DEPS_EOF__'
-{strip_deps_js}__STRIP_DEPS_EOF__
-
 bash /home/check_git_changes.sh
-test "$(git rev-parse HEAD)" = "{self.pr.base.sha}"
-
-node /tmp/strip-unfetchable-deps.js
+BASE_COMMIT="${{BASE_COMMIT:-{self.pr.base.sha}}}"
+test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"
 
 ok=0
 for attempt in 1 2 3 4; do
@@ -332,28 +293,21 @@ if [ "$ok" -ne 1 ]; then
     exit 1
 fi
 
-# --ignore-scripts skipped canvas's postinstall; jsdom needs canvas.node.
-# Rebuild it explicitly so jest-environment-jsdom can load and tests can run.
 npm rebuild canvas 2>&1 || npm install --no-save --no-package-lock canvas 2>&1 \
     || echo "WARN: canvas rebuild failed, jsdom-based tests will fail to load"
 
-if ! npx --no-install patch-package; then
-    echo "prepare: patch-package failed; applying canary 8.1.0 doubled-path workaround"
-    if [ -d patches ]; then
-        find patches -type f -name '*.patch' 2>/dev/null | while IFS= read -r p; do
-            fname=$(basename "$p" .patch)
-            if [[ "$fname" == @* ]]; then
-                pkg=$(echo "$fname" | cut -d+ -f1,2 | tr '+' '/')
-            else
-                pkg=$(echo "$fname" | cut -d+ -f1)
-            fi
-            [ -d "node_modules/$pkg" ] && mkdir -p "node_modules/$pkg/$pkg" 2>/dev/null || true
-        done
+if [ -d patches ]; then
+    rm -rf ./msb-patches
+    mkdir -p ./msb-patches
+    find ./patches -type f -name '*.patch' -exec cp {{}} ./msb-patches ';'
+    n_patches=$(ls ./msb-patches 2>/dev/null | wc -l | tr -d ' ')
+    echo "prepare: applying $n_patches patch-package patches (flattened from nested patches/)"
+    if ! npx --no-install patch-package --patch-dir ./msb-patches; then
+        echo "WARN: one or more patch-package patches failed to apply; continuing"
     fi
-    if ! npx --no-install patch-package; then
-        echo "prepare: still failing, falling back to stable patch-package@8.0.0"
-        npx --yes patch-package@8.0.0 || echo "WARN: patch-package failed after all workarounds, continuing"
-    fi
+    rm -rf ./msb-patches
+else
+    echo "prepare: no patches/ directory found; skipping patch-package"
 fi
 
 git checkout -- package.json package-lock.json
@@ -364,6 +318,7 @@ node --version
 npm --version
 node_modules/.bin/jest --version
 """
+
 
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
@@ -459,7 +414,7 @@ exit 0
             copy_commands += f"COPY {file.name} /home/\n"
 
         hardening_block = f"""RUN set -eux; \\
-    git checkout --detach {sha}; \\
+    git checkout --detach "${{BASE_COMMIT}}"; \\
     git remote remove origin 2>/dev/null || true; \\
     git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
         | xargs -r -n1 git update-ref -d; \\
@@ -470,11 +425,27 @@ exit 0
     git config --local gc.auto 0; \\
     git config --local fetch.recurseSubmodules false; \\
     git config --local remote.pushDefault ""; \\
-    test "$(git rev-parse HEAD)" = "{sha}"; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"; \\
     test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
-    test -z "$(git remote)" """
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/{repo}/.gitmodules ]; then \\
+        cd /home/{repo} && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi"""
 
         return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{sha}"
 
 {self.global_env}
 
@@ -520,6 +491,7 @@ class ExpensifyApp(Instance):
         super().__init__()
         self._pr = pr
         self._config = config
+        _PR_NUMBERS.add(pr.number)
 
     @property
     def pr(self) -> PullRequest:
