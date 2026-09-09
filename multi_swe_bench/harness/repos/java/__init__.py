@@ -93,4 +93,4 @@ from multi_swe_bench.harness.repos.java.selenide import *
 from multi_swe_bench.harness.repos.java.brarcher import *
 from multi_swe_bench.harness.repos.java.tlaplus import *
 from multi_swe_bench.harness.repos.java.react_native_camera import *
-from multi_swe_bench.harness.repos.java.Wynntils import *
+# from multi_swe_bench.harness.repos.java.Wynntils import *
