@@ -127,6 +127,8 @@ from multi_swe_bench.harness.repos.python.intel import *
 from multi_swe_bench.harness.repos.python.ipfs_shipyard import *
 from multi_swe_bench.harness.repos.python.ipython import *
 from multi_swe_bench.harness.repos.python.isi_vista import *
+# [neutralized: module python/iterative does not exist (registration pushed without the file) - blocks the whole registry import]
+# from multi_swe_bench.harness.repos.python.iterative import *
 from multi_swe_bench.harness.repos.python.jackdewinter import *
 from multi_swe_bench.harness.repos.python.jaraco import *
 from multi_swe_bench.harness.repos.python.jazzband import *
@@ -422,3 +424,5 @@ from multi_swe_bench.harness.repos.python.OpenCyphal import *
 from multi_swe_bench.harness.repos.python.openforcefield import *
 from multi_swe_bench.harness.repos.python.vllm_project import *
 from multi_swe_bench.harness.repos.python.pwndbg import *
+from multi_swe_bench.harness.repos.python.CycloneDX import *
+

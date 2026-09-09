@@ -8,4 +8,5 @@ from multi_swe_bench.harness.repos.python.huggingface.datasets_7009_to_6500 impo
 from multi_swe_bench.harness.repos.python.huggingface.diffusers_10261_to_8947 import *
 from multi_swe_bench.harness.repos.python.huggingface.diffusers_11323_to_10347 import *
 from multi_swe_bench.harness.repos.python.huggingface.transformers import *
+from multi_swe_bench.harness.repos.python.huggingface.transformers_13720_to_5252 import *
 from multi_swe_bench.harness.repos.python.huggingface.transformers_44040_to_3323 import *
