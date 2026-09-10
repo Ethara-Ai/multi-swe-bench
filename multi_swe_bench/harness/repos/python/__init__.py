@@ -424,6 +424,7 @@ from multi_swe_bench.harness.repos.python.OpenCyphal import *
 from multi_swe_bench.harness.repos.python.openforcefield import *
 from multi_swe_bench.harness.repos.python.vllm_project import *
 from multi_swe_bench.harness.repos.python.pwndbg import *
+# from multi_swe_bench.harness.repos.python.bali_framework import *
 
 from multi_swe_bench.harness.repos.python.CycloneDX import *
 
