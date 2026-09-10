@@ -22,3 +22,4 @@ from multi_swe_bench.harness.repos.python.scrapy.scrapy_2655_to_2215 import *
 from multi_swe_bench.harness.repos.python.scrapy.scrapy_1880_to_1688 import *
 from multi_swe_bench.harness.repos.python.scrapy.scrapy_1655_to_1603 import *
 from multi_swe_bench.harness.repos.python.scrapy.scrapy_3858_to_2061 import *
+from multi_swe_bench.harness.repos.python.scrapy.scrapy_6608_to_3869 import *
