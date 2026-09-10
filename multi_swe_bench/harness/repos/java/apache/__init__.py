@@ -16,3 +16,4 @@ from multi_swe_bench.harness.repos.java.apache.shenyu import *
 from multi_swe_bench.harness.repos.java.apache.skywalking import *
 from multi_swe_bench.harness.repos.java.apache.flink import *
 from multi_swe_bench.harness.repos.java.apache.commons_codec import *
+from multi_swe_bench.harness.repos.java.apache.druid_7113_to_6221 import *
