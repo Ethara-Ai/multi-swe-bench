@@ -173,13 +173,50 @@ export PYTHONDONTWRITEBYTECODE=1
 python -V
 
 python -m pip install --no-cache-dir --upgrade pip setuptools wheel || true
-python -m pip install --no-cache-dir -e ".[dev]" || true
-python -m pip install --no-cache-dir pytest-xdist || true
+# .[all,dev] not just .[dev]: ~40 of the 81 PRs' target tests live under feature areas
+# gated behind optional extras (messaging/telegram/discord/slack, matrix, mcp, modal, cron,
+# ...). Installing only [dev] would leave those test modules ImportError-ing at collection
+# (like scrapy's Pillow/boto). [all] is a real extra in this repo's pyproject and pulls every
+# feature dep so every PR's target test can import. Fall back to [dev] if [all] can't resolve.
+python -m pip install --no-cache-dir -e ".[all,dev]" || \
+    python -m pip install --no-cache-dir -e ".[dev]" || true
+python -m pip install --no-cache-dir pytest-xdist pytest-timeout || true
 
-python -m pytest tests --collect-only -q -p no:cacheprovider -n 0 \
+# NOTE: do NOT pass `-p <plugin>` to pytest here. hermes_cli/main.py runs
+# _apply_profile_override() at import time, which pre-parses sys.argv for `-p`/
+# `--profile` BEFORE argparse. At these base commits it has no guard for pytest's
+# `-p no:...`, so it treats "no:cacheprovider" as a profile name, fails validation
+# ("Invalid profile name"), and sys.exit(1) -> any test module importing
+# hermes_cli.main raises SystemExit at collection -> pytest INTERNALERROR aborts the
+# WHOLE run -> 0 results. Keeping the pytest cmd `-p`-free avoids it entirely.
+python -m pytest tests --collect-only -q -n 0 \
     --continue-on-collection-errors > /home/collect.txt 2>&1 || true
 tail -3 /home/collect.txt
 grep -qE "[0-9]+ (tests|test) collected" /home/collect.txt
+
+# ---- BASELINE DESELECT ---------------------------------------------------
+# Run the suite with NO patch and record every test that FAILS/ERRORS at baseline.
+# Such tests are environment-broken (no audio device / systemd / live gateway) or
+# flaky (async timing) - they are NOT this PR's graded signal, but when they flip
+# pass<->fail across the run/test/fix stages they spuriously invalidate the PR
+# ("test passed before fix, failed after"). We deselect them in all three graded
+# stages so only stable, gradeable tests count. Tests in files the test.patch
+# touches are NEVER deselected - those are the graded target (f2p/n2p). --timeout
+# caps hangers so a single stuck async test can't stall the whole stage.
+python -m pytest tests -n 0 --timeout=300 --timeout-method=thread \
+    -rA --no-header --tb=no --continue-on-collection-errors \
+    > /home/baseline.txt 2>&1 || true
+# target test files (never deselect anything defined in them)
+grep -E '^\\+\\+\\+ b/' /home/test.patch 2>/dev/null | sed 's#^+++ b/##' | grep -E '\\.py$' \
+    | sort -u > /home/target_files.txt || true
+: > /home/baseline_deselect.txt
+grep -E '^(FAILED|ERROR) ' /home/baseline.txt | awk '{{print $2}}' | sort -u | while read -r nid; do
+    f="${{nid%%::*}}"
+    grep -qxF "$f" /home/target_files.txt && continue
+    echo "$nid" >> /home/baseline_deselect.txt
+done
+echo "baseline deselect: $(wc -l < /home/baseline_deselect.txt) tests"
+# --------------------------------------------------------------------------
 
 git reset --hard
 git clean -fdq
@@ -195,8 +232,11 @@ set -euo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-python -m pytest tests \\
-    -p no:cacheprovider -n 0 \\
+DES=()
+if [ -s /home/baseline_deselect.txt ]; then
+    while IFS= read -r n; do [ -n "$n" ] && DES+=(--deselect "$n"); done < /home/baseline_deselect.txt
+fi
+python -m pytest tests -n 0 --timeout=300 --timeout-method=thread "${{DES[@]}}" \\
     -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
 
 """.format(pr=self.pr),
@@ -213,8 +253,11 @@ if ! git apply --whitespace=nowarn /home/test.patch; then
     echo "PATCH_APPLY_FAILED: test.patch does not apply at {pr.base.sha}" >&2
     exit 1
 fi
-python -m pytest tests \\
-    -p no:cacheprovider -n 0 \\
+DES=()
+if [ -s /home/baseline_deselect.txt ]; then
+    while IFS= read -r n; do [ -n "$n" ] && DES+=(--deselect "$n"); done < /home/baseline_deselect.txt
+fi
+python -m pytest tests -n 0 --timeout=300 --timeout-method=thread "${{DES[@]}}" \\
     -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
 
 """.format(pr=self.pr),
@@ -231,8 +274,11 @@ if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "PATCH_APPLY_FAILED: test.patch + fix.patch do not apply at {pr.base.sha}" >&2
     exit 1
 fi
-python -m pytest tests \\
-    -p no:cacheprovider -n 0 \\
+DES=()
+if [ -s /home/baseline_deselect.txt ]; then
+    while IFS= read -r n; do [ -n "$n" ] && DES+=(--deselect "$n"); done < /home/baseline_deselect.txt
+fi
+python -m pytest tests -n 0 --timeout=300 --timeout-method=thread "${{DES[@]}}" \\
     -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
 
 """.format(pr=self.pr),
