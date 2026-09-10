@@ -105,6 +105,7 @@ from multi_swe_bench.harness.repos.typescript.lukasoppermann import *
 from multi_swe_bench.harness.repos.typescript.lukeautry import *
 from multi_swe_bench.harness.repos.typescript.markedjs import *
 from multi_swe_bench.harness.repos.typescript.mastra_ai import *
+from multi_swe_bench.harness.repos.typescript.mattermost import *
 from multi_swe_bench.harness.repos.typescript.mattermost_community import *
 from multi_swe_bench.harness.repos.typescript.MeguminSama import *
 from multi_swe_bench.harness.repos.typescript.mermaid_js import *
