@@ -9,3 +9,4 @@ from multi_swe_bench.harness.repos.typescript.jestjs.jest_15447_to_14070 import 
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_15831_to_15461 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_6008_to_4614 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_4506_to_3217 import *
+from multi_swe_bench.harness.repos.typescript.jestjs.jest_14139_to_13472 import *  # noqa: F401,F403
