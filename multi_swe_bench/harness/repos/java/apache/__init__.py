@@ -17,3 +17,8 @@ from multi_swe_bench.harness.repos.java.apache.skywalking import *
 from multi_swe_bench.harness.repos.java.apache.flink import *
 from multi_swe_bench.harness.repos.java.apache.commons_codec import *
 from multi_swe_bench.harness.repos.java.apache.druid_7113_to_6221 import *
+# Imported AFTER `rocketmq` on purpose: both register the plain key
+# "apache/rocketmq" and Instance._registry is last-writer-wins, so this
+# ordering is what makes the ranged config serve the dataset. See its
+# module docstring.
+from multi_swe_bench.harness.repos.java.apache.rocketmq_8663_to_6798 import *
