@@ -1,315 +1,34 @@
-"""lobehub/lobehub config for PRs 6474-13716 (monorepo era, pnpm+vitest)."""
-
-import re
-from typing import Union
-
-from multi_swe_bench.harness.image import Config, File, Image
-from multi_swe_bench.harness.instance import Instance, TestResult
-from multi_swe_bench.harness.pull_request import PullRequest
+from multi_swe_bench.harness.instance import Instance
 from multi_swe_bench.harness.repos.typescript.lobehub.lobehub_6452_to_71 import (
-    _CHECK_GIT_CHANGES_SH,
-    _NL,
-    LobeHubImageBase,
+    LobeHubImageBaseCommon,
+    LobeHubImageDefaultCommon,
+    LobeHubInstance,
 )
 
-
-def _clean_test_name(name: str) -> str:
-    """Strip variable timing and metadata from test names for stable eval matching."""
-    # Strip vitest file-level metadata: (2 tests) 75ms, (1 test | 1 failed) 120ms
-    name = re.sub(
-        r"\s+\(\d+\s+tests?(?:\s*\|\s*\d+\s+\w+)*\)\s*(?:\d+(?:\.\d+)?\s*m?s)?\s*$",
-        "",
-        name,
-    )
-    # Strip parenthesized timing: (75ms), (150 ms), (8.954 s)
-    name = re.sub(r"\s+\(\d+(?:\.\d+)?\s*m?s\)\s*$", "", name)
-    return name.strip()
+__all__ = [
+    "LOBEHUB_13716_TO_6474",
+    "LobeHubImageBaseLate",
+    "LobeHubImageDefaultLate",
+]
 
 
-class LobeHubImageDefaultLate(Image):
-    """PR-specific image for lobehub late era."""
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Union[str, Image]:
-        return LobeHubImageBase(self.pr, self.config)
-
+class LobeHubImageBaseLate(LobeHubImageBaseCommon):
     def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
+        return "base-13716_to_6474"
 
     def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
+        return "base-13716_to_6474"
 
-    def files(self) -> list[File]:
-        return [
-            File(".", "fix.patch", f"{self.pr.fix_patch}"),
-            File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
-            File(
-                ".",
-                "prepare.sh",
-                """\
-#!/bin/bash
-set -e
 
-cd /home/{repo}
-git reset --hard
-git checkout {base_sha}
-
-# Install the exact pnpm version declared in packageManager field
-PNPM_VERSION=$(node -e "try {{ const pm = require('./package.json').packageManager; if (pm && pm.startsWith('pnpm@')) console.log(pm.split('@')[1]); else console.log('latest'); }} catch(e) {{ console.log('latest'); }}")
-npm install -g "pnpm@${{PNPM_VERSION}}"
-
-pnpm install --no-frozen-lockfile || true
-
-# Install deps for apps/ workspaces (nested, not in root workspace)
-for app_dir in apps/*/; do
-    if [ -d "${{app_dir}}" ] && [ -f "${{app_dir}}package.json" ]; then
-        (cd "/home/{repo}/${{app_dir}}" && pnpm install --no-frozen-lockfile || true)
-    fi
-done
-""".format(repo=self.pr.repo, base_sha=self.pr.base.sha),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """\
-#!/bin/bash
-
-export CI=true
-export NODE_OPTIONS="--max-old-space-size=4096"
-
-cd /home/{repo}
-
-pnpm vitest run --reporter=verbose 2>&1 || true
-
-for pkg_dir in packages/*/; do
-    if [ -f "${{pkg_dir}}vitest.config.mts" ] || [ -f "${{pkg_dir}}vitest.config.ts" ]; then
-        (cd "/home/{repo}/${{pkg_dir}}" && pnpm vitest run --reporter=verbose 2>&1) || true
-    fi
-done
-
-for app_dir in apps/*/; do
-    if [ -f "${{app_dir}}vitest.config.mts" ] || [ -f "${{app_dir}}vitest.config.ts" ]; then
-        (cd "/home/{repo}/${{app_dir}}" && pnpm vitest run --reporter=verbose 2>&1) || true
-    fi
-done
-""".format(repo=self.pr.repo),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """\
-#!/bin/bash
-set -e
-
-export CI=true
-export NODE_OPTIONS="--max-old-space-size=4096"
-
-cd /home/{repo}
-git apply --whitespace=nowarn /home/test.patch
-
-set +e
-
-pnpm vitest run --reporter=verbose 2>&1 || true
-
-for pkg_dir in packages/*/; do
-    if [ -f "${{pkg_dir}}vitest.config.mts" ] || [ -f "${{pkg_dir}}vitest.config.ts" ]; then
-        (cd "/home/{repo}/${{pkg_dir}}" && pnpm vitest run --reporter=verbose 2>&1) || true
-    fi
-done
-
-for app_dir in apps/*/; do
-    if [ -f "${{app_dir}}vitest.config.mts" ] || [ -f "${{app_dir}}vitest.config.ts" ]; then
-        (cd "/home/{repo}/${{app_dir}}" && pnpm vitest run --reporter=verbose 2>&1) || true
-    fi
-done
-""".format(repo=self.pr.repo),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """\
-#!/bin/bash
-set -e
-
-export CI=true
-export NODE_OPTIONS="--max-old-space-size=4096"
-
-cd /home/{repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
-set +e
-
-pnpm vitest run --reporter=verbose 2>&1 || true
-
-for pkg_dir in packages/*/; do
-    if [ -f "${{pkg_dir}}vitest.config.mts" ] || [ -f "${{pkg_dir}}vitest.config.ts" ]; then
-        (cd "/home/{repo}/${{pkg_dir}}" && pnpm vitest run --reporter=verbose 2>&1) || true
-    fi
-done
-
-for app_dir in apps/*/; do
-    if [ -f "${{app_dir}}vitest.config.mts" ] || [ -f "${{app_dir}}vitest.config.ts" ]; then
-        (cd "/home/{repo}/${{app_dir}}" && pnpm vitest run --reporter=verbose 2>&1) || true
-    fi
-done
-""".format(repo=self.pr.repo),
-            ),
-        ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        if isinstance(image, str):
-            raise ValueError("ImageDefault dependency must be an Image")
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        global_env = f"{_NL}{self.global_env}{_NL}" if self.global_env else ""
-        clear_env = f"{_NL}{self.clear_env}{_NL}" if self.clear_env else ""
-
-        # The repo is cloned once in the shared base image, so this layer does
-        # NOT clone (and needs no ``REPO_URL``): it only checks out this PR's
-        # commit in the inherited working tree.
-        #
-        # This per-PR image chains to a base *Image* (not a string), so
-        # DockerfileEnhancer returns this dockerfile verbatim and does NOT
-        # auto-inject git-history hardening. We therefore check out
-        # ``${BASE_COMMIT}`` and apply ``Image._HARDENING_BLOCK`` manually so
-        # the fix / future commits cannot be read out of git history (reward
-        # hacking). ``BASE_COMMIT`` is pinned to *this* PR's ``base.sha``, which
-        # also prunes the full history inherited from the shared base.
-        return f"""FROM {name}:{tag}
-
-ARG BASE_COMMIT="{self.pr.base.sha}"
-{global_env}
-WORKDIR /home/{self.pr.repo}
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
-{copy_commands}
-RUN bash /home/prepare.sh
-
-{Image._HARDENING_BLOCK}{clear_env}"""
+class LobeHubImageDefaultLate(LobeHubImageDefaultCommon):
+    _base_image_class = LobeHubImageBaseLate
 
 
 @Instance.register("lobehub", "lobehub_13716_to_6474")
-class LOBEHUB_13716_TO_6474(Instance):
-    """Instance for lobehub PRs 6474-13716 (monorepo era, pnpm+vitest)."""
-
-    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
-        super().__init__()
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    def dependency(self) -> Image:
-        return LobeHubImageDefaultLate(self.pr, self._config)
-
-    def run(self, run_cmd: str = "") -> str:
-        if run_cmd:
-            return run_cmd
-        return "bash /home/run.sh"
-
-    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        if test_patch_run_cmd:
-            return test_patch_run_cmd
-        return "bash /home/test-run.sh"
-
-    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        if fix_patch_run_cmd:
-            return fix_patch_run_cmd
-        return "bash /home/fix-run.sh"
-
-    def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
-
-        clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-
-        for line in clean_log.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-
-            # Vitest test-level pass: ✓ or ✔
-            m = re.match(r"[✓✔]\s+(.+?)(?:\s+\(?\d+(?:\.\d+)?\s*m?s\)?)?$", stripped)
-            if m:
-                name = _clean_test_name(m.group(1))
-                passed_tests.add(name)
-                continue
-
-            # Vitest test-level fail: × or ✕ or ✗
-            m = re.match(r"[×✕✗]\s+(.+?)(?:\s+\(?\d+(?:\.\d+)?\s*m?s\)?)?$", stripped)
-            if m:
-                name = _clean_test_name(m.group(1))
-                failed_tests.add(name)
-                continue
-
-            # Vitest file-level FAIL
-            m = re.match(r"FAIL\s+(.+?)$", stripped)
-            if m:
-                name = _clean_test_name(m.group(1))
-                failed_tests.add(name)
-                continue
-
-            # Vitest skipped: ↓ or ○
-            m = re.match(r"[↓○]\s+(.+?)(?:\s+\[skipped\])?$", stripped)
-            if m:
-                name = _clean_test_name(m.group(1))
-                skipped_tests.add(name)
-                continue
-
-        # Dedup: worst wins
-        passed_tests -= failed_tests
-        skipped_tests -= failed_tests
-        skipped_tests -= passed_tests
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+class LOBEHUB_13716_TO_6474(LobeHubInstance):
+    _image_class = LobeHubImageDefaultLate
 
 
-# ---------------------------------------------------------------------------
-# Bundle routing by number_interval
-#
-# The raw dataset groups each release_line's PRs into a bundle. Instance.create()
-# builds the lookup name as f"{org}/{pr.number_interval}" when number_interval is
-# set, so each bundle's interval string must be registered against the era class.
-#
-# The interval is the dash-joined list of prs_in_bundle EXACTLY as stored (NOT a
-# numeric range): [146, 147, 150, 155, 157] -> "146-147-150-155-157". A range like
-# "146-157" would wrongly imply every PR in between; the explicit dash-join lists
-# only the PRs actually in the bundle.
-#
-# All 31 lobehub bundles fall in the late era (every PR >= 6474), so they all map
-# to LOBEHUB_13716_TO_6474. One entry per instance in
-# lobehub__lobehub_lht_final.jsonl; each string is the anchor-first prs_in_bundle.
-# ---------------------------------------------------------------------------
 _NUMBER_INTERVALS = [
     "9988-12199-12377-12533-12603-12654-12704-12712-12729-12743-12745-12749-12752-12758-12761-12763-12764-12770-12771-12772-12774-12781-12784-12785-12787-12788-12795-12798-12799-12807-12808-12809-12827-12828-12834-12836-12838-12839-12842-12843-12844-12846-12856-12858-12863-12865-12866-12873-12876-12881-12885-12886-12887-12890-12892-12895-12896-12897-12901-12902-12903-12904-12905-12906-12908-12911-12912-12915-12918-12920-12922-12926-12929-12930-12931-12936-12938-12941-12949-12950-12956",
     "10011-10015-10628-11715-12002-12017-12061-12215-12272-12332-12371-12393-12404-12418-12422-12424-12430-12432-12433-12457-12458-12459-12465-12471-12474-12475-12480-12482-12485-12486-12487-12489-12493-12496-12506-12509-12511-12512-12513-12514-12515-12517-12518-12520-12525-12526-12528-12534-12538-12539-12542-12547-12548-12549-12550-12551-12553-12555-12561-12562-12563-12564-12567-12568-12572-12573-12574-12581-12582-12587-12588-12595-12597-12598-12601-12604-12606-12607-12610-12611-12612-12614-12615-12624-12627-12628-12629-12630-12631",
@@ -343,5 +62,9 @@ _NUMBER_INTERVALS = [
     "13313-13324-13585-13615-13925-14051-14055-14070-14094-14108-14115-14142-14160-14192-14198-14206-14207-14208-14211-14212-14214-14216-14219-14220-14222-14223-14225-14226-14228-14229-14230-14235-14237-14239-14242-14243-14244-14246-14247-14248-14249-14253-14257-14258-14261-14264-14266-14269-14270-14271-14272-14274-14275-14277-14278-14280-14281-14282-14285-14286-14288-14289-14290-14291-14294-14297-14301-14302-14303-14304-14306-14308-14309-14311-14312-14314-14315-14316-14317-14321-14322-14323-14324-14326-14327-14329-14330-14332-14333-14334-14336-14337-14338-14339-14340-14342-14343-14345-14346-14347-14348-14349-14350-14351-14352-14353-14355-14357-14358-14364-14366-14367-14371-14372-14374-14375-14377-14378-14379-14382-14383-14391-14392-14397-14398-14399-14402-14403-14404-14406-14407-14408-14409-14410-14411-14414-14415-14418-14419-14420-14422-14423-14424-14425-14428-14429-14431-14432-14433-14434-14435-14436-14437-14438-14439-14440-14442-14443-14444-14445-14446-14448-14451-14452-14453-14454-14456-14457-14459-14460-14461-14462-14463-14468-14469-14470-14471-14472-14473-14474-14475-14476-14478-14480-14483-14484-14486-14487-14488-14489-14491-14493-14494-14495-14496-14497-14499-14500-14503-14504-14505-14506-14508-14510-14512-14513-14514-14515-14516-14517-14518-14519-14520-14521-14524-14525-14526-14531-14533-14534-14535-14536-14537-14538-14539-14540-14541-14542-14543-14546-14549-14550-14552-14553-14555-14558-14560-14563-14576",
     "13400-13413-13457-13703-13714-13717-13718-13719-13722-13723-13724-13728-13730-13731-13732-13733-13734-13736-13738-13739-13740-13741-13742-13744-13748-13749-13751-13752-13753-13756-13757-13759-13760-13761-13762-13763-13764-13765-13766-13767-13768-13769-13771-13772-13774-13778-13780-13781-13787-13788-13790-13792-13793-13794-13795-13799-13804-13805-13806-13807-13808-13809-13812-13814-13815-13816-13817-13819-13820-13821-13822-13824-13825-13828-13829-13830-13838-13840-13841-13842-13843-13847-13852-13854-13855-13856-13857-13860-13863-13865-13866-13867-13868-13871-13872-13873-13876-13877-13878-13883-13888-13895-13898",
 ]
+
 for _interval in _NUMBER_INTERVALS:
     Instance.register("lobehub", _interval)(LOBEHUB_13716_TO_6474)
+
+for _number in range(6474, 14600):
+    Instance.register("lobehub", str(_number))(LOBEHUB_13716_TO_6474)
