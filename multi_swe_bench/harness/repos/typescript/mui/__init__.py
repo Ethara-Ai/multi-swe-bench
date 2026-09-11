@@ -6,6 +6,7 @@ from multi_swe_bench.harness.repos.typescript.mui.material_ui_42444_to_42444 imp
 from multi_swe_bench.harness.repos.typescript.mui.material_ui_42172_to_40220 import *
 from multi_swe_bench.harness.repos.typescript.mui.material_ui_34680_to_34680 import *
 from multi_swe_bench.harness.repos.typescript.mui.material_ui_40020_to_33463 import *
+from multi_swe_bench.harness.repos.typescript.mui.material_ui_39353_to_34158 import *
 from multi_swe_bench.harness.repos.typescript.mui.material_ui_33415_to_28358 import *
 from multi_swe_bench.harness.repos.typescript.mui.material_ui_28313_to_24870 import *
 from multi_swe_bench.harness.repos.typescript.mui.material_ui_21638_to_14827 import *
