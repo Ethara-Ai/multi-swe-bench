@@ -54,11 +54,27 @@ from multi_swe_bench.harness.pull_request import PullRequest
 # be reused verbatim in the PR layer.
 #
 # ---------------------------------------------------------------------------
-# ONE CONFIG -> ONE BASE
+# ONE KEY -> TWO CODEBASES (see JestDispatch at the bottom of this file)
 # ---------------------------------------------------------------------------
 # Dataset entries for this repo carry no `number_interval` and no `tag`, so
-# Instance.create() resolves the bare key "jestjs/jest" (instance.py:41-48) and
-# THIS module handles every PR in the dataset. The previous revision forked
+# Instance.create() resolves the bare key "jestjs/jest" (instance.py:41-48) for
+# EVERY jest dataset, whichever era it was collected from. Two such datasets now
+# exist and they need different toolchains:
+#
+#   PRs #1174..#2859   this module           2016 codebase: node:10, npm, lerna
+#   PRs #8890..#10293  jest_10293_to_8890.py 2019-20 codebase: node:12, yarn
+#                                            workspaces, checked-in yarn binary
+#
+# So "jestjs/jest" is now owned by JestDispatch (bottom of this file), a router
+# that hands #8890..#10293 to the newer bundle and leaves every other PR number
+# on the implementation below, byte for byte as before. The classes, images,
+# scripts and parse_log in THIS module are unchanged and still describe the 2016
+# codebase only; read the 2019-20 rationale in jest_10293_to_8890.py.
+#
+# ---------------------------------------------------------------------------
+# ONE CONFIG -> ONE BASE (2016 era)
+# ---------------------------------------------------------------------------
+# Within the 2016 era a single base serves every PR. The previous revision forked
 # internally: PRs 1174-1983 were delegated to Jest_1983_to_1174 (node:10-buster)
 # while everything else used a node:18 base -- but both classes returned
 # image_tag() == "base" under the same image_name(), i.e. two different
@@ -569,7 +585,6 @@ WORKDIR /home/{repo}
 """
 
 
-@Instance.register("jestjs", "jest")
 class jest(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -752,3 +767,63 @@ def _parse_jest_log(test_log: str) -> TestResult:
         failed_tests=failed_tests,
         skipped_tests=skipped_tests,
     )
+
+
+# The 2019-20 bundle, addressed by registry key rather than by import.
+#
+# A direct `from ...jest_10293_to_8890 import JEST_10293_TO_8890` would be the
+# obvious spelling, but era configs in this tree are required to be
+# self-contained with no cross-imports between them. The key is resolved lazily,
+# inside __new__, so import order within repos/typescript/jestjs/__init__.py does
+# not matter -- by the time any PullRequest is routed, the whole package has been
+# imported and every @Instance.register side effect has run.
+_ERA_2019_2020_KEY = "jestjs/jest_10293_to_8890"
+
+# Inclusive, and deliberately NOT derived by scanning the registry for
+# `jest_<a>_to_<b>` keys the way payloadcms does. Ten such keys already exist for
+# this repo and several of them overlap this window (jest_9965_to_7776 covers
+# 7776-9965, jest_10723_to_9326 covers 9326-10723), so a narrowest-interval scan
+# would hand #9965 to a different, unrelated bundle.
+#
+# These two numbers are the newer dataset's own min/max. They are kept here ONLY
+# so a missing registration can be reported as an error rather than silently
+# falling through to the 2016 config; the bundle's own PR_LOW/PR_HIGH remain the
+# authority whenever it is present, and __new__ raises if the two disagree.
+_ERA_2019_2020_RANGE = (8890, 10293)
+
+
+@Instance.register("jestjs", "jest")
+class JestDispatch(Instance):
+    """Routes the bare "jestjs/jest" key to the bundle matching the PR's era.
+
+    __new__ returns a fully constructed instance of a class that is NOT a
+    subclass of JestDispatch, so Python skips JestDispatch.__init__ entirely and
+    the returned object is exactly what a direct registration would have
+    produced.
+    """
+
+    def __new__(cls, pr: PullRequest, config: Config, *args, **kwargs):
+        low, high = _ERA_2019_2020_RANGE
+        impl = Instance._registry.get(_ERA_2019_2020_KEY)
+
+        if impl is None:
+            if low <= pr.number <= high:
+                raise ValueError(
+                    f"jestjs/jest#{pr.number} falls in the {low}-{high} era but "
+                    f"'{_ERA_2019_2020_KEY}' is not registered; check that "
+                    f"repos/typescript/jestjs/__init__.py imports "
+                    f"jest_10293_to_8890."
+                )
+            return jest(pr, config, *args, **kwargs)
+
+        if (impl.PR_LOW, impl.PR_HIGH) != (low, high):
+            raise ValueError(
+                f"routing bounds disagree: {_ERA_2019_2020_KEY} claims "
+                f"{impl.PR_LOW}-{impl.PR_HIGH} but jest.py routes {low}-{high}. "
+                f"Whichever is stale, a PR in the gap would be built with the "
+                f"wrong toolchain and fail silently."
+            )
+
+        if impl.PR_LOW <= pr.number <= impl.PR_HIGH:
+            return impl(pr, config, *args, **kwargs)
+        return jest(pr, config, *args, **kwargs)

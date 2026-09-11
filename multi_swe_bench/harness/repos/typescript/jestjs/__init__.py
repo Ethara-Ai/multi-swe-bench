@@ -1,4 +1,5 @@
 from multi_swe_bench.harness.repos.typescript.jestjs.jest import *
+from multi_swe_bench.harness.repos.typescript.jestjs.jest_10293_to_8890 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_1983_to_1174 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_9828_to_2415 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_9965_to_7776 import *
