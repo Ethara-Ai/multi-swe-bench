@@ -10,6 +10,11 @@ from multi_swe_bench.harness.pull_request import PullRequest
 # Repo name is lowercase "ansible" on GitHub — safe to use {pr.repo}
 REPO_DIR = "ansible"
 
+_DISPATCHED_INTERVAL_KEYS = (
+    "ansible/ansible_86663_to_86126",
+    "ansible/ansible_86665_to_84251",
+)
+
 
 class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -153,7 +158,6 @@ CMD ["/bin/bash"]
         return dockerfile_content.format(pr=self.pr)
 
 
-@Instance.register("ansible", "ansible")
 class ANSIBLE(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -219,3 +223,39 @@ class ANSIBLE(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+def _dispatched_intervals() -> list[tuple[int, int, type]]:
+    intervals: list[tuple[int, int, type]] = []
+    for key in _DISPATCHED_INTERVAL_KEYS:
+        impl = Instance._registry.get(key)
+        if impl is None:
+            raise ValueError(
+                f"ansible/ansible routing is broken: '{key}' is not registered; "
+                f"check that repos/python/ansible/__init__.py imports "
+                f"{key.split('/', 1)[1]}."
+            )
+        intervals.append((impl.PR_LOW, impl.PR_HIGH, impl))
+    return intervals
+
+
+@Instance.register("ansible", "ansible")
+class AnsibleDispatch(Instance):
+    def __new__(cls, pr: PullRequest, config: Config, *args, **kwargs):
+        candidates = sorted(
+            (
+                bounds
+                for bounds in _dispatched_intervals()
+                if bounds[0] <= pr.number <= bounds[1]
+            ),
+            key=lambda bounds: bounds[1] - bounds[0],
+        )
+        if candidates:
+            return candidates[0][2](pr, config, *args, **kwargs)
+        return ANSIBLE(pr, config, *args, **kwargs)
+
+
+for _lo, _hi, _impl in _dispatched_intervals():
+    for _number in range(_lo, _hi + 1):
+        Instance._registry.setdefault(f"ansible/{_number}", AnsibleDispatch)
+del _lo, _hi, _impl, _number
