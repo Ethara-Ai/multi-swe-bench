@@ -13,3 +13,6 @@ from multi_swe_bench.harness.repos.typescript.jestjs.jest_4506_to_3217 import *
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_14139_to_13472 import *  # noqa: F401,F403
 
 from multi_swe_bench.harness.repos.typescript.jestjs.jest_15643_to_14309 import *
+
+from multi_swe_bench.harness.repos.typescript.jestjs.jest_12546_to_10484 import *
+
