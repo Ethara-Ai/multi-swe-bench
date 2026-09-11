@@ -7,3 +7,4 @@ from multi_swe_bench.harness.repos.typescript.Yeachan_Heo.oh_my_claudecode_1075_
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo.oh_my_claudecode_1399_to_1123 import *
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo.oh_my_claudecode_2439_to_1601 import *
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo.oh_my_claudecode_2699_to_2461 import *
+from multi_swe_bench.harness.repos.typescript.Yeachan_Heo.oh_my_claudecode_1595_to_1430 import *
