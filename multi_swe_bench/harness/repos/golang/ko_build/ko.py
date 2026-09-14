@@ -1,7 +1,10 @@
+from __future__ import annotations
+
+import json
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -25,10 +28,6 @@ exit 0
 """
 
 
-# apply_patch.sh -- plain `git apply` first, `--3way` only as an ANNOUNCED
-# fallback. FLOW VERDICT DISCIPLINE requires a failure to be counted from the
-# PRIMARY apply, so a silent --3way rescue would hide a genuinely broken patch.
-# Measured on this dataset: both patches apply cleanly, 0 binary hunks.
 _APPLY_PATCH_SH = """#!/bin/bash
 set -e
 cd /home/ko
@@ -68,22 +67,6 @@ rm -f "$EXCL"
 """
 
 
-# go_test_report.py -- convert `go test -json` into the trailing-keyword lines
-# parse_log reads.
-#
-# Why -json rather than scraping `go test -v`: without -v, `go test` prints one
-# line per PACKAGE and nothing per test, so the run yields no per-test evidence
-# at all (FLOW GATE 2). Adding -v instead means parsing
-# "--- PASS: TestFoo (0.00s)" -- which carries a DURATION that differs between
-# acts and would manufacture false transitions (audit 4B).
-#
-# Three properties guaranteed by construction, each a real defect found in
-# another Go config in this registry (OMNI_CHANGES.md 2.5):
-#   1. only events carrying a "Test" field are emitted, so a PACKAGE-level
-#      pass/fail can NEVER be recorded as a test;
-#   2. names are package-qualified -- a Go test name is unique only within its
-#      package, and this graded scope spans 6 packages;
-#   3. subtests are kept whole, not truncated at the last "/".
 _GO_TEST_REPORT_PY = '''"""Turn one `go test -json` stream into per-test results.
 
 usage: go_test_report.py <events.json>
@@ -160,35 +143,6 @@ if __name__ == "__main__":
 '''
 
 
-# run_tests.sh -- the graded command, identical in all three acts.
-#
-# SCOPE IS `./...`, THE WHOLE MODULE, AND THAT IS DELIBERATE -- it is what keeps
-# this entry out of FLOW **Issue 28**.
-#
-# Every test the PR touches lives in the single package `pkg/build`, so the
-# obvious scope is `./pkg/build/...`. Measured, that scope produces:
-#
-#     run 59 passed | test 0 tests | fix 66 passed
-#
-# because the test patch calls `NewGo(..., test.dir)` against a signature only
-# the FIX introduces --
-#     vet: pkg/build/gobuild_test.go:113:43: cannot use test.dir
-#          (variable of type string) as Option value in argument to NewGo
-# -- so the whole package fails to compile and the test act is a flat 0/0/0.
-# That FAILS GATE 0: no act may report zero passing tests.
-#
-# At `./...` the other five packages still compile and run, so the compile
-# failure is contained to the package that genuinely cannot build:
-#
-#     run 118 passed (6 pkgs) | test 59 passed (5 pkgs) | fix 125 passed (6 pkgs)
-#
-# The 59 tests that vanish in the test act are `pkg/build`'s; they were passing
-# in the run act, so the harness reclassifies them to p2p rather than counting
-# them as n2p (FLOW Issues 9 / 27).
-#
-# `set -e` is absent (only -uo pipefail): `go test` exits non-zero whenever any
-# package fails to build, which is EXPECTED in the test act by design. Under -e
-# the act would abort before the report script ran and score a silent 0/0/0.
 _RUN_TESTS_SH = """#!/bin/bash
 set -uo pipefail
 cd /home/ko
@@ -205,18 +159,6 @@ python3 /home/go_test_report.py "$JSON"
 
 
 class KoImageBase(Image):
-    """Shared base image, one per PR (`base-pr-<N>`).
-
-    dockerfile() is deliberately NOT overridden: the harness's own
-    Image.dockerfile() emits FROM -> apt -> clone -> WORKDIR -> reset ->
-    checkout ${BASE_COMMIT} -> extra_setup -> scrub + its four assertions -> CMD,
-    and DockerfileEnhancer prepends the BuildKit directive, the ARGs
-    (BASE_COMMIT left EMPTY), the env block, labels and cert links.
-
-    The tag carries the PR number because the base's CONTENT is per-PR -- a
-    shared `:base` tag would be one name for two different images
-    (FLOW Issue 25).
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -230,12 +172,6 @@ class KoImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    # go.mod declares `go 1.15`, but golang:1.15 is Debian buster, whose apt
-    # mirrors have been moved to archive.debian.org -- the harness's mandated
-    # apt layer 404s and the image never builds (the same trap that forced
-    # golang:1.16 for a sibling Go config). golang:1.16 is the oldest tag whose
-    # apt still works (measured: APT_OK) and it builds this tree cleanly.
-    # Pinned, not :latest.
     def dependency(self) -> Union[str, "Image"]:
         return "golang:1.16"
 
@@ -249,20 +185,9 @@ class KoImageBase(Image):
         return []
 
     def extra_packages(self) -> list[str]:
-        # The harness already installs ca-certificates, curl, build-essential,
-        # git, gnupg, make, python3, sudo and wget. python3 runs
-        # go_test_report.py inside every act; nothing further is needed.
         return []
 
     def extra_setup(self) -> str:
-        # Runs after `git checkout ${BASE_COMMIT}`, so go.mod/go.sum are this
-        # PR's own. CGO_ENABLED=0 keeps the toolchain hermetic -- nothing in this
-        # tree imports "C" (verified), so disabling cgo costs no packages and
-        # removes a host-toolchain dependency.
-        #
-        # NOT `|| true`: this is the toolchain warm-up, not a nice-to-have cache.
-        # A warm-up that fails quietly ships an image whose acts cannot run
-        # (FLOW Issue 14, GATE 1). The assertions prove it took effect.
         return (
             "RUN go env -w CGO_ENABLED=0 GOFLAGS=-mod=mod && \\\n"
             "    go version && \\\n"
@@ -274,9 +199,6 @@ class KoImageBase(Image):
 
 
 class KoImageDefault(Image):
-    """Per-PR image: FROM the base, COPY the patches and the act scripts, run
-    prepare.sh -- and nothing else. The clone, the checkout and the history
-    scrub already happened in the base."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -307,17 +229,6 @@ class KoImageDefault(Image):
             File(".", "apply_patch.sh", _APPLY_PATCH_SH),
             File(".", "go_test_report.py", _GO_TEST_REPORT_PY),
             File(".", "run_tests.sh", _RUN_TESTS_SH),
-            # `git clean -fdq` is required, not decorative: `go test` can leave
-            # build output in the tree, and `git reset --hard` does not remove
-            # untracked files -- the next act would then abort on a dirty tree
-            # (FLOW Issue 4). Go's caches live in /go/pkg/mod and
-            # /root/.cache/go-build, OUTSIDE the work tree, so the clean cannot
-            # destroy the base's warm-up.
-            #
-            # The warm-up is `go mod download || true` -- idempotent against the
-            # cache the base already populated, and NON-DESTRUCTIVE. The asserts
-            # are the guard: a lost module cache fails the IMAGE BUILD loudly
-            # instead of the acts quietly scoring nothing (GATE 0).
             File(
                 ".",
                 "prepare.sh",
@@ -398,6 +309,274 @@ RUN bash /home/prepare.sh
 """
 
 
+_GO_JSON_MIN_PR = 1307
+_GO_IMAGE = "golang:1.21-bookworm"
+_MODULE_PREFIX = "github.com/google/ko/"
+_TEST_CMD = "go test -json -count=1 -timeout=20m ./... 2>&1"
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+class KoGoModImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str | Image:
+        return _GO_IMAGE
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return self.image_tag()
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
+
+{self.global_env}
+
+RUN printf 'Acquire::Check-Valid-Until "false";\\nAcquire::Retries "5";\\n' > /etc/apt/apt.conf.d/99no-check-valid-until
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates build-essential \\
+    && rm -rf /var/lib/apt/lists/*
+
+ENV GOTOOLCHAIN=local
+
+RUN git config --global --add safe.directory '*'
+
+WORKDIR /home/
+
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo} && \\
+    cd /home/{self.pr.repo} && git rev-parse HEAD >/dev/null
+
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+
+
+class KoGoModImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image | None:
+        return KoGoModImageBase(self.pr, self.config)
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def files(self) -> list[File]:
+        return [
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(
+                ".",
+                "check_git_changes.sh",
+                """\
+#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+""",
+            ),
+            File(
+                ".",
+                "prepare.sh",
+                f"""\
+#!/bin/bash
+set -e
+
+cd /home/{self.pr.repo}
+git reset --hard
+bash /home/check_git_changes.sh
+git checkout --detach {self.pr.base.sha}
+bash /home/check_git_changes.sh
+
+go version
+go env GOTOOLCHAIN GOPATH GOMODCACHE
+
+go mod download || true
+go build ./... || {{ echo "prepare.sh: go build failed at the base commit"; exit 1; }}
+go test -count=1 -run '^$' ./... || {{ echo "prepare.sh: a test package failed to compile at the base commit"; exit 1; }}
+git checkout -- .
+git clean -fdq
+bash /home/check_git_changes.sh
+""",
+            ),
+            File(
+                ".",
+                "run.sh",
+                f"""\
+#!/bin/bash
+set -eo pipefail
+
+cd /home/{self.pr.repo}
+export CI=true
+{_TEST_CMD}
+""",
+            ),
+            File(
+                ".",
+                "test-run.sh",
+                f"""\
+#!/bin/bash
+set -eo pipefail
+
+cd /home/{self.pr.repo}
+export CI=true
+git apply --whitespace=nowarn /home/test.patch
+{_TEST_CMD}
+""",
+            ),
+            File(
+                ".",
+                "fix-run.sh",
+                f"""\
+#!/bin/bash
+set -eo pipefail
+
+cd /home/{self.pr.repo}
+export CI=true
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+{_TEST_CMD}
+""",
+            ),
+        ]
+
+    def dockerfile(self) -> str:
+        image = self.dependency()
+        if isinstance(image, str):
+            raise ValueError(
+                "KoGoModImageDefault dependency must be an Image"
+            )
+        name = image.image_name()
+        tag = image.image_tag()
+
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
+
+        hardening = Image._HARDENING_BLOCK.rstrip("\n")
+
+        return f"""FROM {name}:{tag}
+
+{self.global_env}
+
+ARG BASE_COMMIT={self.pr.base.sha}
+ENV BASE_COMMIT=${{BASE_COMMIT}}
+
+{copy_commands}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN bash /home/prepare.sh
+
+{hardening}
+
+{self.clear_env}
+"""
+
+
+def _parse_go_json_log(test_log: str) -> TestResult:
+    passed: set[str] = set()
+    failed: set[str] = set()
+    skipped: set[str] = set()
+    buckets = {"pass": passed, "fail": failed, "skip": skipped}
+
+    for raw in _ANSI_RE.sub("", test_log).splitlines():
+        line = raw.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        test = event.get("Test")
+        action = event.get("Action")
+        if not test or action not in buckets:
+            continue
+
+        package = event.get("Package") or ""
+        if package.startswith(_MODULE_PREFIX):
+            package = package[len(_MODULE_PREFIX) :]
+        elif package == _MODULE_PREFIX.rstrip("/"):
+            package = "."
+
+        buckets[action].add(f"{package}::{test}")
+
+    passed -= failed
+    passed -= skipped
+    skipped -= failed
+
+    return TestResult(
+        passed_count=len(passed),
+        failed_count=len(failed),
+        skipped_count=len(skipped),
+        passed_tests=passed,
+        failed_tests=failed,
+        skipped_tests=skipped,
+    )
+
+
 @Instance.register("ko-build", "ko")
 class Ko(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
@@ -410,6 +589,8 @@ class Ko(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
+        if self.pr.number >= _GO_JSON_MIN_PR:
+            return KoGoModImageDefault(self.pr, self._config)
         return KoImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -422,12 +603,10 @@ class Ko(Instance):
         return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        # ANSI first: a coloured status keyword never matches an anchored regex.
+        if self.pr.number >= _GO_JSON_MIN_PR:
+            return _parse_go_json_log(test_log)
         test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        # Then narrow to the section the report script printed, when present.
-        # The raw `go test` stderr shares the log and its lines can end in a
-        # status word ("ok", "FAIL"), so a whole-log scan could invent tests.
         marker = "----- per-test results -----"
         if marker in test_log:
             test_log = test_log.rsplit(marker, 1)[1]
@@ -457,9 +636,6 @@ class Ko(Instance):
                     skipped_tests.add(name)
                 break
 
-        # TestResult requires the three sets to be disjoint, else it raises.
-        # Resolved toward the CONSERVATIVE outcome -- a name seen both passing
-        # and skipping is counted as skipped, never claimed as a pass.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
         passed_tests -= skipped_tests

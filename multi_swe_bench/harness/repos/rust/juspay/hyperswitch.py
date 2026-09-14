@@ -5,78 +5,41 @@ import re
 from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-from multi_swe_bench.harness.repos.typescript.ant_design.ant_design import parse_jest_log
 
-_ANSI_RE = re.compile(r"\[[0-9;]*[a-zA-Z]")
-_SUITE_PATH_RE = re.compile(r"^\s*(?:PASS|FAIL)\s+(\S+\.(?:tsx|jsx|ts|js))\b", re.MULTILINE)
+_RUST_IMAGE = "rust:1.69-bookworm"
 
-
-def _restore_truncated_extensions(test_log: str, result: TestResult) -> TestResult:
-    real: dict[str, str] = {}
-    for path in _SUITE_PATH_RE.findall(_ANSI_RE.sub("", test_log)):
-        if path.endswith((".tsx", ".jsx")):
-            real[path[:-1]] = path
-    if not real:
-        return result
-
-    def restore(ident: str) -> str:
-        head, sep, tail = ident.partition("::")
-        return f"{real[head]}{sep}{tail}" if head in real else ident
-
-    return TestResult(
-        passed_count=result.passed_count,
-        failed_count=result.failed_count,
-        skipped_count=result.skipped_count,
-        passed_tests={restore(t) for t in result.passed_tests},
-        failed_tests={restore(t) for t in result.failed_tests},
-        skipped_tests={restore(t) for t in result.skipped_tests},
-    )
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_CRATE_RE = re.compile(r"^=== MSB_CRATE: (\S+) ===$")
+_TARGET_RE = re.compile(r"^Running (?:unittests )?(\S+) \(")
+_DOCTESTS_RE = re.compile(r"^Doc-tests\b")
+_RESULT_RE = re.compile(r"^test (.+?) \.\.\. (ok|FAILED|ignored)")
+_DOC_NAME_RE = re.compile(r"^(\S+\.rs) - (.+)$")
 
 
-_TAG_SUFFIX = "39681_to_33611"
-_NODE_IMAGE = "node:16-bullseye"
-
-_JEST_PATCH_SCRIPT = """\
-node << 'PATCHEOF' || true
-const fs = require('fs');
-try {
-  let c = fs.readFileSync('.jest.js', 'utf8');
-  const needed = ['@exodus', 'jsdom', '@csstools', '@asamuzakjp/dom-selector'];
-  let changed = false;
-  for (const m of needed) {
-    if (!c.includes("'" + m + "'")) {
-      c = c.replace('const compileModules = [', "const compileModules = [\\n  '" + m + "',");
-      changed = true;
-    }
-  }
-  if (changed) { fs.writeFileSync('.jest.js', c); console.log('Patched .jest.js ESM modules'); }
-} catch(e) { console.log('No .jest.js to patch'); }
-PATCHEOF
-"""
-
-_PRE_CLEAN_SCRIPT = """\
-find node_modules -path "*/node_modules/cheerio" -type d -exec rm -rf {} + 2>/dev/null
-rm -rf node_modules/cheerio node_modules/.package-lock.json 2>/dev/null
-"""
-
-_PIN_SCRIPT = """\
-npm install --no-save --legacy-peer-deps cheerio@1.0.0-rc.10 @ant-design/icons@4.7.0 @ant-design/icons-svg@4.2.1 2>/dev/null || true
-"""
-
-_POST_PIN_SCRIPT = """\
-for nested in $(find node_modules -path "*/node_modules/cheerio/dist" -type d 2>/dev/null); do
-  nested_dir=$(dirname "$nested")
-  rm -rf "$nested_dir"
-  cp -r node_modules/cheerio "$nested_dir"
-done
-find node_modules -name "parse5-parser-stream" -type d -exec rm -rf {} + 2>/dev/null
-find node_modules -path "*/node_modules/@ant-design/icons-svg" -type d \\
-  -not -path "node_modules/@ant-design/icons-svg" -exec rm -rf {} + 2>/dev/null
-npm run version || true
-"""
+def _cargo_loop(mode: str) -> str:
+    return f"""rc=0
+for crate in crates/*/; do
+    crate="${{crate%/}}"
+    [ -f "$crate/Cargo.toml" ] || continue
+    echo "=== MSB_CRATE: $crate ==="
+    if [ -f "$crate/src/lib.rs" ]; then
+        (cd "$crate" && cargo test --lib {mode} 2>&1) || rc=$?
+    fi
+    if [ -f "$crate/src/main.rs" ] || [ -d "$crate/src/bin" ]; then
+        (cd "$crate" && cargo test --bins {mode} 2>&1) || rc=$?
+    fi
+    for target in "$crate"/tests/*.rs "$crate"/tests/*/main.rs; do
+        [ -f "$target" ] || continue
+        name="$(basename "$target" .rs)"
+        if [ "$name" = main ]; then
+            name="$(basename "$(dirname "$target")")"
+        fi
+        (cd "$crate" && cargo test --test "$name" {mode} 2>&1) || rc=$?
+    done
+done"""
 
 
-class AntDesignImageBase_ANT_DESIGN_39681_TO_33611(Image):
+class HyperswitchImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -90,10 +53,10 @@ class AntDesignImageBase_ANT_DESIGN_39681_TO_33611(Image):
         return self._config
 
     def dependency(self) -> str | Image:
-        return _NODE_IMAGE
+        return _RUST_IMAGE
 
     def image_tag(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -129,8 +92,12 @@ LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
 RUN printf 'Acquire::Check-Valid-Until "false";\\nAcquire::Retries "5";\\n' > /etc/apt/apt.conf.d/99no-check-valid-until
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates \\
+    git ca-certificates build-essential pkg-config libssl-dev libpq-dev zlib1g-dev \\
     && rm -rf /var/lib/apt/lists/*
+
+ENV CARGO_TERM_COLOR=never \\
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \\
+    CARGO_NET_RETRY=10
 
 RUN git config --global --add safe.directory '*'
 
@@ -145,7 +112,7 @@ CMD ["/bin/bash"]
 """
 
 
-class AntDesignImageDefault_ANT_DESIGN_39681_TO_33611(Image):
+class HyperswitchImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -159,7 +126,7 @@ class AntDesignImageDefault_ANT_DESIGN_39681_TO_33611(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return AntDesignImageBase_ANT_DESIGN_39681_TO_33611(self.pr, self.config)
+        return HyperswitchImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -205,15 +172,25 @@ bash /home/check_git_changes.sh
 git checkout --detach {self.pr.base.sha}
 bash /home/check_git_changes.sh
 
-npm install --legacy-peer-deps || true
+rustc --version
+cargo --version
 
-{_PRE_CLEAN_SCRIPT}{_PIN_SCRIPT}{_POST_PIN_SCRIPT}
-{_JEST_PATCH_SCRIPT}
-test -x node_modules/.bin/jest || {{ echo "prepare.sh: jest was not installed"; exit 1; }}
-test -f components/version/version.tsx -o -f components/version/version.ts || {{ echo "prepare.sh: npm run version generated neither components/version/version.tsx nor version.ts"; exit 1; }}
-node -e "const v=require('@ant-design/icons-svg/package.json').version; if(!v.startsWith('4.2.')){{console.error('prepare.sh: icons-svg pin failed, got '+v);process.exit(1);}}console.log('icons-svg '+v);"
-node -e "try{{const u=require('undici/package.json').version;console.error('prepare.sh: undici '+u+' present - cheerio pin failed, jsdom suites will die on TextDecoder');process.exit(1);}}catch(e){{if(e.code!=='MODULE_NOT_FOUND'){{throw e;}}}}console.log('undici absent');"
-node -e "require('./package.json'); console.log('DEPS_OK')"
+cargo fetch || true
+grep -oE 'git[+]https://[^?#"]+[?]rev=[0-9a-f]{{40}}#[0-9a-f]{{40}}' Cargo.lock | sort -u | while IFS= read -r src; do
+    url="${{src#git+}}"
+    url="${{url%%[?]*}}"
+    sha="${{src##*#}}"
+    for db in "$CARGO_HOME"/git/db/"$(basename "$url")"-*; do
+        [ -d "$db" ] || continue
+        git -C "$db" fetch -q "$url" "$sha:refs/commit/$sha" || true
+    done
+done
+cargo fetch || true
+{_cargo_loop("--no-run")}
+[ "$rc" -eq 0 ] || {{ echo "prepare.sh: a test target failed to compile at the base commit"; exit 1; }}
+git checkout -- .
+git clean -fdq
+bash /home/check_git_changes.sh
 """,
             ),
             File(
@@ -225,7 +202,8 @@ set -eo pipefail
 
 cd /home/{self.pr.repo}
 export CI=true
-npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
+{_cargo_loop("--no-fail-fast")}
+exit $rc
 """,
             ),
             File(
@@ -238,7 +216,8 @@ set -eo pipefail
 cd /home/{self.pr.repo}
 export CI=true
 git apply --3way --whitespace=nowarn /home/test.patch
-npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
+{_cargo_loop("--no-fail-fast")}
+exit $rc
 """,
             ),
             File(
@@ -251,7 +230,8 @@ set -eo pipefail
 cd /home/{self.pr.repo}
 export CI=true
 git apply --3way --whitespace=nowarn /home/test.patch /home/fix.patch
-npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
+{_cargo_loop("--no-fail-fast")}
+exit $rc
 """,
             ),
         ]
@@ -260,7 +240,7 @@ npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
         image = self.dependency()
         if isinstance(image, str):
             raise ValueError(
-                "AntDesignImageDefault_ANT_DESIGN_39681_TO_33611 dependency must be an Image"
+                "HyperswitchImageDefault dependency must be an Image"
             )
         name = image.image_name()
         tag = image.image_tag()
@@ -290,8 +270,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("ant-design", "ant_design_39681_to_33611")
-class ANT_DESIGN_39681_TO_33611(Instance):
+@Instance.register("juspay", "hyperswitch")
+class HYPERSWITCH(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -302,7 +282,7 @@ class ANT_DESIGN_39681_TO_33611(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return AntDesignImageDefault_ANT_DESIGN_39681_TO_33611(self.pr, self._config)
+        return HyperswitchImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -320,4 +300,54 @@ class ANT_DESIGN_39681_TO_33611(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        return _restore_truncated_extensions(test_log, parse_jest_log(test_log))
+        passed: set[str] = set()
+        failed: set[str] = set()
+        skipped: set[str] = set()
+        buckets = {"ok": passed, "FAILED": failed, "ignored": skipped}
+
+        crate = ""
+        target = ""
+        for raw in _ANSI_RE.sub("", test_log).splitlines():
+            line = raw.strip()
+
+            marker = _CRATE_RE.match(line)
+            if marker:
+                crate = marker.group(1)
+                target = ""
+                continue
+
+            running = _TARGET_RE.match(line)
+            if running:
+                target = running.group(1)
+                continue
+
+            if _DOCTESTS_RE.match(line):
+                target = ""
+                continue
+
+            result = _RESULT_RE.match(line)
+            if not result:
+                continue
+
+            name, status = result.group(1), result.group(2)
+            doc = _DOC_NAME_RE.match(name)
+            if doc:
+                path, name = doc.group(1), doc.group(2)
+            else:
+                path = target
+            if crate and path:
+                path = f"{crate}/{path}"
+            buckets[status].add(f"{path}::{name}" if path else name)
+
+        passed -= failed
+        passed -= skipped
+        skipped -= failed
+
+        return TestResult(
+            passed_count=len(passed),
+            failed_count=len(failed),
+            skipped_count=len(skipped),
+            passed_tests=passed,
+            failed_tests=failed,
+            skipped_tests=skipped,
+        )

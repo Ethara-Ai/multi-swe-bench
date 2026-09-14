@@ -7,16 +7,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# Django is pinned rather than left to pip. `setup.py` declares only
-# `django>=2.0`, which on a modern index resolves to Django 4.x/5.x -- a decade
-# newer than this Oct-2020 codebase and guaranteed to break it. The repo's own
-# tox matrix at this commit is django{22,30,31}, so 3.1 is the newest version
-# the project actually claims to support, and it is what CI would have run.
 DJANGO_PIN = "django>=3.1,<3.2"
 
-# `--no-header` needs pytest >= 6.0; requirements-test.txt pins pytest==6.1.1.
-# pytest.ini already supplies `testpaths = axes/tests`, the coverage addopts and
-# DJANGO_SETTINGS_MODULE, so no path or settings argument is needed here.
 TEST_CMD = "python -m pytest -v -rA --no-header -p no:cacheprovider"
 
 
@@ -34,10 +26,7 @@ class DjangoAxesImageBase(Image):
         return self._config
 
     def dependency(self) -> str | Image:
-        # Travis matrix at this commit is 3.6/3.7/3.8 and setup.py declares
-        # python_requires="~=3.6". 3.8 is the newest the project tests against;
-        # 3.9+ would pair badly with Django 3.1.
-        return "python:3.8"
+        return "python:3.8-bookworm"
 
     def image_tag(self) -> str:
         return f"base-pr-{self.pr.number}"
@@ -60,7 +49,6 @@ class DjangoAxesImageBase(Image):
 
         org = self.pr.org
         repo = self.pr.repo
-        sha = self.pr.base.sha
 
         return f"""# syntax=docker/dockerfile:1.6
 
@@ -68,7 +56,7 @@ FROM {image_name}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
-ARG BASE_COMMIT={sha}
+ARG BASE_COMMIT
 
 ARG http_proxy=""
 ARG https_proxy=""
@@ -106,42 +94,14 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
 
 ENV PYTHONUNBUFFERED=1 \\
     PYTHONDONTWRITEBYTECODE=1 \\
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \\
-    DJANGO_SETTINGS_MODULE=axes.tests.settings
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /home/
 
-# The suite runs against sqlite in-memory (axes/tests/settings.py), so no database
-# service is needed. `patch` backs the apply_patch.sh fallback when `git apply`
-# rejects a hunk; python:3.8 is buildpack-deps based and already ships the C
-# toolchain, so build-essential is not required.
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git ca-certificates curl patch \\
     && rm -rf /var/lib/apt/lists/*
 
 {fetch}
-
-WORKDIR /home/{repo}
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
-RUN set -eux; \\
-    git checkout --detach "${{BASE_COMMIT}}"; \\
-    git remote remove origin 2>/dev/null || true; \\
-    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
-        | xargs -r -n1 git update-ref -d; \\
-    git reflog expire --expire=now --all; \\
-    git reflog expire --expire-unreachable=now --all; \\
-    git gc --prune=now --aggressive; \\
-    git repack -a -d -l --quiet; \\
-    rm -f .git/objects/info/alternates; \\
-    git config --local gc.auto 0; \\
-    git config --local fetch.recurseSubmodules false; \\
-    git config --local remote.pushDefault ""; \\
-    test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"; \\
-    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
-    test -z "$(git remote)"; \\
-    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
 {self.clear_env}
 
@@ -179,9 +139,6 @@ class DjangoAxesImageDefault(Image):
                 ".",
                 "check_git_changes.sh",
                 """#!/bin/bash
-# Assert the working tree is pristine. `git reset --hard` restores tracked files
-# but does NOT remove stray untracked ones, and the Dockerfile's HEAD/refs asserts
-# only prove WHICH commit is checked out -- a dirty tree satisfies all of them.
 set -e
 
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
@@ -203,11 +160,6 @@ exit 0
                 ".",
                 "apply_patch.sh",
                 r"""#!/bin/bash
-# Apply one patch as completely as possible, then ALWAYS exit 0. The caller must
-# reach pytest no matter how patching went: a stage that dies while patching
-# reports zero tests, which the harness cannot tell apart from "the fix does not
-# work". Whole-patch fast path first; per-file cascade only when something
-# rejects, so one unappliable file cannot take the gold tests down with it.
 
 patch_file="$1"
 
@@ -236,8 +188,6 @@ revert_section() {
     local p
     for p in $(section_paths "$1"); do
         if git cat-file -e "HEAD:$p" 2>/dev/null; then
-            # From HEAD, not the index: `git apply --3way` stages what it merges,
-            # so `git checkout -- <path>` would restore the half-applied version.
             git checkout HEAD -- "$p" 2>/dev/null || true
         else
             git rm -f -q --cached "$p" 2>/dev/null || true
@@ -281,9 +231,6 @@ echo "apply_patch: $patch_file -> $applied file(s) applied, $rejected rejected"
 if [ "$rejected" -gt 0 ]; then
     echo "apply_patch: rejected:"
     for f in $rejected_files; do echo "apply_patch:   $f"; done
-    # Exiting 0 stays deliberate -- the caller must still reach pytest. But a
-    # patch that did not fully apply must not be discoverable only by a human
-    # reading the log. Drop a marker the run-scripts turn into a loud banner.
     echo "$rejected $patch_file" >> /tmp/apply_patch_rejects
 fi
 
@@ -302,28 +249,13 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# Django first and pinned, so the pinned version wins before `-e .` can pull an
-# unbounded `django>=2.0` from setup.py. requirements-test.txt then supplies the
-# rest at the versions this commit was tested with (pytest 6.1.1,
-# pytest-django 3.10.0, pytest-cov 2.10.1, pytest-subtests 0.3.2, coverage 5.3)
-# and installs the package itself in editable mode via its own `-e .` line.
-#
-# `six` is an undeclared dependency of pytest-django 3.10.0: its
-# live_server_helper.py does `import six` without listing it in install_requires.
-# In 2020 it came along transitively; on a clean index against Django 3.1 nothing
-# pulls it in, and pytest dies at COLLECTION time -- which would look like every
-# test failing rather than a missing package. Pinned to the last 1.x, the series
-# contemporary with this commit.
-pip install --no-cache-dir "{django_pin}" "six==1.15.0"
-pip install --no-cache-dir -r requirements-test.txt
+pip install --no-cache-dir -r requirements-test.txt "{django_pin}" "six==1.15.0" || true
+python -c "import django, axes, pytest, pytest_django, pytest_cov, pytest_subtests" || {{ echo "prepare: FAILED at dependency check" >&2; exit 1; }}
 
 python -c "import django; print('django', django.get_version())"
 python -c "import axes; print('axes import OK')"
 python -m pytest --version
 
-# `-e .` writes axes.egg-info. That path is gitignored, so it does not dirty the
-# tree, but clean up anyway and then ASSERT pristine rather than only warning --
-# a dirty tree here would silently move every graded stage off base.sha.
 git reset --hard --quiet
 git clean -fdq
 bash /home/check_git_changes.sh
@@ -333,9 +265,7 @@ bash /home/check_git_changes.sh
                 ".",
                 "run.sh",
                 """#!/bin/bash
-# No `set -e`: a non-zero pytest exit is the NORMAL outcome of a stage whose
-# tests fail, and the log is the deliverable.
-set -o pipefail
+set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo} || exit 1
@@ -347,7 +277,7 @@ exit 0
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -o pipefail
+set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo} || exit 1
@@ -368,7 +298,7 @@ exit 0
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -o pipefail
+set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo} || exit 1
@@ -397,13 +327,32 @@ exit 0
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        # A PR layer is COPYs + one `RUN bash /home/prepare.sh`, nothing else --
-        # no FROM of a runtime, no clone, no apt, no history scrub. All of that
-        # belongs to the base image, which already hardens and asserts
-        # HEAD/refs/remotes/reachability after checkout.
         return f"""FROM {name}:{tag}
 
+ARG BASE_COMMIT="{self.pr.base.sha}"
+ENV BASE_COMMIT=${{BASE_COMMIT}}
+
 {self.global_env}
+
+WORKDIR /home/{self.pr.repo}
+
+RUN set -eux; \\
+    git checkout --detach "${{BASE_COMMIT}}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
 {copy_commands}
 
@@ -450,11 +399,6 @@ class DjangoAxes(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # `-rA` prints a short-summary line per outcome. The node id is captured
-        # whole (path::Class::test), not just the path, so two tests in one file
-        # stay distinct -- collapsing them to the file would merge a pass and a
-        # fail. django-axes puts every test in a TestCase class, so the ids carry
-        # a class segment.
         result_re = re.compile(
             r"^(PASSED|FAILED|ERROR|XPASS|XFAIL|SKIPPED)(?:\s+\[\s*\d+\s*\])?\s+(\S+)"
         )
@@ -471,7 +415,6 @@ class DjangoAxes(Instance):
             else:
                 skipped_tests.add(name)
 
-        # A name may live in only one bucket.
         passed_tests -= failed_tests
         passed_tests -= skipped_tests
         skipped_tests -= failed_tests

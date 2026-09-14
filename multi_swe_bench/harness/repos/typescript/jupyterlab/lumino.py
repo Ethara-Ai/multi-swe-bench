@@ -5,78 +5,58 @@ import re
 from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-from multi_swe_bench.harness.repos.typescript.ant_design.ant_design import parse_jest_log
 
-_ANSI_RE = re.compile(r"\[[0-9;]*[a-zA-Z]")
-_SUITE_PATH_RE = re.compile(r"^\s*(?:PASS|FAIL)\s+(\S+\.(?:tsx|jsx|ts|js))\b", re.MULTILINE)
+_NODE_IMAGE = "node:14-bullseye"
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_MARKER_RE = re.compile(r"^(TESTPASS|TESTFAIL|TESTSKIP) (.+?)\s*$")
 
-def _restore_truncated_extensions(test_log: str, result: TestResult) -> TestResult:
-    real: dict[str, str] = {}
-    for path in _SUITE_PATH_RE.findall(_ANSI_RE.sub("", test_log)):
-        if path.endswith((".tsx", ".jsx")):
-            real[path[:-1]] = path
-    if not real:
-        return result
-
-    def restore(ident: str) -> str:
-        head, sep, tail = ident.partition("::")
-        return f"{real[head]}{sep}{tail}" if head in real else ident
-
-    return TestResult(
-        passed_count=result.passed_count,
-        failed_count=result.failed_count,
-        skipped_count=result.skipped_count,
-        passed_tests={restore(t) for t in result.passed_tests},
-        failed_tests={restore(t) for t in result.failed_tests},
-        skipped_tests={restore(t) for t in result.skipped_tests},
-    )
-
-
-_TAG_SUFFIX = "39681_to_33611"
-_NODE_IMAGE = "node:16-bullseye"
-
-_JEST_PATCH_SCRIPT = """\
-node << 'PATCHEOF' || true
-const fs = require('fs');
-try {
-  let c = fs.readFileSync('.jest.js', 'utf8');
-  const needed = ['@exodus', 'jsdom', '@csstools', '@asamuzakjp/dom-selector'];
-  let changed = false;
-  for (const m of needed) {
-    if (!c.includes("'" + m + "'")) {
-      c = c.replace('const compileModules = [', "const compileModules = [\\n  '" + m + "',");
-      changed = true;
-    }
+_LENIENT_TSCONFIG = """\
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmitOnError": false,
+    "noUnusedLocals": false
   }
-  if (changed) { fs.writeFileSync('.jest.js', c); console.log('Patched .jest.js ESM modules'); }
-} catch(e) { console.log('No .jest.js to patch'); }
-PATCHEOF
+}
 """
 
-_PRE_CLEAN_SCRIPT = """\
-find node_modules -path "*/node_modules/cheerio" -type d -exec rm -rf {} + 2>/dev/null
-rm -rf node_modules/cheerio node_modules/.package-lock.json 2>/dev/null
+_REPORTER_JS = """\
+const path = require('path');
+
+const SRC_DIR = 'packages/polling/tests/src/';
+
+function identify(test) {
+  const file = test && test.file ? path.basename(test.file) : 'index.spec.js';
+  const source = SRC_DIR + file.replace(/\\.js$/, '.ts');
+  const title = typeof test.fullTitle === 'function' ? test.fullTitle() : String(test.title);
+  return source + '::' + title;
+}
+
+module.exports = function FlatReporter(runner) {
+  runner.on('pass', function (test) {
+    console.log('TESTPASS ' + identify(test));
+  });
+  runner.on('fail', function (test) {
+    console.log('TESTFAIL ' + identify(test));
+  });
+  runner.on('pending', function (test) {
+    console.log('TESTSKIP ' + identify(test));
+  });
+};
 """
 
-_PIN_SCRIPT = """\
-npm install --no-save --legacy-peer-deps cheerio@1.0.0-rc.10 @ant-design/icons@4.7.0 @ant-design/icons-svg@4.2.1 2>/dev/null || true
-"""
-
-_POST_PIN_SCRIPT = """\
-for nested in $(find node_modules -path "*/node_modules/cheerio/dist" -type d 2>/dev/null); do
-  nested_dir=$(dirname "$nested")
-  rm -rf "$nested_dir"
-  cp -r node_modules/cheerio "$nested_dir"
-done
-find node_modules -name "parse5-parser-stream" -type d -exec rm -rf {} + 2>/dev/null
-find node_modules -path "*/node_modules/@ant-design/icons-svg" -type d \\
-  -not -path "node_modules/@ant-design/icons-svg" -exec rm -rf {} + 2>/dev/null
-npm run version || true
+_BUILD_AND_TEST = """\
+rm -rf packages/polling/lib packages/polling/tests/build
+find packages -name "*.tsbuildinfo" -delete
+node_modules/.bin/tsc -b packages/polling packages/algorithm
+node_modules/.bin/tsc -p packages/polling/tests/tsconfig.lenient.json || echo "tsc: the test build reported type diagnostics"
+test -f packages/polling/tests/build/index.spec.js || { echo "run: the test build emitted no javascript"; exit 1; }
+node_modules/.bin/mocha --reporter /home/flat-reporter.js --timeout 20000 --exit $(ls -r packages/polling/tests/build/*.spec.js)
 """
 
 
-class AntDesignImageBase_ANT_DESIGN_39681_TO_33611(Image):
+class LuminoImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -93,10 +73,10 @@ class AntDesignImageBase_ANT_DESIGN_39681_TO_33611(Image):
         return _NODE_IMAGE
 
     def image_tag(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def workdir(self) -> str:
-        return self.image_tag()
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -129,7 +109,7 @@ LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
 RUN printf 'Acquire::Check-Valid-Until "false";\\nAcquire::Retries "5";\\n' > /etc/apt/apt.conf.d/99no-check-valid-until
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates \\
+    git ca-certificates build-essential python3 \\
     && rm -rf /var/lib/apt/lists/*
 
 RUN git config --global --add safe.directory '*'
@@ -145,7 +125,7 @@ CMD ["/bin/bash"]
 """
 
 
-class AntDesignImageDefault_ANT_DESIGN_39681_TO_33611(Image):
+class LuminoImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -159,7 +139,7 @@ class AntDesignImageDefault_ANT_DESIGN_39681_TO_33611(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return AntDesignImageBase_ANT_DESIGN_39681_TO_33611(self.pr, self.config)
+        return LuminoImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -205,15 +185,21 @@ bash /home/check_git_changes.sh
 git checkout --detach {self.pr.base.sha}
 bash /home/check_git_changes.sh
 
-npm install --legacy-peer-deps || true
+yarn install --frozen-lockfile --ignore-scripts --network-timeout 600000 || true
 
-{_PRE_CLEAN_SCRIPT}{_PIN_SCRIPT}{_POST_PIN_SCRIPT}
-{_JEST_PATCH_SCRIPT}
-test -x node_modules/.bin/jest || {{ echo "prepare.sh: jest was not installed"; exit 1; }}
-test -f components/version/version.tsx -o -f components/version/version.ts || {{ echo "prepare.sh: npm run version generated neither components/version/version.tsx nor version.ts"; exit 1; }}
-node -e "const v=require('@ant-design/icons-svg/package.json').version; if(!v.startsWith('4.2.')){{console.error('prepare.sh: icons-svg pin failed, got '+v);process.exit(1);}}console.log('icons-svg '+v);"
-node -e "try{{const u=require('undici/package.json').version;console.error('prepare.sh: undici '+u+' present - cheerio pin failed, jsdom suites will die on TextDecoder');process.exit(1);}}catch(e){{if(e.code!=='MODULE_NOT_FOUND'){{throw e;}}}}console.log('undici absent');"
-node -e "require('./package.json'); console.log('DEPS_OK')"
+cat > packages/polling/tests/tsconfig.lenient.json << 'LENIENTEOF'
+{_LENIENT_TSCONFIG}LENIENTEOF
+
+cat > /home/flat-reporter.js << 'REPORTEREOF'
+{_REPORTER_JS}REPORTEREOF
+
+test -x node_modules/.bin/mocha || {{ echo "prepare.sh: mocha was not installed"; exit 1; }}
+test -x node_modules/.bin/tsc || {{ echo "prepare.sh: typescript was not installed"; exit 1; }}
+test -e node_modules/@lumino/polling || {{ echo "prepare.sh: the yarn workspace link for @lumino/polling is missing"; exit 1; }}
+node -e "require('chai'); require('mocha'); console.log('DEPS_OK')"
+node_modules/.bin/tsc -b packages/polling packages/algorithm
+node_modules/.bin/tsc -p packages/polling/tests/tsconfig.lenient.json
+test -f packages/polling/tests/build/index.spec.js || {{ echo "prepare.sh: the baseline test build emitted no javascript"; exit 1; }}
 """,
             ),
             File(
@@ -225,8 +211,7 @@ set -eo pipefail
 
 cd /home/{self.pr.repo}
 export CI=true
-npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
-""",
+{_BUILD_AND_TEST}""",
             ),
             File(
                 ".",
@@ -237,9 +222,8 @@ set -eo pipefail
 
 cd /home/{self.pr.repo}
 export CI=true
-git apply --3way --whitespace=nowarn /home/test.patch
-npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
-""",
+git apply --whitespace=nowarn /home/test.patch
+{_BUILD_AND_TEST}""",
             ),
             File(
                 ".",
@@ -250,18 +234,15 @@ set -eo pipefail
 
 cd /home/{self.pr.repo}
 export CI=true
-git apply --3way --whitespace=nowarn /home/test.patch /home/fix.patch
-npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
-""",
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+{_BUILD_AND_TEST}""",
             ),
         ]
 
     def dockerfile(self) -> str:
         image = self.dependency()
         if isinstance(image, str):
-            raise ValueError(
-                "AntDesignImageDefault_ANT_DESIGN_39681_TO_33611 dependency must be an Image"
-            )
+            raise ValueError("LuminoImageDefault dependency must be an Image")
         name = image.image_name()
         tag = image.image_tag()
 
@@ -290,8 +271,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("ant-design", "ant_design_39681_to_33611")
-class ANT_DESIGN_39681_TO_33611(Instance):
+@Instance.register("jupyterlab", "lumino")
+class Lumino(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -302,7 +283,7 @@ class ANT_DESIGN_39681_TO_33611(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return AntDesignImageDefault_ANT_DESIGN_39681_TO_33611(self.pr, self._config)
+        return LuminoImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -320,4 +301,33 @@ class ANT_DESIGN_39681_TO_33611(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        return _restore_truncated_extensions(test_log, parse_jest_log(test_log))
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
+
+        log = _ANSI_RE.sub("", test_log)
+
+        for line in log.splitlines():
+            match = _MARKER_RE.match(line)
+            if not match:
+                continue
+            tag, name = match.group(1), match.group(2)
+            if tag == "TESTPASS":
+                passed_tests.add(name)
+            elif tag == "TESTFAIL":
+                failed_tests.add(name)
+            else:
+                skipped_tests.add(name)
+
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
+
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
+        )

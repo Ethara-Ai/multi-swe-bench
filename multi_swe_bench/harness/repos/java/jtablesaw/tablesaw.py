@@ -5,78 +5,55 @@ import re
 from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
-from multi_swe_bench.harness.repos.typescript.ant_design.ant_design import parse_jest_log
 
-_ANSI_RE = re.compile(r"\[[0-9;]*[a-zA-Z]")
-_SUITE_PATH_RE = re.compile(r"^\s*(?:PASS|FAIL)\s+(\S+\.(?:tsx|jsx|ts|js))\b", re.MULTILINE)
+_JDK_IMAGE = "maven:3.8.8-eclipse-temurin-8-focal"
+_MVN = "mvn -B -o --no-transfer-progress -fae"
+_SUREFIRE_FLAGS = "-Dmaven.test.failure.ignore=true -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false -Dsurefire.useFile=false"
+_DEACTIVATE = "-Djunit.jupiter.conditions.deactivate='org.junit.*DisabledCondition'"
+_JSPLOT_TESTS = "-Dtest='tech/tablesaw/plotly/**/*.java,tech/tablesaw/components/**/*.java'"
 
-
-def _restore_truncated_extensions(test_log: str, result: TestResult) -> TestResult:
-    real: dict[str, str] = {}
-    for path in _SUITE_PATH_RE.findall(_ANSI_RE.sub("", test_log)):
-        if path.endswith((".tsx", ".jsx")):
-            real[path[:-1]] = path
-    if not real:
-        return result
-
-    def restore(ident: str) -> str:
-        head, sep, tail = ident.partition("::")
-        return f"{real[head]}{sep}{tail}" if head in real else ident
-
-    return TestResult(
-        passed_count=result.passed_count,
-        failed_count=result.failed_count,
-        skipped_count=result.skipped_count,
-        passed_tests={restore(t) for t in result.passed_tests},
-        failed_tests={restore(t) for t in result.failed_tests},
-        skipped_tests={restore(t) for t in result.skipped_tests},
-    )
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_FILE_MARKER_RE = re.compile(r"^##### FILE: (\S+)[ \t]*$", re.M)
+_MODULE_RE = re.compile(r"^(?:\./)?(.*?)/?target/surefire-reports/")
+_TESTCASE_RE = re.compile(r"<testcase\b([^>]*?)(/>|>(.*?)</testcase>)", re.S)
+_NAME_RE = re.compile(r'\bname="([^"]*)"')
+_CLASSNAME_RE = re.compile(r'\bclassname="([^"]*)"')
 
 
-_TAG_SUFFIX = "39681_to_33611"
-_NODE_IMAGE = "node:16-bullseye"
-
-_JEST_PATCH_SCRIPT = """\
-node << 'PATCHEOF' || true
-const fs = require('fs');
-try {
-  let c = fs.readFileSync('.jest.js', 'utf8');
-  const needed = ['@exodus', 'jsdom', '@csstools', '@asamuzakjp/dom-selector'];
-  let changed = false;
-  for (const m of needed) {
-    if (!c.includes("'" + m + "'")) {
-      c = c.replace('const compileModules = [', "const compileModules = [\\n  '" + m + "',");
-      changed = true;
-    }
-  }
-  if (changed) { fs.writeFileSync('.jest.js', c); console.log('Patched .jest.js ESM modules'); }
-} catch(e) { console.log('No .jest.js to patch'); }
-PATCHEOF
-"""
-
-_PRE_CLEAN_SCRIPT = """\
-find node_modules -path "*/node_modules/cheerio" -type d -exec rm -rf {} + 2>/dev/null
-rm -rf node_modules/cheerio node_modules/.package-lock.json 2>/dev/null
-"""
-
-_PIN_SCRIPT = """\
-npm install --no-save --legacy-peer-deps cheerio@1.0.0-rc.10 @ant-design/icons@4.7.0 @ant-design/icons-svg@4.2.1 2>/dev/null || true
-"""
-
-_POST_PIN_SCRIPT = """\
-for nested in $(find node_modules -path "*/node_modules/cheerio/dist" -type d 2>/dev/null); do
-  nested_dir=$(dirname "$nested")
-  rm -rf "$nested_dir"
-  cp -r node_modules/cheerio "$nested_dir"
+def _test_block(repo: str) -> str:
+    return f"""find . -type d -name surefire-reports -prune -exec rm -rf {{}} +
+clean=clean
+for attempt in 1 2 3 4 5; do
+    compile_rc=0
+    {_MVN} $clean test-compile > /home/compile.log 2>&1 || compile_rc=$?
+    cat /home/compile.log
+    [ "$compile_rc" -eq 0 ] && break
+    bad=$( {{ grep -oE '^\\[ERROR\\] /home/{repo}/[^ :]*/src/test/java/[^ :]+\\.java:\\[[^]]*\\]' /home/compile.log || true; }} | sed -e 's|^\\[ERROR\\] ||' -e 's|:\\[[^]]*\\]$||' | sort -u)
+    [ -n "$bad" ] || break
+    printf '%s\\n' "$bad" | while IFS= read -r f; do
+        echo "QUARANTINE attempt $attempt: ${{f#/home/{repo}/}}"
+        rm -f "$f"
+    done
+    clean=""
 done
-find node_modules -name "parse5-parser-stream" -type d -exec rm -rf {} + 2>/dev/null
-find node_modules -path "*/node_modules/@ant-design/icons-svg" -type d \\
-  -not -path "node_modules/@ant-design/icons-svg" -exec rm -rf {} + 2>/dev/null
-npm run version || true
-"""
+rc=0
+{_MVN} test {_SUREFIRE_FLAGS} || rc=$?
+{_MVN} test {_SUREFIRE_FLAGS} {_DEACTIVATE} {_JSPLOT_TESTS} || rc=$?
+echo "===== BEGIN TEST RESULTS ====="
+find . -path '*/target/surefire-reports/TEST-*.xml' -print0 | sort -z | while IFS= read -r -d '' f; do
+    echo "##### FILE: ${{f#./}}"
+    cat "$f"
+    echo
+done
+echo "===== END TEST RESULTS ====="
+if [ "$rc" -ne 0 ] && [ -z "$(find . -path '*/target/surefire-reports/TEST-*.xml' -print -quit)" ]; then
+    echo "FATAL: maven exited $rc and produced no surefire reports" >&2
+    exit "$rc"
+fi
+exit 0"""
 
 
-class AntDesignImageBase_ANT_DESIGN_39681_TO_33611(Image):
+class TablesawImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -90,10 +67,10 @@ class AntDesignImageBase_ANT_DESIGN_39681_TO_33611(Image):
         return self._config
 
     def dependency(self) -> str | Image:
-        return _NODE_IMAGE
+        return _JDK_IMAGE
 
     def image_tag(self) -> str:
-        return f"base-{_TAG_SUFFIX}"
+        return "base"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -129,8 +106,10 @@ LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
 RUN printf 'Acquire::Check-Valid-Until "false";\\nAcquire::Retries "5";\\n' > /etc/apt/apt.conf.d/99no-check-valid-until
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates \\
+    git ca-certificates curl \\
     && rm -rf /var/lib/apt/lists/*
+
+ENV MAVEN_OPTS="-Xmx1g"
 
 RUN git config --global --add safe.directory '*'
 
@@ -145,7 +124,7 @@ CMD ["/bin/bash"]
 """
 
 
-class AntDesignImageDefault_ANT_DESIGN_39681_TO_33611(Image):
+class TablesawImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -159,7 +138,7 @@ class AntDesignImageDefault_ANT_DESIGN_39681_TO_33611(Image):
         return self._config
 
     def dependency(self) -> Image | None:
-        return AntDesignImageBase_ANT_DESIGN_39681_TO_33611(self.pr, self.config)
+        return TablesawImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -205,15 +184,13 @@ bash /home/check_git_changes.sh
 git checkout --detach {self.pr.base.sha}
 bash /home/check_git_changes.sh
 
-npm install --legacy-peer-deps || true
+java -version
+mvn -version
 
-{_PRE_CLEAN_SCRIPT}{_PIN_SCRIPT}{_POST_PIN_SCRIPT}
-{_JEST_PATCH_SCRIPT}
-test -x node_modules/.bin/jest || {{ echo "prepare.sh: jest was not installed"; exit 1; }}
-test -f components/version/version.tsx -o -f components/version/version.ts || {{ echo "prepare.sh: npm run version generated neither components/version/version.tsx nor version.ts"; exit 1; }}
-node -e "const v=require('@ant-design/icons-svg/package.json').version; if(!v.startsWith('4.2.')){{console.error('prepare.sh: icons-svg pin failed, got '+v);process.exit(1);}}console.log('icons-svg '+v);"
-node -e "try{{const u=require('undici/package.json').version;console.error('prepare.sh: undici '+u+' present - cheerio pin failed, jsdom suites will die on TextDecoder');process.exit(1);}}catch(e){{if(e.code!=='MODULE_NOT_FOUND'){{throw e;}}}}console.log('undici absent');"
-node -e "require('./package.json'); console.log('DEPS_OK')"
+mvn -B --no-transfer-progress -fae clean test -Dmaven.test.failure.ignore=true -DfailIfNoTests=false -Dsurefire.useFile=false || {{ echo "prepare.sh: maven could not build the reactor at the base commit"; exit 1; }}
+git checkout -- .
+git clean -fdq
+bash /home/check_git_changes.sh
 """,
             ),
             File(
@@ -225,7 +202,7 @@ set -eo pipefail
 
 cd /home/{self.pr.repo}
 export CI=true
-npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
+{_test_block(self.pr.repo)}
 """,
             ),
             File(
@@ -237,8 +214,8 @@ set -eo pipefail
 
 cd /home/{self.pr.repo}
 export CI=true
-git apply --3way --whitespace=nowarn /home/test.patch
-npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
+git apply --whitespace=nowarn /home/test.patch
+{_test_block(self.pr.repo)}
 """,
             ),
             File(
@@ -250,8 +227,8 @@ set -eo pipefail
 
 cd /home/{self.pr.repo}
 export CI=true
-git apply --3way --whitespace=nowarn /home/test.patch /home/fix.patch
-npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+{_test_block(self.pr.repo)}
 """,
             ),
         ]
@@ -260,7 +237,7 @@ npx jest --config .jest.js --no-cache --verbose --maxWorkers=4
         image = self.dependency()
         if isinstance(image, str):
             raise ValueError(
-                "AntDesignImageDefault_ANT_DESIGN_39681_TO_33611 dependency must be an Image"
+                "TablesawImageDefault dependency must be an Image"
             )
         name = image.image_name()
         tag = image.image_tag()
@@ -290,8 +267,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("ant-design", "ant_design_39681_to_33611")
-class ANT_DESIGN_39681_TO_33611(Instance):
+@Instance.register("jtablesaw", "tablesaw")
+class TABLESAW(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -302,7 +279,7 @@ class ANT_DESIGN_39681_TO_33611(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return AntDesignImageDefault_ANT_DESIGN_39681_TO_33611(self.pr, self._config)
+        return TablesawImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -320,4 +297,43 @@ class ANT_DESIGN_39681_TO_33611(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        return _restore_truncated_extensions(test_log, parse_jest_log(test_log))
+        passed: set[str] = set()
+        failed: set[str] = set()
+        skipped: set[str] = set()
+
+        chunks = _FILE_MARKER_RE.split(_ANSI_RE.sub("", test_log))[1:]
+        for report_path, body in zip(chunks[0::2], chunks[1::2]):
+            module_match = _MODULE_RE.match(report_path)
+            module = module_match.group(1) if module_match else ""
+            for case in _TESTCASE_RE.finditer(body):
+                attrs = case.group(1) or ""
+                name = _NAME_RE.search(attrs)
+                classname = _CLASSNAME_RE.search(attrs)
+                if not name or not classname:
+                    continue
+                rel = classname.group(1).split("$", 1)[0].replace(".", "/") + ".java"
+                source = f"{module}/src/test/java/{rel}" if module else f"src/test/java/{rel}"
+                test_id = f"{source}::{name.group(1)}"
+                inner = case.group(3) or ""
+                if case.group(2) == "/>":
+                    passed.add(test_id)
+                elif "<failure" in inner or "<error" in inner:
+                    failed.add(test_id)
+                elif "<skipped" in inner:
+                    skipped.add(test_id)
+                else:
+                    passed.add(test_id)
+
+        passed -= failed
+        skipped -= failed
+        skipped -= passed
+
+        return TestResult(
+            passed_count=len(passed),
+            failed_count=len(failed),
+            skipped_count=len(skipped),
+            passed_tests=passed,
+            failed_tests=failed,
+            skipped_tests=skipped,
+        )
+
