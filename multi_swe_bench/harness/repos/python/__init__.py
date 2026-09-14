@@ -429,3 +429,5 @@ from multi_swe_bench.harness.repos.python.pwndbg import *
 from multi_swe_bench.harness.repos.python.CycloneDX import *
 
 from multi_swe_bench.harness.repos.python.Spherre_Labs import *
+from multi_swe_bench.harness.repos.python.Tuxemon import *
+from multi_swe_bench.harness.repos.python.SolFoundry import *

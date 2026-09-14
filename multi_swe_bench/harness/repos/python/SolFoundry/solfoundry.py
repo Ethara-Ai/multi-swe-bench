@@ -5,8 +5,9 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_NODE_IMAGE = "node:22-bookworm"
-_BASE_TAG = "base-724_to_665"
+_PYTHON_IMAGE = "python:3.12-slim"
+_BASE_TAG = "base-65_to_65"
+_TEST_TARGET = "backend/tests"
 
 _CHECK_GIT_CHANGES_SH = """#!/bin/bash
 set -e
@@ -15,51 +16,48 @@ if [[ -n $(git status --porcelain) ]]; then
   echo "check_git_changes: Uncommitted changes"
   exit 1
 fi
-
-echo "check_git_changes: No uncommitted changes"
 """
 
-_EMIT_TESTCASES_MJS = """import path from 'node:path';
+_EMIT_RESULTS_PY = """import os
+import sys
+import xml.etree.ElementTree as ET
 
-const repoDir = process.cwd();
-const clean = (v) => String(v === undefined || v === null ? '' : v).replace(/\\s+/g, ' ').trim();
+report = sys.argv[1]
+expected = sys.argv[2] if len(sys.argv) > 2 else ""
+results = {}
 
-export default async function* reporter(source) {
-    const stacks = new Map();
+if os.path.exists(report):
+    for case in ET.parse(report).getroot().iter("testcase"):
+        cls = (case.get("classname") or "").strip()
+        name = (case.get("name") or "").strip()
+        if not cls or not name:
+            continue
+        status = "PASSED"
+        for child in case:
+            tag = child.tag.split("}")[-1].lower()
+            if tag in ("failure", "error"):
+                status = "FAILED"
+                break
+            if tag == "skipped":
+                status = "SKIPPED"
+                break
+        key = cls + " > " + name
+        if status == "FAILED" or key not in results:
+            results[key] = status
 
-    for await (const event of source) {
-        const data = event.data || {};
-        const file = data.file || '';
+if expected and os.path.exists(expected):
+    for line in open(expected):
+        key = line.strip()
+        if key and key not in results:
+            results[key] = "FAILED"
 
-        if (event.type === 'test:start') {
-            if (!stacks.has(file)) stacks.set(file, []);
-            const stack = stacks.get(file);
-            stack.length = data.nesting;
-            stack[data.nesting] = data.name;
-            continue;
-        }
-
-        if (event.type !== 'test:pass' && event.type !== 'test:fail') continue;
-        if ((data.details || {}).type === 'suite') continue;
-
-        const rel = (path.relative(repoDir, file) || file).split(path.sep).join('/');
-        const src = (rel.startsWith('dist/') ? 'src/' + rel.slice(5) : rel).replace(/\\.js$/, '.ts');
-        const parts = [src, ...(stacks.get(file) || []).slice(0, data.nesting).map(clean)].filter(Boolean);
-
-        const title = clean(data.name);
-        if (title && title !== rel) parts.push(title);
-
-        const status = event.type === 'test:fail' ? 'FAILED'
-            : data.skip || data.todo ? 'SKIPPED' : 'PASSED';
-        yield 'TESTCASE ' + status + ' ' + parts.join(' > ') + '\\n';
-    }
-}
+for key, status in results.items():
+    print("TESTCASE " + status + " " + key)
+sys.stderr.write("emit_results: %d test cases\\n" % len(results))
 """
 
 _PREPARE_SH = """#!/bin/bash
 set -e
-
-export NODE_OPTIONS=--max-old-space-size=4096
 
 cd /home/__REPO__
 git reset --hard
@@ -69,48 +67,55 @@ git cat-file -e __BASE_SHA__^{commit} 2>/dev/null || git fetch --quiet --no-tags
 git checkout --detach __BASE_SHA__
 bash /home/check_git_changes.sh
 
-npm install --no-audit --no-fund
-npx --no-install tsc
-find dist -name '*.test.js' | grep -q .
-echo DEPS_OK
+pip install --no-cache-dir -r backend/requirements.txt
+pip install --no-cache-dir fastapi==0.141.1 pydantic==2.13.5 httpx==0.28.1 \\
+    sqlalchemy==2.0.52 pytest==9.1.1
+
+PYTHONPATH=/home/__REPO__/backend python -c "import app.main, sqlalchemy, pytest, httpx; print('DEPS_OK')"
 """
 
-_RUN_SH = """#!/bin/bash
+_RUN_TESTS_SH = """#!/bin/bash
 set -uo pipefail
 
-export CI=true TZ=UTC LC_ALL=C.UTF-8 NODE_ENV=test FORCE_COLOR=0 NO_COLOR=1
-export NODE_OPTIONS=--max-old-space-size=4096
+export CI=true TZ=UTC LC_ALL=C.UTF-8 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH=/home/__REPO__/backend
 
 cd /home/__REPO__
 
-rm -rf dist
-npx --no-install tsc || echo "tsc reported errors"
+EXPECTED=""
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ -n "$(git status --porcelain -- "$f")" ]; then
+        EXPECTED=/home/expected_tests.txt
+        break
+    fi
+done < /home/patched_tests.txt
 
-TEST_FILES=$(find dist -name '*.test.js' | sort)
-[ -n "$TEST_FILES" ] || { echo "no compiled test files under dist" >&2; exit 1; }
+rm -f /home/report.xml
+python -m pytest __TEST_TARGET__ --continue-on-collection-errors -p no:cacheprovider \\
+    -q --junitxml=/home/report.xml
 
-node --test --test-concurrency=1 \\
-    --test-reporter=/home/emit_testcases.mjs --test-reporter-destination=stdout \\
-    $TEST_FILES
+python /home/emit_results.py /home/report.xml "$EXPECTED"
 exit 0
 """
 
-_TEST_RUN_SH = """#!/bin/bash
-set -eo pipefail
+_RUN_SH = """#!/bin/bash
+set -e
+bash /home/run_tests.sh
+"""
 
+_TEST_RUN_SH = """#!/bin/bash
+set -e
 cd /home/__REPO__
 git apply --whitespace=nowarn /home/test.patch
-
-bash /home/run.sh
+bash /home/run_tests.sh
 """
 
 _FIX_RUN_SH = """#!/bin/bash
-set -eo pipefail
-
+set -e
 cd /home/__REPO__
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
-bash /home/run.sh
+bash /home/run_tests.sh
 """
 
 _BASE_DOCKERFILE = """# syntax=docker/dockerfile:1.6
@@ -131,7 +136,10 @@ ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
     TZ=UTC \\
+    PYTHONUNBUFFERED=1 \\
+    PYTHONDONTWRITEBYTECODE=1 \\
     http_proxy=${http_proxy} \\
     https_proxy=${https_proxy} \\
     HTTP_PROXY=${HTTP_PROXY} \\
@@ -158,7 +166,7 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    ca-certificates git \\
+    ca-certificates git build-essential \\
     && rm -rf /var/lib/apt/lists/*
 
 RUN git config --global --add safe.directory '*'
@@ -201,7 +209,42 @@ RUN if [ -f .gitmodules ]; then \\
     fi
 """
 
-_TESTCASE_RE = re.compile(r"^TESTCASE\s+(PASSED|FAILED|SKIPPED)\s+(\S.*?)\s*$")
+_TESTCASE_RE = re.compile(r"^TESTCASE (PASSED|FAILED|SKIPPED) (\S.*)$")
+_DIFF_FILE_RE = re.compile(r'^diff --git "?a/.+?"? "?b/(.+?)"?$')
+_TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]+|[^/]+_test)\.py$")
+_CLASS_RE = re.compile(r"^class\s+([A-Za-z_]\w*)")
+_FUNC_RE = re.compile(r"^(\s*)(?:async\s+)?def\s+(test\w*)\s*\(")
+
+
+def _test_patch_targets(pr: PullRequest) -> tuple[list[str], list[str]]:
+    files: list[str] = []
+    ids: list[str] = []
+    path = None
+    cls = None
+    for line in (pr.test_patch or "").replace("\r", "").split("\n"):
+        header = _DIFF_FILE_RE.match(line)
+        if header:
+            name = header.group(1)
+            path = name if _TEST_FILE_RE.search(name) else None
+            cls = None
+            if path and path not in files:
+                files.append(path)
+            continue
+        if not path or not line.startswith("+"):
+            continue
+        body = line[1:]
+        klass = _CLASS_RE.match(body)
+        if klass:
+            cls = klass.group(1)
+            continue
+        func = _FUNC_RE.match(body)
+        if func:
+            module = path[:-3].replace("/", ".")
+            prefix = module + "." + cls if (func.group(1) and cls) else module
+            test_id = prefix + " > " + func.group(2)
+            if test_id not in ids:
+                ids.append(test_id)
+    return files, ids
 
 
 def _render(template: str, pr: PullRequest) -> str:
@@ -209,10 +252,11 @@ def _render(template: str, pr: PullRequest) -> str:
         template.replace("__ORG__", pr.org)
         .replace("__REPO__", pr.repo)
         .replace("__BASE_SHA__", pr.base.sha)
+        .replace("__TEST_TARGET__", _TEST_TARGET)
     )
 
 
-class OhMyCodexImageBase724To665(Image):
+class SolfoundryImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -226,7 +270,7 @@ class OhMyCodexImageBase724To665(Image):
         return self._config
 
     def dependency(self) -> str:
-        return _NODE_IMAGE
+        return _PYTHON_IMAGE
 
     def image_tag(self) -> str:
         return _BASE_TAG
@@ -243,7 +287,7 @@ class OhMyCodexImageBase724To665(Image):
         )
 
 
-class OhMyCodexImageDefault724To665(Image):
+class SolfoundryImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -257,7 +301,7 @@ class OhMyCodexImageDefault724To665(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return OhMyCodexImageBase724To665(self.pr, self._config)
+        return SolfoundryImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -266,9 +310,12 @@ class OhMyCodexImageDefault724To665(Image):
         return f"pr-{self.pr.number}"
 
     def prepare_files(self) -> list[File]:
+        files, ids = _test_patch_targets(self.pr)
         return [
             File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
-            File(".", "emit_testcases.mjs", _EMIT_TESTCASES_MJS),
+            File(".", "emit_results.py", _EMIT_RESULTS_PY),
+            File(".", "patched_tests.txt", "".join(f + "\n" for f in files)),
+            File(".", "expected_tests.txt", "".join(i + "\n" for i in ids)),
             File(".", "prepare.sh", _render(_PREPARE_SH, self.pr)),
         ]
 
@@ -276,7 +323,8 @@ class OhMyCodexImageDefault724To665(Image):
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(".", "run.sh", _render(_RUN_SH, self.pr)),
+            File(".", "run_tests.sh", _render(_RUN_TESTS_SH, self.pr)),
+            File(".", "run.sh", _RUN_SH),
             File(".", "test-run.sh", _render(_TEST_RUN_SH, self.pr)),
             File(".", "fix-run.sh", _render(_FIX_RUN_SH, self.pr)),
         ]
@@ -304,8 +352,8 @@ class OhMyCodexImageDefault724To665(Image):
         return "\n\n".join(sections) + "\n"
 
 
-@Instance.register("Yeachan-Heo", "oh_my_codex_724_to_665")
-class OH_MY_CODEX_724_TO_665(Instance):
+@Instance.register("SolFoundry", "solfoundry")
+class SOLFOUNDRY(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -316,7 +364,7 @@ class OH_MY_CODEX_724_TO_665(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return OhMyCodexImageDefault724To665(self.pr, self._config)
+        return SolfoundryImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"
@@ -328,33 +376,26 @@ class OH_MY_CODEX_724_TO_665(Instance):
         return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
+        passed: set[str] = set()
+        failed: set[str] = set()
+        skipped: set[str] = set()
+        buckets = {"PASSED": passed, "FAILED": failed, "SKIPPED": skipped}
 
-        for line in test_log.split("\n"):
-            match = _TESTCASE_RE.match(line)
-            if not match:
-                continue
-            status, name = match.group(1), match.group(2)
-            if status == "FAILED":
-                failed_tests.add(name)
-            elif status == "SKIPPED":
-                skipped_tests.add(name)
-            else:
-                passed_tests.add(name)
+        for line in test_log.replace("\r", "").split("\n"):
+            match = _TESTCASE_RE.match(line.rstrip())
+            if match:
+                buckets[match.group(1)].add(match.group(2))
 
-        passed_tests -= failed_tests
-        skipped_tests -= failed_tests | passed_tests
-
+        passed -= failed
+        skipped -= failed | passed
         return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
+            passed_count=len(passed),
+            failed_count=len(failed),
+            skipped_count=len(skipped),
+            passed_tests=passed,
+            failed_tests=failed,
+            skipped_tests=skipped,
         )
 
 
-Instance.register("Yeachan-Heo", "oh-my-codex_724_to_665")(OH_MY_CODEX_724_TO_665)
+Instance.register("SolFoundry", "solfoundry_65")(SOLFOUNDRY)

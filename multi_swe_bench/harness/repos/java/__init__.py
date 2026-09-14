@@ -75,6 +75,7 @@ from multi_swe_bench.harness.repos.java.yegor256 import *
 from multi_swe_bench.harness.repos.java.halo_dev import *
 from multi_swe_bench.harness.repos.java.GoogleCloudPlatform import *
 from multi_swe_bench.harness.repos.java.OpenElements import *
+from multi_swe_bench.harness.repos.java.OpenTracksApp import *
 from multi_swe_bench.harness.repos.java.HubSpot import *
 from multi_swe_bench.harness.repos.java.cryostatio import *
 from multi_swe_bench.harness.repos.java.Swati4star import *
@@ -95,3 +96,4 @@ from multi_swe_bench.harness.repos.java.tlaplus import *
 from multi_swe_bench.harness.repos.java.react_native_camera import *
 # from multi_swe_bench.harness.repos.java.gaul import *
 # from multi_swe_bench.harness.repos.java.Wynntils import *
+from multi_swe_bench.harness.repos.java.Vonage import *

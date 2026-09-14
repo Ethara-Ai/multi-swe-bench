@@ -5,8 +5,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_NODE_IMAGE = "node:22-bookworm"
-_BASE_TAG = "base-724_to_665"
+_PYTHON_IMAGE = "python:3.10-slim"
+_BASE_TAG = "base-3320_to_1105"
 
 _CHECK_GIT_CHANGES_SH = """#!/bin/bash
 set -e
@@ -15,51 +15,40 @@ if [[ -n $(git status --porcelain) ]]; then
   echo "check_git_changes: Uncommitted changes"
   exit 1
 fi
-
-echo "check_git_changes: No uncommitted changes"
 """
 
-_EMIT_TESTCASES_MJS = """import path from 'node:path';
+_EMIT_TESTCASES_PY = """import os
 
-const repoDir = process.cwd();
-const clean = (v) => String(v === undefined || v === null ? '' : v).replace(/\\s+/g, ' ').trim();
+_RANK = {"SKIPPED": 0, "PASSED": 1, "FAILED": 2}
+_RESULTS = {}
 
-export default async function* reporter(source) {
-    const stacks = new Map();
 
-    for await (const event of source) {
-        const data = event.data || {};
-        const file = data.file || '';
+def pytest_runtest_logreport(report):
+    if report.when == "call":
+        if report.passed:
+            status = "PASSED"
+        elif report.skipped:
+            status = "SKIPPED"
+        else:
+            status = "FAILED"
+    elif report.skipped:
+        status = "SKIPPED"
+    elif report.failed:
+        status = "FAILED"
+    else:
+        return
+    if _RANK[status] > _RANK.get(_RESULTS.get(report.nodeid), -1):
+        _RESULTS[report.nodeid] = status
 
-        if (event.type === 'test:start') {
-            if (!stacks.has(file)) stacks.set(file, []);
-            const stack = stacks.get(file);
-            stack.length = data.nesting;
-            stack[data.nesting] = data.name;
-            continue;
-        }
 
-        if (event.type !== 'test:pass' && event.type !== 'test:fail') continue;
-        if ((data.details || {}).type === 'suite') continue;
-
-        const rel = (path.relative(repoDir, file) || file).split(path.sep).join('/');
-        const src = (rel.startsWith('dist/') ? 'src/' + rel.slice(5) : rel).replace(/\\.js$/, '.ts');
-        const parts = [src, ...(stacks.get(file) || []).slice(0, data.nesting).map(clean)].filter(Boolean);
-
-        const title = clean(data.name);
-        if (title && title !== rel) parts.push(title);
-
-        const status = event.type === 'test:fail' ? 'FAILED'
-            : data.skip || data.todo ? 'SKIPPED' : 'PASSED';
-        yield 'TESTCASE ' + status + ' ' + parts.join(' > ') + '\\n';
-    }
-}
+def pytest_sessionfinish(session, exitstatus):
+    with open(os.environ["TESTCASE_OUT"], "w") as fh:
+        for nodeid, status in _RESULTS.items():
+            fh.write("TESTCASE " + status + " " + nodeid + "\\n")
 """
 
 _PREPARE_SH = """#!/bin/bash
 set -e
-
-export NODE_OPTIONS=--max-old-space-size=4096
 
 cd /home/__REPO__
 git reset --hard
@@ -69,29 +58,27 @@ git cat-file -e __BASE_SHA__^{commit} 2>/dev/null || git fetch --quiet --no-tags
 git checkout --detach __BASE_SHA__
 bash /home/check_git_changes.sh
 
-npm install --no-audit --no-fund
-npx --no-install tsc
-find dist -name '*.test.js' | grep -q .
-echo DEPS_OK
+python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+python -m pip install --no-cache-dir -r requirements.txt
+python -m pip install --no-cache-dir pytest
+python -c "import pygame, pytest, tuxemon; print('DEPS_OK')"
 """
 
 _RUN_SH = """#!/bin/bash
 set -uo pipefail
 
-export CI=true TZ=UTC LC_ALL=C.UTF-8 NODE_ENV=test FORCE_COLOR=0 NO_COLOR=1
-export NODE_OPTIONS=--max-old-space-size=4096
+export PYTHONPATH=/home:/home/__REPO__
+export TESTCASE_OUT=/home/testcases.txt
+export SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy
+export TZ=UTC LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTHONDONTWRITEBYTECODE=1
 
 cd /home/__REPO__
+: > "$TESTCASE_OUT"
 
-rm -rf dist
-npx --no-install tsc || echo "tsc reported errors"
+python -m pytest tests -p emit_testcases -p no:cacheprovider \\
+    -q --continue-on-collection-errors
 
-TEST_FILES=$(find dist -name '*.test.js' | sort)
-[ -n "$TEST_FILES" ] || { echo "no compiled test files under dist" >&2; exit 1; }
-
-node --test --test-concurrency=1 \\
-    --test-reporter=/home/emit_testcases.mjs --test-reporter-destination=stdout \\
-    $TEST_FILES
+cat "$TESTCASE_OUT"
 exit 0
 """
 
@@ -158,7 +145,7 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    ca-certificates git \\
+    ca-certificates git build-essential \\
     && rm -rf /var/lib/apt/lists/*
 
 RUN git config --global --add safe.directory '*'
@@ -201,7 +188,7 @@ RUN if [ -f .gitmodules ]; then \\
     fi
 """
 
-_TESTCASE_RE = re.compile(r"^TESTCASE\s+(PASSED|FAILED|SKIPPED)\s+(\S.*?)\s*$")
+_TESTCASE_RE = re.compile(r"^TESTCASE (PASSED|FAILED|SKIPPED) (\S.*?)\s*$")
 
 
 def _render(template: str, pr: PullRequest) -> str:
@@ -212,7 +199,7 @@ def _render(template: str, pr: PullRequest) -> str:
     )
 
 
-class OhMyCodexImageBase724To665(Image):
+class TuxemonImageBase3320To1105(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -226,7 +213,7 @@ class OhMyCodexImageBase724To665(Image):
         return self._config
 
     def dependency(self) -> str:
-        return _NODE_IMAGE
+        return _PYTHON_IMAGE
 
     def image_tag(self) -> str:
         return _BASE_TAG
@@ -243,7 +230,7 @@ class OhMyCodexImageBase724To665(Image):
         )
 
 
-class OhMyCodexImageDefault724To665(Image):
+class TuxemonImageDefault3320To1105(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -257,7 +244,7 @@ class OhMyCodexImageDefault724To665(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return OhMyCodexImageBase724To665(self.pr, self._config)
+        return TuxemonImageBase3320To1105(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -268,7 +255,7 @@ class OhMyCodexImageDefault724To665(Image):
     def prepare_files(self) -> list[File]:
         return [
             File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
-            File(".", "emit_testcases.mjs", _EMIT_TESTCASES_MJS),
+            File(".", "emit_testcases.py", _EMIT_TESTCASES_PY),
             File(".", "prepare.sh", _render(_PREPARE_SH, self.pr)),
         ]
 
@@ -304,8 +291,8 @@ class OhMyCodexImageDefault724To665(Image):
         return "\n\n".join(sections) + "\n"
 
 
-@Instance.register("Yeachan-Heo", "oh_my_codex_724_to_665")
-class OH_MY_CODEX_724_TO_665(Instance):
+@Instance.register("Tuxemon", "Tuxemon_3320_to_1105")
+class TUXEMON_3320_TO_1105(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -316,7 +303,7 @@ class OH_MY_CODEX_724_TO_665(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return OhMyCodexImageDefault724To665(self.pr, self._config)
+        return TuxemonImageDefault3320To1105(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"
@@ -328,33 +315,27 @@ class OH_MY_CODEX_724_TO_665(Instance):
         return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
+        passed: set[str] = set()
+        failed: set[str] = set()
+        skipped: set[str] = set()
+        buckets = {"PASSED": passed, "FAILED": failed, "SKIPPED": skipped}
 
-        for line in test_log.split("\n"):
+        for line in test_log.replace("\r", "").split("\n"):
             match = _TESTCASE_RE.match(line)
-            if not match:
-                continue
-            status, name = match.group(1), match.group(2)
-            if status == "FAILED":
-                failed_tests.add(name)
-            elif status == "SKIPPED":
-                skipped_tests.add(name)
-            else:
-                passed_tests.add(name)
+            if match:
+                buckets[match.group(1)].add(match.group(2))
 
-        passed_tests -= failed_tests
-        skipped_tests -= failed_tests | passed_tests
+        passed -= failed
+        skipped -= failed | passed
 
         return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
+            passed_count=len(passed),
+            failed_count=len(failed),
+            skipped_count=len(skipped),
+            passed_tests=passed,
+            failed_tests=failed,
+            skipped_tests=skipped,
         )
 
 
-Instance.register("Yeachan-Heo", "oh-my-codex_724_to_665")(OH_MY_CODEX_724_TO_665)
+Instance.register("Tuxemon", "Tuxemon")(TUXEMON_3320_TO_1105)

@@ -210,6 +210,7 @@ from multi_swe_bench.harness.repos.typescript.withastro import *
 from multi_swe_bench.harness.repos.typescript.wulkano import *
 from multi_swe_bench.harness.repos.typescript.xtermjs import *
 from multi_swe_bench.harness.repos.typescript.yarnpkg import *
+from multi_swe_bench.harness.repos.typescript.Sofie_Automation import *
 from multi_swe_bench.harness.repos.typescript.Yeachan_Heo import *
 from multi_swe_bench.harness.repos.typescript.pixijs import *
 from multi_swe_bench.harness.repos.typescript.lobehub import *

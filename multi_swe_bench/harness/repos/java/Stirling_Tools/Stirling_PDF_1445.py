@@ -5,8 +5,8 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_NODE_IMAGE = "node:22-bookworm"
-_BASE_TAG = "base-724_to_665"
+_JDK_IMAGE = "eclipse-temurin:21-jdk"
+_BASE_TAG = "base-1445_to_1445"
 
 _CHECK_GIT_CHANGES_SH = """#!/bin/bash
 set -e
@@ -19,47 +19,48 @@ fi
 echo "check_git_changes: No uncommitted changes"
 """
 
-_EMIT_TESTCASES_MJS = """import path from 'node:path';
+_EMIT_RESULTS_PY = r'''import glob
+import re
+import sys
+import xml.etree.ElementTree as ET
 
-const repoDir = process.cwd();
-const clean = (v) => String(v === undefined || v === null ? '' : v).replace(/\\s+/g, ' ').trim();
+repo = sys.argv[1]
+rank = {"PASSED": 0, "SKIPPED": 1, "FAILED": 2}
+results = {}
 
-export default async function* reporter(source) {
-    const stacks = new Map();
+for path in sorted(glob.glob(repo + "/**/build/test-results/test/TEST-*.xml", recursive=True)):
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        continue
+    for case in root.iter("testcase"):
+        cls = (case.get("classname") or "").strip()
+        raw = re.sub(r"\s+", " ", (case.get("name") or "")).strip()
+        method = re.match(r"^([A-Za-z_$][\w$]*)\s*\(", raw)
+        name = method.group(1) if method else raw
+        if not cls or not name:
+            continue
+        status = "PASSED"
+        for child in case:
+            tag = child.tag.split("}")[-1].lower()
+            if tag in ("failure", "error"):
+                status = "FAILED"
+                break
+            if tag == "skipped":
+                status = "SKIPPED"
+                break
+        key = cls + "." + name
+        prev = results.get(key)
+        if prev is None or rank[status] > rank[prev]:
+            results[key] = status
 
-    for await (const event of source) {
-        const data = event.data || {};
-        const file = data.file || '';
-
-        if (event.type === 'test:start') {
-            if (!stacks.has(file)) stacks.set(file, []);
-            const stack = stacks.get(file);
-            stack.length = data.nesting;
-            stack[data.nesting] = data.name;
-            continue;
-        }
-
-        if (event.type !== 'test:pass' && event.type !== 'test:fail') continue;
-        if ((data.details || {}).type === 'suite') continue;
-
-        const rel = (path.relative(repoDir, file) || file).split(path.sep).join('/');
-        const src = (rel.startsWith('dist/') ? 'src/' + rel.slice(5) : rel).replace(/\\.js$/, '.ts');
-        const parts = [src, ...(stacks.get(file) || []).slice(0, data.nesting).map(clean)].filter(Boolean);
-
-        const title = clean(data.name);
-        if (title && title !== rel) parts.push(title);
-
-        const status = event.type === 'test:fail' ? 'FAILED'
-            : data.skip || data.todo ? 'SKIPPED' : 'PASSED';
-        yield 'TESTCASE ' + status + ' ' + parts.join(' > ') + '\\n';
-    }
-}
-"""
+for key in sorted(results):
+    print("TESTCASE " + results[key] + " " + key)
+sys.stderr.write("emit_results: %d test cases\n" % len(results))
+'''
 
 _PREPARE_SH = """#!/bin/bash
 set -e
-
-export NODE_OPTIONS=--max-old-space-size=4096
 
 cd /home/__REPO__
 git reset --hard
@@ -69,48 +70,50 @@ git cat-file -e __BASE_SHA__^{commit} 2>/dev/null || git fetch --quiet --no-tags
 git checkout --detach __BASE_SHA__
 bash /home/check_git_changes.sh
 
-npm install --no-audit --no-fund
-npx --no-install tsc
-find dist -name '*.test.js' | grep -q .
+chmod +x gradlew
+sed -i "s|^distributionUrl=.*|distributionUrl=file:/opt/gradle-dist/gradle-bin.zip|" gradle/wrapper/gradle-wrapper.properties
+./gradlew test --no-daemon --console=plain --continue -x spotlessApply || true
+python3 /home/emit_results.py /home/__REPO__ | grep -q '^TESTCASE '
+git checkout -- src
 echo DEPS_OK
 """
 
-_RUN_SH = """#!/bin/bash
+_RUN_TESTS_SH = """#!/bin/bash
 set -uo pipefail
 
-export CI=true TZ=UTC LC_ALL=C.UTF-8 NODE_ENV=test FORCE_COLOR=0 NO_COLOR=1
-export NODE_OPTIONS=--max-old-space-size=4096
-
 cd /home/__REPO__
+rm -rf build/test-results
+./gradlew test --no-daemon --console=plain --continue -x spotlessApply || true
 
-rm -rf dist
-npx --no-install tsc || echo "tsc reported errors"
+if ! python3 /home/emit_results.py /home/__REPO__ | grep -q '^TESTCASE '; then
+    for patch in "$@"; do
+        git apply -R --whitespace=nowarn "$patch" || true
+    done
+    rm -rf build/test-results
+    ./gradlew test --no-daemon --console=plain --continue -x spotlessApply || true
+fi
 
-TEST_FILES=$(find dist -name '*.test.js' | sort)
-[ -n "$TEST_FILES" ] || { echo "no compiled test files under dist" >&2; exit 1; }
-
-node --test --test-concurrency=1 \\
-    --test-reporter=/home/emit_testcases.mjs --test-reporter-destination=stdout \\
-    $TEST_FILES
+python3 /home/emit_results.py /home/__REPO__
 exit 0
 """
 
-_TEST_RUN_SH = """#!/bin/bash
-set -eo pipefail
+_RUN_SH = """#!/bin/bash
+set -e
+bash /home/run_tests.sh
+"""
 
+_TEST_RUN_SH = """#!/bin/bash
+set -e
 cd /home/__REPO__
 git apply --whitespace=nowarn /home/test.patch
-
-bash /home/run.sh
+bash /home/run_tests.sh /home/test.patch
 """
 
 _FIX_RUN_SH = """#!/bin/bash
-set -eo pipefail
-
+set -e
 cd /home/__REPO__
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
-bash /home/run.sh
+bash /home/run_tests.sh
 """
 
 _BASE_DOCKERFILE = """# syntax=docker/dockerfile:1.6
@@ -128,9 +131,11 @@ ARG HTTPS_PROXY=""
 ARG no_proxy="localhost,127.0.0.1,::1"
 ARG NO_PROXY="localhost,127.0.0.1,::1"
 ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+ARG GRADLE_DIST_URL="https://services.gradle.org/distributions/gradle-8.7-bin.zip"
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
     TZ=UTC \\
     http_proxy=${http_proxy} \\
     https_proxy=${https_proxy} \\
@@ -141,6 +146,9 @@ ENV DEBIAN_FRONTEND=noninteractive \\
     SSL_CERT_FILE=${CA_CERT_PATH} \\
     REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\
     CURL_CA_BUNDLE=${CA_CERT_PATH}
+
+ENV GRADLE_USER_HOME=/home/gradle-home \\
+    GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8"
 
 LABEL org.opencontainers.image.title="__ORG__/__REPO__" \\
       org.opencontainers.image.description="__ORG__/__REPO__ Docker image" \\
@@ -158,8 +166,22 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
-    ca-certificates git \\
+    ca-certificates curl git python3 \\
     && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/gradle-dist && \\
+    curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 60 --max-time 1800 \\
+        -o /opt/gradle-dist/gradle-bin.zip "${GRADLE_DIST_URL}" && \\
+    test -s /opt/gradle-dist/gradle-bin.zip
+
+RUN update-ca-certificates && \\
+    csplit -z -f /tmp/sysca- -b "%03d.pem" "${CA_CERT_PATH}" "/-----BEGIN CERTIFICATE-----/" "{*}" >/dev/null && \\
+    for f in /tmp/sysca-*.pem; do \\
+        keytool -importcert -noprompt -trustcacerts -cacerts -storepass changeit \\
+            -alias "$(basename "$f" .pem)" -file "$f" >/dev/null 2>&1 || true; \\
+    done && \\
+    rm -f /tmp/sysca-*.pem && \\
+    keytool -list -cacerts -storepass changeit | grep -c trustedCertEntry
 
 RUN git config --global --add safe.directory '*'
 
@@ -169,39 +191,39 @@ RUN git clone "${REPO_URL}" /home/__REPO__ && \\
 CMD ["/bin/bash"]
 """
 
-_PRUNE_BLOCK = """RUN set -eux; \\
-    git checkout --detach "__BASE_SHA__"; \\
-    git remote remove origin 2>/dev/null || true; \\
-    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
-        | xargs -r -n1 git update-ref -d; \\
-    git reflog expire --expire=now --all; \\
-    git reflog expire --expire-unreachable=now --all; \\
-    git gc --prune=now --quiet; \\
-    git repack -a -d -l --quiet; \\
-    rm -f .git/objects/info/alternates; \\
-    git config --local gc.auto 0; \\
-    git config --local fetch.recurseSubmodules false; \\
-    git config --local remote.pushDefault ""; \\
-    test "$(git rev-parse HEAD)" = "__BASE_SHA__"; \\
-    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
-    test -z "$(git remote)"; \\
+_PRUNE_BLOCK = r"""RUN set -eux; \
+    git checkout --detach "__BASE_SHA__"; \
+    git remote remove origin 2>/dev/null || true; \
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \
+        | xargs -r -n1 git update-ref -d; \
+    git reflog expire --expire=now --all; \
+    git reflog expire --expire-unreachable=now --all; \
+    git gc --prune=now --quiet; \
+    git repack -a -d -l --quiet; \
+    rm -f .git/objects/info/alternates; \
+    git config --local gc.auto 0; \
+    git config --local fetch.recurseSubmodules false; \
+    git config --local remote.pushDefault ""; \
+    test "$(git rev-parse HEAD)" = "__BASE_SHA__"; \
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \
+    test -z "$(git remote)"; \
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
-RUN if [ -f .gitmodules ]; then \\
-        git submodule foreach --recursive ' \\
-            git checkout --detach HEAD; \\
-            git remote remove origin 2>/dev/null || true; \\
-            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
-                | xargs -r -n1 git update-ref -d; \\
-            git reflog expire --expire=now --all; \\
-            git reflog expire --expire-unreachable=now --all; \\
-            git gc --prune=now --quiet; \\
-            rm -f .git/objects/info/alternates; \\
-        '; \\
+RUN if [ -f .gitmodules ]; then \
+        git submodule foreach --recursive ' \
+            git checkout --detach HEAD; \
+            git remote remove origin 2>/dev/null || true; \
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \
+                | xargs -r -n1 git update-ref -d; \
+            git reflog expire --expire=now --all; \
+            git reflog expire --expire-unreachable=now --all; \
+            git gc --prune=now --quiet; \
+            rm -f .git/objects/info/alternates; \
+        '; \
     fi
 """
 
-_TESTCASE_RE = re.compile(r"^TESTCASE\s+(PASSED|FAILED|SKIPPED)\s+(\S.*?)\s*$")
+_TESTCASE_RE = re.compile(r"^TESTCASE (PASSED|FAILED|SKIPPED) (\S.*)$")
 
 
 def _render(template: str, pr: PullRequest) -> str:
@@ -212,7 +234,7 @@ def _render(template: str, pr: PullRequest) -> str:
     )
 
 
-class OhMyCodexImageBase724To665(Image):
+class StirlingPdfImageBase1445(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -226,7 +248,7 @@ class OhMyCodexImageBase724To665(Image):
         return self._config
 
     def dependency(self) -> str:
-        return _NODE_IMAGE
+        return _JDK_IMAGE
 
     def image_tag(self) -> str:
         return _BASE_TAG
@@ -243,7 +265,7 @@ class OhMyCodexImageBase724To665(Image):
         )
 
 
-class OhMyCodexImageDefault724To665(Image):
+class StirlingPdfImageDefault1445(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -257,7 +279,7 @@ class OhMyCodexImageDefault724To665(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return OhMyCodexImageBase724To665(self.pr, self._config)
+        return StirlingPdfImageBase1445(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -268,7 +290,7 @@ class OhMyCodexImageDefault724To665(Image):
     def prepare_files(self) -> list[File]:
         return [
             File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
-            File(".", "emit_testcases.mjs", _EMIT_TESTCASES_MJS),
+            File(".", "emit_results.py", _EMIT_RESULTS_PY),
             File(".", "prepare.sh", _render(_PREPARE_SH, self.pr)),
         ]
 
@@ -276,7 +298,8 @@ class OhMyCodexImageDefault724To665(Image):
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(".", "run.sh", _render(_RUN_SH, self.pr)),
+            File(".", "run_tests.sh", _render(_RUN_TESTS_SH, self.pr)),
+            File(".", "run.sh", _RUN_SH),
             File(".", "test-run.sh", _render(_TEST_RUN_SH, self.pr)),
             File(".", "fix-run.sh", _render(_FIX_RUN_SH, self.pr)),
         ]
@@ -304,8 +327,8 @@ class OhMyCodexImageDefault724To665(Image):
         return "\n\n".join(sections) + "\n"
 
 
-@Instance.register("Yeachan-Heo", "oh_my_codex_724_to_665")
-class OH_MY_CODEX_724_TO_665(Instance):
+@Instance.register("Stirling-Tools", "Stirling-PDF")
+class STIRLING_PDF_1445(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -316,7 +339,7 @@ class OH_MY_CODEX_724_TO_665(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return OhMyCodexImageDefault724To665(self.pr, self._config)
+        return StirlingPdfImageDefault1445(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"
@@ -328,33 +351,26 @@ class OH_MY_CODEX_724_TO_665(Instance):
         return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
+        passed: set[str] = set()
+        failed: set[str] = set()
+        skipped: set[str] = set()
+        buckets = {"PASSED": passed, "FAILED": failed, "SKIPPED": skipped}
 
-        for line in test_log.split("\n"):
-            match = _TESTCASE_RE.match(line)
-            if not match:
-                continue
-            status, name = match.group(1), match.group(2)
-            if status == "FAILED":
-                failed_tests.add(name)
-            elif status == "SKIPPED":
-                skipped_tests.add(name)
-            else:
-                passed_tests.add(name)
+        for line in test_log.replace("\r", "").split("\n"):
+            match = _TESTCASE_RE.match(line.rstrip())
+            if match:
+                buckets[match.group(1)].add(match.group(2))
 
-        passed_tests -= failed_tests
-        skipped_tests -= failed_tests | passed_tests
-
+        passed -= failed
+        skipped -= failed | passed
         return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
+            passed_count=len(passed),
+            failed_count=len(failed),
+            skipped_count=len(skipped),
+            passed_tests=passed,
+            failed_tests=failed,
+            skipped_tests=skipped,
         )
 
 
-Instance.register("Yeachan-Heo", "oh-my-codex_724_to_665")(OH_MY_CODEX_724_TO_665)
+Instance.register("Stirling-Tools", "Stirling-PDF_1445")(STIRLING_PDF_1445)
