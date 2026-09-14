@@ -9,16 +9,26 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-_NODE_IMAGE = "node:14-bullseye"
+ALIAS_KEY = "pnpm_10066_to_7141"
+
+
+
+_NODE_IMAGE = "node:20-bullseye"
+
+_BOOTSTRAP_PNPM = "10.19.0"
+
+_RUNTIME_NODE_VERSIONS = ("18.20.4", "20.16.0", "22.9.0")
 
 _JSON_BEGIN = "===== MSB-JEST-BEGIN"
 _JSON_END = "===== MSB-JEST-END"
 
-_REPO_ROOT = "/home/graphql"
+_REPO_ROOT = "/home/pnpm"
+
+_EXTRA_SETUP: dict[int, str] = {}
 
 _TARGET_RE = re.compile(r"^\+\+\+ b/(.+)$", re.M)
 
-_TEST_EXT = (".ts", ".tsx", ".js", ".jsx")
+_TEST_EXT = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 
 
 def _patch_paths(patch: Optional[str]) -> list[str]:
@@ -34,17 +44,35 @@ def _patch_paths(patch: Optional[str]) -> list[str]:
 def _test_files(pr: PullRequest) -> list[str]:
     out = []
     for path in _patch_paths(pr.test_patch):
+        probe = "/" + path
+        if "/test/" not in probe:
+            continue
+        if "/test/utils/" in probe:
+            continue
+        if not path.endswith(_TEST_EXT) or path.endswith(".d.ts"):
+            continue
         parts = path.split("/")
         if "fixtures" in parts or "__fixtures__" in parts:
             continue
-        base = parts[-1]
-        if base.endswith(".d.ts"):
-            continue
-        if not base.endswith(_TEST_EXT):
-            continue
-        if ".test." not in base and ".spec." not in base:
-            continue
         out.append(path)
+    return sorted(set(out))
+
+
+def _touched_files(pr: PullRequest) -> list[str]:
+    return sorted(set(_patch_paths(pr.fix_patch)) | set(_patch_paths(pr.test_patch)))
+
+
+def _new_package_dirs(pr: PullRequest) -> list[str]:
+    out = []
+    for block in (pr.fix_patch or "").split("diff --git ")[1:]:
+        if "new file mode" not in block:
+            continue
+        m = _TARGET_RE.search(block)
+        if not m:
+            continue
+        path = m.group(1).strip()
+        if path.endswith("/package.json"):
+            out.append(path[: -len("/package.json")])
     return sorted(set(out))
 
 
@@ -80,34 +108,69 @@ set +e
 ROOT=[[ROOT]]
 cd "$ROOT" || exit 0
 
-if [ "$(node -e "process.stdout.write((((require('./package.json').scripts)||{}).build)?'1':'')" 2>/dev/null)" = "1" ]; then
-    yarn build 2>&1 | tail -n 40
-fi
+DIRS=("pnpm")
+
+TOUCHED=( [[TOUCHED]] )
+
+for p in "${TOUCHED[@]}"; do
+    d=$(dirname "$p")
+    found=""
+    while [ "$d" != "." ] && [ "$d" != "/" ]; do
+        if [ -f "$ROOT/$d/package.json" ]; then
+            found="$d"
+            break
+        fi
+        d=$(dirname "$d")
+    done
+    [ -n "$found" ] || continue
+    case " ${DIRS[*]} " in
+        *" $found "*) continue ;;
+    esac
+    DIRS+=("$found")
+done
+
+for d in "${DIRS[@]}"; do
+    [ -f "$ROOT/$d/tsconfig.json" ] || continue
+    (
+        cd "$ROOT/$d" || exit 0
+        echo "compile: $d"
+        pnpm exec tsc --build 2>&1 | tail -n 40
+
+        if node -e "process.exit(((require('./package.json').scripts)||{}).bundle?0:1)" 2>/dev/null; then
+            rm -rf dist
+            pnpm run bundle 2>&1 | tail -n 20
+            pnpm exec shx cp -r node-gyp-bin dist/node-gyp-bin > /dev/null 2>&1
+            pnpm exec shx cp -r node_modules/@pnpm/tabtab/lib/templates dist/templates > /dev/null 2>&1
+            pnpm exec shx cp -r node_modules/@pnpm/tabtab/lib/scripts dist/scripts > /dev/null 2>&1
+            pnpm exec shx cp -r node_modules/ps-list/vendor dist/vendor > /dev/null 2>&1
+            pnpm exec shx cp pnpmrc dist/pnpmrc > /dev/null 2>&1
+        fi
+    )
+done
 
 exit 0
 """
 
 
 _RUN_TESTS_SH = r"""#!/bin/bash
-set -eo pipefail
+set +e
 
 ROOT=[[ROOT]]
-cd "$ROOT"
+cd "$ROOT" || exit 0
 
 export CI=true
 export NO_COLOR=1
 export FORCE_COLOR=0
 export npm_config_color=false
 export npm_config_progress=false
-export NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=4096"
+export NODE_OPTIONS="--dns-result-order=ipv4first --experimental-vm-modules --disable-warning=ExperimentalWarning --disable-warning=DEP0169"
 
-for i in 1 2 3 4 5; do
-    yarn install --frozen-lockfile --offline --ignore-engines --network-timeout 600000 > /tmp/msb_install.log 2>&1 && break
-    yarn install --frozen-lockfile --ignore-engines --network-timeout 600000 > /tmp/msb_install.log 2>&1 && break
-    yarn install --ignore-engines --network-timeout 600000 > /tmp/msb_install.log 2>&1 && break
-    sleep 15
-done
+pnpm install --frozen-lockfile --offline > /tmp/msb_install.log 2>&1 \
+    || pnpm install --frozen-lockfile > /tmp/msb_install.log 2>&1 \
+    || pnpm install --no-frozen-lockfile > /tmp/msb_install.log 2>&1
 tail -n 5 /tmp/msb_install.log
+
+[[EXTRA]]
 
 bash /home/compile.sh
 
@@ -146,20 +209,19 @@ if [ ${#ORDER[@]} -eq 0 ]; then
 fi
 
 for pkg in "${ORDER[@]}"; do
-    cd "$ROOT/$pkg"
+    cd "$ROOT/$pkg" || continue
+
+    export PNPM_SCRIPT_SRC_DIR="$ROOT/$pkg"
 
     slug=$(printf '%s' "$pkg" | tr '/' '_')
     out="/tmp/msb_jest_${slug}.json"
     log="/tmp/msb_jest_${slug}.log"
     rm -f "$out" "$log"
 
-    if yarn jest --ci --colors=false \
+    pnpm exec jest --ci --coverage=false \
+        --globals '{"ts-jest":{"diagnostics":false}}' \
         --json --outputFile="$out" \
-        --runTestsByPath ${MSB_GROUPS[$pkg]} > "$log" 2>&1; then
-        :
-    else
-        :
-    fi
+        --runTestsByPath ${MSB_GROUPS[$pkg]} > "$log" 2>&1
 
     tail -n 200 "$log"
 
@@ -182,24 +244,26 @@ exit 0
 _PREPARE_SH = r"""#!/bin/bash
 set -e
 
+export HUSKY=0
+export HUSKY_SKIP_INSTALL=1
+export HUSKY_SKIP_HOOKS=1
+
+npm install -g pnpm@[[BOOTSTRAP]] --no-audit --no-fund
+
 git config --global user.name "msb"
 git config --global user.email "msb@example.com"
 git config --global init.defaultBranch main
 git config --global core.hooksPath /dev/null
-git config --global url."https://github.com/".insteadOf "git://github.com/"
-git config --global --add url."https://github.com/".insteadOf "git@github.com:"
-git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
 
 cd [[ROOT]]
 git reset --hard
-git clean -fdx
 bash /home/check_git_changes.sh
 
 git remote add origin https://github.com/[[ORG]]/[[REPO]].git 2>/dev/null || true
 git rev-parse --verify --quiet "[[SHA]]^{commit}" > /dev/null 2>&1 \
-    || git fetch --depth=1 origin [[SHA]] \
-    || git fetch origin
-git checkout --detach [[SHA]]
+    || git fetch --depth=1 origin [[SHA]] 2>/dev/null \
+    || git fetch origin 2>/dev/null || true
+git checkout -f [[SHA]]
 bash /home/check_git_changes.sh
 
 export CI=true
@@ -207,29 +271,118 @@ export NO_COLOR=1
 export FORCE_COLOR=0
 export npm_config_color=false
 export npm_config_progress=false
-export NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=4096"
+export NODE_OPTIONS=--dns-result-order=ipv4first
 
-for i in 1 2 3 4 5; do
-    yarn install --frozen-lockfile --ignore-engines --network-timeout 600000 && break
-    yarn install --ignore-engines --network-timeout 600000 && break
-    echo "yarn install attempt $i failed; retrying in 15s" >&2
-    sleep 15
+PM=$(node -e "process.stdout.write((require('./package.json').packageManager)||'')")
+PM_VER=${PM#pnpm@}
+if [ -z "$PM_VER" ] || [ "$PM_VER" = "$PM" ]; then
+    PM_VER=$(node -e "var d=((require('./package.json').devEngines)||{}).packageManager||{};process.stdout.write(d.name==='pnpm'?(d.version||''):'')")
+fi
+if [ -n "$PM_VER" ]; then
+    echo "prepare: package.json pins pnpm@$PM_VER"
+    npm install -g "pnpm@$PM_VER" --no-audit --no-fund || true
+fi
+pnpm --version > /dev/null 2>&1 || npm install -g "pnpm@[[BOOTSTRAP]]" --no-audit --no-fund
+echo "prepare: pnpm $(pnpm --version), node $(node --version)"
+
+pnpm install --frozen-lockfile --config.engine-strict=false || pnpm install --no-frozen-lockfile --config.engine-strict=false
+
+for v in [[RUNTIME_VERSIONS]]; do
+    pnpm env use --global "$v" > /tmp/msb_runtime_warm.log 2>&1 || true
 done
+pnpm env use --global "$PM_VER" > /dev/null 2>&1 || true
+
+git checkout -- .
+bash /home/check_git_changes.sh
+
+if git apply --check --whitespace=nowarn /home/fix.patch > /dev/null 2>&1; then
+    git apply --whitespace=nowarn /home/fix.patch
+    pnpm install --frozen-lockfile --config.engine-strict=false > /tmp/msb_warm.log 2>&1 \
+        || pnpm install --no-frozen-lockfile --config.engine-strict=false > /tmp/msb_warm.log 2>&1 \
+        || tail -n 5 /tmp/msb_warm.log
+
+    git checkout -- .
+    node -e "var fs=require('fs');var out=[];fs.readFileSync('/home/fix.patch','utf8').split('diff --git ').slice(1).forEach(function(b){if(b.indexOf('new file mode')===-1)return;var m=b.match(/^\+\+\+ b\/(.+)$/m);if(m)out.push(m[1].trim())});out.forEach(function(x){process.stdout.write(x+String.fromCharCode(10))})" > /tmp/msb_fix_new.txt
+    echo "prepare: fix patch creates $(grep -c . /tmp/msb_fix_new.txt) file(s); removing them"
+    while IFS= read -r f || [ -n "$f" ]; do
+        if [ -n "$f" ]; then
+            rm -f "[[ROOT]]/$f"
+        fi
+    done < /tmp/msb_fix_new.txt
+
+    while IFS= read -r f || [ -n "$f" ]; do
+        if [ -n "$f" ] && [ -e "[[ROOT]]/$f" ]; then
+            echo "prepare: fix-patch file survived the revert: $f" >&2
+            exit 1
+        fi
+    done < /tmp/msb_fix_new.txt
+
+    pnpm install --frozen-lockfile --offline --config.engine-strict=false > /tmp/msb_rebase.log 2>&1 \
+        || pnpm install --frozen-lockfile --config.engine-strict=false > /tmp/msb_rebase.log 2>&1 \
+        || pnpm install --no-frozen-lockfile --config.engine-strict=false > /tmp/msb_rebase.log 2>&1
+    git checkout -- .
+    bash /home/check_git_changes.sh
+    echo "prepare: fix-patch dependencies pre-resolved into the store"
+else
+    echo "prepare: fix patch does not apply at build time; store not pre-warmed" >&2
+fi
 
 bash /home/compile.sh
 
-node -e "require.resolve('jest'); console.log('prepare: DEPS_OK')"
+pnpm --dir=__fixtures__ run prepareFixtures 2>/dev/null || true
+
+NEW_PKG_DIRS=( [[NEW_PKG_DIRS]] )
+CHECKED=0
+DEFERRED=0
+for p in [[TEST_PATHS]]; do
+    d=$(dirname "$p")
+    pkg=""
+    while [ "$d" != "." ] && [ "$d" != "/" ]; do
+        if [ -f "[[ROOT]]/$d/package.json" ]; then
+            pkg="$d"
+            break
+        fi
+        d=$(dirname "$d")
+    done
+    if [ -z "$pkg" ]; then
+        for newdir in "${NEW_PKG_DIRS[@]}"; do
+            case "/$p" in
+                "/$newdir/"*)
+                    echo "prepare: $p belongs to $newdir, created by the fix patch; deferring its check"
+                    DEFERRED=$((DEFERRED + 1))
+                    pkg=""
+                    ;;
+            esac
+        done
+        continue
+    fi
+    (
+        cd "[[ROOT]]/$pkg"
+        export PNPM_SCRIPT_SRC_DIR="[[ROOT]]/$pkg"
+        pnpm exec jest --version > /dev/null
+        node -e "var p=require('./package.json');var d=Object.assign({},p.dependencies,p.devDependencies);if(d[p.name])require.resolve(p.name)"
+    )
+    CHECKED=$((CHECKED + 1))
+done
+if [ "$CHECKED" -eq 0 ] && [ "$DEFERRED" -eq 0 ]; then
+    echo "prepare: no workspace package owns any graded test path" >&2
+    exit 1
+fi
+echo "prepare: $CHECKED graded package path(s) checked, $DEFERRED deferred to the graded stages"
+
+cd [[ROOT]]
+git checkout -- .
+bash /home/check_git_changes.sh
 """
 
-
 _RUN_SH = """#!/bin/bash
-set -eo pipefail
+set -e
 
 bash /home/run_tests.sh
 """
 
 _TEST_RUN_SH = """#!/bin/bash
-set -eo pipefail
+set -e
 
 cd [[ROOT]]
 if ! git apply --whitespace=nowarn /home/test.patch; then
@@ -240,7 +393,7 @@ bash /home/run_tests.sh
 """
 
 _FIX_RUN_SH = """#!/bin/bash
-set -eo pipefail
+set -e
 
 cd [[ROOT]]
 if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
@@ -251,7 +404,7 @@ bash /home/run_tests.sh
 """
 
 
-class RedwoodjsGraphqlImageBase(Image):
+class Pnpm10066To7141ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -284,8 +437,8 @@ class RedwoodjsGraphqlImageBase(Image):
         if self.config.need_clone:
             code = (
                 f'RUN git config --global http.postBuffer 1048576000 && '
-                f'git config --global http.lowSpeedLimit 100 && '
-                f'git config --global http.lowSpeedTime 600 && '
+                f'git config --global http.lowSpeedLimit 1000 && '
+                f'git config --global http.lowSpeedTime 300 && '
                 f'for i in $(seq 1 6); do '
                 f'git clone "${{REPO_URL}}" /home/{self.pr.repo} && break; '
                 f'echo "clone attempt $i failed; retrying"; rm -rf /home/{self.pr.repo}; sleep 15; '
@@ -312,7 +465,6 @@ ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
     TZ=UTC \\
     http_proxy=${{http_proxy}} \\
     https_proxy=${{https_proxy}} \\
@@ -348,17 +500,13 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
 
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates build-essential \\
-    && rm -rf /var/lib/apt/lists/*
-
 {code}
 
 CMD ["/bin/bash"]
 """
 
 
-class RedwoodjsGraphqlImageDefault(Image):
+class Pnpm10066To7141ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -371,8 +519,8 @@ class RedwoodjsGraphqlImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Optional[Image]:  # type: ignore
-        return RedwoodjsGraphqlImageBase(self.pr, self._config)
+    def dependency(self) -> Optional[Image]: # type: ignore
+        return Pnpm10066To7141ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -386,10 +534,19 @@ class RedwoodjsGraphqlImageDefault(Image):
         sha = self.pr.base.sha
 
         test_paths = _sh_list(_test_files(self.pr))
+        touched = _sh_list(_touched_files(self.pr))
+        new_pkg_dirs = _sh_list(_new_package_dirs(self.pr))
+
+        extra = _EXTRA_SETUP.get(int(self.pr.number), "true")
 
         def _fill(text: str) -> str:
             return (
-                text.replace("[[TEST_PATHS]]", test_paths)
+                text.replace("[[EXTRA]]", extra)
+                .replace("[[TEST_PATHS]]", test_paths)
+                .replace("[[TOUCHED]]", touched)
+                .replace("[[NEW_PKG_DIRS]]", new_pkg_dirs)
+                .replace("[[RUNTIME_VERSIONS]]", " ".join(_RUNTIME_NODE_VERSIONS))
+                .replace("[[BOOTSTRAP]]", _BOOTSTRAP_PNPM)
                 .replace("[[BEGIN]]", _JSON_BEGIN)
                 .replace("[[END]]", _JSON_END)
                 .replace("[[ROOT]]", _REPO_ROOT)
@@ -412,8 +569,8 @@ class RedwoodjsGraphqlImageDefault(Image):
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()  # type: ignore
-        tag = image.image_tag()  # type: ignore
+        name = image.image_name() # type: ignore
+        tag = image.image_tag() # type: ignore
         repo = self.pr.repo
         sha = self.pr.base.sha
 
@@ -462,8 +619,8 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 """
 
 
-@Instance.register("redwoodjs", "graphql")
-class RedwoodjsGraphql(Instance):
+@Instance.register("pnpm", ALIAS_KEY)
+class Pnpm10066To7141(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -473,8 +630,8 @@ class RedwoodjsGraphql(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:  # type: ignore
-        return RedwoodjsGraphqlImageDefault(self.pr, self._config)
+    def dependency(self) -> Optional[Image]: # type: ignore
+        return Pnpm10066To7141ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -537,12 +694,10 @@ class RedwoodjsGraphql(Instance):
                     continue
 
                 for a in assertions:
-                    ancestors = [t for t in (a.get("ancestorTitles") or []) if t]
-                    title = a.get("title") or ""
-                    full = a.get("fullName") or " > ".join(ancestors + [title])
-                    if not full:
+                    name = a.get("fullName") or a.get("title") or ""
+                    if not name:
                         continue
-                    test_id = f"jest::{path}::{full}" if path else f"jest::{full}"
+                    test_id = f"jest::{path}::{name}" if path else f"jest::{name}"
                     status = (a.get("status") or "").lower()
 
                     if status == "passed":
@@ -564,3 +719,6 @@ class RedwoodjsGraphql(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+Instance.register("pnpm", "7141-10066")(Pnpm10066To7141)
