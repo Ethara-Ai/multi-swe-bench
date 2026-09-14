@@ -255,6 +255,7 @@ from multi_swe_bench.harness.repos.typescript.mattermost import *
 from multi_swe_bench.harness.repos.typescript.azu import *
 from multi_swe_bench.harness.repos.typescript.Swatinem import *
 from multi_swe_bench.harness.repos.typescript.OpenHands import *
+from multi_swe_bench.harness.repos.typescript.apollo_elements import *
 
 from multi_swe_bench.harness.repos.typescript.t10d import *
 from multi_swe_bench.harness.repos.typescript.jupyterlab import *
