@@ -168,6 +168,7 @@ from multi_swe_bench.harness.repos.python.mindsdb import *
 from multi_swe_bench.harness.repos.python.mitodl import *
 from multi_swe_bench.harness.repos.python.mne_tools import *
 from multi_swe_bench.harness.repos.python.mnetools import *
+from multi_swe_bench.harness.repos.python.moinwiki import *
 from multi_swe_bench.harness.repos.python.MongoEngine import *
 from multi_swe_bench.harness.repos.python.mwaskom import *
 from multi_swe_bench.harness.repos.python.napari import *
@@ -177,6 +178,7 @@ from multi_swe_bench.harness.repos.python.NCAS_CMS import *
 from multi_swe_bench.harness.repos.python.nedbat import *
 from multi_swe_bench.harness.repos.python.networktocode import *
 from multi_swe_bench.harness.repos.python.networkx import *
+from multi_swe_bench.harness.repos.python.netket import *
 from multi_swe_bench.harness.repos.python.NeurodataWithoutBorders import *
 from multi_swe_bench.harness.repos.python.nextstrain import *
 from multi_swe_bench.harness.repos.python.nilearn import *
@@ -423,7 +425,9 @@ from multi_swe_bench.harness.repos.python.strawberry_graphql import *
 from multi_swe_bench.harness.repos.python.OpenCyphal import *
 from multi_swe_bench.harness.repos.python.openforcefield import *
 from multi_swe_bench.harness.repos.python.vllm_project import *
+
 from multi_swe_bench.harness.repos.python.pwndbg import *
+from multi_swe_bench.harness.repos.python.mljar import *
 # from multi_swe_bench.harness.repos.python.bali_framework import *
 
 from multi_swe_bench.harness.repos.python.CycloneDX import *

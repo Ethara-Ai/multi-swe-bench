@@ -7,7 +7,8 @@ from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Imag
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_TEST_DIR = "tests/"
+_TEST_DIR = "src/moin/"
+_TEST_PKG = "/_tests/"
 
 _EXCLUDED_BASENAMES = frozenset({
     "conftest.py",
@@ -36,24 +37,29 @@ exit 0
 """
 
 
-def _test_files_from_patch(patch: str, skip_added: bool = False) -> list[str]:
+def _test_files_from_patch(patch: str) -> list[str]:
     seen: set[str] = set()
     for patched_file in PatchSet(patch):
-        if skip_added and patched_file.is_added_file:
-            continue
         path = patched_file.target_file
         if path.startswith(("a/", "b/")):
             path = path[2:]
         if path == "/dev/null":
             continue
-        if path.endswith(".py") and path.startswith(_TEST_DIR):
-            basename = path.rsplit("/", 1)[-1]
-            if basename not in _EXCLUDED_BASENAMES:
-                seen.add(path)
+        if not (path.endswith(".py") and path.startswith(_TEST_DIR)):
+            continue
+        if _TEST_PKG not in path:
+            continue
+        basename = path.rsplit("/", 1)[-1]
+        if basename not in _EXCLUDED_BASENAMES:
+            seen.add(path)
     return sorted(seen)
 
 
-class py7zrImageBase(Image):
+def _test_dirs_from_patch(patch: str) -> list[str]:
+    return sorted({path.rsplit("/", 1)[0] for path in _test_files_from_patch(patch)})
+
+
+class moinImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -67,7 +73,7 @@ class py7zrImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "python:3.11-bookworm"
+        return "python:3.12-bookworm"
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -113,6 +119,7 @@ ARG BASE_COMMIT
 
 ENV LC_ALL=C.UTF-8
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PYTHONHASHSEED=0
 
 {label_block}
 
@@ -148,7 +155,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return py7zrImageBase(self.pr, self._config)
+        return moinImageBase(self.pr, self._config)
 
     def image_prefix(self) -> str:
         return "envagent"
@@ -166,14 +173,8 @@ class ImageDefault(Image):
         return []
 
     def _pytest_cmd(self) -> str:
-        test_files = " ".join(_test_files_from_patch(self.pr.test_patch))
-        return f"{_PYTEST} {test_files}" if test_files else _PYTEST
-
-    def _base_pytest_cmd(self) -> str:
-        test_files = " ".join(
-            _test_files_from_patch(self.pr.test_patch, skip_added=True)
-        )
-        return f"{_PYTEST} {test_files}" if test_files else self._pytest_cmd()
+        test_dirs = " ".join(_test_dirs_from_patch(self.pr.test_patch))
+        return f"{_PYTEST} {test_dirs}" if test_dirs else _PYTEST
 
     def _prepare_sh(self) -> str:
         extra_installs = "".join(
@@ -181,7 +182,18 @@ class ImageDefault(Image):
             for pkg in self._extra_pip_packages()
         )
         import_checks = " ".join(
-            f"import {mod};" for mod in ["py7zr", "pytest", *self._extra_import_checks()]
+            f"import {mod};"
+            for mod in [
+                "moin",
+                "pytest",
+                "py",
+                "lxml",
+                "psutil",
+                "flask",
+                "whoosh",
+                "markupsafe",
+                *self._extra_import_checks(),
+            ]
         )
 
         return (
@@ -194,14 +206,16 @@ class ImageDefault(Image):
             f"git checkout {self.pr.base.sha}\n"
             "bash /home/check_git_changes.sh\n"
             "\n"
-            "pip install --no-cache-dir -e '.[test]'\n"
+            "pip install --no-cache-dir -r requirements.d/development.txt || true\n"
+            "pip install --no-cache-dir pytest py lxml psutil\n"
+            "pip install --no-cache-dir -e .\n"
             f"{extra_installs}"
             "\n"
             f'python -c "{import_checks}"\n'
             "python -m pytest --version\n"
             'echo "DEPS_OK"\n'
             "\n"
-            f"{self._base_pytest_cmd()} || true\n"
+            f"{self._pytest_cmd()} || true\n"
         )
 
     def _run_sh(self) -> str:
@@ -210,7 +224,7 @@ class ImageDefault(Image):
             "set -e\n"
             "\n"
             f"cd /home/{self.pr.repo}\n"
-            f"{self._base_pytest_cmd()}\n"
+            f"{self._pytest_cmd()}\n"
         )
 
     def _test_run_sh(self) -> str:
@@ -273,46 +287,8 @@ RUN git checkout ${{BASE_COMMIT}}
 """
 
 
-class ImagePR620(ImageDefault):
-    def _extra_pip_packages(self) -> list[str]:
-        return ["pytest-httpserver"]
-
-    def _extra_import_checks(self) -> list[str]:
-        return ["pytest_httpserver"]
-
-
-class ImagePR558(ImageDefault):
-    def _fix_run_sh(self) -> str:
-        inject_report_update = (
-            "python -c \"\n"
-            "path = 'tests/test_misc.py'\n"
-            "with open(path) as f:\n"
-            "    content = f.read()\n"
-            "old = '        def report_warning(self, message):'\n"
-            "new = '        def report_update(self, decompressed_bytes):\\n'\\\n"
-            "      '            pass\\n\\n'\\\n"
-            "      '        def report_warning(self, message):'\n"
-            "content = content.replace(old, new, 1)\n"
-            "with open(path, 'w') as f:\n"
-            "    f.write(content)\n"
-            "\"\n"
-        )
-
-        return (
-            "#!/bin/bash\n"
-            "set -e\n"
-            "\n"
-            f"cd /home/{self.pr.repo}\n"
-            "git reset --hard\n"
-            "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
-            "\n"
-            f"{inject_report_update}"
-            f"{self._pytest_cmd()}\n"
-        )
-
-
-@Instance.register("miurahr", "py7zr")
-class PY7ZR(Instance):
+@Instance.register("moinwiki", "moin")
+class MOIN(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -323,10 +299,6 @@ class PY7ZR(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        if self.pr.number == 620:
-            return ImagePR620(self.pr, self._config)
-        if self.pr.number == 558:
-            return ImagePR558(self.pr, self._config)
         return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -353,19 +325,21 @@ class PY7ZR(Instance):
         log = ansi_escape.sub("", log)
 
         pattern = re.compile(
-            r"(tests/[^\s]+::[^\s]+)\s+(PASSED|FAILED|SKIPPED|ERROR)"
+            r"^(src/moin/\S+\.py::.*?)\s+"
+            r"(PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)"
+            r"(?:\s+\[\s*\d+%\])?\s*$"
         )
 
         for line in log.splitlines():
-            m = pattern.search(line)
+            m = pattern.match(line)
             if m:
                 test_name = m.group(1)
                 status = m.group(2)
-                if status == "PASSED":
+                if status in ("PASSED", "XPASS"):
                     passed_tests.add(test_name)
                 elif status in ("FAILED", "ERROR"):
                     failed_tests.add(test_name)
-                elif status == "SKIPPED":
+                elif status in ("SKIPPED", "XFAIL"):
                     skipped_tests.add(test_name)
 
         return TestResult(

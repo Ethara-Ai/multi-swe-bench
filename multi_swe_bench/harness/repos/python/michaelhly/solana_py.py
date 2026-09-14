@@ -1,11 +1,108 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 REPO_DIR = "solana-py"
+
+
+class SolanaPyImageBase(Image):
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        if self._pr.number <= 232:
+            return "python:3.8-slim"
+        return "python:3.9-slim"
+
+    def image_prefix(self) -> str:
+        return "mswebench"
+
+    def _era(self) -> str:
+        if self._pr.number <= 114:
+            return "py38-era1"
+        if self._pr.number <= 232:
+            return "py38-era2"
+        return "py39-era3"
+
+    def image_tag(self) -> str:
+        return f"base-{self._era()}"
+
+    def workdir(self) -> str:
+        return f"base-{self._era()}"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        org = self.pr.org
+        repo = self.pr.repo
+        enh = DockerfileEnhancer
+
+        extra_apt = SolanaPyImageDefault(self.pr, self.config)._extra_apt_packages()
+        default_packages = "ca-certificates curl git gnupg make python3 sudo wget"
+        packages_str = (
+            f"{default_packages} {extra_apt}" if extra_apt else default_packages
+        )
+
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{REPO_DIR}'
+        else:
+            code = f"COPY {repo} /home/{REPO_DIR}"
+
+        label_block = (
+            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
+
+        return f"""{enh.SYNTAX_DIRECTIVE}
+
+FROM {image_name}
+
+{enh._TARGETARCH_ARG}
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+{enh._PROXY_ARGS}
+
+{enh._ENV_BLOCK}
+
+{label_block}
+
+{enh._CERT_SYMLINKS}
+
+{self.global_env}
+
+WORKDIR /home/
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    {packages_str} \\
+    && rm -rf /var/lib/apt/lists/*
+
+{code}
+
+WORKDIR /home/{REPO_DIR}
+
+CMD ["/bin/bash"]
+"""
 
 
 class SolanaPyImageDefault(Image):
@@ -21,10 +118,8 @@ class SolanaPyImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        if self._pr.number <= 232:
-            return "python:3.8-slim"
-        return "python:3.9-slim"
+    def dependency(self) -> Image:
+        return SolanaPyImageBase(self.pr, self.config)
 
     def image_prefix(self) -> str:
         return "mswebench"
@@ -37,49 +132,40 @@ class SolanaPyImageDefault(Image):
 
     def _extra_apt_packages(self) -> str:
         if self._pr.number <= 114:
-            # Era 1 (setup.py): only git needed
             return ""
         elif self._pr.number <= 232:
-            # Era 2 (poetry + PyNaCl): need build tools + libsodium for PyNaCl
             return "build-essential libffi-dev libsodium-dev"
         else:
-            # Era 3 (poetry + solders): need build tools for Rust bindings
             return "build-essential"
 
     def _install_commands(self) -> str:
         if self._pr.number <= 114:
-            # Era 1: setup.py based
-            cmd = 'RUN pip install --upgrade pip setuptools wheel\nRUN pip install -e ".[dev]"'
+            cmd = 'pip install --upgrade pip setuptools wheel\npip install -e ".[dev]"'
             if self._pr.number == 105:
-                # cachetools used in blockhash.py but not declared in setup.py at this commit
-                cmd += "\nRUN pip install cachetools"
+                cmd += "\npip install cachetools"
             return cmd
         else:
-            # Era 2 & 3: poetry based
             return (
-                "RUN pip install --upgrade pip setuptools wheel\n"
-                "RUN pip install poetry\n"
-                "RUN poetry config virtualenvs.create false\n"
-                "RUN poetry lock\n"
-                "RUN poetry install"
+                "pip install --upgrade pip setuptools wheel\n"
+                "pip install poetry\n"
+                "poetry config virtualenvs.create false\n"
+                "poetry lock\n"
+                "poetry install"
             )
 
     def _test_command(self) -> str:
         if self._pr.number <= 114:
-            # Era 1: flat layout, need PYTHONPATH
             return (
                 'PYTHONPATH=./solana pytest -v -m "not integration" '
-                "--no-header -rA --tb=no -p no:cacheprovider"
+                '--no-header -rA --tb=no -p no:cacheprovider -o addopts=""'
             )
         elif self._pr.number <= 232:
-            # Era 2: src layout, ignore integration
             return (
                 'pytest -v -m "not integration" '
                 "--no-header -rA --tb=no -p no:cacheprovider "
                 "--ignore=src --ignore=tests/integration"
             )
         else:
-            # Era 3: src layout, ignore integration, disable anyio
             return (
                 'pytest -v -m "not integration" '
                 "--no-header -rA --tb=no -p no:cacheprovider "
@@ -87,60 +173,36 @@ class SolanaPyImageDefault(Image):
             )
 
     def dockerfile(self) -> str:
-        base_img = self.dependency()
-        extra_apt = self._extra_apt_packages()
-
-        default_packages = (
-            "ca-certificates curl git gnupg make python3 sudo wget"
-        )
-        if extra_apt:
-            packages_str = f"{default_packages} {extra_apt}"
-        else:
-            packages_str = default_packages
-
-        if self.config.need_clone:
-            clone = (
-                f'RUN git clone "${{REPO_URL}}" /home/{REPO_DIR}'
-            )
-        else:
-            clone = f"COPY {self.pr.repo} /home/{REPO_DIR}"
-
-        install_cmds = self._install_commands()
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
 
         copy_commands = "\n".join(
             f"COPY {f.name} /home/" for f in self.files()
         )
 
-        return f"""FROM {base_img}
+        return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
 {self.global_env}
 
-WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
+{copy_commands}
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    {packages_str} \\
-    && rm -rf /var/lib/apt/lists/*
 
-{clone}
+RUN bash /home/prepare.sh
 
-WORKDIR /home/{REPO_DIR}
 RUN git reset --hard
 RUN git checkout ${{BASE_COMMIT}}
 
-{install_cmds}
-
-{copy_commands}
-RUN bash /home/prepare.sh
+{Image._HARDENING_BLOCK}
 
 {self.clear_env}
-
-CMD ["/bin/bash"]
 """
 
     def files(self) -> list[File]:
         test_cmd = self._test_command()
+        install_sh = self._install_commands()
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
@@ -171,6 +233,7 @@ git reset --hard
 bash /home/check_git_changes.sh
 git checkout {self.pr.base.sha}
 bash /home/check_git_changes.sh
+{install_sh}
 {test_cmd}
 echo '{test_cmd}' > test_commands.sh
 """,
