@@ -14,6 +14,46 @@ from .mermaid import (
     _PNPM_FIX_RUN_SH,
 )
 
+# --- MITM proxy / cert scaffolding (PIPELINE §2a, §8) -- written out in full ---
+# This PR image has an `Image`-typed dependency, so `DockerfileEnhancer.enhance()`
+# returns its Dockerfile raw and injects nothing. Per §2a the MITM block is added
+# BY HAND, spelled out literally below. The text is identical to the canonical
+# `image.py` constants (`_PROXY_ARGS`, `_ENV_BLOCK`, `_CERT_SYMLINKS`) -- keep it
+# that way; if image.py changes, update these literals or §8.1 will flag the drift.
+# `_MITM_MOUNT` stays latent (§2a). Empty proxy ARG defaults = passthrough.
+
+_MITM_PROXY_ARGS = '''\
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"'''
+
+_MITM_ENV_BLOCK = '''\
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${http_proxy} \\
+    https_proxy=${https_proxy} \\
+    HTTP_PROXY=${HTTP_PROXY} \\
+    HTTPS_PROXY=${HTTPS_PROXY} \\
+    no_proxy=${no_proxy} \\
+    NO_PROXY=${NO_PROXY} \\
+    SSL_CERT_FILE=${CA_CERT_PATH} \\
+    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\
+    CURL_CA_BUNDLE=${CA_CERT_PATH}'''
+
+_MITM_CERT_SYMLINKS = '''\
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt'''
+
 _NODE_IMAGE = "node:18-bookworm"
 _INTERVAL_NAME = "mermaid_6007_to_3531"
 
@@ -78,6 +118,13 @@ class ImageDefault(Image):
         ]
 
     def dockerfile(self) -> str:
+        """Per-PR image — PIPELINE §4 reference format.
+
+        `prepare.sh` resets and checks out `base.sha`, then the canonical
+        `Image._HARDENING_BLOCK` runs with the **literal** base sha substituted
+        for `${BASE_COMMIT}` so the fix cannot be recovered from git history
+        (PIPELINE §2/§9).
+        """
         image = self.dependency()
         name = image.image_name()
         tag = image.image_tag()
@@ -86,21 +133,43 @@ class ImageDefault(Image):
         for file in self.files():
             copy_commands += "COPY {name} /home/\n".format(name=file.name)
 
-        return """FROM {name}:{tag}
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return """# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
+
+ARG TARGETARCH
+
+{mitm_args}
+
+{mitm_env}
+
+{mitm_certs}
 
 {global_env}
 
 {copy_commands}
-
 RUN bash /home/prepare.sh
+
+WORKDIR /home/{repo}
+
+{hardening}
 
 {clear_env}
 
+CMD ["/bin/bash"]
 """.format(
             name=name,
             tag=tag,
+            mitm_args=_MITM_PROXY_ARGS,
+            mitm_env=_MITM_ENV_BLOCK,
+            mitm_certs=_MITM_CERT_SYMLINKS,
             global_env=self.global_env,
             copy_commands=copy_commands,
+            repo=self.pr.repo,
+            hardening=hardening,
             clear_env=self.clear_env,
         )
 
@@ -137,3 +206,16 @@ class MermaidPnpmVitest18(Instance):
 
     def parse_log(self, test_log: str) -> TestResult:
         return mermaid_vitest_parse_log(test_log)
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) -- PIPELINE 11b ===
+_BUNDLE_NIS_MERMAID_6007_TO_3531 = [
+    "4501",
+    "4514",
+    "4924",
+    "5066",
+    "5798",
+    "5826",
+]
+for _ni in _BUNDLE_NIS_MERMAID_6007_TO_3531:
+    Instance.register("mermaid-js", _ni)(MermaidPnpmVitest18)

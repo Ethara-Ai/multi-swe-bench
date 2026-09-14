@@ -7,6 +7,55 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 # ---------------------------------------------------------------------------
+# MITM proxy / cert scaffolding (PIPELINE §2a, §8) — written out in full here
+# ---------------------------------------------------------------------------
+# These images opt out of `DockerfileEnhancer` auto-injection: the base carries a
+# `# syntax` directive (§2 opt-out gotcha) and the PR layer has an `Image`-typed
+# dependency, so `enhance()` returns both Dockerfiles raw and injects nothing.
+# Per §2a the MITM block is therefore added BY HAND, spelled out literally below.
+#
+# The text is identical to the canonical `image.py` constants (`_PROXY_ARGS`,
+# `_ENV_BLOCK`, `_CERT_SYMLINKS`) — keep it that way. If `image.py` ever changes,
+# these literals must be updated to match, or the §8.1 audit will flag the drift.
+#
+# `_MITM_MOUNT` is deliberately NOT wired in — it is latent in image.py too (§2a).
+# Proxy ARGs default to empty = passthrough; pass `--build-arg http_proxy=...`
+# to actually route the build through a MITM proxy.
+
+_MITM_PROXY_ARGS = '''\
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"'''
+
+_MITM_ENV_BLOCK = '''\
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${http_proxy} \\
+    https_proxy=${https_proxy} \\
+    HTTP_PROXY=${HTTP_PROXY} \\
+    HTTPS_PROXY=${HTTPS_PROXY} \\
+    no_proxy=${no_proxy} \\
+    NO_PROXY=${NO_PROXY} \\
+    SSL_CERT_FILE=${CA_CERT_PATH} \\
+    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\
+    CURL_CA_BUNDLE=${CA_CERT_PATH}'''
+
+_MITM_CERT_SYMLINKS = '''\
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt'''
+
+
+# ---------------------------------------------------------------------------
 # Shared base image — parameterized by Node version + package manager style
 # ---------------------------------------------------------------------------
 
@@ -58,32 +107,66 @@ class MermaidVersionBase(Image):
         return []
 
     def dockerfile(self) -> str:
+        """Shared per-era base image — PIPELINE §3 reference format.
+
+        `# syntax=docker/dockerfile:1.6` opts this base out of
+        `DockerfileEnhancer` auto-injection (PIPELINE §2 "opt-out gotcha"), so a
+        single base is built and reused by every PR of the era instead of being
+        rebuilt per PR under one shared tag. Full git history is kept here; the
+        strict `_HARDENING_BLOCK` runs in the PR layer (PIPELINE §4).
+        """
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        clone_and_checkout = (
-            "RUN git clone --bare https://github.com/{org}/{repo}.git /home/{repo}.git && \\\n"
-            "    cd /home/{repo}.git && \\\n"
-            '    git fetch origin "+refs/pull/*/head:refs/pull/*/head" "+refs/pull/*/merge:refs/pull/*/merge" && \\\n'
-            "    cd /home && \\\n"
-            "    git clone /home/{repo}.git /home/{repo} && \\\n"
-            "    rm -rf /home/{repo}.git && \\\n"
-            "    cd /home/{repo} && \\\n"
-            "    git checkout ${{BASE_COMMIT}}"
-        ).format(org=self.pr.org, repo=self.pr.repo)
+        org = self.pr.org
+        repo = self.pr.repo
+        if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
+        else:
+            code = f"COPY {repo} /home/{repo}"
 
         global_env = self.global_env.strip()
         clear_env = self.clear_env.strip()
         global_section = f"\n{global_env}\n" if global_env else ""
         clear_section = f"\n{clear_env}\n" if clear_env else ""
 
-        return "FROM {image_name}{global_section}\nWORKDIR /home/\nRUN apt-get update && apt-get install -y --no-install-recommends jq git && rm -rf /var/lib/apt/lists/*\n\n{clone_and_checkout}\n{clear_section}\nCMD [\"/bin/bash\"]\n".format(
-            image_name=image_name,
-            global_section=global_section,
-            clone_and_checkout=clone_and_checkout,
-            clear_section=clear_section,
-        )
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+{_MITM_PROXY_ARGS}
+
+{_MITM_ENV_BLOCK}
+
+ENV LC_ALL=C.UTF-8
+
+{_MITM_CERT_SYMLINKS}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+{global_section}
+WORKDIR /home/
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    jq git ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git config --global --add safe.directory '*'
+{code}
+
+WORKDIR /home/{repo}
+RUN git remote remove origin 2>/dev/null || true; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
+{clear_section}
+CMD ["/bin/bash"]
+"""
 
 
 # ---------------------------------------------------------------------------
