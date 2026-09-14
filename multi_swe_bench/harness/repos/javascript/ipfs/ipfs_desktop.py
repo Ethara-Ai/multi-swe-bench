@@ -5,121 +5,19 @@ from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Imag
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-PLAYWRIGHT_IMAGE = "mcr.microsoft.com/playwright:v1.48.0-jammy"
+NODE_IMAGE = "node:12-bullseye"
 BASE_TAG = "base"
 RESULTS_MARKER = "----- per-test results -----"
 
-_TEST_FILES = re.compile(r"^diff --git a/(\S+\.test\.m?js) b/", re.M)
+_SPEC_FILES = re.compile(r"^diff --git a/(\S+\.spec\.js) b/", re.M)
 _PASSED = re.compile(r"^===TEST=== PASS (.+)$", re.M)
 _FAILED = re.compile(r"^===TEST=== FAIL (.+)$", re.M)
 _SKIPPED = re.compile(r"^===TEST=== SKIP (.+)$", re.M)
 _ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
-_WTR_CONFIG = r"""import fs from 'fs';
-import path from 'path';
-import baseConfig from '../../web-test-runner.config.mjs';
-import { playwrightLauncher } from '@web/test-runner-playwright';
-
-const ROOT = path.resolve(process.cwd());
-const OUT = process.env.MSB_OUT;
-const FILE = process.env.MSB_FILE;
-
-const clean = s => String(s).replace(/\s+/g, ' ').trim();
-
-function walk(node, trail, file, lines) {
-  for (const t of node.tests || []) {
-    const name = [file, ...trail, clean(t.name)].join(' > ');
-    const status = t.skipped ? 'SKIP' : t.passed ? 'PASS' : 'FAIL';
-    lines.push('===TEST=== ' + status + ' ' + name);
-  }
-  for (const s of node.suites || []) walk(s, [...trail, clean(s.name)], file, lines);
-}
-
-const msbReporter = () => ({
-  reportTestFileResults({ sessionsForTestFile, testFile }) {
-    const rel = path.relative(ROOT, testFile).split(path.sep).join('/');
-    const lines = [];
-    for (const session of sessionsForTestFile) {
-      if (session.testResults) walk(session.testResults, [], rel, lines);
-    }
-    if (lines.length) fs.appendFileSync(OUT, lines.join('\n') + '\n');
-  },
-});
-
-const config = { ...baseConfig };
-config.groups = [];
-config.files = [FILE];
-config.coverage = false;
-config.concurrency = 1;
-config.testFramework = {
-  ...baseConfig.testFramework,
-  config: {
-    ...((baseConfig.testFramework && baseConfig.testFramework.config) || {}),
-    timeout: '20000',
-  },
-};
-config.browsers = [
-  playwrightLauncher({
-    product: 'chromium',
-    launchOptions: { args: ['--disable-dev-shm-usage'] },
-  }),
-];
-config.reporters = [msbReporter()];
-
-const guard = `<script>
-(function () {
-  var names = [
-    'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
-    'requestAnimationFrame', 'cancelAnimationFrame',
-    'requestIdleCallback', 'cancelIdleCallback',
-    'queueMicrotask', 'Date', 'performance',
-  ];
-  var natives = {};
-  names.forEach(function (n) {
-    if (n in window) natives[n] = window[n];
-  });
-  function restore() {
-    names.forEach(function (n) {
-      if (n in natives && window[n] !== natives[n]) {
-        try {
-          window[n] = natives[n];
-        } catch (e) {}
-      }
-    });
-  }
-  Object.defineProperty(window, 'afterEach', {
-    configurable: true,
-    get: function () {
-      return undefined;
-    },
-    set: function (fn) {
-      Object.defineProperty(window, 'afterEach', {
-        configurable: true,
-        writable: true,
-        value: fn,
-      });
-      fn(function () {
-        restore();
-      });
-    },
-  });
-})();
-</script>`;
-
-const baseHtml = baseConfig.testRunnerHtml;
-config.testRunnerHtml = testRunnerImport => {
-  const html = baseHtml
-    ? baseHtml(testRunnerImport)
-    : '<html><head><script type="module" src="' + testRunnerImport + '"></script></head></html>';
-  return html.replace('<head>', '<head>' + guard);
-};
-
-export default config;
-"""
-
 
 def _targets(pr: PullRequest) -> str:
-    dirs = {f.rsplit("/", 1)[0] for f in _TEST_FILES.findall(pr.test_patch)}
+    dirs = {f.rsplit("/", 1)[0] for f in _SPEC_FILES.findall(pr.test_patch)}
     return " ".join(sorted(dirs))
 
 
@@ -127,25 +25,41 @@ def _run_tests_sh(pr: PullRequest) -> str:
     return (
         "#!/bin/bash\n"
         f"cd /home/{pr.repo}\n"
-        "export CI=true\n"
+        "export NODE_ENV=test\n"
         "RESULTS=/tmp/msb-results.txt\n"
         ': > "$RESULTS"\n'
         f'TARGETS="{_targets(pr)}"\n'
-        "SUITES=$(find $TARGETS -type f -name '*.test.js' 2>/dev/null | sort -u)\n"
+        "SUITES=$(find $TARGETS -type f -name '*.spec.js' 2>/dev/null | sort -u)\n"
         "for suite in $SUITES; do\n"
-        '  out="/tmp/msb-$(echo "$suite" | tr / _).txt"\n'
+        '  out="/tmp/msb-$(echo "$suite" | tr / _).json"\n'
         '  rm -f "$out"\n'
-        '  MSB_FILE="$suite" MSB_OUT="$out" npx web-test-runner'
-        " --config node_modules/.msb/wtr-msb.config.mjs < /dev/null\n"
-        '  test -s "$out" || echo "===TEST=== FAIL $suite > SUITE_ERROR" > "$out"\n'
-        '  cat "$out" >> "$RESULTS"\n'
+        '  npx mocha --reporter json "$suite" > "$out" 2>/dev/null < /dev/null\n'
+        '  SUITE="$suite" OUT="$out" node >> "$RESULTS" <<\'JS\'\n'
+        "const fs = require('fs');\n"
+        "const file = process.env.SUITE;\n"
+        "const clean = (s) => String(s).replace(/\\s+/g, ' ').trim();\n"
+        "let report = {};\n"
+        "try { report = JSON.parse(fs.readFileSync(process.env.OUT, 'utf8')); } catch (e) {}\n"
+        "const lines = [];\n"
+        "const add = (list, status) =>\n"
+        "  (list || []).forEach((t) =>\n"
+        "    lines.push('===TEST=== ' + status + ' ' + file + ' > ' + clean(t.fullTitle)),\n"
+        "  );\n"
+        "add(report.passes, 'PASS');\n"
+        "add(report.failures, 'FAIL');\n"
+        "add(report.pending, 'SKIP');\n"
+        "const missing = ['===TEST=== FAIL ' + file + ' > SUITE_ERROR'].slice(\n"
+        "  Math.min(1, lines.length),\n"
+        ");\n"
+        "console.log([...lines, ...missing].join('\\n'));\n"
+        "JS\n"
         "done\n"
         f'echo "{RESULTS_MARKER}"\n'
         'cat "$RESULTS"\n'
     )
 
 
-class LionImageBase(Image):
+class IpfsDesktopImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -159,7 +73,7 @@ class LionImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return PLAYWRIGHT_IMAGE
+        return NODE_IMAGE
 
     def image_tag(self) -> str:
         return BASE_TAG
@@ -181,14 +95,10 @@ FROM {base_img}
 
 ENV NPM_CONFIG_PROGRESS=false
 ENV NPM_CONFIG_COLOR=false
-ENV NPM_CONFIG_FUND=false
-ENV NPM_CONFIG_AUDIT=false
 ENV NO_COLOR=1
 ENV FORCE_COLOR=0
 ENV CI=true
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV NODE_OPTIONS=--max-old-space-size=4096
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 
 WORKDIR /home/
 
@@ -198,7 +108,7 @@ CMD ["/bin/bash"]
 """
 
 
-class LionImageDefault(Image):
+class IpfsDesktopImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -212,7 +122,7 @@ class LionImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return LionImageBase(self.pr, self._config)
+        return IpfsDesktopImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -241,13 +151,11 @@ class LionImageDefault(Image):
             "bash /home/check_git_changes.sh\n"
             'git checkout --detach "${BASE_COMMIT}"\n'
             "bash /home/check_git_changes.sh\n"
-            "npm ci --ignore-scripts --no-audit --no-fund\n"
-            "mkdir -p node_modules/.msb\n"
-            "cp /home/wtr-msb.config.mjs node_modules/.msb/wtr-msb.config.mjs\n"
-            "test -x node_modules/.bin/web-test-runner\n"
-            "node -e \"['@web/test-runner', '@web/test-runner-playwright', 'playwright-core', "
-            "'@open-wc/testing', 'sinon', 'mocha', 'globby', '@lit-labs/testing', "
-            "'@webcomponents/scoped-custom-element-registry']"
+            "npm config set maxsockets 5\n"
+            "npm ci --ignore-scripts --no-audit --no-fund"
+            " || npm ci --ignore-scripts --no-audit --no-fund\n"
+            "test -x node_modules/.bin/mocha\n"
+            "node -e \"['mocha', 'chai', 'dirty-chai', 'sinon', 'proxyquire']"
             ".forEach((m) => require.resolve(m)); console.log('DEPS_OK')\"\n"
             "bash /home/check_git_changes.sh\n"
         )
@@ -278,7 +186,6 @@ class LionImageDefault(Image):
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(".", "wtr-msb.config.mjs", _WTR_CONFIG),
             File(".", "check_git_changes.sh", check_git_changes_sh),
             File(".", "prepare.sh", prepare_sh),
             File(".", "run.sh", run_sh),
@@ -303,8 +210,8 @@ WORKDIR /home/{self.pr.repo}
 """
 
 
-@Instance.register("ing-bank", "lion")
-class Lion(Instance):
+@Instance.register("ipfs", "ipfs-desktop")
+class IpfsDesktop(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -315,7 +222,7 @@ class Lion(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return LionImageDefault(self.pr, self._config)
+        return IpfsDesktopImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"

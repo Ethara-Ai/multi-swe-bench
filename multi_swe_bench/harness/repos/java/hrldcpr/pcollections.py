@@ -1,67 +1,44 @@
 import re
+import xml.etree.ElementTree as ET
 from typing import Optional
 
 from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-NODE_IMAGE = "node:22-bookworm"
-BASE_TAG = "base-57633_to_55639"
-RESULTS_MARKER = "----- per-test results -----"
+_MAVEN_IMAGE = "maven:3.9-eclipse-temurin-8"
+_BASE_TAG = "base"
 
-_COMPONENT_DIRS = re.compile(r"^diff --git a/components/(?!__tests__/)([^/]+)/", re.M)
-_OTHER_TESTS = re.compile(
-    r"^diff --git a/((?!components/(?!__tests__/)[^/]+/)\S+\.test\.[jt]sx?) b/", re.M
-)
-_PASSED = re.compile(r"^(jest::.+?)\s+PASSED$", re.M)
-_FAILED = re.compile(r"^(jest::.+?)\s+FAILED$", re.M)
-_SKIPPED = re.compile(r"^(jest::.+?)\s+SKIPPED$", re.M)
-_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_SUITE = re.compile(r"<testsuite\b.*?</testsuite>", re.S)
+_SYNTHETIC = re.compile(r"^SYNTHETIC_FAIL (\S+)$", re.M)
 
-
-def _targets(pr: PullRequest) -> str:
-    dirs = {f"components/{c}/__tests__" for c in _COMPONENT_DIRS.findall(pr.test_patch)}
-    files = set(_OTHER_TESTS.findall(pr.test_patch))
-    return " ".join(sorted(dirs | files))
-
-
-def _run_tests_sh(pr: PullRequest) -> str:
-    return (
-        "#!/bin/bash\n"
-        f"cd /home/{pr.repo}\n"
-        "RESULTS=/tmp/jest-results.txt\n"
-        ': > "$RESULTS"\n'
-        f'TARGETS="{_targets(pr)}"\n'
-        "SUITES=$(find $TARGETS -type f 2>/dev/null"
-        " | grep -E '\\.test\\.[jt]sx?$'"
-        " | grep -Ev 'node|dekko|image\\.test\\.(js|ts)'"
-        " | sort -u)\n"
-        "for suite in $SUITES; do\n"
-        '  out="/tmp/jest-$(echo "$suite" | tr / _).json"\n'
-        '  rm -f "$out"\n'
-        '  npx jest --config .jest.js --no-cache --ci --runTestsByPath "$suite" --json --outputFile="$out" < /dev/null\n'
-        "  SUITE=\"$suite\" OUT=\"$out\" node >> \"$RESULTS\" <<'JS'\n"
-        "const fs = require('fs');\n"
-        "const file = process.env.SUITE;\n"
-        "const status = { passed: 'PASSED', failed: 'FAILED' };\n"
-        "let results = [];\n"
-        "try { results = JSON.parse(fs.readFileSync(process.env.OUT, 'utf8')).testResults; } catch (e) {}\n"
-        "const lines = results\n"
-        "  .flatMap((r) => r.assertionResults)\n"
-        "  .map((a) => `jest::${file}::${a.fullName.replace(/\\n/g, ' ')} ${status[a.status] || 'SKIPPED'}`);\n"
-        "const errors = results\n"
-        "  .filter((r) => r.status === 'failed' && !r.assertionResults.some((a) => a.status === 'failed'))\n"
-        "  .map(() => `jest::${file}::SUITE_ERROR FAILED`);\n"
-        "const missing = [`jest::${file}::SUITE_ERROR FAILED`].slice(Math.min(1, lines.length + errors.length));\n"
-        "console.log([...lines, ...errors, ...missing].join('\\n'));\n"
-        "JS\n"
-        "done\n"
-        f'echo "{RESULTS_MARKER}"\n'
-        'cat "$RESULTS"\n'
-    )
+_RUN_TESTS_BODY = r"""rm -rf target/surefire-reports
+mvn -o -B -DskipTests test-compile > /tmp/compile.log 2>&1
+echo "COMPILE_EXIT=$?"
+tail -20 /tmp/compile.log
+CLASSES=$(find src/test -name '*Test.java' | sed 's#^src/test/java/##; s#/#.#g; s#\.java$##' | sort -u)
+for cls in $CLASSES; do
+  mvn -o -B surefire:test -Dtest="$cls" -DfailIfNoTests=false > "/tmp/mvn-$cls.log" 2>&1
+  xml="target/surefire-reports/TEST-$cls.xml"
+  if [ -f "$xml" ]; then
+    echo "=== SUREFIRE XML $cls"
+    cat "$xml"
+    echo
+  else
+    echo "=== SUREFIRE MISSING $cls"
+    src="src/test/java/$(echo "$cls" | tr . /).java"
+    grep -oE 'public void test[A-Za-z0-9_]*' "$src" 2>/dev/null | awk '{print "SYNTHETIC_FAIL " $3}'
+    tail -15 "/tmp/mvn-$cls.log"
+  fi
+done
+"""
 
 
-class AntDesignImageBase_ANT_DESIGN_57633_TO_55639(Image):
+def _run_tests_sh(repo: str) -> str:
+    return "#!/bin/bash\n" f"cd /home/{repo}\n" + _RUN_TESTS_BODY
+
+
+class PcollectionsImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -75,13 +52,13 @@ class AntDesignImageBase_ANT_DESIGN_57633_TO_55639(Image):
         return self._config
 
     def dependency(self) -> str:
-        return NODE_IMAGE
+        return _MAVEN_IMAGE
 
     def image_tag(self) -> str:
-        return BASE_TAG
+        return _BASE_TAG
 
     def workdir(self) -> str:
-        return BASE_TAG
+        return _BASE_TAG
 
     def files(self) -> list[File]:
         return []
@@ -103,7 +80,7 @@ CMD ["/bin/bash"]
 """
 
 
-class AntDesignImageDefault_ANT_DESIGN_57633_TO_55639(Image):
+class PcollectionsImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -117,7 +94,7 @@ class AntDesignImageDefault_ANT_DESIGN_57633_TO_55639(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return AntDesignImageBase_ANT_DESIGN_57633_TO_55639(self.pr, self._config)
+        return PcollectionsImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -142,16 +119,11 @@ class AntDesignImageDefault_ANT_DESIGN_57633_TO_55639(Image):
             "set -e\n"
             f"cd /home/{repo}\n"
             "git reset --hard\n"
-            "git clean -fdx\n"
             "bash /home/check_git_changes.sh\n"
+            'git cat-file -e "${BASE_COMMIT}" 2>/dev/null || git fetch --no-tags origin "${BASE_COMMIT}"\n'
             'git checkout --detach "${BASE_COMMIT}"\n'
             "bash /home/check_git_changes.sh\n"
-            'npm install --ignore-scripts --before="$(git log -1 --format=%cI)"\n'
-            "npm run version\n"
-            "test -f components/version/version.ts\n"
-            "node -e \"['jest', 'jest-environment-jsdom', 'jest-canvas-mock', '@testing-library/jest-dom', "
-            "'@testing-library/react', 'jest-axe', '@ant-design/tools/lib/jest/codePreprocessor']"
-            ".forEach((m) => require.resolve(m)); console.log('DEPS_OK')\"\n"
+            "mvn -B test\n"
         )
 
         run_sh = (
@@ -185,7 +157,7 @@ class AntDesignImageDefault_ANT_DESIGN_57633_TO_55639(Image):
             File(".", "run.sh", run_sh),
             File(".", "test-run.sh", test_run_sh),
             File(".", "fix-run.sh", fix_run_sh),
-            File(".", "run_tests.sh", _run_tests_sh(self.pr)),
+            File(".", "run_tests.sh", _run_tests_sh(repo)),
         ]
 
     def dockerfile(self) -> str:
@@ -204,8 +176,8 @@ WORKDIR /home/{self.pr.repo}
 """
 
 
-@Instance.register("ant-design", "ant_design_57633_to_55639")
-class ANT_DESIGN_57633_TO_55639(Instance):
+@Instance.register("hrldcpr", "pcollections")
+class Pcollections(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -216,7 +188,7 @@ class ANT_DESIGN_57633_TO_55639(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return AntDesignImageDefault_ANT_DESIGN_57633_TO_55639(self.pr, self._config)
+        return PcollectionsImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"
@@ -228,10 +200,37 @@ class ANT_DESIGN_57633_TO_55639(Instance):
         return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        section = _ANSI.sub("", test_log).rsplit(RESULTS_MARKER, 1)[-1]
-        failed_tests = set(_FAILED.findall(section))
-        passed_tests = set(_PASSED.findall(section)) - failed_tests
-        skipped_tests = set(_SKIPPED.findall(section)) - failed_tests - passed_tests
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
+
+        for block in _SUITE.findall(test_log):
+            try:
+                root = ET.fromstring(block)
+            except ET.ParseError:
+                continue
+            suite = root.get("name") or ""
+            for case in root.iter("testcase"):
+                name = case.get("name")
+                if not name:
+                    continue
+                ident = f"mvn::{suite}::{name}"
+                if case.find("failure") is not None or case.find("error") is not None:
+                    failed_tests.add(ident)
+                elif case.find("skipped") is not None:
+                    skipped_tests.add(ident)
+                else:
+                    passed_tests.add(ident)
+
+        for section in test_log.split("=== SUREFIRE MISSING ")[1:]:
+            cls = section.split("\n", 1)[0].strip()
+            body = section.split("=== SUREFIRE", 1)[0]
+            for method in _SYNTHETIC.findall(body):
+                failed_tests.add(f"mvn::{cls}::{method}")
+
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests | passed_tests
+
         return TestResult(
             passed_count=len(passed_tests),
             failed_count=len(failed_tests),

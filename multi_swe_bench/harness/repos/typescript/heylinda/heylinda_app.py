@@ -1,13 +1,56 @@
 import re
-from typing import Optional, Union
-from multi_swe_bench.harness.image import Config, File, Image
+from typing import Optional
+
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_NODE_IMAGE = "node:14"
+_BASE_TAG = "base"
+_RESULTS_MARKER = "----- per-test results -----"
+
+_PASSED = re.compile(r"^(jest::.+?)\s+PASSED$", re.M)
+_FAILED = re.compile(r"^(jest::.+?)\s+FAILED$", re.M)
+_SKIPPED = re.compile(r"^(jest::.+?)\s+SKIPPED$", re.M)
+_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+_RUN_TESTS_BODY = r"""RESULTS=/tmp/jest-results.txt
+: > "$RESULTS"
+SUITES=$(npx jest --listTests < /dev/null | sed "s#^$PWD/##" | sort -u)
+for suite in $SUITES; do
+  out="/tmp/jest-$(echo "$suite" | tr / _).json"
+  rm -f "$out"
+  npx jest --runTestsByPath "$suite" --json --outputFile="$out" < /dev/null
+  SUITE="$suite" OUT="$out" node >> "$RESULTS" <<'JS'
+const fs = require('fs');
+const file = process.env.SUITE;
+const status = { passed: 'PASSED', failed: 'FAILED' };
+let results = [];
+try { results = JSON.parse(fs.readFileSync(process.env.OUT, 'utf8')).testResults; } catch (e) {}
+const lines = results
+  .flatMap((r) => r.assertionResults)
+  .map((a) => `jest::${file}::${a.fullName.replace(/\n/g, ' ')} ${status[a.status] || 'SKIPPED'}`);
+const errors = results
+  .filter((r) => r.status === 'failed' && !r.assertionResults.some((a) => a.status === 'failed'))
+  .map(() => `jest::${file}::SUITE_ERROR FAILED`);
+const missing = [`jest::${file}::SUITE_ERROR FAILED`].slice(Math.min(1, lines.length + errors.length));
+console.log([...lines, ...errors, ...missing].join('\n'));
+JS
+done
+"""
+
+
+def _run_tests_sh(repo: str) -> str:
+    return (
+        "#!/bin/bash\n"
+        f"cd /home/{repo}\n"
+        + _RUN_TESTS_BODY
+        + f'echo "{_RESULTS_MARKER}"\n'
+        + 'cat "$RESULTS"\n'
+    )
+
 
 class HeyLindaAppImageBase(Image):
-    """Base image for heylinda/heylinda-app - clones the repo."""
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,50 +63,36 @@ class HeyLindaAppImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:14"
+    def dependency(self) -> str:
+        return _NODE_IMAGE
 
     def image_tag(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def workdir(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        base_img = self.dependency()
+        infra = DockerfileEnhancer._infrastructure_block(self, base_img).rstrip("\n")
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+FROM {base_img}
 
-        return f"""FROM {image_name}
-
-{self.global_env}
+{infra}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list && \
-    sed -i '/security.debian.org/d' /etc/apt/sources.list && \
-    sed -i '/buster-updates/d' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
 class HeyLindaAppImageDefault(Image):
-    """Per-PR image for heylinda/heylinda-app - checks out commit, installs deps."""
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -76,7 +105,7 @@ class HeyLindaAppImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Image:
         return HeyLindaAppImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -86,117 +115,80 @@ class HeyLindaAppImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        repo = self.pr.repo
+
+        check_git_changes_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            "git rev-parse --is-inside-work-tree > /dev/null\n"
+            "git status --porcelain\n"
+            'test -z "$(git status --porcelain)"\n'
+            'echo "check_git_changes: No uncommitted changes"\n'
+        )
+
+        prepare_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "git reset --hard\n"
+            "bash /home/check_git_changes.sh\n"
+            'git checkout --detach "${BASE_COMMIT}"\n'
+            "bash /home/check_git_changes.sh\n"
+            "yarn install --frozen-lockfile\n"
+        )
+
+        run_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "bash /home/run_tests.sh\n"
+        )
+
+        test_run_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "git apply --whitespace=nowarn /home/test.patch\n"
+            "bash /home/run_tests.sh\n"
+        )
+
+        fix_run_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
+            "bash /home/run_tests.sh\n"
+        )
+
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-yarn install --frozen-lockfile || yarn install || true
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -e
-cd /home/{pr.repo}
-
-npx jest --verbose --no-watchAll 2>&1 || true
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -e
-cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude yarn.lock /home/test.patch
-
-npx jest --verbose --no-watchAll 2>&1 || true
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -e
-cd /home/{pr.repo}
-git apply --whitespace=nowarn --exclude yarn.lock /home/test.patch /home/fix.patch
-
-npx jest --verbose --no-watchAll 2>&1 || true
-
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", check_git_changes_sh),
+            File(".", "prepare.sh", prepare_sh),
+            File(".", "run.sh", run_sh),
+            File(".", "test-run.sh", test_run_sh),
+            File(".", "fix-run.sh", fix_run_sh),
+            File(".", "run_tests.sh", _run_tests_sh(repo)),
         ]
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        copies = "".join(f"COPY {f.name} /home/\n" for f in self.files())
+        return f"""FROM {image.image_full_name()}
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+{copies}
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+RUN bash /home/prepare.sh
 
-        return f"""FROM {name}:{tag}
+WORKDIR /home/{self.pr.repo}
 
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
+{Image._HARDENING_BLOCK}
 """
 
 
 @Instance.register("heylinda", "heylinda-app")
 class HeyLindaApp(Instance):
-    """Instance handler for heylinda/heylinda-app - runs Jest tests and parses output."""
-
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -210,108 +202,19 @@ class HeyLindaApp(Instance):
         return HeyLindaAppImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
-        if run_cmd:
-            return run_cmd
-        return "bash /home/run.sh"
+        return run_cmd or "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        if test_patch_run_cmd:
-            return test_patch_run_cmd
-        return "bash /home/test-run.sh"
+        return test_patch_run_cmd or "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        if fix_patch_run_cmd:
-            return fix_patch_run_cmd
-        return "bash /home/fix-run.sh"
+        return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
-
-        current_suite = None
-
-        # Suite-level patterns (PASS/FAIL <file>)
-        re_pass_suite = re.compile(r"^PASS\s+(\S+)(\s+\(.+\))?$")
-        re_fail_suite = re.compile(r"^FAIL\s+(\S+)(\s+\(.+\))?$")
-
-        # Individual test patterns (checkmark/cross <test name>)
-        re_pass_test = re.compile(
-            r"^\s*[✔✓]\s+(.*?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$"
-        )
-        re_fail_test = re.compile(
-            r"^\s*[×✕✗✘✖]\s+(.*?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$"
-        )
-
-        # Skipped test pattern (circle skipped <test name>)
-        re_skipped_test = re.compile(
-            r"^\s*○\s+(?:skipped\s+)?(.*?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s)\))?\s*$"
-        )
-
-        current_describe = None
-
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        for line in test_log.splitlines():
-            line = ansi_escape.sub("", line)
-            stripped = line.strip()
-            if not stripped:
-                continue
-
-            pass_suite = re_pass_suite.match(stripped)
-            if pass_suite:
-                current_suite = pass_suite.group(1)
-                passed_tests.add(current_suite)
-                current_describe = None
-                continue
-
-            fail_suite = re_fail_suite.match(stripped)
-            if fail_suite:
-                current_suite = fail_suite.group(1)
-                failed_tests.add(current_suite)
-                current_describe = None
-                continue
-
-            # Describe block header (2-space indent, no test marker)
-            # Jest output:  PASS components/__tests__/Themed.tests.js
-            #                 Themed component tests            <- 2-space (describe)
-            #                   ✓ renders themed text correctly <- 4-space (test)
-            if current_suite and re.match(r"^  \S", line) and not re.match(r"^  [✓✔✕×✗✘✖○]", line):
-                current_describe = stripped
-                continue
-
-            pass_test = re_pass_test.match(stripped)
-            if pass_test:
-                test_name = pass_test.group(1).strip()
-                if current_describe:
-                    test_name = f"{current_describe}:{test_name}"
-                if current_suite:
-                    test_name = f"{current_suite}:{test_name}"
-                if test_name not in failed_tests:
-                    passed_tests.add(test_name)
-                continue
-
-            fail_test = re_fail_test.match(stripped)
-            if fail_test:
-                test_name = fail_test.group(1).strip()
-                if current_describe:
-                    test_name = f"{current_describe}:{test_name}"
-                if current_suite:
-                    test_name = f"{current_suite}:{test_name}"
-                failed_tests.add(test_name)
-                if test_name in passed_tests:
-                    passed_tests.remove(test_name)
-                continue
-
-            skipped_test = re_skipped_test.match(stripped)
-            if skipped_test:
-                test_name = skipped_test.group(1).strip()
-                if current_describe:
-                    test_name = f"{current_describe}:{test_name}"
-                if current_suite:
-                    test_name = f"{current_suite}:{test_name}"
-                skipped_tests.add(test_name)
-                continue
-
+        section = _ANSI.sub("", test_log).rsplit(_RESULTS_MARKER, 1)[-1]
+        failed_tests = set(_FAILED.findall(section))
+        passed_tests = set(_PASSED.findall(section)) - failed_tests
+        skipped_tests = set(_SKIPPED.findall(section)) - failed_tests - passed_tests
         return TestResult(
             passed_count=len(passed_tests),
             failed_count=len(failed_tests),

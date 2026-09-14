@@ -185,3 +185,4 @@ from multi_swe_bench.harness.repos.javascript.moleculerjs import *
 from multi_swe_bench.harness.repos.javascript.navidrome import *
 
 from multi_swe_bench.harness.repos.javascript.thenewboston_blockchain import *
+from multi_swe_bench.harness.repos.javascript.ipfs import *

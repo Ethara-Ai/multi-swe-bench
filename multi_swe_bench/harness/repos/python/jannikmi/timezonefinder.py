@@ -5,117 +5,15 @@ from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Imag
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-PLAYWRIGHT_IMAGE = "mcr.microsoft.com/playwright:v1.48.0-jammy"
+PYTHON_IMAGE = "python:3.13-bookworm"
 BASE_TAG = "base"
 RESULTS_MARKER = "----- per-test results -----"
 
-_TEST_FILES = re.compile(r"^diff --git a/(\S+\.test\.m?js) b/", re.M)
-_PASSED = re.compile(r"^===TEST=== PASS (.+)$", re.M)
-_FAILED = re.compile(r"^===TEST=== FAIL (.+)$", re.M)
-_SKIPPED = re.compile(r"^===TEST=== SKIP (.+)$", re.M)
+_TEST_FILES = re.compile(r"^diff --git a/(\S+/(?:test_\S+|\S+_test)\.py) b/", re.M)
+_PASSED = re.compile(r"^(.+?)\s+PASSED$", re.M)
+_FAILED = re.compile(r"^(.+?)\s+FAILED$", re.M)
+_SKIPPED = re.compile(r"^(.+?)\s+SKIPPED$", re.M)
 _ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-
-_WTR_CONFIG = r"""import fs from 'fs';
-import path from 'path';
-import baseConfig from '../../web-test-runner.config.mjs';
-import { playwrightLauncher } from '@web/test-runner-playwright';
-
-const ROOT = path.resolve(process.cwd());
-const OUT = process.env.MSB_OUT;
-const FILE = process.env.MSB_FILE;
-
-const clean = s => String(s).replace(/\s+/g, ' ').trim();
-
-function walk(node, trail, file, lines) {
-  for (const t of node.tests || []) {
-    const name = [file, ...trail, clean(t.name)].join(' > ');
-    const status = t.skipped ? 'SKIP' : t.passed ? 'PASS' : 'FAIL';
-    lines.push('===TEST=== ' + status + ' ' + name);
-  }
-  for (const s of node.suites || []) walk(s, [...trail, clean(s.name)], file, lines);
-}
-
-const msbReporter = () => ({
-  reportTestFileResults({ sessionsForTestFile, testFile }) {
-    const rel = path.relative(ROOT, testFile).split(path.sep).join('/');
-    const lines = [];
-    for (const session of sessionsForTestFile) {
-      if (session.testResults) walk(session.testResults, [], rel, lines);
-    }
-    if (lines.length) fs.appendFileSync(OUT, lines.join('\n') + '\n');
-  },
-});
-
-const config = { ...baseConfig };
-config.groups = [];
-config.files = [FILE];
-config.coverage = false;
-config.concurrency = 1;
-config.testFramework = {
-  ...baseConfig.testFramework,
-  config: {
-    ...((baseConfig.testFramework && baseConfig.testFramework.config) || {}),
-    timeout: '20000',
-  },
-};
-config.browsers = [
-  playwrightLauncher({
-    product: 'chromium',
-    launchOptions: { args: ['--disable-dev-shm-usage'] },
-  }),
-];
-config.reporters = [msbReporter()];
-
-const guard = `<script>
-(function () {
-  var names = [
-    'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
-    'requestAnimationFrame', 'cancelAnimationFrame',
-    'requestIdleCallback', 'cancelIdleCallback',
-    'queueMicrotask', 'Date', 'performance',
-  ];
-  var natives = {};
-  names.forEach(function (n) {
-    if (n in window) natives[n] = window[n];
-  });
-  function restore() {
-    names.forEach(function (n) {
-      if (n in natives && window[n] !== natives[n]) {
-        try {
-          window[n] = natives[n];
-        } catch (e) {}
-      }
-    });
-  }
-  Object.defineProperty(window, 'afterEach', {
-    configurable: true,
-    get: function () {
-      return undefined;
-    },
-    set: function (fn) {
-      Object.defineProperty(window, 'afterEach', {
-        configurable: true,
-        writable: true,
-        value: fn,
-      });
-      fn(function () {
-        restore();
-      });
-    },
-  });
-})();
-</script>`;
-
-const baseHtml = baseConfig.testRunnerHtml;
-config.testRunnerHtml = testRunnerImport => {
-  const html = baseHtml
-    ? baseHtml(testRunnerImport)
-    : '<html><head><script type="module" src="' + testRunnerImport + '"></script></head></html>';
-  return html.replace('<head>', '<head>' + guard);
-};
-
-export default config;
-"""
 
 
 def _targets(pr: PullRequest) -> str:
@@ -127,25 +25,54 @@ def _run_tests_sh(pr: PullRequest) -> str:
     return (
         "#!/bin/bash\n"
         f"cd /home/{pr.repo}\n"
-        "export CI=true\n"
+        "export PIP_FIND_LINKS=/tmp/msb-wheelhouse\n"
         "RESULTS=/tmp/msb-results.txt\n"
         ': > "$RESULTS"\n'
         f'TARGETS="{_targets(pr)}"\n'
-        "SUITES=$(find $TARGETS -type f -name '*.test.js' 2>/dev/null | sort -u)\n"
+        "SUITES=$(find $TARGETS -type f \\( -name 'test_*.py' -o -name '*_test.py' \\)"
+        " 2>/dev/null | sort -u)\n"
         "for suite in $SUITES; do\n"
-        '  out="/tmp/msb-$(echo "$suite" | tr / _).txt"\n'
+        '  out="/tmp/msb-$(echo "$suite" | tr / _).xml"\n'
         '  rm -f "$out"\n'
-        '  MSB_FILE="$suite" MSB_OUT="$out" npx web-test-runner'
-        " --config node_modules/.msb/wtr-msb.config.mjs < /dev/null\n"
-        '  test -s "$out" || echo "===TEST=== FAIL $suite > SUITE_ERROR" > "$out"\n'
-        '  cat "$out" >> "$RESULTS"\n'
+        '  log="/tmp/msb-$(echo "$suite" | tr / _).log"\n'
+        '  python -m pytest "$suite" -p no:cacheprovider --junitxml="$out" -q'
+        ' > "$log" 2>&1 < /dev/null\n'
+        '  echo "----- pytest output: $suite -----"\n'
+        '  tail -40 "$log"\n'
+        '  SUITE="$suite" OUT="$out" python >> "$RESULTS" <<\'PY\'\n'
+        "import os\n"
+        "import xml.etree.ElementTree as ET\n"
+        "suite = os.environ['SUITE']\n"
+        "module = suite[:-3].replace('/', '.')\n"
+        "lines = []\n"
+        "root = None\n"
+        "try:\n"
+        "    root = ET.parse(os.environ['OUT']).getroot()\n"
+        "except Exception:\n"
+        "    pass\n"
+        "for case in [] if root is None else root.iter('testcase'):\n"
+        "    name = case.get('name') or ''\n"
+        "    classname = case.get('classname') or ''\n"
+        "    extra = classname[len(module):].lstrip('.')\n"
+        "    if not classname.startswith(module):\n"
+        "        extra = classname\n"
+        "    prefix = extra + '::' if extra else ''\n"
+        "    status = 'PASSED'\n"
+        "    if case.find('skipped') is not None:\n"
+        "        status = 'SKIPPED'\n"
+        "    if case.find('failure') is not None or case.find('error') is not None:\n"
+        "        status = 'FAILED'\n"
+        "    lines.append(suite + '::' + prefix + name + ' ' + status)\n"
+        "missing = [suite + '::SUITE_ERROR FAILED'][: 0 if lines else 1]\n"
+        "print('\\n'.join(lines + missing))\n"
+        "PY\n"
         "done\n"
         f'echo "{RESULTS_MARKER}"\n'
         'cat "$RESULTS"\n'
     )
 
 
-class LionImageBase(Image):
+class TimezonefinderImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -159,7 +86,7 @@ class LionImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return PLAYWRIGHT_IMAGE
+        return PYTHON_IMAGE
 
     def image_tag(self) -> str:
         return BASE_TAG
@@ -179,16 +106,13 @@ FROM {base_img}
 
 {infra}
 
-ENV NPM_CONFIG_PROGRESS=false
-ENV NPM_CONFIG_COLOR=false
-ENV NPM_CONFIG_FUND=false
-ENV NPM_CONFIG_AUDIT=false
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_NO_INPUT=1
+ENV PIP_ROOT_USER_ACTION=ignore
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV NO_COLOR=1
-ENV FORCE_COLOR=0
 ENV CI=true
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV NODE_OPTIONS=--max-old-space-size=4096
 
 WORKDIR /home/
 
@@ -198,7 +122,7 @@ CMD ["/bin/bash"]
 """
 
 
-class LionImageDefault(Image):
+class TimezonefinderImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -212,7 +136,7 @@ class LionImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return LionImageBase(self.pr, self._config)
+        return TimezonefinderImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -241,15 +165,17 @@ class LionImageDefault(Image):
             "bash /home/check_git_changes.sh\n"
             'git checkout --detach "${BASE_COMMIT}"\n'
             "bash /home/check_git_changes.sh\n"
-            "npm ci --ignore-scripts --no-audit --no-fund\n"
-            "mkdir -p node_modules/.msb\n"
-            "cp /home/wtr-msb.config.mjs node_modules/.msb/wtr-msb.config.mjs\n"
-            "test -x node_modules/.bin/web-test-runner\n"
-            "node -e \"['@web/test-runner', '@web/test-runner-playwright', 'playwright-core', "
-            "'@open-wc/testing', 'sinon', 'mocha', 'globby', '@lit-labs/testing', "
-            "'@webcomponents/scoped-custom-element-registry']"
-            ".forEach((m) => require.resolve(m)); console.log('DEPS_OK')\"\n"
+            "python -m pip config set global.retries 10\n"
+            "python -m pip install --upgrade pip setuptools wheel\n"
+            "python -m pip install uv pytest pytz\n"
+            "python -m pip install -e .\n"
+            "python -m pip download --dest /tmp/msb-wheelhouse"
+            " pip setuptools wheel numpy 'h3>4' cffi flatbuffers\n"
             "bash /home/check_git_changes.sh\n"
+            "python -c \"import numpy, h3, cffi, flatbuffers, pytest, pytz;"
+            " print('DEPS_OK')\"\n"
+            "uv --version\n"
+            "timezonefinder --help > /dev/null\n"
         )
 
         run_sh = (
@@ -278,7 +204,6 @@ class LionImageDefault(Image):
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(".", "wtr-msb.config.mjs", _WTR_CONFIG),
             File(".", "check_git_changes.sh", check_git_changes_sh),
             File(".", "prepare.sh", prepare_sh),
             File(".", "run.sh", run_sh),
@@ -303,8 +228,8 @@ WORKDIR /home/{self.pr.repo}
 """
 
 
-@Instance.register("ing-bank", "lion")
-class Lion(Instance):
+@Instance.register("jannikmi", "timezonefinder")
+class Timezonefinder(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -315,7 +240,7 @@ class Lion(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return LionImageDefault(self.pr, self._config)
+        return TimezonefinderImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"
