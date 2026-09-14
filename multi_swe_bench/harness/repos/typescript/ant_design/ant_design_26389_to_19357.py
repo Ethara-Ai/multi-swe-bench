@@ -1,16 +1,9 @@
-"""ant-design/ant-design PRs 19357-26389."""
-
 from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 from multi_swe_bench.harness.repos.typescript.ant_design.ant_design import (
     parse_jest_log,
 )
-from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_dispatcher import (
-    AntDesignDispatcher,
-)
-
-_PR_LOW, _PR_HIGH = 19357, 26389
 
 _NODE_IMAGE = "node:12"
 
@@ -50,8 +43,6 @@ if (bad.length) {
 }
 console.log("pins verified: " + Object.keys(all).length + " deps scanned");
 """
-
-
 
 
 class AntDesignImageBase_ANT_DESIGN_26389_TO_19357(Image):
@@ -262,11 +253,6 @@ RUN bash /home/prepare.sh
 @Instance.register("ant-design", "ant-design")
 @Instance.register("ant-design", "ant_design_26389_to_19357")
 class ANT_DESIGN_26389_TO_19357(Instance):
-    def __new__(cls, pr: PullRequest, config: Config, *args, **kwargs):
-        if not (_PR_LOW <= pr.number <= _PR_HIGH):
-            return AntDesignDispatcher(pr, config, *args, **kwargs)
-        return super().__new__(cls)
-
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
