@@ -272,6 +272,12 @@ WORKDIR /home/
 ENV PIP_ROOT_USER_ACTION=ignore
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Debian 11's live pool no longer serves the .deb versions its own index
+# advertises (jq 1.6-2.1+deb11u3 -> 404), so apt-get install dies with code 100.
+# python:3.8-bullseye already PINS the matching snapshot archive and only
+# comments it out -- re-enable it. Same package versions, working mirror.
+RUN sed -i 's|^deb http://deb.debian.org|# &|; s|^# *deb http://snapshot.debian.org|deb [check-valid-until=no] http://snapshot.debian.org|' /etc/apt/sources.list
+
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     ca-certificates \\
     curl \\
