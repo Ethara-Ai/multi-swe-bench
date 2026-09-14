@@ -2,7 +2,7 @@ import json as _json
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -143,11 +143,10 @@ class MimirImageBase(Image):
 
         # The leading `# syntax=docker/dockerfile:1.6` directive makes
         # DockerfileEnhancer.enhance() return this Dockerfile VERBATIM (it
-        # early-returns when the directive is present). That deliberately
-        # suppresses the enhancer's proxy / MITM / CA-cert injection (no proxy
-        # build-args/ENVs, no cert symlinks, no MITM secret mount). The
-        # `ca-certificates` apt package below is unrelated -- it is the standard
-        # CA bundle for HTTPS `git clone` / `go mod download`.
+        # early-returns when the directive is present), so the enhancer's
+        # proxy / MITM / CA-cert scaffolding is NOT auto-injected. It is added
+        # here by reference to the canonical image.py constants (PIPELINE
+        # §2a/§8): proxy build-args, proxy/SSL ENV, and CA-bundle symlinks.
         #
         # TOOLCHAIN-ONLY base (NO persistent clone), following the cloudwego/eino
         # model: the repo clone + `${{BASE_COMMIT}}` checkout live in the PER-PR
@@ -163,6 +162,8 @@ ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 ARG BASE_COMMIT
 
+{DockerfileEnhancer._PROXY_ARGS}
+
 {self.global_env}
 
 ENV DEBIAN_FRONTEND=noninteractive \\
@@ -171,6 +172,8 @@ ENV DEBIAN_FRONTEND=noninteractive \\
     GOTOOLCHAIN=auto \\
     GOFLAGS=-mod=mod \\
     CGO_ENABLED=1
+
+{DockerfileEnhancer._ENV_BLOCK}
 
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
@@ -182,6 +185,8 @@ WORKDIR /home/
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git curl ca-certificates build-essential pkg-config \\
     && rm -rf /var/lib/apt/lists/*
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 RUN ( git clone --depth 1 "${{REPO_URL}}" /tmp/{repo}-warm \\
       && cd /tmp/{repo}-warm && go mod download ) || true; \\

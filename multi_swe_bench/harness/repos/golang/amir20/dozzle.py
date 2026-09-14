@@ -1,7 +1,7 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -57,6 +57,8 @@ FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
+{DockerfileEnhancer._PROXY_ARGS}
+
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
     LC_ALL=C.UTF-8 \\
@@ -69,8 +71,14 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
 
 {self.global_env}
 
+# `# syntax` opt-out bases are not auto-injected, so the canonical image.py
+# MITM proxy/cert scaffolding is added here by reference (PIPELINE §2a/§8).
+{DockerfileEnhancer._ENV_BLOCK}
+
 RUN apt-get update && apt-get install -y --no-install-recommends git openssl ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 # -mod=mod lets older eras (go 1.21) self-heal their go.sum under the 1.26 toolchain.
 # GOTOOLCHAIN=auto downloads the exact toolchain pinned by each PR's go.mod when needed.

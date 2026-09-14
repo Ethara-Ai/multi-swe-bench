@@ -1,9 +1,106 @@
 import re
 from typing import Optional
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+class LangchainImageBase(Image):
+    """Shared base for every langchain.py PR image (built once, tag "base").
+
+    Holds everything that does not depend on the PR: OS packages, poetry and a
+    FULL clone of langchain (every Data 10 base.sha is on master history). The
+    `# syntax` line opts this image out of DockerfileEnhancer, which would
+    otherwise inject `git checkout ${BASE_COMMIT}` + `git gc --prune` HERE and
+    prune the shared base down to a single PR's history ("reference is not a
+    tree" for every other PR -- the go-ethereum/gvisor shared-base bug). Because
+    of that opt-out the MITM scaffolding is written by hand, verbatim from
+    image.py's constants. Per-PR checkout + anti-cheat hardening live in
+    ImageDefault, which inherits this image's proxy ENV and cert symlinks.
+    """
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        return "python:3.11-slim"
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        org = self.pr.org
+        repo = self.pr.repo
+        packages = " \\\n    ".join(
+            [
+                "ca-certificates",
+                "curl",
+                "build-essential",
+                "git",
+                "gnupg",
+                "make",
+                "python3",
+                "sudo",
+                "wget",
+                # C build deps poetry needs to compile langchain's native extras
+                "pkg-config",
+                "libffi-dev",
+                "libssl-dev",
+            ]
+        )
+        apt = self._get_apt_update_command(packages, self.dependency())
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {self.dependency()}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
+
+WORKDIR /home/
+
+{apt}
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \\
+    PIP_NO_INPUT=1 \\
+    POETRY_VIRTUALENVS_IN_PROJECT=true \\
+    POETRY_NO_INTERACTION=1
+RUN pip install --no-cache-dir "poetry<1.5"
+
+RUN git config --global --add safe.directory '*'
+RUN git clone "${{REPO_URL}}" /home/{repo}
+WORKDIR /home/{repo}
+RUN git config --local gc.auto 0
+
+WORKDIR /home/
+
+CMD ["/bin/bash"]
+"""
 
 
 class ImageDefault(Image):
@@ -19,51 +116,17 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        # Returning a string (rather than a chained Image) lets the shared
-        # Image.dockerfile() in image.py own the build: it clones "${REPO_URL}",
-        # checks out "${BASE_COMMIT}", and appends the _HARDENING_BLOCK that
-        # strips every other ref/commit so the fix can't be read out of git
-        # history. DockerfileEnhancer then injects the proxy/cert infra and the
-        # final sanitize pass. None of that fires when dockerfile() is
-        # overridden, which is why the previous two-stage build bypassed it.
-        return "python:3.11-slim"
+    def dependency(self) -> Image:
+        # Thin PR layer on the shared base. Because dependency() is an Image,
+        # DockerfileEnhancer.enhance() returns dockerfile() verbatim, so the
+        # per-PR checkout and the literal-sha hardening are written below.
+        return LangchainImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
-
-    def extra_packages(self) -> list[str]:
-        # git, build-essential, curl, ca-certificates are already in the
-        # default package set baked by Image.dockerfile(); add only the C
-        # build deps poetry needs to compile langchain's native extras.
-        return ["pkg-config", "libffi-dev", "libssl-dev"]
-
-    def extra_setup(self) -> str:
-        # Runs after "git checkout ${BASE_COMMIT}" and before the hardening
-        # block. We install poetry, stage the runtime helper scripts + patches
-        # into /home/, and pre-install every libs/* package so the eval scripts
-        # find warm venvs. The copied files live outside /home/{repo}, so the
-        # hardening pass (which only operates inside the git tree) leaves them
-        # untouched.
-        return (
-            "ENV PIP_DISABLE_PIP_VERSION_CHECK=1\n"
-            "ENV PIP_NO_INPUT=1\n"
-            "ENV POETRY_VIRTUALENVS_IN_PROJECT=true\n"
-            "ENV POETRY_NO_INTERACTION=1\n"
-            'RUN pip install --no-cache-dir "poetry<1.5"\n'
-            "COPY fix.patch /home/fix.patch\n"
-            "COPY test.patch /home/test.patch\n"
-            "COPY strip_binaries.sh /home/strip_binaries.sh\n"
-            "COPY run_tests.sh /home/run_tests.sh\n"
-            "COPY run.sh /home/run.sh\n"
-            "COPY test-run.sh /home/test-run.sh\n"
-            "COPY fix-run.sh /home/fix-run.sh\n"
-            "COPY prepare.sh /home/prepare.sh\n"
-            "RUN bash /home/prepare.sh"
-        )
 
     def files(self) -> list[File]:
         return [
@@ -137,19 +200,20 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-# Pre-install langchain + every libs/* subpackage so the run scripts find
-# cached venvs. The repo is already checked out at ${{BASE_COMMIT}} and
-# hardened by Image.dockerfile(), so this script no longer performs any
-# git checkout itself. `git reset --hard` only discards tracked-file churn
-# from a previous install pass (e.g. poetry.lock); untracked .venv dirs are
-# left in place. Failures are tolerated because optional extras frequently
-# fail on stripped images. Pip-based fallbacks ensure the project + its core
-# test plugins are still installed when a single optional sub-dep build
-# fails midway.
+# Check this PR's base commit out of the shared base clone, then pre-install
+# langchain + every libs/* subpackage so the run scripts find cached venvs.
+# The Dockerfile's hardening block runs AFTER this script: it detaches at the
+# same literal sha and strips every other ref, so later commits (the fix) are
+# unreachable. Failures are tolerated because optional extras frequently fail
+# on stripped images. Pip-based fallbacks ensure the project + its core test
+# plugins are still installed when a single optional sub-dep build fails.
 set -e
 
+git config --global --add safe.directory '*'
 cd /home/{pr.repo}
-git reset --hard || true
+git reset --hard
+git clean -fdx
+git checkout {pr.base.sha}
 
 for pkg in libs/langchain libs/core libs/community libs/experimental libs/text-splitters libs/partners/*; do
     [ -f "$pkg/pyproject.toml" ] || continue
@@ -219,6 +283,34 @@ bash /home/run_tests.sh
 """.format(pr=self.pr),
             ),
         ]
+
+
+    def dockerfile(self) -> str:
+        dep = self.dependency()
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {dep.image_name()}:{dep.image_tag()}
+{self.global_env}
+COPY fix.patch /home/fix.patch
+COPY test.patch /home/test.patch
+COPY strip_binaries.sh /home/strip_binaries.sh
+COPY run_tests.sh /home/run_tests.sh
+COPY run.sh /home/run.sh
+COPY test-run.sh /home/test-run.sh
+COPY fix-run.sh /home/fix-run.sh
+COPY prepare.sh /home/prepare.sh
+RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
 
 
 @Instance.register("langchain-ai", "langchain")
