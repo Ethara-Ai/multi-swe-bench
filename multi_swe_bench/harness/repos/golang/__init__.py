@@ -222,3 +222,5 @@ from multi_swe_bench.harness.repos.golang.cosmonic_labs import *
 # from multi_swe_bench.harness.repos.golang.hypnoglow import *
 from multi_swe_bench.harness.repos.golang.GoogleContainerTools import *
 from multi_swe_bench.harness.repos.golang.OpenDiablo2 import *
+
+from multi_swe_bench.harness.repos.golang.bebop import *
