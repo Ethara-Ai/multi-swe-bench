@@ -183,3 +183,5 @@ from multi_swe_bench.harness.repos.javascript.dbader import *
 from multi_swe_bench.harness.repos.javascript.React95 import *
 from multi_swe_bench.harness.repos.javascript.moleculerjs import *
 from multi_swe_bench.harness.repos.javascript.navidrome import *
+
+from multi_swe_bench.harness.repos.javascript.thenewboston_blockchain import *

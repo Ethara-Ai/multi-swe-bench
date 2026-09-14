@@ -48,7 +48,7 @@ class TscircuitCoreImageBase(Image):
 WORKDIR /home/
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y \
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 update && apt-get install -y \
     curl \
     git \
     unzip \

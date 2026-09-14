@@ -47,10 +47,18 @@ class PythonEcdsaImageBase(Image):
         return "python:3.11-slim-bookworm"
 
     def image_tag(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
+
+    def _get_apt_update_command(self, packages_str: str, base_img: str) -> str:
+        return (
+            "RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 update && \\\n"
+            "    apt-get install -y --no-install-recommends \\\n"
+            f"    {packages_str} \\\n"
+            "    && rm -rf /var/lib/apt/lists/*"
+        )
 
     def files(self) -> list[File]:
         return []
@@ -70,10 +78,12 @@ class PythonEcdsaImageBase(Image):
             "sudo",
             "wget",
         ]
-        packages_str = " \\n    ".join(packages)
+        packages_str = " ".join(packages)
         apt_command = self._get_apt_update_command(packages_str, base_img)
 
-        return f"""FROM {base_img}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {base_img}
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
 WORKDIR /home/
 
@@ -82,9 +92,6 @@ WORKDIR /home/
 RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
 WORKDIR /home/{self.pr.repo}
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
 
 CMD ["/bin/bash"]
 """

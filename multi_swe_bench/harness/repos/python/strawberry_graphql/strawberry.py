@@ -185,8 +185,8 @@ def _pins(number: int) -> list[str]:
     """
     if number <= 400:
         return _ERA_0_21
-    if number <= 600:
-        return _ERA_0_40
+    if number <= 680:
+        return _ERA_0_44
     if number <= 680:
         return _ERA_0_44
     if number <= 800:
@@ -210,6 +210,22 @@ python -m pytest tests/ -o addopts="$ADDOPTS" -v -rA --tb=no \\
     -p no:cacheprovider --continue-on-collection-errors
 """
 
+# Modern era (>= v0.100, requires-python >=3.10, pydantic 2, graphql-core 3.2):
+# install editable and run ONLY the test.patch target files with addopts cleared
+# (pyproject's addopts pull in --emoji/-n xdist/mypy plugins not all present).
+_MODERN_MIN_PR = 4000
+_MODERN_TEST_DEPS = (
+    "pytest pytest-asyncio pytest-mock pytest-subtests pytest-emoji "
+    "pytest-snapshot 'pydantic>=2' rich libcst inline-snapshot"
+)
+_MODERN_RUN_TESTS = """
+TARGETS=$(grep -E '^\\+\\+\\+ b/' /home/test.patch 2>/dev/null | sed 's#^+++ b/##' \\
+    | grep -E '\\.py$' | grep -E '^tests/' | sort -u | tr '\\n' ' ')
+[ -z "$TARGETS" ] && TARGETS="tests/"
+python -m pytest $TARGETS -o addopts="" -v -rA --tb=no \\
+    -p no:cacheprovider --continue-on-collection-errors
+"""
+
 
 class StrawberryImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -225,13 +241,17 @@ class StrawberryImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "python:3.8-slim-bookworm"
+        if self.pr.number >= _MODERN_MIN_PR:
+            return "python:3.11-slim-bookworm"
+        return "python:3.9-slim-bookworm"
 
     def image_tag(self) -> str:
+        if self.pr.number >= _MODERN_MIN_PR:
+            return "base-modern"
         return "base"
 
     def workdir(self) -> str:
-        return "base"
+        return self.image_tag()
 
     def files(self) -> list[File]:
         return []
@@ -250,7 +270,8 @@ class StrawberryImageBase(Image):
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {image_name}
 
 {self.global_env}
 
@@ -260,7 +281,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /home/
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 update && apt-get install -y --no-install-recommends \\
     git ca-certificates build-essential \\
     && rm -rf /var/lib/apt/lists/*
 
@@ -296,7 +317,24 @@ class StrawberryImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        modern = self.pr.number >= _MODERN_MIN_PR
         pins = " \\\n    ".join(f'"{pin}"' for pin in _pins(self.pr.number))
+        if modern:
+            install_block = (
+                "python -m pip install --no-cache-dir --upgrade pip setuptools wheel\n"
+                "python -m pip install --no-cache-dir -e .\n"
+                f"python -m pip install --no-cache-dir {_MODERN_TEST_DEPS}\n"
+                'python -c "import strawberry, graphql; print(strawberry.__file__)"\n'
+            )
+        else:
+            install_block = (
+                "python -m pip install --no-cache-dir --upgrade pip setuptools wheel\n\n"
+                f"python -m pip install --no-cache-dir \\\n    {pins}\n\n"
+                'python -c "import site; f = open(site.getsitepackages()[0] + \'/_strawberry_src.pth\', \'w\'); '
+                "f.write('/home/" + self.pr.repo + "')\"\n"
+                'python -c "import strawberry, graphql; print(strawberry.__file__); print(graphql.version)"\n'
+            )
+        run_tests = _MODERN_RUN_TESTS if modern else _RUN_TESTS
 
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
@@ -341,20 +379,9 @@ fi
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-python -m pip install --no-cache-dir --upgrade pip setuptools wheel
-
-python -m pip install --no-cache-dir \\
-    {pins}
-
-# Put the checkout on the path for every interpreter in the image, including
-# the one pytest-mypy-plugins spawns for mypy. Written after the checkout so
-# a broken clone fails earlier, at the git step, than at import time.
-python -c "import site; f = open(site.getsitepackages()[0] + '/_strawberry_src.pth', 'w'); f.write('/home/{pr.repo}')"
-
 python --version
-python -c "import strawberry, graphql; print(strawberry.__file__); print(graphql.version)"
-
-""".format(pr=self.pr, pins=pins),
+{install_block}
+""".format(pr=self.pr, install_block=install_block),
             ),
             File(
                 ".",
@@ -365,7 +392,7 @@ export CI=true
 
 cd /home/{pr.repo}
 {run_tests}
-""".format(pr=self.pr, run_tests=_RUN_TESTS),
+""".format(pr=self.pr, run_tests=run_tests),
             ),
             File(
                 ".",
@@ -380,7 +407,7 @@ if ! git apply --whitespace=nowarn /home/test.patch; then
     exit 1
 fi
 {run_tests}
-""".format(pr=self.pr, run_tests=_RUN_TESTS),
+""".format(pr=self.pr, run_tests=run_tests),
             ),
             File(
                 ".",
@@ -395,7 +422,7 @@ if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     exit 1
 fi
 {run_tests}
-""".format(pr=self.pr, run_tests=_RUN_TESTS),
+""".format(pr=self.pr, run_tests=run_tests),
             ),
         ]
 
