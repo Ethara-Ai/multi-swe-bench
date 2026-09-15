@@ -123,36 +123,12 @@ exit 0
             File(
                 ".",
                 "run_tests.py",
-                '''"""Emit one greppable result line per test in the MPF suite.
-
-MPF is a unittest project: `python -m unittest discover -s mpf/tests` is what
-setup.py (test_suite), the Makefile and .travis.yml all run, and it is the only
-runner the suite is green under. pytest is not usable here -- it walks
-mpf/tests/machine_files/, whose test_*.py files are machine fixtures rather
-than tests (one of them fails collection outright and aborts the run), and it
-collects the `test_config` / `test_config_directory` decorators exported by
-MpfTestCase as though they were test functions.
-
-Plain `unittest discover -v` is not parseable either. MpfTestCase.setUp calls
-unittest_verbosity(), which walks the stack for the running TextTestRunner and
-attaches a DEBUG StreamHandler to the root logger as soon as that verbosity is
-above 1. The machine log lines it then emits share a stream with unittest's own
-progress output and land between the "<id> ... " prefix and the "ok" that
-terminates it, smearing one result across many lines.
-
-Verbosity 1 keeps the suite silent, so this runner stays there and prints its
-own result lines instead. Each is preceded by a newline because a few tests
-(test_OPP's serial fake, test_Shows' timing warning) print without a trailing
-one.
-"""
-import sys
+                '''import sys
 import unittest
 
 MARKER = "MPF_TEST_RESULT:"
 
 class EmittingTestResult(unittest.TextTestResult):
-    """TextTestResult that announces every outcome on stdout by test id."""
-
     def _emit(self, status, test):
         sys.stdout.write("\\n{} {} {}\\n".format(MARKER, status, test.id()))
         sys.stdout.flush()

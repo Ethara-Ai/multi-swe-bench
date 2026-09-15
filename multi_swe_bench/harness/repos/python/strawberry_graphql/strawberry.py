@@ -1,33 +1,3 @@
-"""strawberry-graphql/strawberry config.
-
-A pure-python GraphQL library laid out as a single top-level `strawberry`
-package with its suite in `tests/`, plus per-integration subdirectories
-(tests/asgi, tests/django, tests/flask, tests/sanic, tests/mypy).
-
-Covers the five PRs in input/strawberry-graphql__strawberry_raw_dataset.jsonl
--- 289, 555, 659, 712 and 900. None of them carries a `tag` or a
-`number_interval`, so Instance.create() looks every one of them up under the
-single key "strawberry-graphql/strawberry" registered at the bottom of this
-file.
-
-The repo is poetry-managed, and its build-system at these commits asks for
-`poetry>=0.12` with the `poetry.masonry.api` backend, so `pip install -e .`
-would first have to install poetry itself. Nothing here needs the package
-installed: the checkout is put on the interpreter path with a .pth file (see
-prepare.sh) and the dependencies are pip-installed from the pinned lists below.
-A .pth rather than PYTHONPATH because pytest-mypy-plugins shells mypy out with
-its own environment -- under PYTHONPATH alone every tests/mypy/*.yml case fails
-with "Error importing plugin 'strawberry.ext.mypy_plugin'".
-
-The pins are per-era. These five PRs span a year of the project (v0.21.1 in
-April 2020 to v0.57.4 in May 2021) and the dependency set moves underneath
-them: pytest 5 -> 6, starlette 0.13.0 -> 0.14.2, and pydantic, cached-property,
-python-multipart and sanic each arrive partway through. Each list below is the
-era's own pyproject.toml resolved to concrete versions, and each was verified
-to give a clean baseline -- 0 failed, 0 collection errors -- at that PR's base
-commit.
-"""
-
 import re
 from typing import Optional, Union
 
@@ -177,12 +147,6 @@ _ERA_0_57 = [
 
 
 def _pins(number: int) -> list[str]:
-    """The dependency set for the era a PR number falls in.
-
-    Thresholds sit between the five PRs in the dataset rather than on them, so
-    a neighbouring PR pulled in later lands on the era whose pyproject.toml it
-    actually shares.
-    """
     if number <= 400:
         return _ERA_0_21
     if number <= 680:
@@ -369,15 +333,18 @@ set -eo pipefail
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-# In dataset mode the base image is already detached at the base commit with
-# its history pruned and its remote removed, so cat-file short-circuits and
-# nothing is fetched. Outside that mode the clone sits on the default branch
-# and the base commit has to be pulled down before it can be checked out.
 if ! git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null; then
     git fetch --no-tags --depth 1 https://github.com/{pr.org}/{pr.repo}.git {pr.base.sha}
 fi
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
+
+python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+python -m pip install --no-cache-dir \\
+    {pins}
+
+python -c "import site; f = open(site.getsitepackages()[0] + '/_strawberry_src.pth', 'w'); f.write('/home/{pr.repo}')"
 
 python --version
 {install_block}

@@ -152,6 +152,8 @@ exit 0
                 """#!/bin/bash
 set -eo pipefail
 
+
+
 cd /home/{repo}
 git reset --hard
 bash /home/check_git_changes.sh

@@ -1,78 +1,3 @@
-"""openclaw/openclaw config.
-
-A Node/TypeScript agent gateway (the project ships as `clawdbot`, then
-`moltbot`, then `openclaw` across this dataset) laid out as a pnpm workspace:
-the root package plus `ui`, `packages/*` and `extensions/*`. Tests are vitest 4
-run from source -- no build step -- against `src/**/*.test.ts`,
-`extensions/**/*.test.ts` and `test/format-error.test.ts`.
-
-Covers the ten PRs in input/openclaw__openclaw_raw_dataset.jsonl -- 1437, 1450,
-1535, 1624, 2509, 2649, 5042, 5405, 7473 and 7610. All ten target `main` and
-carry neither `tag` nor `number_interval`, so Instance.create() looks every one
-of them up under the single key "openclaw/openclaw" registered at the bottom of
-this file.
-
-All ten PRs share one base image, tagged `base`: it carries the node toolchain,
-the apt packages and one clone of the repo, none of which differ per PR, so
-tagging it per PR would build the same layers -- and re-clone -- ten times. That
-shared layer keeps the clone unpinned and its history intact; each `pr-<number>`
-image checks its own base commit out of that history and then applies
-Image._HARDENING_BLOCK itself, so every PR image still ends up detached at its
-own commit with the remote gone, every other ref deleted and nothing after the
-base commit readable. The dataset is eleven images: one base and ten PR images.
-
-The ten base commits span 2026-01-22 to 2026-02-13, and the repo's own test
-entry point moves underneath them: `pnpm test` is `vitest run` at the two
-oldest commits and `node scripts/test-parallel.mjs` from 1535 onward. The run
-scripts therefore drive vitest directly, off the config files that are stable,
-and mirror what .github/workflows/ci.yml runs at each commit:
-
-    vitest run --config vitest.unit.config.ts        # when the split exists
-    vitest run --config vitest.extensions.config.ts
-    vitest run --config vitest.gateway.config.ts
-    vitest run --config vitest.config.ts             # older commits: one lane
-    vitest run --config vitest.e2e.config.ts <file>  # see the e2e note below
-
-The union of the unit/extensions/gateway lanes is exactly the include list of
-vitest.config.ts -- vitest.unit.config.ts is the base config minus
-`src/gateway/**` and `extensions/**`, and the other two configs are those two
-trees. Running them as separate processes is not cosmetic: test-parallel.mjs
-keeps the gateway suite off the shared worker pool because those tests bind
-sockets, and folding them back into one invocation reintroduces the flakiness
-the repo split them out to avoid. A full pass over those three lanes takes
-about 12 minutes in this image (792 + 73 + 33 files).
-
-The e2e lane is the exception, and it is deliberately narrow. Nothing in
-.github/workflows runs `pnpm test:e2e`, and a full pass over
-vitest.e2e.config.ts in a container bears that out: 19 of its 52 files fail on
-`Hook timed out in 10000ms` while a gateway binds its socket, and they take
-another ~9 minutes to do it. Timing-dependent failures are worse than useless
-here -- one that happens to pass in the fix stage and time out in the run stage
-manufactures a fail-to-pass out of nothing. So the lane runs only the
-`*.e2e.test.ts` files the PR's own test patch touches, which across this
-dataset means PR 5042 alone
-(src/config/config.legacy-config-detection.rejects-routing-allowfrom.e2e.test.ts,
-a pure config-validation suite that exists at its base commit). Every other
-PR's graded universe is the three lanes above, which is exactly what CI runs.
-
-No build, no `pnpm build`, no dist/: the `checks` job in ci.yml installs and
-runs vitest, and every fix patch in this dataset is TypeScript that vitest
-transforms on the fly. `pnpm canvas:a2ui:bundle` runs in prepare.sh because CI
-runs it before the test lanes, but it is best-effort -- src/canvas-host tests
-write their own stub bundle when the real one is missing.
-
-None of the ten test patches deletes a test file and none of the twenty patches
-touches package.json or pnpm-lock.yaml, so there is no retired-suite pruning
-and no post-patch reinstall: the dependency tree prepare.sh installs is the one
-all three stages run against.
-
-Only PR 1624 reaches into the `ui` workspace, whose suites all run in a real
-chromium through @vitest/browser-playwright, so that browser is installed for
-that PR alone. PR 1450 is the one PR whose fix patch does not apply to its own
-base commit, conflicting on CHANGELOG.md and nothing else; fix-run.sh retries
-without that file, which no test or source file reads.
-"""
-
 import re
 from typing import Optional, Union
 
@@ -128,26 +53,6 @@ class OpenclawImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        # One `base` tag serves all ten PRs, so this layer clones the repo once
-        # and deliberately does NOT check out ${BASE_COMMIT} or prune history:
-        # the ten PRs sit on ten different commits, and pinning here would strip
-        # nine of them out of the shared clone. The per-PR checkout and the
-        # hardening run in OpenclawImageDefault.dockerfile(), off the full
-        # history this layer keeps.
-        #
-        # Two DockerfileEnhancer behaviours (image.py) keep that true:
-        #   * _standardize_repo_fetch rewrites a hardcoded `git clone <url>`
-        #     into a BASE_COMMIT-pinned sequence, but its Pattern-2 regex skips a
-        #     clone written against the literal "${REPO_URL}" -- the ARG the
-        #     infra block injects. Its Pattern 1 rewrites `COPY <repo>
-        #     /home/<repo>` the same way, which is why this clones
-        #     unconditionally instead of honouring config.need_clone: the COPY
-        #     form cannot reach the build unpinned.
-        #   * _inject_final_sanitize appends a BASE_COMMIT-pinned hardening block
-        #     to any Dockerfile mentioning a clone, unless the content already
-        #     carries the hardening marker line before its CMD. The comment below
-        #     supplies that marker, and has to sit AFTER the clone -- the
-        #     enhancer re-injects if a clone appears between the two.
         return f"""FROM {image_name}
 
 {self.global_env}
@@ -165,19 +70,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 RUN npm install -g corepack@0.36.0 && corepack enable
 
-# --shallow-since keeps every commit the dataset touches -- the ten base commits
-# span 2026-01-22 to 2026-02-13 -- while dropping the pre-2026 history, which cuts
-# the clone from a 1.5 GB+ pack to a fraction of it. Nothing is lost downstream:
-# the per-PR hardening deletes every ref and repacks, so everything outside
-# HEAD's ancestry is discarded from the graded image anyway.
-#
-# GitHub drops this repo's pack mid-transfer often enough to matter -- two
-# builds died at ~30s in on "RPC failed; curl 56 GnuTLS recv error" /
-# "fatal: early EOF". HTTP/1.1 keeps the transfer off the HTTP/2 multiplexed
-# path those decode errors come from, and the retry loop absorbs the rest. One
-# clone now feeds all ten PR images, so paying for retries here is cheap. The
-# clone is not a bare `RUN git clone <url> /home/<repo>` line, so it is invisible
-# to DockerfileEnhancer._standardize_repo_fetch either way.
 RUN git config --global http.version HTTP/1.1 \\
     && git config --global http.postBuffer 524288000 \\
     && for attempt in 1 2 3 4 5; do \\
@@ -188,10 +80,7 @@ RUN git config --global http.version HTTP/1.1 \\
     done \\
     && test -d /home/{self.pr.repo}/.git
 
-# History hardening is deferred to the per-PR image, which ends with
 # test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
-# Keep that marker here so DockerfileEnhancer._inject_final_sanitize does not
-# pin this shared base to one PR's BASE_COMMIT.
 
 {self.clear_env}
 
@@ -277,8 +166,6 @@ cd /home/{repo}
 git reset --hard
 bash /home/check_git_changes.sh
 
-# The per-PR image checks this commit out of the shared base's full history
-# before this script runs, so this is an assertion rather than a checkout.
 test "$(git rev-parse HEAD)" = "{base_sha}"
 bash /home/check_git_changes.sh
 
@@ -398,15 +285,6 @@ bash /home/run-suites.sh
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        # The clone lives in the shared base, so this layer only checks out this
-        # PR's commit in the inherited working tree -- no clone, no REPO_URL.
-        # Chaining to a base *Image* (not a string) makes DockerfileEnhancer
-        # return this dockerfile verbatim, so Image._HARDENING_BLOCK is applied
-        # by hand: it detaches at BASE_COMMIT, drops the remote and deletes every
-        # other ref, which both removes the nine other PRs' commits and puts the
-        # fix commit and everything after it out of reach of a reward-hacking
-        # agent. BASE_COMMIT is baked in as a literal default because the harness
-        # only passes it as a build arg to images whose dependency is a string.
         return f"""FROM {name}:{tag}
 
 ARG BASE_COMMIT="{self.pr.base.sha}"
