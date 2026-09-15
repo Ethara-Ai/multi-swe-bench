@@ -1,17 +1,14 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-UBUNTU_IMAGE = "ubuntu:22.04"
-_BASE_APT = "ca-certificates curl build-essential git gnupg make python3 python3-pip python3-dev libssl-dev libffi-dev sudo wget libxml2-dev libxslt1-dev libattr1-dev zlib1g-dev"
-
-_PR_NUMBERS: set = set()
+PYTHON_IMAGE = "python:3.10"
 
 
-class KiwiImageBase_2859_to_2648(Image):
+class OpenCiviWikiImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -24,11 +21,11 @@ class KiwiImageBase_2859_to_2648(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return UBUNTU_IMAGE
+    def dependency(self) -> str | Image:
+        return PYTHON_IMAGE
 
     def image_tag(self) -> str:
-        return "base-2859-to-2648"
+        return "base"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -58,7 +55,9 @@ ENV DEBIAN_FRONTEND=noninteractive \\
     LC_ALL=C.UTF-8 \\
     TZ=UTC \\
     PIP_DISABLE_PIP_VERSION_CHECK=1 \\
-    POETRY_VIRTUALENVS_CREATE=false \\
+    PIP_NO_CACHE_DIR=1 \\
+    PYTHONDONTWRITEBYTECODE=1 \\
+    PYTHONUNBUFFERED=1 \\
     http_proxy=${{http_proxy}} \\
     https_proxy=${{https_proxy}} \\
     HTTP_PROXY=${{HTTP_PROXY}} \\
@@ -74,10 +73,8 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
 
-WORKDIR /home/
-
 RUN set -eux; \\
-    mkdir -p /etc/pki/tls/certs /etc/ssl/certs /etc/pki/ca-trust/extracted/pem; \\
+    mkdir -p /etc/pki/tls/certs /etc/ssl /etc/pki/ca-trust/extracted/pem; \\
     ln -sf ${{CA_CERT_PATH}} /etc/pki/tls/certs/ca-bundle.crt; \\
     ln -sf ${{CA_CERT_PATH}} /etc/ssl/cert.pem; \\
     ln -sf ${{CA_CERT_PATH}} /etc/ssl/ca-bundle.pem; \\
@@ -85,17 +82,15 @@ RUN set -eux; \\
     ln -sf ${{CA_CERT_PATH}} /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem; \\
     ln -sf ${{CA_CERT_PATH}} /etc/ssl/certs/ca-bundle.crt
 
-RUN set -eux; \\
-    apt-get update; \\
-    apt-get install -y --no-install-recommends {_BASE_APT}; \\
-    rm -rf /var/lib/apt/lists/*
+WORKDIR /home/
 
-RUN git clone "${{REPO_URL}}" /home/{repo}
+RUN git -C /home clone "${{REPO_URL}}" {repo}
+
 CMD ["/bin/bash"]
 """
 
 
-class KiwiImageDefault_2859_to_2648(Image):
+class OpenCiviWikiImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -109,7 +104,7 @@ class KiwiImageDefault_2859_to_2648(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return KiwiImageBase_2859_to_2648(self.pr, self._config)
+        return OpenCiviWikiImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -140,52 +135,72 @@ class KiwiImageDefault_2859_to_2648(Image):
         prepare_sh = (
             "#!/bin/bash\n"
             "set -e\n"
+            f'BASE_COMMIT="${{BASE_COMMIT:-{sha}}}"\n'
             f"cd /home/{repo}\n"
             "git reset --hard\n"
-            "git clean -fdx\n"
             "bash /home/check_git_changes.sh\n"
-            f"git checkout --detach {self.pr.base.sha}\n"
+            'git checkout --detach "${BASE_COMMIT}"\n'
             "bash /home/check_git_changes.sh\n"
-            "pip install poetry || true\n"
-            "make setup || true\n"
-            "python3 -c \"import kiwi, pytest, lxml, yaml, docopt; from unittest import mock; print('DEPS_OK')\"\n"
+            "python -m pip install --upgrade pip setuptools wheel || true\n"
+            "if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi\n"
+            "if [ -f requirements/base.txt ]; then pip install -r requirements/base.txt || true; fi\n"
+            "if [ -f requirements/dev.txt ]; then pip install -r requirements/dev.txt || true; fi\n"
+            "if [ -f requirements/test.txt ]; then pip install -r requirements/test.txt || true; fi\n"
+            "git checkout -- .\n"
+            "bash /home/check_git_changes.sh\n"
         )
 
-        test_cmd = (
-            'poetry run bash -c "cd test/unit && pytest -v --doctest-modules '
-            '--no-cov-on-fail --cov=kiwi --cov-report=term-missing '
-            '--cov-fail-under=100 --cov-config .coveragerc"\n'
-            'poetry run bash -c "cd test/scripts && pytest -s -vv"'
+        manage_resolver = (
+            "if [ -f manage.py ]; then\n"
+            "  MANAGE_DIR=.\n"
+            "elif [ -f project/manage.py ]; then\n"
+            "  MANAGE_DIR=project\n"
+            "else\n"
+            '  echo "manage.py not found" >&2; exit 1\n'
+            "fi\n"
+        )
+
+        django_env = (
+            "export CI=true\n"
+            "export DJANGO_SETTINGS_MODULE=project.core.settings\n"
+            "export SECRET_KEY=ci-dummy-secret-key\n"
+            f"export PYTHONPATH=/home/{repo}\n"
         )
 
         run_sh = (
             "#!/bin/bash\n"
             "set -eo pipefail\n"
-            "export CI=true\n"
+            f"{django_env}"
             f"cd /home/{repo}\n"
             "git reset --hard\n"
-            "git clean -qfd\n"
-            f"{test_cmd}\n"
+            "git clean -qfdx -e '__pycache__'\n"
+            f"{manage_resolver}"
+            'cd "$MANAGE_DIR"\n'
+            "python manage.py test --verbosity=2 --noinput\n"
         )
         test_run_sh = (
             "#!/bin/bash\n"
             "set -eo pipefail\n"
-            "export CI=true\n"
+            f"{django_env}"
             f"cd /home/{repo}\n"
             "git reset --hard\n"
-            "git clean -qfd\n"
+            "git clean -qfdx -e '__pycache__'\n"
             "git apply --whitespace=nowarn /home/test.patch\n"
-            f"{test_cmd}\n"
+            f"{manage_resolver}"
+            'cd "$MANAGE_DIR"\n'
+            "python manage.py test --verbosity=2 --noinput\n"
         )
         fix_run_sh = (
             "#!/bin/bash\n"
             "set -eo pipefail\n"
-            "export CI=true\n"
+            f"{django_env}"
             f"cd /home/{repo}\n"
             "git reset --hard\n"
-            "git clean -qfd\n"
+            "git clean -qfdx -e '__pycache__'\n"
             "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
-            f"{test_cmd}\n"
+            f"{manage_resolver}"
+            'cd "$MANAGE_DIR"\n'
+            "python manage.py test --verbosity=2 --noinput\n"
         )
 
         return [
@@ -214,9 +229,6 @@ class KiwiImageDefault_2859_to_2648(Image):
 ARG BASE_COMMIT="{sha}"
 
 WORKDIR /home/{repo}
-
-RUN git reset --hard
-RUN git checkout {sha}
 
 {copy_commands}
 RUN set -eux; \\
@@ -255,20 +267,19 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("OSInside", "kiwi_2859_to_2648")
-class KIWI_2859_TO_2648(Instance):
+@Instance.register("CiviWiki", "OpenCiviWiki")
+class OpenCiviWiki(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
         self._config = config
-        _PR_NUMBERS.add(pr.number)
 
     @property
     def pr(self) -> PullRequest:
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return KiwiImageDefault_2859_to_2648(self.pr, self._config)
+        return OpenCiviWikiImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"
@@ -279,29 +290,53 @@ class KIWI_2859_TO_2648(Instance):
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
-    def parse_log(self, log: str) -> TestResult:
-        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+    def parse_log(self, test_log: str) -> TestResult:
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+        passed_tests: set = set()
+        failed_tests: set = set()
+        skipped_tests: set = set()
 
-        passed_pattern = re.compile(r"^([^\s]+)\s+PASSED\b", re.MULTILINE)
-        for m in passed_pattern.finditer(log):
-            passed_tests.add(m.group(1).strip())
+        line_re = re.compile(
+            r"^(?P<name>\S+\s*\([^)]+\))\s*\.\.\.\s*(?P<status>ok|OK|FAIL|ERROR|skipped.*|expected failure|unexpected success)\s*$"
+        )
+        summary_re = re.compile(
+            r"^(?P<status>FAIL|ERROR):\s+(?P<name>\S+\s*\([^)]+\))"
+        )
 
-        failed_pattern = re.compile(r"^FAILED\s+([^\s-]+)", re.MULTILINE)
-        for m in failed_pattern.finditer(log):
-            failed_tests.add(m.group(1).strip())
+        def norm(name: str) -> str:
+            return re.sub(r"\s+", " ", name).strip()
 
-        error_pattern = re.compile(r"^ERROR\s+([^\s-]+)", re.MULTILINE)
-        for m in error_pattern.finditer(log):
-            failed_tests.add(m.group(1).strip())
+        for raw in test_log.splitlines():
+            line = raw.rstrip()
+            m = line_re.match(line.strip())
+            if m:
+                name = norm(m.group("name"))
+                status = m.group("status").lower()
+                if status in ("ok",):
+                    if name in failed_tests:
+                        continue
+                    skipped_tests.discard(name)
+                    passed_tests.add(name)
+                elif status in ("fail", "error"):
+                    passed_tests.discard(name)
+                    skipped_tests.discard(name)
+                    failed_tests.add(name)
+                elif status.startswith("skipped") or status == "expected failure":
+                    if name in passed_tests or name in failed_tests:
+                        continue
+                    skipped_tests.add(name)
+                elif status == "unexpected success":
+                    passed_tests.discard(name)
+                    skipped_tests.discard(name)
+                    failed_tests.add(name)
+                continue
 
-        skipped_pattern = re.compile(r"^([^\s]+)\s+SKIPPED\b", re.MULTILINE)
-        for m in skipped_pattern.finditer(log):
-            skipped_tests.add(m.group(1).strip())
-
-        passed_tests -= failed_tests
+            m2 = summary_re.match(line.strip())
+            if m2:
+                name = norm(m2.group("name"))
+                passed_tests.discard(name)
+                skipped_tests.discard(name)
+                failed_tests.add(name)
 
         return TestResult(
             passed_count=len(passed_tests),
@@ -311,19 +346,3 @@ class KIWI_2859_TO_2648(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
-
-
-_KIWI_ROUTES = {
-    1432: "kiwi_1432_to_1432",
-    2595: "kiwi_2595_to_2479",
-    2778: "kiwi_2859_to_2648",
-}
-
-
-@Instance.register("OSInside", "kiwi")
-class KiwiRouter:
-    def __new__(cls, pr, config, *args, **kwargs):
-        shard = _KIWI_ROUTES.get(pr.number)
-        if shard is None:
-            raise ValueError(f"No kiwi shard registered for PR {pr.number}")
-        return Instance._registry[f"OSInside/{shard}"](pr, config, *args, **kwargs)

@@ -5,13 +5,231 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+try:
+    from multi_swe_bench.utils import git_util as _lp_git_util
+    from multi_swe_bench.utils.safe_subprocess import safe_run as _lp_safe_run
+    from git import Repo as _LpRepo
 
-REPO_DIR = "lp-components"
+    _lp_orig_get_all = _lp_git_util.get_all_commit_hashes
+
+    def _lp_patched_get_all(repo_path, logger):
+        if "LaunchPadLab" in str(repo_path) and "lp-components" in str(repo_path):
+            try:
+                _lp_safe_run(
+                    ["git", "-C", str(repo_path), "fetch", "--no-tags", "--quiet",
+                     "origin", "+refs/pull/*/head:refs/remotes/origin/pr/*"],
+                    check=False,
+                )
+                return {c.hexsha for c in _LpRepo(repo_path).iter_commits("--all")}
+            except Exception as exc:
+                logger.error(f"lp-components PR-ref fetch failed: {exc}")
+        return _lp_orig_get_all(repo_path, logger)
+
+    _lp_git_util.get_all_commit_hashes = _lp_patched_get_all
+except Exception:
+    pass
 
 
-# =============================================================================
-# Era 1: v5 (master branch, PR 521) — node:12
-# =============================================================================
+_CHECK_GIT_CHANGES_SH = """\
+#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+"""
+
+
+def _base_dockerfile(from_image: str, org: str, repo: str, apt_extra_sed: str) -> str:
+    return f"""\
+# syntax=docker/dockerfile:1.6
+
+FROM {from_image}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+WORKDIR /home/
+
+RUN {apt_extra_sed}apt-get update && \\
+    apt-get install -y --no-install-recommends ca-certificates git && \\
+    rm -rf /var/lib/apt/lists/*
+
+RUN git -C /home clone "${{REPO_URL}}" {repo}
+
+RUN git -C /home/{repo} fetch --no-tags origin "+refs/pull/*/head:refs/remotes/origin/pr/*"
+
+CMD ["/bin/bash"]
+"""
+
+
+def _pr_dockerfile(name: str, tag: str, sha: str, repo: str, copy_commands: str) -> str:
+    return f"""\
+FROM {name}:{tag}
+
+WORKDIR /home/{repo}
+
+RUN git reset --hard
+RUN git checkout {sha}
+
+{copy_commands}
+RUN set -eux; \\
+    git checkout --detach "{sha}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "{sha}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+
+RUN bash /home/prepare.sh
+"""
+
+
+_APT_SED_STRETCH = (
+    "sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
+    "    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \\\n"
+    "    sed -i '/stretch-updates/d' /etc/apt/sources.list && \\\n    "
+)
+
+_APT_SED_BUSTER = (
+    "sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \\\n"
+    "    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \\\n"
+    "    sed -i '/buster-updates/d' /etc/apt/sources.list && \\\n    "
+)
+
+
+def _prepare_sh(yarn_prefix: str, sha: str, repo: str) -> str:
+    return f"""\
+#!/bin/bash
+set -e
+
+cd /home/{repo}
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+git checkout --detach {sha}
+bash /home/check_git_changes.sh
+
+{yarn_prefix}yarn install --frozen-lockfile || true
+node -e "require.resolve('jest'); require('react'); console.log('DEPS_OK')"
+"""
+
+
+def _run_sh(repo: str) -> str:
+    return f"""\
+#!/bin/bash
+set -eo pipefail
+
+cd /home/{repo}
+npx jest --verbose
+"""
+
+
+def _test_run_sh(repo: str, yarn_prefix: str = "") -> str:
+    return f"""\
+#!/bin/bash
+set -eo pipefail
+
+cd /home/{repo}
+git apply --exclude yarn.lock --exclude '*/yarn.lock' --whitespace=nowarn /home/test.patch
+{yarn_prefix}yarn install
+npx jest --verbose
+"""
+
+
+def _fix_run_sh(repo: str, yarn_prefix: str = "") -> str:
+    return f"""\
+#!/bin/bash
+set -eo pipefail
+
+cd /home/{repo}
+git apply --exclude yarn.lock --exclude '*/yarn.lock' --whitespace=nowarn /home/test.patch /home/fix.patch
+{yarn_prefix}yarn install
+npx jest --verbose
+"""
+
+
+def _pr_files(pr: PullRequest, yarn_prefix: str = "") -> list[File]:
+    return [
+        File(".", "fix.patch", f"{pr.fix_patch}"),
+        File(".", "test.patch", f"{pr.test_patch}"),
+        File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
+        File(".", "prepare.sh", _prepare_sh(yarn_prefix, pr.base.sha, pr.repo)),
+        File(".", "run.sh", _run_sh(pr.repo)),
+        File(".", "test-run.sh", _test_run_sh(pr.repo, yarn_prefix)),
+        File(".", "fix-run.sh", _fix_run_sh(pr.repo, yarn_prefix)),
+    ]
+
+
+def _pr_copy_commands(files: list[File]) -> str:
+    return "\n".join(f"COPY {f.name} /home/" for f in files) + "\n"
 
 
 class ImageBase12(Image):
@@ -31,40 +249,19 @@ class ImageBase12(Image):
         return "node:12"
 
     def image_tag(self) -> str:
-        return "base-12"
+        return "base-node12"
 
     def workdir(self) -> str:
-        return "base_12"
+        return "base_node12"
 
     def files(self) -> list[File]:
         return []
 
     def repo_dir(self) -> str:
-        return REPO_DIR
+        return self.pr.repo
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{REPO_DIR}.git /home/{REPO_DIR}"
-        else:
-            code = f"COPY {REPO_DIR} /home/{REPO_DIR}"
-
-        return f"""\
-FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
-    sed -i '/stretch-updates/d' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-"""
+        return _base_dockerfile(self.dependency(), self.pr.org, self.pr.repo, _APT_SED_STRETCH)
 
 
 class ImageDefault12(Image):
@@ -90,120 +287,20 @@ class ImageDefault12(Image):
         return f"pr-{self.pr.number}"
 
     def repo_dir(self) -> str:
-        return REPO_DIR
+        return self.pr.repo
 
     def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """\
-#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """\
-#!/bin/bash
-set -e
-
-cd /home/{repo_dir}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-yarn install --frozen-lockfile
-""".format(pr=self.pr, repo_dir=REPO_DIR),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-
-cd /home/{repo_dir}
-npx jest --verbose
-""".format(repo_dir=REPO_DIR),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-
-cd /home/{repo_dir}
-git apply --exclude yarn.lock --exclude '*/yarn.lock' --whitespace=nowarn /home/test.patch
-yarn install --frozen-lockfile || true
-npx jest --verbose
-""".format(repo_dir=REPO_DIR),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-
-cd /home/{repo_dir}
-git apply --exclude yarn.lock --exclude '*/yarn.lock' --whitespace=nowarn /home/test.patch /home/fix.patch
-yarn install --frozen-lockfile || true
-npx jest --verbose
-""".format(repo_dir=REPO_DIR),
-            ),
-        ]
+        return _pr_files(self.pr)
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        return f"""\
-FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-RUN bash /home/prepare.sh
-
-{self.clear_env}
-"""
-
-
-# =============================================================================
-# Era 2: v7 (v6 branch, PRs 503, 540, 554, 558, 562) — node:16
-# =============================================================================
+        return _pr_dockerfile(
+            image.image_name(),
+            image.image_tag(),
+            self.pr.base.sha,
+            self.pr.repo,
+            _pr_copy_commands(self.files()),
+        )
 
 
 class ImageBase16(Image):
@@ -223,40 +320,19 @@ class ImageBase16(Image):
         return "node:16"
 
     def image_tag(self) -> str:
-        return "base-16"
+        return "base-node16"
 
     def workdir(self) -> str:
-        return "base_16"
+        return "base_node16"
 
     def files(self) -> list[File]:
         return []
 
     def repo_dir(self) -> str:
-        return REPO_DIR
+        return self.pr.repo
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{REPO_DIR}.git /home/{REPO_DIR}"
-        else:
-            code = f"COPY {REPO_DIR} /home/{REPO_DIR}"
-
-        return f"""\
-FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
-    sed -i '/buster-updates/d' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-"""
+        return _base_dockerfile(self.dependency(), self.pr.org, self.pr.repo, _APT_SED_BUSTER)
 
 
 class ImageDefault16(Image):
@@ -282,120 +358,20 @@ class ImageDefault16(Image):
         return f"pr-{self.pr.number}"
 
     def repo_dir(self) -> str:
-        return REPO_DIR
+        return self.pr.repo
 
     def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """\
-#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """\
-#!/bin/bash
-set -e
-
-cd /home/{repo_dir}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-yarn install --frozen-lockfile
-""".format(pr=self.pr, repo_dir=REPO_DIR),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-
-cd /home/{repo_dir}
-npx jest --verbose
-""".format(repo_dir=REPO_DIR),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-
-cd /home/{repo_dir}
-git apply --exclude yarn.lock --exclude '*/yarn.lock' --whitespace=nowarn /home/test.patch
-yarn install --frozen-lockfile || true
-npx jest --verbose
-""".format(repo_dir=REPO_DIR),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-
-cd /home/{repo_dir}
-git apply --exclude yarn.lock --exclude '*/yarn.lock' --whitespace=nowarn /home/test.patch /home/fix.patch
-yarn install --frozen-lockfile || true
-npx jest --verbose
-""".format(repo_dir=REPO_DIR),
-            ),
-        ]
+        return _pr_files(self.pr)
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        return f"""\
-FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-RUN bash /home/prepare.sh
-
-{self.clear_env}
-"""
-
-
-# =============================================================================
-# Era 3: v9 (main branch, PR 595) — node:20
-# =============================================================================
+        return _pr_dockerfile(
+            image.image_name(),
+            image.image_tag(),
+            self.pr.base.sha,
+            self.pr.repo,
+            _pr_copy_commands(self.files()),
+        )
 
 
 class ImageBase(Image):
@@ -415,37 +391,19 @@ class ImageBase(Image):
         return "node:20"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-node20"
 
     def workdir(self) -> str:
-        return "base"
+        return "base_node20"
 
     def files(self) -> list[File]:
         return []
 
     def repo_dir(self) -> str:
-        return REPO_DIR
+        return self.pr.repo
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{REPO_DIR}.git /home/{REPO_DIR}"
-        else:
-            code = f"COPY {REPO_DIR} /home/{REPO_DIR}"
-
-        return f"""\
-FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-
-{code}
-
-{self.clear_env}
-"""
+        return _base_dockerfile(self.dependency(), self.pr.org, self.pr.repo, "")
 
 
 class ImageDefault(Image):
@@ -471,124 +429,27 @@ class ImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def repo_dir(self) -> str:
-        return REPO_DIR
+        return self.pr.repo
 
     def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """\
-#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """\
-#!/bin/bash
-set -e
-
-cd /home/{repo_dir}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-HUSKY=0 yarn install --frozen-lockfile
-""".format(pr=self.pr, repo_dir=REPO_DIR),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-
-cd /home/{repo_dir}
-npx jest --verbose
-""".format(repo_dir=REPO_DIR),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-
-cd /home/{repo_dir}
-git apply --exclude yarn.lock --exclude '*/yarn.lock' --whitespace=nowarn /home/test.patch
-HUSKY=0 yarn install --frozen-lockfile || true
-npx jest --verbose
-""".format(repo_dir=REPO_DIR),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-
-cd /home/{repo_dir}
-git apply --exclude yarn.lock --exclude '*/yarn.lock' --whitespace=nowarn /home/test.patch /home/fix.patch
-HUSKY=0 yarn install --frozen-lockfile || true
-npx jest --verbose
-""".format(repo_dir=REPO_DIR),
-            ),
-        ]
+        return _pr_files(self.pr, yarn_prefix="HUSKY=0 ")
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        return f"""\
-FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-RUN bash /home/prepare.sh
-
-{self.clear_env}
-"""
-
-
-# =============================================================================
-# Instance
-# =============================================================================
+        return _pr_dockerfile(
+            image.image_name(),
+            image.image_tag(),
+            self.pr.base.sha,
+            self.pr.repo,
+            _pr_copy_commands(self.files()),
+        )
 
 
 @Instance.register("LaunchPadLab", "lp-components")
 class LpComponents(Instance):
+    _PRS_NODE12: frozenset[int] = frozenset({521})
+    _MAX_PR_NODE16: int = 562
+
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -599,9 +460,9 @@ class LpComponents(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        if self.pr.number == 521:
+        if self.pr.number in self._PRS_NODE12:
             return ImageDefault12(self.pr, self._config)
-        elif self.pr.number <= 562:
+        if self.pr.number <= self._MAX_PR_NODE16:
             return ImageDefault16(self.pr, self._config)
         return ImageDefault(self.pr, self._config)
 
@@ -621,6 +482,8 @@ class LpComponents(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
@@ -632,6 +495,8 @@ class LpComponents(Instance):
 
         re_fail_suite = re.compile(r"^FAIL (.+?)(?:\s\(\d*\.?\d+\s*\w+\))?$")
         re_fail_test = re.compile(r"^\s*[✕×]\s+(.+?)(?:\s+\(\d*\.?\d+\s*\w+\))?$")
+
+        re_skip_test = re.compile(r"^\s*○\s+(?:skipped\s+|todo\s+)?(.+?)(?:\s+\(\d*\.?\d+\s*\w+\))?$", re.IGNORECASE)
 
         for line in test_log.splitlines():
             line = line.strip()
@@ -668,7 +533,18 @@ class LpComponents(Instance):
                 failed_tests.add(test)
                 continue
 
+            skip_test_match = re_skip_test.match(line)
+            if skip_test_match:
+                if current_suite is None:
+                    continue
+
+                test = f"{current_suite}:{skip_test_match.group(1)}"
+                skipped_tests.add(test)
+                continue
+
         passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
@@ -678,3 +554,16 @@ class LpComponents(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+class _LpRegistry(dict):
+    def __missing__(self, key):
+        if (isinstance(key, str)
+                and key.startswith("LaunchPadLab/")
+                and key.rsplit("/", 1)[1].isdigit()):
+            return self["LaunchPadLab/lp-components"]
+        raise KeyError(key)
+
+
+if not isinstance(Instance._registry, _LpRegistry):
+    Instance._registry = _LpRegistry(Instance._registry)

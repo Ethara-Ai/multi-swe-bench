@@ -40,6 +40,7 @@ from multi_swe_bench.harness.repos.python.cekit import *
 from multi_swe_bench.harness.repos.python.celery import *
 from multi_swe_bench.harness.repos.python.certbot import *
 from multi_swe_bench.harness.repos.python.chainer import *
+from multi_swe_bench.harness.repos.python.CiviWiki import *
 from multi_swe_bench.harness.repos.python.ClawBio import *
 from multi_swe_bench.harness.repos.python.Clinical_Genomics import *
 from multi_swe_bench.harness.repos.python.cloud_custodian import *
@@ -444,3 +445,6 @@ from multi_swe_bench.harness.repos.python.stumpy_dev import *
 from multi_swe_bench.harness.repos.python.jannikmi import *
 from multi_swe_bench.harness.repos.python.graphql_python import *
 from multi_swe_bench.harness.repos.python.pschanely import *
+from multi_swe_bench.harness.repos.python.DjangoGirls import *
+
+from multi_swe_bench.harness.repos.python.CuriousLearner import *

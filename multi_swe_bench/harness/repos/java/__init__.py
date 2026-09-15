@@ -99,4 +99,5 @@ from multi_swe_bench.harness.repos.java.react_native_camera import *
 from multi_swe_bench.harness.repos.java.jtablesaw import *
 # from multi_swe_bench.harness.repos.java.gaul import *
 # from multi_swe_bench.harness.repos.java.Wynntils import *
+from multi_swe_bench.harness.repos.java.Discord4J import *
 from multi_swe_bench.harness.repos.java.Vonage import *

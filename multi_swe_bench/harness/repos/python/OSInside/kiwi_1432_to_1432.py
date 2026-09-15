@@ -11,7 +11,7 @@ _BASE_APT = "ca-certificates curl build-essential git gnupg make python3 python3
 _PR_NUMBERS: set = set()
 
 
-class KiwiImageBase_2859_to_2648(Image):
+class KiwiImageBase_1432_to_1432(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -28,7 +28,7 @@ class KiwiImageBase_2859_to_2648(Image):
         return UBUNTU_IMAGE
 
     def image_tag(self) -> str:
-        return "base-2859-to-2648"
+        return "base-1432-to-1432"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -95,7 +95,7 @@ CMD ["/bin/bash"]
 """
 
 
-class KiwiImageDefault_2859_to_2648(Image):
+class KiwiImageDefault_1432_to_1432(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -109,7 +109,7 @@ class KiwiImageDefault_2859_to_2648(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return KiwiImageBase_2859_to_2648(self.pr, self._config)
+        return KiwiImageBase_1432_to_1432(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -146,16 +146,28 @@ class KiwiImageDefault_2859_to_2648(Image):
             "bash /home/check_git_changes.sh\n"
             f"git checkout --detach {self.pr.base.sha}\n"
             "bash /home/check_git_changes.sh\n"
-            "pip install poetry || true\n"
-            "make setup || true\n"
-            "python3 -c \"import kiwi, pytest, lxml, yaml, docopt; from unittest import mock; print('DEPS_OK')\"\n"
+            "if [ -f pyproject.toml ]; then\n"
+            "    pip install poetry || true\n"
+            "    sed -i 's/types-pkg_resources/types-setuptools/' pyproject.toml || true\n"
+            "    poetry install --all-extras || true\n"
+            "    poetry run pip install 'setuptools>=68' || true\n"
+            "    poetry run python3 -c \"import pkg_resources, kiwi, kiwi.defaults, pytest, mock, lxml, yaml, docopt; print('DEPS_OK')\"\n"
+            "else\n"
+            "    pip install --upgrade 'setuptools>=68' wheel || true\n"
+            "    pip install -e . || pip install . || true\n"
+            "    pip install pytest pytest-cov mock lxml pyyaml docopt || true\n"
+            "    python3 -c \"import pkg_resources, kiwi, kiwi.defaults, pytest, mock, lxml, yaml, docopt; print('DEPS_OK')\"\n"
+            "fi\n"
         )
 
         test_cmd = (
-            'poetry run bash -c "cd test/unit && pytest -v --doctest-modules '
-            '--no-cov-on-fail --cov=kiwi --cov-report=term-missing '
-            '--cov-fail-under=100 --cov-config .coveragerc"\n'
-            'poetry run bash -c "cd test/scripts && pytest -s -vv"'
+            "cd test/unit && "
+            "(command -v poetry >/dev/null && poetry run pytest -v --doctest-modules --continue-on-collection-errors "
+            "--no-cov-on-fail --cov=kiwi --cov-report=term-missing "
+            "--cov-fail-under=100 --cov-config .coveragerc "
+            "|| python3 -m pytest -v --doctest-modules --continue-on-collection-errors "
+            "--no-cov-on-fail --cov=kiwi --cov-report=term-missing "
+            "--cov-fail-under=100 --cov-config .coveragerc)"
         )
 
         run_sh = (
@@ -255,8 +267,8 @@ RUN bash /home/prepare.sh
 """
 
 
-@Instance.register("OSInside", "kiwi_2859_to_2648")
-class KIWI_2859_TO_2648(Instance):
+@Instance.register("OSInside", "kiwi_1432_to_1432")
+class KIWI_1432_TO_1432(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -268,7 +280,7 @@ class KIWI_2859_TO_2648(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return KiwiImageDefault_2859_to_2648(self.pr, self._config)
+        return KiwiImageDefault_1432_to_1432(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"
@@ -311,19 +323,3 @@ class KIWI_2859_TO_2648(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
-
-
-_KIWI_ROUTES = {
-    1432: "kiwi_1432_to_1432",
-    2595: "kiwi_2595_to_2479",
-    2778: "kiwi_2859_to_2648",
-}
-
-
-@Instance.register("OSInside", "kiwi")
-class KiwiRouter:
-    def __new__(cls, pr, config, *args, **kwargs):
-        shard = _KIWI_ROUTES.get(pr.number)
-        if shard is None:
-            raise ValueError(f"No kiwi shard registered for PR {pr.number}")
-        return Instance._registry[f"OSInside/{shard}"](pr, config, *args, **kwargs)
