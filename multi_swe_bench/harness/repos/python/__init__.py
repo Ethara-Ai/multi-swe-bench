@@ -431,7 +431,6 @@ from multi_swe_bench.harness.repos.python.pwndbg import *
 
 from multi_swe_bench.harness.repos.python.CycloneDX import *
 
-<<<<<<< Updated upstream
 from multi_swe_bench.harness.repos.python.Spherre_Labs import *
 from multi_swe_bench.harness.repos.python.Tuxemon import *
 from multi_swe_bench.harness.repos.python.SolFoundry import *
@@ -439,6 +438,4 @@ from multi_swe_bench.harness.repos.python.ansible_collections import *
 
 from multi_swe_bench.harness.repos.python.stumpy_dev import *
 
-=======
 from multi_swe_bench.harness.repos.python.jannikmi import *
->>>>>>> Stashed changes
