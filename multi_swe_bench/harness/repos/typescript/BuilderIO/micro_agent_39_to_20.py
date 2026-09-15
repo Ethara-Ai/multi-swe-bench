@@ -2,12 +2,29 @@ from __future__ import annotations
 
 import re
 import shlex
-from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+
+_ORG = "BuilderIO"
+_REPO = "micro-agent"
+_ERA_KEY = "micro_agent_39_to_20"
+_BASE_TAG = "base-20_to_39"
+_NODE_IMAGE = "node:18.20.3-bookworm"
+_APT_PACKAGES = "git ca-certificates"
+_TEST_FILE_RE = re.compile(r"\.(?:test|spec)\.[cm]?[jt]sx?$")
+_VITEST = (
+    "node_modules/.bin/vitest run --reporter=verbose --no-file-parallelism "
+    "--testTimeout=120000 --hookTimeout=120000 $TEST_TARGETS 2>&1"
+)
+_ESBUILD_GATE_JS = (
+    'const { createRequire } = require("module");'
+    ' createRequire(require.resolve("vite"))("esbuild")'
+    '.transformSync("const a: number = 1", { loader: "ts" });'
+)
+_SHARP_GATE_JS = 'require("sharp"); console.log("DEPS_OK");'
 
 _MITM_PROXY_ARGS = (
     'ARG http_proxy=""\n'
@@ -36,8 +53,6 @@ _BASE_ENV_BLOCK = (
     "    NODE_EXTRA_CA_CERTS=${CA_CERT_PATH} \\\n"
     "    NODE_OPTIONS=--max-old-space-size=4096 \\\n"
     "    CI=true \\\n"
-    "    SLS_TELEMETRY_DISABLED=1 \\\n"
-    "    SLS_TRACKING_DISABLED=1 \\\n"
     "    NO_UPDATE_NOTIFIER=1 \\\n"
     "    NPM_CONFIG_UPDATE_NOTIFIER=false \\\n"
     "    NPM_CONFIG_FUND=false \\\n"
@@ -72,6 +87,14 @@ _HARDENING_BLOCK = """RUN set -eux; \\
     test -z "$(git remote)"; \\
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)\""""
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_RESULT_RE = re.compile(
+    r"^(?P<symbol>[✓√×✗↓])\s+"
+    r"(?P<name>\S+\.[cm]?[jt]sx?\s+>\s+.+?)"
+    r"(?:\s+\[(?:skipped|todo)\])?(?:\s+\d+ms)?$"
+)
+_FAIL_SUMMARY_RE = re.compile(r"^FAIL\s+(?P<name>\S+\.[cm]?[jt]sx?\s+>\s+.+?)$")
+
 
 def _submodule_scrub_block(repo: str) -> str:
     return f"""RUN if [ -f /home/{repo}/.gitmodules ]; then \\
@@ -88,37 +111,32 @@ def _submodule_scrub_block(repo: str) -> str:
     fi"""
 
 
-_ORG = "AnomalyInnovations"
-_REPO = "serverless-bundle"
-_NODE_IMAGE = "node:14-bullseye"
-_SERVERLESS_CLI = "serverless@2.25.1"
-_NPM_SYNC = "npm ci --prefer-offline --no-audit --no-fund"
-_JEST = "node_modules/.bin/jest --no-watchman --verbose --no-color --ci --runInBand"
-_TEST_FILE_RE = re.compile(r"\.(?:test|spec)\.[cm]?[jt]sx?$")
-
-_GATE_JS = (
-    'require("./package.json"); require("webpack"); require("serverless-webpack");'
-    ' require("jest/package.json"); console.log("DEPS_OK");'
-)
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-_SUITE_HEADER_RE = re.compile(r"^(?:PASS|FAIL)\s+(\S+\.[cm]?[jt]sx?)(?:\s+\(.*\))?\s*$")
-_RESULT_LINE_RE = re.compile(r"^([✓✕○✎])\s+(.*)$")
-_DURATION_RE = re.compile(r"\s+\(\d+(?:\.\d+)?\s*m?s\)$")
-
-
-def _test_command(test_patch: str) -> str:
+def _test_targets(test_patch: str) -> str:
     targets: list[str] = []
     for path in re.findall(r"^\+\+\+ b/(\S+)", test_patch, re.MULTILINE):
         if _TEST_FILE_RE.search(path) and "node_modules/" not in path and path not in targets:
             targets.append(path)
-    if not targets:
-        return f"{_JEST} 2>&1"
-    quoted = " ".join(shlex.quote(path) for path in targets)
+    return " ".join(shlex.quote(path) for path in targets)
+
+
+def _binary_excludes(*patches: str) -> str:
+    paths: list[str] = []
+    for patch in patches:
+        for old, new in re.findall(r"^Binary files (\S+) and (\S+) differ$", patch, re.MULTILINE):
+            chosen = new if new != "/dev/null" else old
+            path = chosen.split("/", 1)[1] if "/" in chosen else chosen
+            if path not in paths:
+                paths.append(path)
+    return "".join(f" --exclude={shlex.quote(path)}" for path in paths)
+
+
+def _test_command(targets: str) -> str:
     return (
+        'export PATH="$PWD/node_modules/.bin:$PATH"\n'
+        "\n"
         'TEST_TARGETS=""\n'
-        f"for f in {quoted}; do\n"
-        '    if [ -e "$f" ]; then\n'
+        f"for f in {targets}; do\n"
+        '    if [ -s "$f" ]; then\n'
         '        TEST_TARGETS="$TEST_TARGETS $f"\n'
         "    fi\n"
         "done\n"
@@ -126,11 +144,11 @@ def _test_command(test_patch: str) -> str:
         '    echo "No test targets present"\n'
         "    exit 0\n"
         "fi\n"
-        f"{_JEST} --runTestsByPath $TEST_TARGETS 2>&1"
+        f"{_VITEST}"
     )
 
 
-class ServerlessBundleImageBase(Image):
+class ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -147,10 +165,10 @@ class ServerlessBundleImageBase(Image):
         return _NODE_IMAGE
 
     def image_tag(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def workdir(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def files(self) -> list[File]:
         return []
@@ -180,7 +198,9 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
 
 WORKDIR /home/
 
-RUN npm install -g {_SERVERLESS_CLI}
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        {_APT_PACKAGES} \\
+    && rm -rf /var/lib/apt/lists/*
 
 RUN git config --global --add safe.directory '*'
 
@@ -191,7 +211,7 @@ CMD ["/bin/bash"]
 """
 
 
-class ServerlessBundleImageDefault(Image):
+class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -205,7 +225,7 @@ class ServerlessBundleImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return ServerlessBundleImageBase(self.pr, self.config)
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -216,7 +236,9 @@ class ServerlessBundleImageDefault(Image):
     def files(self) -> list[File]:
         repo = self.pr.repo
         sha = self.pr.base.sha
-        test_cmd = _test_command(self.pr.test_patch)
+        test_cmd = _test_command(_test_targets(self.pr.test_patch))
+        test_excludes = _binary_excludes(self.pr.test_patch)
+        fix_excludes = _binary_excludes(self.pr.test_patch, self.pr.fix_patch)
 
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
@@ -259,10 +281,12 @@ bash /home/check_git_changes.sh
 git checkout --detach {sha}
 bash /home/check_git_changes.sh
 
-npm ci
+npm ci --ignore-scripts
 
-serverless --version > /dev/null
-node -e '{_GATE_JS}'
+node_modules/.bin/vitest --version
+node_modules/.bin/jiti ./src/cli.ts --version
+node -e '{_ESBUILD_GATE_JS}'
+node -e '{_SHARP_GATE_JS}'
 """,
             ),
             File(
@@ -275,8 +299,6 @@ export CI=true
 cd /home/{repo}
 git reset --hard
 git clean -fd
-
-{_NPM_SYNC}
 
 {test_cmd}
 """,
@@ -291,9 +313,7 @@ export CI=true
 cd /home/{repo}
 git reset --hard
 git clean -fd
-git apply --whitespace=nowarn /home/test.patch
-
-{_NPM_SYNC}
+git apply --whitespace=nowarn{test_excludes} /home/test.patch
 
 {test_cmd}
 """,
@@ -308,9 +328,7 @@ export CI=true
 cd /home/{repo}
 git reset --hard
 git clean -fd
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
-{_NPM_SYNC}
+git apply --whitespace=nowarn{fix_excludes} /home/test.patch /home/fix.patch
 
 {test_cmd}
 """,
@@ -352,7 +370,8 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
 
 @Instance.register(_ORG, _REPO)
-class ServerlessBundle(Instance):
+@Instance.register(_ORG, _ERA_KEY)
+class MICRO_AGENT_39_TO_20(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -363,7 +382,7 @@ class ServerlessBundle(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return ServerlessBundleImageDefault(self.pr, self._config)
+        return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -382,37 +401,19 @@ class ServerlessBundle(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         final_status: dict[str, str] = {}
-        current_file: Optional[str] = None
-        in_tree = False
-        groups: list[tuple[int, str]] = []
-
         for raw in _ANSI_RE.sub("", log).splitlines():
-            line = raw.rstrip()
-            header = _SUITE_HEADER_RE.match(line)
-            if header:
-                current_file = header.group(1)
-                in_tree = True
-                groups = []
+            line = raw.strip()
+            match = _RESULT_RE.match(line)
+            if match:
+                symbol = match.group("symbol")
+                name = re.sub(r"\s+>\s+", " > ", match.group("name").strip())
+                status = "PASS" if symbol in ("✓", "√") else "SKIP" if symbol == "↓" else "FAIL"
+                if final_status.get(name) != "FAIL":
+                    final_status[name] = status
                 continue
-            if not in_tree:
-                continue
-            stripped = line.strip()
-            if not stripped or stripped.startswith("●"):
-                in_tree = False
-                continue
-            indent = len(line) - len(line.lstrip(" "))
-            while groups and groups[-1][0] >= indent:
-                groups.pop()
-            result = _RESULT_LINE_RE.match(stripped)
-            if not result:
-                groups.append((indent, stripped))
-                continue
-            symbol, title = result.groups()
-            if symbol in ("○", "✎"):
-                title = re.sub(r"^(?:skipped|todo)\s+", "", title)
-            title = _DURATION_RE.sub("", title).strip()
-            name = " > ".join([current_file] + [g for _, g in groups] + [title])
-            final_status[name] = {"✓": "PASS", "✕": "FAIL"}.get(symbol, "SKIP")
+            summary = _FAIL_SUMMARY_RE.match(line)
+            if summary:
+                final_status[re.sub(r"\s+>\s+", " > ", summary.group("name").strip())] = "FAIL"
 
         passed_tests: set[str] = {n for n, s in final_status.items() if s == "PASS"}
         failed_tests: set[str] = {n for n, s in final_status.items() if s == "FAIL"}

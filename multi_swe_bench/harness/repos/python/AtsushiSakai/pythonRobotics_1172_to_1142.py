@@ -2,12 +2,53 @@ from __future__ import annotations
 
 import re
 import shlex
-from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+
+_ORG = "AtsushiSakai"
+_REPO = "PythonRobotics"
+_ERA_KEY = "pythonRobotics_1172_to_1142"
+_BASE_TAG = "base-1142_to_1172"
+_PYTHON_IMAGE = "python:3.12-slim"
+_APT_PACKAGES = "git ca-certificates build-essential"
+_PIP_PIN = '"pip==25.0.1"'
+_REQUIREMENTS = "requirements/requirements.txt"
+_ERA_CONSTRAINTS = "\n".join(
+    (
+        "cffi==1.17.1",
+        "clarabel==0.10.0",
+        "cloudpickle==3.1.1",
+        "contourpy==1.3.1",
+        "cycler==0.12.1",
+        "ecos==2.0.14",
+        "execnet==2.1.1",
+        "fonttools==4.55.8",
+        "iniconfig==2.0.0",
+        "Jinja2==3.1.5",
+        "joblib==1.4.2",
+        "kiwisolver==1.4.8",
+        "MarkupSafe==3.0.2",
+        "mypy_extensions==1.0.0",
+        "osqp==0.6.7.post3",
+        "packaging==24.2",
+        "pillow==11.1.0",
+        "pluggy==1.5.0",
+        "pycparser==2.22",
+        "pyparsing==3.2.1",
+        "python-dateutil==2.9.0.post0",
+        "scs==3.2.7.post2",
+        "setuptools==75.8.0",
+        "six==1.17.0",
+        "typing_extensions==4.12.2",
+    )
+)
+_PYTEST = (
+    "COLUMNS=200 pytest $TEST_TARGETS -v -rA -p no:cacheprovider -Werror "
+    "--continue-on-collection-errors 2>&1"
+)
 
 _MITM_PROXY_ARGS = (
     'ARG http_proxy=""\n'
@@ -33,15 +74,13 @@ _BASE_ENV_BLOCK = (
     "    SSL_CERT_FILE=${CA_CERT_PATH} \\\n"
     "    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\\n"
     "    CURL_CA_BUNDLE=${CA_CERT_PATH} \\\n"
-    "    NODE_EXTRA_CA_CERTS=${CA_CERT_PATH} \\\n"
-    "    NODE_OPTIONS=--max-old-space-size=4096 \\\n"
-    "    CI=true \\\n"
-    "    SLS_TELEMETRY_DISABLED=1 \\\n"
-    "    SLS_TRACKING_DISABLED=1 \\\n"
-    "    NO_UPDATE_NOTIFIER=1 \\\n"
-    "    NPM_CONFIG_UPDATE_NOTIFIER=false \\\n"
-    "    NPM_CONFIG_FUND=false \\\n"
-    "    NPM_CONFIG_AUDIT=false"
+    "    PIP_CERT=${CA_CERT_PATH} \\\n"
+    "    PYTHONUNBUFFERED=1 \\\n"
+    "    PYTHONDONTWRITEBYTECODE=1 \\\n"
+    "    PIP_DISABLE_PIP_VERSION_CHECK=1 \\\n"
+    "    PIP_NO_CACHE_DIR=1 \\\n"
+    "    MPLBACKEND=Agg \\\n"
+    "    CI=true"
 )
 
 _MITM_CERT_SYMLINKS = (
@@ -72,6 +111,17 @@ _HARDENING_BLOCK = """RUN set -eux; \\
     test -z "$(git remote)"; \\
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)\""""
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_VERBOSE_RE = re.compile(
+    r"^(?P<id>\S+\.py::.+?)\s+"
+    r"(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS|RERUN)"
+    r"(?:\s+\(.*\))?\s*(?:\[\s*\d+%\])?\s*$"
+)
+_SUMMARY_RE = re.compile(
+    r"^(?P<status>PASSED|FAILED|ERROR|XFAIL|XPASS)\s+"
+    r"(?P<id>\S+\.py::.+?)(?:\s+-\s+.*)?$"
+)
+
 
 def _submodule_scrub_block(repo: str) -> str:
     return f"""RUN if [ -f /home/{repo}/.gitmodules ]; then \\
@@ -88,36 +138,33 @@ def _submodule_scrub_block(repo: str) -> str:
     fi"""
 
 
-_ORG = "AnomalyInnovations"
-_REPO = "serverless-bundle"
-_NODE_IMAGE = "node:14-bullseye"
-_SERVERLESS_CLI = "serverless@2.25.1"
-_NPM_SYNC = "npm ci --prefer-offline --no-audit --no-fund"
-_JEST = "node_modules/.bin/jest --no-watchman --verbose --no-color --ci --runInBand"
-_TEST_FILE_RE = re.compile(r"\.(?:test|spec)\.[cm]?[jt]sx?$")
-
-_GATE_JS = (
-    'require("./package.json"); require("webpack"); require("serverless-webpack");'
-    ' require("jest/package.json"); console.log("DEPS_OK");'
-)
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-_SUITE_HEADER_RE = re.compile(r"^(?:PASS|FAIL)\s+(\S+\.[cm]?[jt]sx?)(?:\s+\(.*\))?\s*$")
-_RESULT_LINE_RE = re.compile(r"^([✓✕○✎])\s+(.*)$")
-_DURATION_RE = re.compile(r"\s+\(\d+(?:\.\d+)?\s*m?s\)$")
-
-
-def _test_command(test_patch: str) -> str:
+def _test_targets(test_patch: str) -> str:
     targets: list[str] = []
     for path in re.findall(r"^\+\+\+ b/(\S+)", test_patch, re.MULTILINE):
-        if _TEST_FILE_RE.search(path) and "node_modules/" not in path and path not in targets:
+        name = path.rsplit("/", 1)[-1]
+        is_test = name.startswith("test_") or name.endswith("_test.py")
+        if path.endswith(".py") and is_test and path not in targets:
             targets.append(path)
     if not targets:
-        return f"{_JEST} 2>&1"
-    quoted = " ".join(shlex.quote(path) for path in targets)
+        targets.append("tests")
+    return " ".join(shlex.quote(path) for path in targets)
+
+
+def _binary_excludes(*patches: str) -> str:
+    paths: list[str] = []
+    for patch in patches:
+        for old, new in re.findall(r"^Binary files (\S+) and (\S+) differ$", patch, re.MULTILINE):
+            chosen = new if new != "/dev/null" else old
+            path = chosen.split("/", 1)[1] if "/" in chosen else chosen
+            if path not in paths:
+                paths.append(path)
+    return "".join(f" --exclude={shlex.quote(path)}" for path in paths)
+
+
+def _test_command(targets: str) -> str:
     return (
         'TEST_TARGETS=""\n'
-        f"for f in {quoted}; do\n"
+        f"for f in {targets}; do\n"
         '    if [ -e "$f" ]; then\n'
         '        TEST_TARGETS="$TEST_TARGETS $f"\n'
         "    fi\n"
@@ -126,11 +173,11 @@ def _test_command(test_patch: str) -> str:
         '    echo "No test targets present"\n'
         "    exit 0\n"
         "fi\n"
-        f"{_JEST} --runTestsByPath $TEST_TARGETS 2>&1"
+        f"{_PYTEST}"
     )
 
 
-class ServerlessBundleImageBase(Image):
+class ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -144,13 +191,13 @@ class ServerlessBundleImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return _NODE_IMAGE
+        return _PYTHON_IMAGE
 
     def image_tag(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def workdir(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def files(self) -> list[File]:
         return []
@@ -161,7 +208,7 @@ class ServerlessBundleImageBase(Image):
 
         return f"""# syntax=docker/dockerfile:1.6
 
-FROM {_NODE_IMAGE}
+FROM {_PYTHON_IMAGE}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
@@ -180,7 +227,11 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
 
 WORKDIR /home/
 
-RUN npm install -g {_SERVERLESS_CLI}
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        {_APT_PACKAGES} \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir --upgrade {_PIP_PIN}
 
 RUN git config --global --add safe.directory '*'
 
@@ -191,7 +242,7 @@ CMD ["/bin/bash"]
 """
 
 
-class ServerlessBundleImageDefault(Image):
+class ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -205,7 +256,7 @@ class ServerlessBundleImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return ServerlessBundleImageBase(self.pr, self.config)
+        return ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -216,7 +267,9 @@ class ServerlessBundleImageDefault(Image):
     def files(self) -> list[File]:
         repo = self.pr.repo
         sha = self.pr.base.sha
-        test_cmd = _test_command(self.pr.test_patch)
+        test_cmd = _test_command(_test_targets(self.pr.test_patch))
+        test_excludes = _binary_excludes(self.pr.test_patch)
+        fix_excludes = _binary_excludes(self.pr.test_patch, self.pr.fix_patch)
 
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
@@ -259,10 +312,16 @@ bash /home/check_git_changes.sh
 git checkout --detach {sha}
 bash /home/check_git_changes.sh
 
-npm ci
+cat > /tmp/era-constraints.txt <<'CONSTRAINTS'
+{_ERA_CONSTRAINTS}
+CONSTRAINTS
+python -m pip install --no-cache-dir -r {_REQUIREMENTS} -c /tmp/era-constraints.txt
+rm -f /tmp/era-constraints.txt
 
-serverless --version > /dev/null
-node -e '{_GATE_JS}'
+python -W error -c "\\
+import sys; sys.path.insert(0, 'tests'); \\
+import numpy, scipy, matplotlib.pyplot, cvxpy, pytest, conftest; \\
+print('DEPS_OK')"
 """,
             ),
             File(
@@ -275,8 +334,6 @@ export CI=true
 cd /home/{repo}
 git reset --hard
 git clean -fd
-
-{_NPM_SYNC}
 
 {test_cmd}
 """,
@@ -291,9 +348,7 @@ export CI=true
 cd /home/{repo}
 git reset --hard
 git clean -fd
-git apply --whitespace=nowarn /home/test.patch
-
-{_NPM_SYNC}
+git apply --whitespace=nowarn{test_excludes} /home/test.patch
 
 {test_cmd}
 """,
@@ -308,9 +363,7 @@ export CI=true
 cd /home/{repo}
 git reset --hard
 git clean -fd
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
-{_NPM_SYNC}
+git apply --whitespace=nowarn{fix_excludes} /home/test.patch /home/fix.patch
 
 {test_cmd}
 """,
@@ -352,7 +405,8 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
 
 @Instance.register(_ORG, _REPO)
-class ServerlessBundle(Instance):
+@Instance.register(_ORG, _ERA_KEY)
+class PYTHONROBOTICS_1172_TO_1142(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -363,7 +417,7 @@ class ServerlessBundle(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return ServerlessBundleImageDefault(self.pr, self._config)
+        return ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -382,41 +436,16 @@ class ServerlessBundle(Instance):
 
     def parse_log(self, log: str) -> TestResult:
         final_status: dict[str, str] = {}
-        current_file: Optional[str] = None
-        in_tree = False
-        groups: list[tuple[int, str]] = []
-
         for raw in _ANSI_RE.sub("", log).splitlines():
-            line = raw.rstrip()
-            header = _SUITE_HEADER_RE.match(line)
-            if header:
-                current_file = header.group(1)
-                in_tree = True
-                groups = []
+            line = raw.strip()
+            match = _VERBOSE_RE.match(line) or _SUMMARY_RE.match(line)
+            if not match or match.group("status") == "RERUN":
                 continue
-            if not in_tree:
-                continue
-            stripped = line.strip()
-            if not stripped or stripped.startswith("●"):
-                in_tree = False
-                continue
-            indent = len(line) - len(line.lstrip(" "))
-            while groups and groups[-1][0] >= indent:
-                groups.pop()
-            result = _RESULT_LINE_RE.match(stripped)
-            if not result:
-                groups.append((indent, stripped))
-                continue
-            symbol, title = result.groups()
-            if symbol in ("○", "✎"):
-                title = re.sub(r"^(?:skipped|todo)\s+", "", title)
-            title = _DURATION_RE.sub("", title).strip()
-            name = " > ".join([current_file] + [g for _, g in groups] + [title])
-            final_status[name] = {"✓": "PASS", "✕": "FAIL"}.get(symbol, "SKIP")
+            final_status[match.group("id").strip()] = match.group("status")
 
-        passed_tests: set[str] = {n for n, s in final_status.items() if s == "PASS"}
-        failed_tests: set[str] = {n for n, s in final_status.items() if s == "FAIL"}
-        skipped_tests: set[str] = {n for n, s in final_status.items() if s == "SKIP"}
+        passed_tests: set[str] = {n for n, s in final_status.items() if s in ("PASSED", "XPASS")}
+        failed_tests: set[str] = {n for n, s in final_status.items() if s in ("FAILED", "ERROR")}
+        skipped_tests: set[str] = {n for n, s in final_status.items() if s in ("SKIPPED", "XFAIL")}
 
         passed_tests -= failed_tests
         skipped_tests -= failed_tests

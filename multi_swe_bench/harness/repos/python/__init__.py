@@ -3,6 +3,7 @@ from multi_swe_bench.harness.repos.python.aeon_toolkit import *
 from multi_swe_bench.harness.repos.python.Lightning_Universe import *
 from multi_swe_bench.harness.repos.python.aesara_devs import *
 from multi_swe_bench.harness.repos.python.agno_agi import *
+from multi_swe_bench.harness.repos.python.AcademySoftwareFoundation import *
 from multi_swe_bench.harness.repos.python.AgnostiqHQ import *
 from multi_swe_bench.harness.repos.python.agronholm import *
 from multi_swe_bench.harness.repos.python.aiidateam import *
@@ -388,6 +389,8 @@ from multi_swe_bench.harness.repos.python.nils_braun import *
 from multi_swe_bench.harness.repos.python.dribdat import *
 from multi_swe_bench.harness.repos.python.LAAC_LSCP import *
 from multi_swe_bench.harness.repos.python.AlertaDengue import *
+from multi_swe_bench.harness.repos.python.AtsushiSakai import *
+from multi_swe_bench.harness.repos.python.Bogdanp import *
 from multi_swe_bench.harness.repos.python.pytition import *
 from multi_swe_bench.harness.repos.python.hummingbot import *
 from multi_swe_bench.harness.repos.python.gicait import *
