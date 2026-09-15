@@ -72,14 +72,15 @@ if not getattr(_pull_request.PullRequest, "_lg_number_interval_patched", False):
         def _lg_build(cls, pr, report):
             ds = _lg_orig_build(cls, pr, report)
             ni = getattr(pr, "_lg_number_interval", "")
-            if not ni:
-                # No usable prs_in_bundle on the raw record (absent, empty, or not
-                # a langchain-ai/langgraph row). Keep whatever the loader carried;
-                # otherwise fall back to the bare PR number, so the output row is
-                # NEVER empty -- SOP 11a ("single-PR instance -> just the number")
-                # and 11c ("every record non-empty number_interval").
-                ni = (ds.number_interval or "").strip() or str(pr.number)
-            ds.number_interval = ni
+            # Only stamp rows this registry actually claimed. `_Dataset.build` is
+            # a PROCESS-WIDE hook (harness/__init__.py imports every registry), so
+            # an unconditional write here would rewrite number_interval for every
+            # other repo's output rows too -- handing them a value their registry
+            # never registered, which the trajectory harness then fails to resolve
+            # via f"{org}/{number_interval}". Leave non-langgraph rows untouched;
+            # same shape as the sibling registries (netbirdio/netbird.py et al).
+            if ni:
+                ds.number_interval = ni
             return ds
 
         _Dataset.build = classmethod(_lg_build)
