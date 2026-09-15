@@ -10,3 +10,4 @@ from multi_swe_bench.harness.repos.typescript.microsoft.vscode_vsce import *
 from multi_swe_bench.harness.repos.typescript.microsoft.vscode_languageserver_node import *
 from multi_swe_bench.harness.repos.typescript.microsoft.SandDance_229_to_229 import *
 from multi_swe_bench.harness.repos.typescript.microsoft.azuredatastudio import *
+from multi_swe_bench.harness.repos.typescript.microsoft.vscode_cmake_tools import *
