@@ -430,17 +430,13 @@ from multi_swe_bench.harness.repos.python.strawberry_graphql import *
 from multi_swe_bench.harness.repos.python.OpenCyphal import *
 from multi_swe_bench.harness.repos.python.openforcefield import *
 from multi_swe_bench.harness.repos.python.vllm_project import *
-
 from multi_swe_bench.harness.repos.python.pwndbg import *
-# from multi_swe_bench.harness.repos.python.bali_framework import *
-
 from multi_swe_bench.harness.repos.python.CycloneDX import *
 
 from multi_swe_bench.harness.repos.python.Spherre_Labs import *
 from multi_swe_bench.harness.repos.python.Tuxemon import *
 from multi_swe_bench.harness.repos.python.SolFoundry import *
 from multi_swe_bench.harness.repos.python.ansible_collections import *
-
 from multi_swe_bench.harness.repos.python.stumpy_dev import *
 
 from multi_swe_bench.harness.repos.python.jannikmi import *
@@ -449,3 +445,5 @@ from multi_swe_bench.harness.repos.python.pschanely import *
 from multi_swe_bench.harness.repos.python.DjangoGirls import *
 
 from multi_swe_bench.harness.repos.python.CuriousLearner import *
+
+from multi_swe_bench.harness.repos.python.altdesktop import *
