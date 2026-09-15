@@ -15,7 +15,7 @@ history (anti reward-hacking).
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -62,15 +62,18 @@ FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    GOTOOLCHAIN=auto \\
-    CGO_ENABLED=0 \\
-    TZ=UTC
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+ENV GOTOOLCHAIN=auto \\
+    CGO_ENABLED=0
 
 LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
       org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 {self.global_env}
 

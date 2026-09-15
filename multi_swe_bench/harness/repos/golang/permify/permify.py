@@ -1,7 +1,7 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -47,33 +47,44 @@ class PermifyImageBase(Image):
         return "golang:1.25-bookworm"
 
     def image_tag(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
+        # SHARED base (tag "base"), built once for every PR. The `# syntax` line
+        # opts it out of DockerfileEnhancer, which would otherwise inject
+        # `git checkout ${BASE_COMMIT}` + `git gc --prune` HERE and prune the
+        # shared clone down to one PR's history ("reference is not a tree" for
+        # every other PR -- the go-ethereum/gvisor bug). Because of that opt-out
+        # the MITM scaffolding is hand-written, verbatim from image.py's
+        # constants; the per-PR checkout + literal-sha hardening live in
+        # PermifyImageDefault, which inherits this image's proxy ENV + certs.
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {self.dependency()}
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
-        # No inline `# syntax` directive: its presence is the enhancer's
-        # skip-sentinel (image.py:317), so omitting it lets DockerfileEnhancer
-        # inject the proxy/CA-cert/${{BASE_COMMIT}} fetch + history-scrub. Safe
-        # here because the base tag is per-PR, not shared.
-        return f"""FROM {image_name}
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+ENV GOTOOLCHAIN=auto
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 {self.global_env}
-
-ENV GOTOOLCHAIN=auto
 
 WORKDIR /home/
 
@@ -81,10 +92,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     git ca-certificates build-essential \\
     && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git config --global --add safe.directory '*'
+RUN git clone "${{REPO_URL}}" /home/{repo}
+WORKDIR /home/{repo}
+RUN git config --local gc.auto 0
+
+WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -208,7 +225,16 @@ go test -v -count=1 ./...
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
-        return f"""FROM {name}:{tag}
+        # dependency() is an Image, so DockerfileEnhancer.enhance() returns this
+        # verbatim: MITM comes from the shared base via FROM, and the anti-cheat
+        # hardening is written here with this PR's literal base.sha (prepare.sh
+        # has already checked that sha out).
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
+
+        return f"""# syntax=docker/dockerfile:1.6
+FROM {name}:{tag}
 
 {self.global_env}
 
@@ -216,8 +242,13 @@ go test -v -count=1 ./...
 
 {prepare_commands}
 
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
