@@ -439,3 +439,4 @@ from multi_swe_bench.harness.repos.python.ansible_collections import *
 from multi_swe_bench.harness.repos.python.stumpy_dev import *
 
 from multi_swe_bench.harness.repos.python.jannikmi import *
+from multi_swe_bench.harness.repos.python.graphql_python import *

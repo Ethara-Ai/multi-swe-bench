@@ -6,31 +6,31 @@ from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Imag
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_PYTHON_BASE = "python:3.11-bullseye"
+_ORG = "grafana"
+_REPO = "grafana"
 
-_REPO_DIR = "/home/graphene-django"
-_TEST_TARGET = "graphene_django examples"
-_DJANGO_SETTINGS_MODULE = "examples.django_test_settings"
-_PYTHONPATH = _REPO_DIR
-_RANDOM_ORDER_SEED = "1411"
+_NODE_BASE = "node:24.11.0-bookworm"
+_BASE_TAG = "base-node24"
 
-_RUNTIME_DEPS = (
-    "'Django==4.2.3' "
-    "'graphene==3.2.2' "
-    "'graphql-core==3.2.3' "
-    "'graphql-relay==3.2.0' "
-    "'promise==2.3' "
-    "'text-unidecode==1.3' "
-    "'djangorestframework==3.14.0' "
-    "'django-filter==23.2' "
-    "'pytest==7.4.0' "
-    "'pytest-django==4.5.2' "
-    "'pytest-random-order==1.1.0' "
-    "'mock==5.0.2' "
-    "'pytz==2023.3' "
-    "'sqlparse==0.4.4' "
-    "'asgiref==3.7.2'"
-)
+_REPO_DIR = f"/home/{_REPO}"
+_NODE_OPTIONS = "--max-old-space-size=8192"
+_FALLBACK_SCOPE = "packages/grafana-ui/src/components/VizLegend"
+
+_JEST_CMD = "yarn jest --ci --verbose --runInBand --watchAll=false __TEST_SCOPE__"
+
+
+def _test_scope(pr: PullRequest) -> str:
+    dirs: list[str] = []
+    for line in (pr.test_patch or "").split("\n"):
+        if not line.startswith("diff --git a/"):
+            continue
+        path = line.split(" a/", 1)[1].split(" b/", 1)[0]
+        directory = path.rsplit("/", 1)[0] if "/" in path else ""
+        if directory.endswith("/__snapshots__"):
+            directory = directory[: -len("/__snapshots__")]
+        if directory and directory not in dirs:
+            dirs.append(directory)
+    return " ".join(dirs) if dirs else _FALLBACK_SCOPE
 
 
 _CHECK_GIT_CHANGES_SH = r"""#!/bin/bash
@@ -53,14 +53,14 @@ exit 0
 
 
 _VERIFY = r"""
-python -c "import django; print('DEPS_OK: django', django.get_version())"
-python -c "import graphene, graphql, graphql_relay, promise; print('DEPS_OK: graphene stack')"
-python -c "import graphene_django; print('DEPS_OK: graphene_django', graphene_django.__version__)"
-python -c "import pytest, pytest_django, random_order, django_filters, rest_framework, mock, pytz; print('DEPS_OK: test stack')"
-python -c "import django; django.setup(); from django.conf import settings; assert settings.INSTALLED_APPS; print('DEPS_OK: django settings loaded')"
-python -m pytest --version
-python -m pytest -q --collect-only __TEST_TARGET__
-echo "DEPS_OK: pytest collects __TEST_TARGET__"
+node --version
+yarn --version
+node -e "require('./package.json'); console.log('DEPS_OK: package.json')"
+node -e "require.resolve('jest'); require.resolve('ts-jest'); console.log('DEPS_OK: jest + ts-jest resolved')"
+yarn jest --version
+echo "DEPS_OK: jest runs"
+yarn jest --ci --listTests __TEST_SCOPE__ > /dev/null
+echo "DEPS_OK: jest resolves scoped tests"
 """
 
 
@@ -70,8 +70,8 @@ set -e
 
 export CI=true
 export DEBIAN_FRONTEND=noninteractive
-export PYTHONPATH=__PYTHONPATH__
-export DJANGO_SETTINGS_MODULE=__DJANGO_SETTINGS_MODULE__
+export NODE_OPTIONS=__NODE_OPTIONS__
+export CYPRESS_INSTALL_BINARY=0
 
 cd __REPO_DIR__
 
@@ -83,7 +83,10 @@ git checkout --detach __BASE_SHA__
 bash /home/check_git_changes.sh
 echo "=== HEAD pinned at $(git rev-parse HEAD) ==="
 
-python -m pip install --no-cache-dir --no-deps -e .
+corepack enable
+corepack install
+
+yarn install --immutable
 """
     + _VERIFY
 )
@@ -93,10 +96,9 @@ _SCRIPT_HEADER = r"""#!/bin/bash
 set -eo pipefail
 
 export CI=true
-export PYTHONPATH=__PYTHONPATH__
-export DJANGO_SETTINGS_MODULE=__DJANGO_SETTINGS_MODULE__
-export PYTHONDONTWRITEBYTECODE=1
-export PYTHONUNBUFFERED=1
+export NODE_OPTIONS=__NODE_OPTIONS__
+export FORCE_COLOR=0
+export NO_COLOR=1
 export PAGER=/bin/cat
 
 cd __REPO_DIR__
@@ -135,11 +137,7 @@ fi
 """
 
 
-_EXEC_TESTS = r"""
-python -m pytest -rA --tb=short -v --color=no \
-    --random-order-seed=__RANDOM_ORDER_SEED__ \
-    --continue-on-collection-errors __TEST_TARGET__
-"""
+_EXEC_TESTS = "\n" + _JEST_CMD + "\n"
 
 
 _RUN_SH = _SCRIPT_HEADER + _RESET + _EXEC_TESTS
@@ -170,28 +168,21 @@ LABEL org.opencontainers.image.title="__ORG__/__REPO__" \
 
 __CERT_SYMLINKS__
 
-ENV PIP_PROGRESS_BAR=off \
-    PIP_NO_COLOR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_ROOT_USER_ACTION=ignore \
-    PYTHONIOENCODING=utf-8 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=__PYTHONPATH__ \
-    DJANGO_SETTINGS_MODULE=__DJANGO_SETTINGS_MODULE__ \
+ENV NODE_OPTIONS=__NODE_OPTIONS__ \
+    CYPRESS_INSTALL_BINARY=0 \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    YARN_ENABLE_IMMUTABLE_INSTALLS=false \
     NO_COLOR=1 \
-    PY_COLORS=0 \
+    FORCE_COLOR=0 \
     CI=true
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     git \
-    build-essential \
+    jq \
  && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --no-cache-dir --upgrade 'pip==23.2.1' 'setuptools==68.0.0' 'wheel==0.41.0'
-
-RUN python -m pip install --no-cache-dir __RUNTIME_DEPS__
+RUN corepack enable
 
 RUN git config --global --add safe.directory '*'
 
@@ -219,7 +210,7 @@ __CLEAR_ENV__
 """
 
 
-class GrapheneDjangoImageBase(Image):
+class GrafanaEraImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -233,13 +224,13 @@ class GrapheneDjangoImageBase(Image):
         return self._config
 
     def dependency(self) -> str | Image:
-        return _PYTHON_BASE
+        return _NODE_BASE
 
     def image_tag(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def workdir(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def files(self) -> list[File]:
         return []
@@ -253,16 +244,14 @@ class GrapheneDjangoImageBase(Image):
             _BASE_DOCKERFILE.replace("__BASE_IMAGE__", base_image)
             .replace("__ORG__", self.pr.org)
             .replace("__REPO__", self.pr.repo)
-            .replace("__PYTHONPATH__", _PYTHONPATH)
-            .replace("__DJANGO_SETTINGS_MODULE__", _DJANGO_SETTINGS_MODULE)
-            .replace("__RUNTIME_DEPS__", _RUNTIME_DEPS)
+            .replace("__NODE_OPTIONS__", _NODE_OPTIONS)
             .replace("__PROXY_ARGS__", DockerfileEnhancer._PROXY_ARGS)
             .replace("__ENV_BLOCK__", DockerfileEnhancer._ENV_BLOCK)
             .replace("__CERT_SYMLINKS__", DockerfileEnhancer._CERT_SYMLINKS)
         )
 
 
-class GrapheneDjangoImageDefault(Image):
+class GrafanaEraImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -276,7 +265,7 @@ class GrapheneDjangoImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return GrapheneDjangoImageBase(self.pr, self._config)
+        return GrafanaEraImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -286,10 +275,8 @@ class GrapheneDjangoImageDefault(Image):
 
     def _render(self, template: str) -> str:
         return (
-            template.replace("__PYTHONPATH__", _PYTHONPATH)
-            .replace("__DJANGO_SETTINGS_MODULE__", _DJANGO_SETTINGS_MODULE)
-            .replace("__RANDOM_ORDER_SEED__", _RANDOM_ORDER_SEED)
-            .replace("__TEST_TARGET__", _TEST_TARGET)
+            template.replace("__NODE_OPTIONS__", _NODE_OPTIONS)
+            .replace("__TEST_SCOPE__", _test_scope(self.pr))
             .replace("__REPO_DIR__", _REPO_DIR)
             .replace("__BASE_SHA__", self.pr.base.sha)
             .replace("__ORG__", self.pr.org)
@@ -327,62 +314,117 @@ class GrapheneDjangoImageDefault(Image):
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
-_VERBOSE_RE = re.compile(
-    r"^(?P<name>\S+\.py::\S+?)"
-    r"\s+(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b"
+_SUITE_RE = re.compile(
+    r"^ {0,2}(?:PASS|FAIL)\s+(?:\[[^\]]*\]\s+)?"
+    r"(\S+\.[cm]?[jt]sx?)"
+    r"(?:\s+\(\d+(?:[.,]\d+)?\s*m?s\))?\s*$"
 )
 
-_SUMMARY_RE = re.compile(
-    r"^(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)"
-    r"\s+(?P<name>\S+\.py::\S+)"
+_PASS_MARKS = "\u2713\u2714"
+_FAIL_MARKS = "\u2715\u2717\u00d7\u2718"
+_SKIP_MARKS = "\u25cb\u25ef\u270e\u2193"
+
+_TEST_LINE_RE = re.compile(
+    r"^(\s+)([" + _PASS_MARKS + _FAIL_MARKS + _SKIP_MARKS + r"])\s+(\S.*)$"
 )
 
-_COLLECT_ERROR_RE = re.compile(r"^ERROR\s+(?P<name>\S+\.py)(?:\s|$)")
+_DURATION_RE = re.compile(r"\s*\(\d+(?:[.,]\d+)?\s*m?s\)\s*$")
 
-_PASS_STATUSES = frozenset({"PASSED", "XPASS"})
-_FAIL_STATUSES = frozenset({"FAILED", "ERROR"})
+_BLOCK_END_PREFIXES = (
+    "\u25cf",
+    "Test Suites:",
+    "Tests:",
+    "Snapshots:",
+    "Time:",
+    "Ran all test suites",
+    "Summary of all failing tests",
+)
+
+_CONSOLE_RE = re.compile(r"^\s*console\.[a-zA-Z]+\b")
+_CONSOLE_CONTENT_MIN_INDENT = 3
+
+_SKIP_AGGREGATE_RE = re.compile(r"^(?:skipped|todo)\s+\d+\s+tests?$")
+_SKIP_PREFIX_RE = re.compile(r"^(?:skipped|todo)\s+")
 
 
-def graphene_django_parse_log(test_log: str) -> TestResult:
+def _clean_title(title: str) -> str:
+    return _DURATION_RE.sub("", title.strip()).strip()
+
+
+def grafana_jest_parse_log(test_log: str) -> TestResult:
     log = _ANSI_RE.sub("", test_log)
 
     passed_tests: set[str] = set()
     failed_tests: set[str] = set()
     skipped_tests: set[str] = set()
 
-    def record(name: str, status: str) -> None:
+    def record(mark: str, name: str) -> None:
         if not name:
             return
-        if status in _PASS_STATUSES:
-            if name in failed_tests:
-                return
-            skipped_tests.discard(name)
+        if mark in _PASS_MARKS:
             passed_tests.add(name)
-        elif status in _FAIL_STATUSES:
-            passed_tests.discard(name)
-            skipped_tests.discard(name)
+        elif mark in _FAIL_MARKS:
             failed_tests.add(name)
         else:
-            if name in passed_tests or name in failed_tests:
-                return
             skipped_tests.add(name)
 
+    current_file: str | None = None
+    describe_stack: list[str] = []
+    in_suite = False
+    in_console = False
+
     for raw_line in log.splitlines():
-        line = raw_line.strip()
+        line = raw_line.rstrip()
 
-        match = _VERBOSE_RE.match(line)
-        if match:
-            record(match.group("name"), match.group("status"))
+        suite = _SUITE_RE.match(line)
+        if suite:
+            current_file = suite.group(1)
+            describe_stack = []
+            in_suite = True
+            in_console = False
             continue
 
-        match = _SUMMARY_RE.match(line)
-        if match:
-            record(match.group("name"), match.group("status"))
+        if not in_suite:
             continue
 
-        match = _COLLECT_ERROR_RE.match(line)
-        if match:
-            record(match.group("name"), "ERROR")
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+
+        if in_console:
+            if indent > _CONSOLE_CONTENT_MIN_INDENT or _CONSOLE_RE.match(line):
+                continue
+            in_console = False
+
+        if _CONSOLE_RE.match(line):
+            in_console = True
+            continue
+
+        if stripped.startswith(_BLOCK_END_PREFIXES):
+            in_suite = False
+            continue
+
+        if indent == 0:
+            continue
+
+        test = _TEST_LINE_RE.match(line)
+        if test:
+            mark = test.group(2)
+            title = _clean_title(test.group(3))
+            if mark in _SKIP_MARKS:
+                if _SKIP_AGGREGATE_RE.match(title):
+                    continue
+                title = _SKIP_PREFIX_RE.sub("", title).strip()
+            context = describe_stack[: max(indent // 2 - 1, 0)]
+            parts = ([current_file] if current_file else []) + context + [title]
+            record(mark, " > ".join(part for part in parts if part))
+            continue
+
+        level = max(indent // 2, 1)
+        describe_stack = describe_stack[: level - 1]
+        describe_stack.append(stripped)
 
     passed_tests -= failed_tests
     skipped_tests -= failed_tests
@@ -398,8 +440,8 @@ def graphene_django_parse_log(test_log: str) -> TestResult:
     )
 
 
-@Instance.register("graphql-python", "graphene-django")
-class GRAPHENE_DJANGO(Instance):
+@Instance.register(_ORG, _REPO)
+class GRAFANA(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -410,7 +452,7 @@ class GRAPHENE_DJANGO(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return GrapheneDjangoImageDefault(self.pr, self._config)
+        return GrafanaEraImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -428,4 +470,4 @@ class GRAPHENE_DJANGO(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        return graphene_django_parse_log(test_log)
+        return grafana_jest_parse_log(test_log)

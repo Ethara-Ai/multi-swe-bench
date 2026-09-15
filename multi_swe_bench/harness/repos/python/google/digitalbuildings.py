@@ -6,30 +6,19 @@ from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Imag
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_PYTHON_BASE = "python:3.11-bullseye"
+_PYTHON_BASE = "python:3.7-bullseye"
 
-_REPO_DIR = "/home/graphene-django"
-_TEST_TARGET = "graphene_django examples"
-_DJANGO_SETTINGS_MODULE = "examples.django_test_settings"
-_PYTHONPATH = _REPO_DIR
-_RANDOM_ORDER_SEED = "1411"
+_REPO_DIR = "/home/digitalbuildings"
+_ONTOLOGY_VALIDATOR_DIR = f"{_REPO_DIR}/tools/validators/ontology_validator"
+_INSTANCE_VALIDATOR_DIR = f"{_REPO_DIR}/tools/validators/instance_validator"
+_TEST_TARGET = "tools/validators/instance_validator/tests"
+_PYTHONPATH = f"{_ONTOLOGY_VALIDATOR_DIR}:{_INSTANCE_VALIDATOR_DIR}"
 
 _RUNTIME_DEPS = (
-    "'Django==4.2.3' "
-    "'graphene==3.2.2' "
-    "'graphql-core==3.2.3' "
-    "'graphql-relay==3.2.0' "
-    "'promise==2.3' "
-    "'text-unidecode==1.3' "
-    "'djangorestframework==3.14.0' "
-    "'django-filter==23.2' "
-    "'pytest==7.4.0' "
-    "'pytest-django==4.5.2' "
-    "'pytest-random-order==1.1.0' "
-    "'mock==5.0.2' "
-    "'pytz==2023.3' "
-    "'sqlparse==0.4.4' "
-    "'asgiref==3.7.2'"
+    "'pytest==7.4.4' 'absl-py==2.1.0' 'six==1.17.0' 'pyyaml==6.0.1' "
+    "'protobuf==3.17.3' 'ruamel.yaml==0.15.93' 'strictyaml==1.1.0' "
+    "'google-cloud-pubsub==2.6.1' 'google-auth==1.35.0' "
+    "'googleapis-common-protos==1.52.0'"
 )
 
 
@@ -53,14 +42,12 @@ exit 0
 
 
 _VERIFY = r"""
-python -c "import django; print('DEPS_OK: django', django.get_version())"
-python -c "import graphene, graphql, graphql_relay, promise; print('DEPS_OK: graphene stack')"
-python -c "import graphene_django; print('DEPS_OK: graphene_django', graphene_django.__version__)"
-python -c "import pytest, pytest_django, random_order, django_filters, rest_framework, mock, pytz; print('DEPS_OK: test stack')"
-python -c "import django; django.setup(); from django.conf import settings; assert settings.INSTALLED_APPS; print('DEPS_OK: django settings loaded')"
+python -c "import pytest; from absl.testing import absltest; print('DEPS_OK: pytest + absltest')"
+python -c "from validate import constants, entity_instance, field_translation, generate_universe, handler, instance_parser, telemetry_validator; print('DEPS_OK: instance validator')"
+python -c "from yamlformat.validator import presubmit_validate_types_lib; print('DEPS_OK: ontology validator')"
+python -c "from os import path; from tests import test_constants; assert path.isdir(test_constants.ONTOLOGY_ROOT), test_constants.ONTOLOGY_ROOT; print('DEPS_OK: ontology root resolved')"
 python -m pytest --version
-python -m pytest -q --collect-only __TEST_TARGET__
-echo "DEPS_OK: pytest collects __TEST_TARGET__"
+echo "DEPS_OK: pytest runs"
 """
 
 
@@ -71,7 +58,6 @@ set -e
 export CI=true
 export DEBIAN_FRONTEND=noninteractive
 export PYTHONPATH=__PYTHONPATH__
-export DJANGO_SETTINGS_MODULE=__DJANGO_SETTINGS_MODULE__
 
 cd __REPO_DIR__
 
@@ -82,10 +68,11 @@ git cat-file -e "__BASE_SHA__^{commit}" 2>/dev/null || git fetch --no-tags origi
 git checkout --detach __BASE_SHA__
 bash /home/check_git_changes.sh
 echo "=== HEAD pinned at $(git rev-parse HEAD) ==="
-
-python -m pip install --no-cache-dir --no-deps -e .
 """
     + _VERIFY
+    + r"""
+python -m pytest -q -p no:cacheprovider __TEST_TARGET__ > /dev/null 2>&1 || true
+"""
 )
 
 
@@ -94,9 +81,7 @@ set -eo pipefail
 
 export CI=true
 export PYTHONPATH=__PYTHONPATH__
-export DJANGO_SETTINGS_MODULE=__DJANGO_SETTINGS_MODULE__
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONUNBUFFERED=1
 export PAGER=/bin/cat
 
 cd __REPO_DIR__
@@ -107,7 +92,7 @@ apply_patches() {
     fi
     echo "=== plain git apply failed; retrying with --3way ===" >&2
     git reset --hard
-    git clean -fd
+    git clean -fdx
     git apply --3way --whitespace=nowarn "$@"
 }
 """
@@ -115,7 +100,7 @@ apply_patches() {
 
 _RESET = r"""
 git reset --hard
-git clean -fd
+git clean -fdx
 """
 
 
@@ -136,8 +121,7 @@ fi
 
 
 _EXEC_TESTS = r"""
-python -m pytest -rA --tb=short -v --color=no \
-    --random-order-seed=__RANDOM_ORDER_SEED__ \
+python -m pytest -rA --tb=short -v -p no:cacheprovider --color=no \
     --continue-on-collection-errors __TEST_TARGET__
 """
 
@@ -178,7 +162,6 @@ ENV PIP_PROGRESS_BAR=off \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=__PYTHONPATH__ \
-    DJANGO_SETTINGS_MODULE=__DJANGO_SETTINGS_MODULE__ \
     NO_COLOR=1 \
     PY_COLORS=0 \
     CI=true
@@ -188,8 +171,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
  && rm -rf /var/lib/apt/lists/*
-
-RUN python -m pip install --no-cache-dir --upgrade 'pip==23.2.1' 'setuptools==68.0.0' 'wheel==0.41.0'
 
 RUN python -m pip install --no-cache-dir __RUNTIME_DEPS__
 
@@ -219,7 +200,7 @@ __CLEAR_ENV__
 """
 
 
-class GrapheneDjangoImageBase(Image):
+class DigitalBuildingsImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -254,7 +235,6 @@ class GrapheneDjangoImageBase(Image):
             .replace("__ORG__", self.pr.org)
             .replace("__REPO__", self.pr.repo)
             .replace("__PYTHONPATH__", _PYTHONPATH)
-            .replace("__DJANGO_SETTINGS_MODULE__", _DJANGO_SETTINGS_MODULE)
             .replace("__RUNTIME_DEPS__", _RUNTIME_DEPS)
             .replace("__PROXY_ARGS__", DockerfileEnhancer._PROXY_ARGS)
             .replace("__ENV_BLOCK__", DockerfileEnhancer._ENV_BLOCK)
@@ -262,7 +242,7 @@ class GrapheneDjangoImageBase(Image):
         )
 
 
-class GrapheneDjangoImageDefault(Image):
+class DigitalBuildingsImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -276,7 +256,7 @@ class GrapheneDjangoImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return GrapheneDjangoImageBase(self.pr, self._config)
+        return DigitalBuildingsImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -287,8 +267,6 @@ class GrapheneDjangoImageDefault(Image):
     def _render(self, template: str) -> str:
         return (
             template.replace("__PYTHONPATH__", _PYTHONPATH)
-            .replace("__DJANGO_SETTINGS_MODULE__", _DJANGO_SETTINGS_MODULE)
-            .replace("__RANDOM_ORDER_SEED__", _RANDOM_ORDER_SEED)
             .replace("__TEST_TARGET__", _TEST_TARGET)
             .replace("__REPO_DIR__", _REPO_DIR)
             .replace("__BASE_SHA__", self.pr.base.sha)
@@ -343,7 +321,7 @@ _PASS_STATUSES = frozenset({"PASSED", "XPASS"})
 _FAIL_STATUSES = frozenset({"FAILED", "ERROR"})
 
 
-def graphene_django_parse_log(test_log: str) -> TestResult:
+def digitalbuildings_parse_log(test_log: str) -> TestResult:
     log = _ANSI_RE.sub("", test_log)
 
     passed_tests: set[str] = set()
@@ -398,8 +376,8 @@ def graphene_django_parse_log(test_log: str) -> TestResult:
     )
 
 
-@Instance.register("graphql-python", "graphene-django")
-class GRAPHENE_DJANGO(Instance):
+@Instance.register("google", "digitalbuildings")
+class DIGITALBUILDINGS(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -410,7 +388,7 @@ class GRAPHENE_DJANGO(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return GrapheneDjangoImageDefault(self.pr, self._config)
+        return DigitalBuildingsImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -428,4 +406,4 @@ class GRAPHENE_DJANGO(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        return graphene_django_parse_log(test_log)
+        return digitalbuildings_parse_log(test_log)
