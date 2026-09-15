@@ -4,9 +4,9 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-BASE_TAG = "base-3718_to_13737"
-NODE_IMAGE = "node:10-buster"
-NPM_VERSION = "7.24.2"
+BASE_TAG = "base-174_to_11"
+NODE_IMAGE = "node:20-bookworm"
+PNPM_VERSION = "8.15.8"
 BEGIN_MARKER = "===== BEGIN TEST DETAIL ====="
 END_MARKER = "===== END TEST DETAIL ====="
 
@@ -42,7 +42,13 @@ try {
 let total = 0;
 for (const suite of report.testResults || []) {
   const file = path.relative(root, suite.name).split(path.sep).join("/");
-  for (const assertion of suite.assertionResults || []) {
+  const assertions = suite.assertionResults || [];
+  if (assertions.length === 0 && suite.status === "failed") {
+    process.stdout.write("TESTCASE " + file + "::Test suite failed to run FAILED\n");
+    total += 1;
+    continue;
+  }
+  for (const assertion of assertions) {
     let status = "SKIPPED";
     if (assertion.status === "passed") {
       status = "PASSED";
@@ -59,84 +65,30 @@ process.stdout.write("MSWEBENCH_TOTAL " + total + "\n");
 """
 
 PROVISION_BODY = r"""export DEBIAN_FRONTEND=noninteractive
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
 export npm_config_update_notifier=false
 
-npm install -g "npm@${NPM_VERSION}"
+npm install -g "pnpm@${PNPM_VERSION}"
 
-ERA_CUTOFF="$(git show -s --format=%cI HEAD)"
-npm install --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund --no-package-lock
-
-cat > /home/sync_deps.js <<'MSWEBENCH_JS_EOF'
-const fs = require("fs");
-const path = require("path");
-
-const root = process.argv[2];
-const manifests = [path.join(root, "package.json")];
-const packagesDir = path.join(root, "packages");
-if (fs.existsSync(packagesDir)) {
-  for (const entry of fs.readdirSync(packagesDir)) {
-    const manifest = path.join(packagesDir, entry, "package.json");
-    if (fs.existsSync(manifest)) {
-      manifests.push(manifest);
-    }
-  }
-}
-
-const missing = new Set();
-for (const manifest of manifests) {
-  const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
-  const deps = Object.assign({}, pkg.devDependencies, pkg.dependencies);
-  for (const name of Object.keys(deps)) {
-    try {
-      require.resolve(name + "/package.json", { paths: [path.dirname(manifest)] });
-    } catch (err) {
-      missing.add(name + "@" + deps[name]);
-    }
-  }
-}
-
-process.stdout.write(Array.from(missing).join(" "));
-MSWEBENCH_JS_EOF
-
-MISSING_DEPS="$(node /home/sync_deps.js "$REPO_DIR")"
-if [ -n "$MISSING_DEPS" ]; then
-    npm install --no-save --no-package-lock --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund $MISSING_DEPS
-fi
-
-(
-    cd packages/react-scripts
-    yarn link
-)
+cd "$REPO_DIR/apps/api"
+pnpm install --frozen-lockfile
 """
 
-GATE_BODY = r"""YARN_LINK_DIR="$(dirname "$(yarn global dir)")/link"
-test -L "${YARN_LINK_DIR}/react-scripts"
-test -x node_modules/.bin/jest
-test -s packages/react-error-overlay/lib/index.js
-test -z "$(node /home/sync_deps.js "$REPO_DIR")"
-node -e "require('jest/package.json'); require('execa'); require('tempy'); require('fs-extra'); require('get-port'); require('strip-ansi'); require('wait-for-localhost'); require('babel-preset-react-app/create'); require.resolve('react-scripts/bin/react-scripts.js'); console.log('DEPS_OK')"
+GATE_BODY = r"""test -x node_modules/.bin/jest
+node -e "require('jest/package.json'); require('ts-jest/package.json'); require('typescript'); require.resolve('jest-fetch-mock'); require('supertest'); console.log('DEPS_OK')"
+node_modules/.bin/jest --listTests --testPathIgnorePatterns=src/__tests__/e2e_noAuth/ --testPathIgnorePatterns=src/__tests__/e2e_withAuth/
 """
 
-TEST_BODY = r"""export CI=false
-export SKIP_PREFLIGHT_CHECK=true
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
+TEST_BODY = r"""export CI=true
 export npm_config_update_notifier=false
 
-cd "$REPO_DIR"
+cd "$REPO_DIR/apps/api"
 
-ERA_CUTOFF="$(git show -s --format=%cI HEAD)"
-MISSING_DEPS="$(node /home/sync_deps.js "$REPO_DIR")"
-if [ -n "$MISSING_DEPS" ]; then
-    npm install --no-save --no-package-lock --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund $MISSING_DEPS
-fi
+pnpm install --frozen-lockfile --prefer-offline
 
 rm -f /home/results.json
 
-cd "$REPO_DIR/test"
-
 set +e
-timeout --kill-after=60 3600 ../node_modules/.bin/jest --ci -w 2 --json --outputFile=/home/results.json
+timeout --kill-after=60 3600 node_modules/.bin/jest --ci --forceExit --watchAll=false --passWithNoTests --testPathIgnorePatterns=src/__tests__/e2e_noAuth/ --testPathIgnorePatterns=src/__tests__/e2e_withAuth/ --json --outputFile=/home/results.json
 set -e
 
 test -s /home/results.json
@@ -147,7 +99,7 @@ echo "===== END TEST DETAIL ====="
 """
 
 
-class ImageBaseYarnWS(Image):
+class Firecrawl174To11ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -238,7 +190,7 @@ CMD ["/bin/bash"]
 """
 
 
-class ImageDefaultYarnWS(Image):
+class Firecrawl174To11ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -252,7 +204,7 @@ class ImageDefaultYarnWS(Image):
         return self._config
 
     def dependency(self) -> "str | Image":
-        return ImageBaseYarnWS(self.pr, self.config)
+        return Firecrawl174To11ImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -267,7 +219,7 @@ class ImageDefaultYarnWS(Image):
         prepare += "set -euo pipefail\n"
         prepare += "\n"
         prepare += f'REPO_DIR="{repo_dir}"\n'
-        prepare += f'NPM_VERSION="{NPM_VERSION}"\n'
+        prepare += f'PNPM_VERSION="{PNPM_VERSION}"\n'
         prepare += "\n"
         prepare += f"cd {repo_dir}\n"
         prepare += "\n"
@@ -374,7 +326,7 @@ RUN if [ -f .gitmodules ]; then \\
 """
 
 
-class CreateReactAppYarnWSInstance(Instance):
+class Firecrawl174To11Instance(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -385,7 +337,7 @@ class CreateReactAppYarnWSInstance(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return ImageDefaultYarnWS(self.pr, self._config)
+        return Firecrawl174To11ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -451,6 +403,6 @@ class CreateReactAppYarnWSInstance(Instance):
         )
 
 
-@Instance.register("facebook", "create_react_app_3718_to_13737")
-class CREATE_REACT_APP_3718_TO_13737(CreateReactAppYarnWSInstance):
+@Instance.register("firecrawl", "firecrawl_174_to_11")
+class FIRECRAWL_174_TO_11(Firecrawl174To11Instance):
     pass

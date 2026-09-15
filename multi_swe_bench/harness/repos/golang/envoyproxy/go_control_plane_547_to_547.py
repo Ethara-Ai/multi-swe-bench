@@ -1,14 +1,13 @@
 import re
+from typing import Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-BASE_TAG = "base-3718_to_13737"
-NODE_IMAGE = "node:10-buster"
-NPM_VERSION = "7.24.2"
-BEGIN_MARKER = "===== BEGIN TEST DETAIL ====="
-END_MARKER = "===== END TEST DETAIL ====="
+PRS = [547]
+BASE_TAG = "base-547_to_547"
+GO_IMAGE = "golang:1.16"
 
 CHECK_GIT_CHANGES = r"""#!/bin/bash
 set -euo pipefail
@@ -25,129 +24,64 @@ echo "check_git_changes: No uncommitted changes"
 exit 0
 """
 
-EMIT_RESULTS = r"""const fs = require("fs");
-const path = require("path");
+PREPARE_BODY = r"""set -euo pipefail
 
-const resultsFile = process.argv[2];
-const root = process.argv[3];
-
-let report;
-try {
-  report = JSON.parse(fs.readFileSync(resultsFile, "utf8"));
-} catch (err) {
-  process.stdout.write("MSWEBENCH_EMIT_ERROR " + err.message + "\n");
-  process.exit(0);
-}
-
-let total = 0;
-for (const suite of report.testResults || []) {
-  const file = path.relative(root, suite.name).split(path.sep).join("/");
-  for (const assertion of suite.assertionResults || []) {
-    let status = "SKIPPED";
-    if (assertion.status === "passed") {
-      status = "PASSED";
-    } else if (assertion.status === "failed") {
-      status = "FAILED";
-    }
-    const title = (assertion.fullName || assertion.title || "").replace(/\s+/g, " ").trim();
-    process.stdout.write("TESTCASE " + file + "::" + title + " " + status + "\n");
-    total += 1;
-  }
-}
-
-process.stdout.write("MSWEBENCH_TOTAL " + total + "\n");
-"""
-
-PROVISION_BODY = r"""export DEBIAN_FRONTEND=noninteractive
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
-export npm_config_update_notifier=false
-
-npm install -g "npm@${NPM_VERSION}"
-
-ERA_CUTOFF="$(git show -s --format=%cI HEAD)"
-npm install --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund --no-package-lock
-
-cat > /home/sync_deps.js <<'MSWEBENCH_JS_EOF'
-const fs = require("fs");
-const path = require("path");
-
-const root = process.argv[2];
-const manifests = [path.join(root, "package.json")];
-const packagesDir = path.join(root, "packages");
-if (fs.existsSync(packagesDir)) {
-  for (const entry of fs.readdirSync(packagesDir)) {
-    const manifest = path.join(packagesDir, entry, "package.json");
-    if (fs.existsSync(manifest)) {
-      manifests.push(manifest);
-    }
-  }
-}
-
-const missing = new Set();
-for (const manifest of manifests) {
-  const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
-  const deps = Object.assign({}, pkg.devDependencies, pkg.dependencies);
-  for (const name of Object.keys(deps)) {
-    try {
-      require.resolve(name + "/package.json", { paths: [path.dirname(manifest)] });
-    } catch (err) {
-      missing.add(name + "@" + deps[name]);
-    }
-  }
-}
-
-process.stdout.write(Array.from(missing).join(" "));
-MSWEBENCH_JS_EOF
-
-MISSING_DEPS="$(node /home/sync_deps.js "$REPO_DIR")"
-if [ -n "$MISSING_DEPS" ]; then
-    npm install --no-save --no-package-lock --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund $MISSING_DEPS
-fi
-
-(
-    cd packages/react-scripts
-    yarn link
-)
-"""
-
-GATE_BODY = r"""YARN_LINK_DIR="$(dirname "$(yarn global dir)")/link"
-test -L "${YARN_LINK_DIR}/react-scripts"
-test -x node_modules/.bin/jest
-test -s packages/react-error-overlay/lib/index.js
-test -z "$(node /home/sync_deps.js "$REPO_DIR")"
-node -e "require('jest/package.json'); require('execa'); require('tempy'); require('fs-extra'); require('get-port'); require('strip-ansi'); require('wait-for-localhost'); require('babel-preset-react-app/create'); require.resolve('react-scripts/bin/react-scripts.js'); console.log('DEPS_OK')"
-"""
-
-TEST_BODY = r"""export CI=false
-export SKIP_PREFLIGHT_CHECK=true
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
-export npm_config_update_notifier=false
+export CI=true
+export GOPATH=/go
+export GOFLAGS=-mod=mod
 
 cd "$REPO_DIR"
 
-ERA_CUTOFF="$(git show -s --format=%cI HEAD)"
-MISSING_DEPS="$(node /home/sync_deps.js "$REPO_DIR")"
-if [ -n "$MISSING_DEPS" ]; then
-    npm install --no-save --no-package-lock --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund $MISSING_DEPS
+bash /home/check_git_changes.sh "$REPO_DIR"
+
+go version
+go env GOCACHE
+
+go mod download
+
+go build ./pkg/... || true
+go vet ./pkg/... > /dev/null 2>&1 || true
+
+test -n "$(go list ./pkg/... 2>/dev/null)"
+
+bash /home/check_git_changes.sh "$REPO_DIR"
+"""
+
+TEST_BODY = r"""export CI=true
+
+cd "$REPO_DIR"
+
+PKGS=$(go list ./pkg/... 2>/dev/null)
+
+if [ -z "$PKGS" ]; then
+    echo "GCP RUNNER: go list ./pkg/... produced nothing"
+    exit 0
 fi
 
-rm -f /home/results.json
+echo '##### TESTMAP-BEGIN'
+for p in $PKGS; do
+    d=$(go list -f '{{.Dir}}' "$p" 2>/dev/null) || continue
+    rel="${d#$REPO_DIR/}"
+    find "$d" -maxdepth 1 -name '*_test.go' 2>/dev/null | while IFS= read -r f; do
+        grep -oE '^func (Test[A-Za-z0-9_]+)\(' "$f" 2>/dev/null \
+            | sed 's/^func //; s/($//; s/(//' \
+            | while IFS= read -r t; do
+                echo "${rel}/$(basename "$f")|$t"
+            done
+    done
+done
+echo '##### TESTMAP-END'
 
-cd "$REPO_DIR/test"
-
-set +e
-timeout --kill-after=60 3600 ../node_modules/.bin/jest --ci -w 2 --json --outputFile=/home/results.json
-set -e
-
-test -s /home/results.json
-
-echo "===== BEGIN TEST DETAIL ====="
-node /home/emit_results.js /home/results.json "$REPO_DIR"
-echo "===== END TEST DETAIL ====="
+for p in $PKGS; do
+    d=$(go list -f '{{.Dir}}' "$p" 2>/dev/null) || continue
+    rel="${d#$REPO_DIR/}"
+    echo "##### PKG: $rel"
+    go test -race -v -timeout 30s -count=1 -parallel 100 "$p" 2>&1 || true
+done
 """
 
 
-class ImageBaseYarnWS(Image):
+class GoControlPlaneImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -160,8 +94,8 @@ class ImageBaseYarnWS(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> "str | Image":
-        return NODE_IMAGE
+    def dependency(self) -> Union[str, "Image"]:
+        return GO_IMAGE
 
     def image_tag(self) -> str:
         return BASE_TAG
@@ -238,7 +172,7 @@ CMD ["/bin/bash"]
 """
 
 
-class ImageDefaultYarnWS(Image):
+class GoControlPlaneImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -251,8 +185,8 @@ class ImageDefaultYarnWS(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> "str | Image":
-        return ImageBaseYarnWS(self.pr, self.config)
+    def dependency(self) -> Union[str, Image]:
+        return GoControlPlaneImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -264,36 +198,18 @@ class ImageDefaultYarnWS(Image):
         repo_dir = f"/home/{self.pr.repo}"
 
         prepare = "#!/bin/bash\n"
-        prepare += "set -euo pipefail\n"
-        prepare += "\n"
         prepare += f'REPO_DIR="{repo_dir}"\n'
-        prepare += f'NPM_VERSION="{NPM_VERSION}"\n'
         prepare += "\n"
-        prepare += f"cd {repo_dir}\n"
-        prepare += "\n"
-        prepare += "git reset --hard\n"
-        prepare += "git clean -fdx\n"
-        prepare += f"bash /home/check_git_changes.sh {repo_dir}\n"
-        prepare += "\n"
-        prepare += f"git checkout --detach {self.pr.base.sha}\n"
-        prepare += f"bash /home/check_git_changes.sh {repo_dir}\n"
-        prepare += "\n"
-        prepare += "cat > /home/emit_results.js <<'MSWEBENCH_JS_EOF'\n"
-        prepare += EMIT_RESULTS
-        prepare += "MSWEBENCH_JS_EOF\n"
-        prepare += "\n"
-        prepare += PROVISION_BODY
-        prepare += "\n"
-        prepare += GATE_BODY
+        prepare += PREPARE_BODY
 
         run = "#!/bin/bash\n"
-        run += "set -eo pipefail\n"
+        run += "set -uo pipefail\n"
         run += f'REPO_DIR="{repo_dir}"\n'
         run += "\n"
         run += TEST_BODY
 
         test_run = "#!/bin/bash\n"
-        test_run += "set -eo pipefail\n"
+        test_run += "set -uo pipefail\n"
         test_run += f'REPO_DIR="{repo_dir}"\n'
         test_run += "\n"
         test_run += f'cd "{repo_dir}"\n'
@@ -302,7 +218,7 @@ class ImageDefaultYarnWS(Image):
         test_run += TEST_BODY
 
         fix_run = "#!/bin/bash\n"
-        fix_run += "set -eo pipefail\n"
+        fix_run += "set -uo pipefail\n"
         fix_run += f'REPO_DIR="{repo_dir}"\n'
         fix_run += "\n"
         fix_run += f'cd "{repo_dir}"\n'
@@ -337,7 +253,9 @@ class ImageDefaultYarnWS(Image):
 {copy_commands}
 WORKDIR /home/{self.pr.repo}
 
-RUN bash /home/prepare.sh
+RUN git cat-file -e {sha}^{{commit}} 2>/dev/null \\
+    || git fetch --no-tags --depth=2147483647 origin {sha} \\
+    || git fetch --no-tags origin "+refs/pull/{self.pr.number}/head:refs/remotes/origin/pr-{self.pr.number}"
 
 RUN set -eux; \\
     git checkout --detach {sha}; \\
@@ -370,11 +288,13 @@ RUN if [ -f .gitmodules ]; then \\
         '; \\
     fi
 
+RUN bash /home/prepare.sh
+
 {self.clear_env}
 """
 
 
-class CreateReactAppYarnWSInstance(Instance):
+class GoControlPlaneInstance(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -385,7 +305,7 @@ class CreateReactAppYarnWSInstance(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return ImageDefaultYarnWS(self.pr, self._config)
+        return GoControlPlaneImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -407,35 +327,57 @@ class CreateReactAppYarnWSInstance(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+        ansi = re.compile(r"\x1B\[[0-?9;]*[mK]")
+        clean = ansi.sub("", test_log)
 
-        case_re = re.compile(r"^TESTCASE (.+) (PASSED|FAILED|SKIPPED)\s*$")
-
-        in_detail = False
+        testmap: dict[tuple[str, str], str] = {}
+        in_map = False
         for line in clean.splitlines():
-            stripped = line.strip()
-            if stripped.startswith(BEGIN_MARKER):
-                in_detail = True
+            s = line.strip()
+            if s == "##### TESTMAP-BEGIN":
+                in_map = True
                 continue
-            if stripped.startswith(END_MARKER):
-                in_detail = False
+            if s == "##### TESTMAP-END":
+                in_map = False
                 continue
-            if not in_detail:
+            if in_map and "|" in s:
+                path, _, name = s.partition("|")
+                path, name = path.strip(), name.strip()
+                if path and name:
+                    d = path.rsplit("/", 1)[0] if "/" in path else "."
+                    testmap[(d, name)] = path
+
+        pkg_re = re.compile(r"^##### PKG:\s*(\S+)\s*$")
+        res_re = re.compile(r"^\s*--- (PASS|FAIL|SKIP):\s+(\S+)")
+
+        cur_dir = ""
+        for line in clean.splitlines():
+            m = pkg_re.match(line)
+            if m:
+                cur_dir = m.group(1)
+                if cur_dir.startswith("./"):
+                    cur_dir = cur_dir[2:]
+                if cur_dir in ("...", ""):
+                    cur_dir = "."
                 continue
 
-            match = case_re.match(stripped)
-            if not match:
+            m = res_re.match(line)
+            if not m:
                 continue
-            name = match.group(1).strip()
-            status = match.group(2)
-            if not name:
-                continue
-            if status == "PASSED":
-                passed_tests.add(name)
-            elif status == "FAILED":
-                failed_tests.add(name)
+            status, name = m.group(1), m.group(2)
+
+            parent = name.split("/", 1)[0]
+            src = testmap.get((cur_dir, parent))
+            if src is None:
+                src = cur_dir or "."
+            ident = f"{src}::{name}"
+
+            if status == "PASS":
+                passed_tests.add(ident)
+            elif status == "FAIL":
+                failed_tests.add(ident)
             else:
-                skipped_tests.add(name)
+                skipped_tests.add(ident)
 
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
@@ -451,6 +393,6 @@ class CreateReactAppYarnWSInstance(Instance):
         )
 
 
-@Instance.register("facebook", "create_react_app_3718_to_13737")
-class CREATE_REACT_APP_3718_TO_13737(CreateReactAppYarnWSInstance):
+@Instance.register("envoyproxy", "go_control_plane_547_to_547")
+class GO_CONTROL_PLANE_547_TO_547(GoControlPlaneInstance):
     pass

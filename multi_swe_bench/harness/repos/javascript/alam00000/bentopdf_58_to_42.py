@@ -1,14 +1,14 @@
+import json
 import re
+from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-BASE_TAG = "base-3718_to_13737"
-NODE_IMAGE = "node:10-buster"
-NPM_VERSION = "7.24.2"
-BEGIN_MARKER = "===== BEGIN TEST DETAIL ====="
-END_MARKER = "===== END TEST DETAIL ====="
+PRS = [42, 58]
+BASE_TAG = "base-58_to_42"
+NODE_IMAGE = "node:20-bookworm"
 
 CHECK_GIT_CHANGES = r"""#!/bin/bash
 set -euo pipefail
@@ -25,129 +25,94 @@ echo "check_git_changes: No uncommitted changes"
 exit 0
 """
 
-EMIT_RESULTS = r"""const fs = require("fs");
-const path = require("path");
+EMIT_RESULTS = r"""const fs = require('fs');
+const path = require('path');
 
-const resultsFile = process.argv[2];
-const root = process.argv[3];
+const repoDir = process.argv[2];
+const jsonPath = process.argv[3];
 
-let report;
+const STATUS = {
+    passed: 'PASS',
+    failed: 'FAIL',
+    pending: 'SKIP',
+    skipped: 'SKIP',
+    todo: 'SKIP',
+};
+
+function rel(p) {
+    if (!p) return '';
+    let r = path.isAbsolute(p) ? path.relative(repoDir, p) : p;
+    return r.split(path.sep).join('/');
+}
+
+let raw;
 try {
-  report = JSON.parse(fs.readFileSync(resultsFile, "utf8"));
-} catch (err) {
-  process.stdout.write("MSWEBENCH_EMIT_ERROR " + err.message + "\n");
-  process.exit(0);
+    raw = fs.readFileSync(jsonPath, 'utf8');
+} catch (e) {
+    console.log('MSWEBENCH_EMIT_ERROR no results file: ' + jsonPath);
+    process.exit(0);
 }
 
-let total = 0;
-for (const suite of report.testResults || []) {
-  const file = path.relative(root, suite.name).split(path.sep).join("/");
-  for (const assertion of suite.assertionResults || []) {
-    let status = "SKIPPED";
-    if (assertion.status === "passed") {
-      status = "PASSED";
-    } else if (assertion.status === "failed") {
-      status = "FAILED";
+let data;
+try {
+    data = JSON.parse(raw);
+} catch (e) {
+    console.log('MSWEBENCH_EMIT_ERROR unparsable results: ' + e.message);
+    process.exit(0);
+}
+
+let n = 0;
+for (const suite of data.testResults || []) {
+    const file = rel(suite.name || suite.testFilePath);
+    for (const t of suite.assertionResults || []) {
+        const status = STATUS[t.status] || 'SKIP';
+        const title = t.fullName || [].concat(t.ancestorTitles || [], t.title || []).join(' > ');
+        if (!file || !title) continue;
+        console.log('MSWEBENCH_TEST ' + status + ' ' + file + '::' + title);
+        n += 1;
     }
-    const title = (assertion.fullName || assertion.title || "").replace(/\s+/g, " ").trim();
-    process.stdout.write("TESTCASE " + file + "::" + title + " " + status + "\n");
-    total += 1;
-  }
 }
-
-process.stdout.write("MSWEBENCH_TOTAL " + total + "\n");
+console.log('MSWEBENCH_TOTAL ' + n);
 """
 
-PROVISION_BODY = r"""export DEBIAN_FRONTEND=noninteractive
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
-export npm_config_update_notifier=false
+PREPARE_BODY = r"""set -euo pipefail
 
-npm install -g "npm@${NPM_VERSION}"
-
-ERA_CUTOFF="$(git show -s --format=%cI HEAD)"
-npm install --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund --no-package-lock
-
-cat > /home/sync_deps.js <<'MSWEBENCH_JS_EOF'
-const fs = require("fs");
-const path = require("path");
-
-const root = process.argv[2];
-const manifests = [path.join(root, "package.json")];
-const packagesDir = path.join(root, "packages");
-if (fs.existsSync(packagesDir)) {
-  for (const entry of fs.readdirSync(packagesDir)) {
-    const manifest = path.join(packagesDir, entry, "package.json");
-    if (fs.existsSync(manifest)) {
-      manifests.push(manifest);
-    }
-  }
-}
-
-const missing = new Set();
-for (const manifest of manifests) {
-  const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
-  const deps = Object.assign({}, pkg.devDependencies, pkg.dependencies);
-  for (const name of Object.keys(deps)) {
-    try {
-      require.resolve(name + "/package.json", { paths: [path.dirname(manifest)] });
-    } catch (err) {
-      missing.add(name + "@" + deps[name]);
-    }
-  }
-}
-
-process.stdout.write(Array.from(missing).join(" "));
-MSWEBENCH_JS_EOF
-
-MISSING_DEPS="$(node /home/sync_deps.js "$REPO_DIR")"
-if [ -n "$MISSING_DEPS" ]; then
-    npm install --no-save --no-package-lock --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund $MISSING_DEPS
-fi
-
-(
-    cd packages/react-scripts
-    yarn link
-)
-"""
-
-GATE_BODY = r"""YARN_LINK_DIR="$(dirname "$(yarn global dir)")/link"
-test -L "${YARN_LINK_DIR}/react-scripts"
-test -x node_modules/.bin/jest
-test -s packages/react-error-overlay/lib/index.js
-test -z "$(node /home/sync_deps.js "$REPO_DIR")"
-node -e "require('jest/package.json'); require('execa'); require('tempy'); require('fs-extra'); require('get-port'); require('strip-ansi'); require('wait-for-localhost'); require('babel-preset-react-app/create'); require.resolve('react-scripts/bin/react-scripts.js'); console.log('DEPS_OK')"
-"""
-
-TEST_BODY = r"""export CI=false
-export SKIP_PREFLIGHT_CHECK=true
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
-export npm_config_update_notifier=false
+export NPM_CONFIG_FUND=false
+export NPM_CONFIG_AUDIT=false
+export NPM_CONFIG_UPDATE_NOTIFIER=false
+export CI=true
 
 cd "$REPO_DIR"
 
-ERA_CUTOFF="$(git show -s --format=%cI HEAD)"
-MISSING_DEPS="$(node /home/sync_deps.js "$REPO_DIR")"
-if [ -n "$MISSING_DEPS" ]; then
-    npm install --no-save --no-package-lock --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund $MISSING_DEPS
-fi
+bash /home/check_git_changes.sh "$REPO_DIR"
 
-rm -f /home/results.json
+npm ci
 
-cd "$REPO_DIR/test"
+test -d node_modules
+test -x node_modules/.bin/vitest
+node_modules/.bin/vitest --version
 
-set +e
-timeout --kill-after=60 3600 ../node_modules/.bin/jest --ci -w 2 --json --outputFile=/home/results.json
-set -e
+bash /home/check_git_changes.sh "$REPO_DIR"
+"""
 
-test -s /home/results.json
+TEST_BODY = r"""export CI=true
+export NPM_CONFIG_FUND=false
+export NPM_CONFIG_AUDIT=false
 
-echo "===== BEGIN TEST DETAIL ====="
-node /home/emit_results.js /home/results.json "$REPO_DIR"
-echo "===== END TEST DETAIL ====="
+cd "$REPO_DIR"
+
+rm -f /home/vitest-results.json /home/vitest.log
+
+node_modules/.bin/vitest run --reporter=json --outputFile=/home/vitest-results.json \
+    > /home/vitest.log 2>&1 || true
+
+cat /home/vitest.log
+
+node /home/emit_results.js "$REPO_DIR" /home/vitest-results.json
 """
 
 
-class ImageBaseYarnWS(Image):
+class BentoPdfImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -160,7 +125,7 @@ class ImageBaseYarnWS(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> "str | Image":
+    def dependency(self) -> Union[str, "Image"]:
         return NODE_IMAGE
 
     def image_tag(self) -> str:
@@ -238,7 +203,7 @@ CMD ["/bin/bash"]
 """
 
 
-class ImageDefaultYarnWS(Image):
+class BentoPdfImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -251,8 +216,8 @@ class ImageDefaultYarnWS(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> "str | Image":
-        return ImageBaseYarnWS(self.pr, self.config)
+    def dependency(self) -> Union[str, Image]:
+        return BentoPdfImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -264,36 +229,22 @@ class ImageDefaultYarnWS(Image):
         repo_dir = f"/home/{self.pr.repo}"
 
         prepare = "#!/bin/bash\n"
-        prepare += "set -euo pipefail\n"
-        prepare += "\n"
         prepare += f'REPO_DIR="{repo_dir}"\n'
-        prepare += f'NPM_VERSION="{NPM_VERSION}"\n'
-        prepare += "\n"
-        prepare += f"cd {repo_dir}\n"
-        prepare += "\n"
-        prepare += "git reset --hard\n"
-        prepare += "git clean -fdx\n"
-        prepare += f"bash /home/check_git_changes.sh {repo_dir}\n"
-        prepare += "\n"
-        prepare += f"git checkout --detach {self.pr.base.sha}\n"
-        prepare += f"bash /home/check_git_changes.sh {repo_dir}\n"
         prepare += "\n"
         prepare += "cat > /home/emit_results.js <<'MSWEBENCH_JS_EOF'\n"
         prepare += EMIT_RESULTS
         prepare += "MSWEBENCH_JS_EOF\n"
         prepare += "\n"
-        prepare += PROVISION_BODY
-        prepare += "\n"
-        prepare += GATE_BODY
+        prepare += PREPARE_BODY
 
         run = "#!/bin/bash\n"
-        run += "set -eo pipefail\n"
+        run += "set -uo pipefail\n"
         run += f'REPO_DIR="{repo_dir}"\n'
         run += "\n"
         run += TEST_BODY
 
         test_run = "#!/bin/bash\n"
-        test_run += "set -eo pipefail\n"
+        test_run += "set -uo pipefail\n"
         test_run += f'REPO_DIR="{repo_dir}"\n'
         test_run += "\n"
         test_run += f'cd "{repo_dir}"\n'
@@ -302,7 +253,7 @@ class ImageDefaultYarnWS(Image):
         test_run += TEST_BODY
 
         fix_run = "#!/bin/bash\n"
-        fix_run += "set -eo pipefail\n"
+        fix_run += "set -uo pipefail\n"
         fix_run += f'REPO_DIR="{repo_dir}"\n'
         fix_run += "\n"
         fix_run += f'cd "{repo_dir}"\n'
@@ -337,7 +288,9 @@ class ImageDefaultYarnWS(Image):
 {copy_commands}
 WORKDIR /home/{self.pr.repo}
 
-RUN bash /home/prepare.sh
+RUN git cat-file -e {sha}^{{commit}} 2>/dev/null \\
+    || git fetch --no-tags --depth=2147483647 origin {sha} \\
+    || git fetch --no-tags origin "+refs/pull/{self.pr.number}/head:refs/remotes/origin/pr-{self.pr.number}"
 
 RUN set -eux; \\
     git checkout --detach {sha}; \\
@@ -370,11 +323,13 @@ RUN if [ -f .gitmodules ]; then \\
         '; \\
     fi
 
+RUN bash /home/prepare.sh
+
 {self.clear_env}
 """
 
 
-class CreateReactAppYarnWSInstance(Instance):
+class BentoPdfInstance(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -385,7 +340,7 @@ class CreateReactAppYarnWSInstance(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return ImageDefaultYarnWS(self.pr, self._config)
+        return BentoPdfImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -407,32 +362,18 @@ class CreateReactAppYarnWSInstance(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+        line_re = re.compile(
+            r"^MSWEBENCH_TEST (PASS|FAIL|SKIP) (.+?)\s*$", re.MULTILINE
+        )
 
-        case_re = re.compile(r"^TESTCASE (.+) (PASSED|FAILED|SKIPPED)\s*$")
-
-        in_detail = False
-        for line in clean.splitlines():
-            stripped = line.strip()
-            if stripped.startswith(BEGIN_MARKER):
-                in_detail = True
-                continue
-            if stripped.startswith(END_MARKER):
-                in_detail = False
-                continue
-            if not in_detail:
-                continue
-
-            match = case_re.match(stripped)
-            if not match:
-                continue
-            name = match.group(1).strip()
-            status = match.group(2)
+        for match in line_re.finditer(test_log):
+            status = match.group(1)
+            name = match.group(2).strip()
             if not name:
                 continue
-            if status == "PASSED":
+            if status == "PASS":
                 passed_tests.add(name)
-            elif status == "FAILED":
+            elif status == "FAIL":
                 failed_tests.add(name)
             else:
                 skipped_tests.add(name)
@@ -451,6 +392,6 @@ class CreateReactAppYarnWSInstance(Instance):
         )
 
 
-@Instance.register("facebook", "create_react_app_3718_to_13737")
-class CREATE_REACT_APP_3718_TO_13737(CreateReactAppYarnWSInstance):
+@Instance.register("alam00000", "bentopdf_58_to_42")
+class BENTOPDF_58_TO_42(BentoPdfInstance):
     pass

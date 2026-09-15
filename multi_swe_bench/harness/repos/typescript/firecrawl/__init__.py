@@ -4,3 +4,4 @@ from .base import FirecrawlFirecrawlInstance
 
 # Dynamic registration of firecrawl/firecrawl instances
 Instance.register("firecrawl", "firecrawl")(FirecrawlFirecrawlInstance)
+from multi_swe_bench.harness.repos.typescript.firecrawl.firecrawl_174_to_11 import *

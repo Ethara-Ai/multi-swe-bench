@@ -4,9 +4,13 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-BASE_TAG = "base-3718_to_13737"
-NODE_IMAGE = "node:10-buster"
-NPM_VERSION = "7.24.2"
+BASE_TAG = "base-106_to_106"
+PY_IMAGE = "python:3.7-bookworm"
+UV_VERSION = "0.12.13"
+ERA_CUTOFF = "2020-03-04T09:07:25Z"
+ATOMICWRITES_CUTOFF = "2022-07-09T00:00:00Z"
+MISTLETOE_EBP_CUTOFF = "2020-03-05T18:30:00Z"
+MISTLETOE_EBP_VERSION = "0.8.2"
 BEGIN_MARKER = "===== BEGIN TEST DETAIL ====="
 END_MARKER = "===== END TEST DETAIL ====="
 
@@ -25,129 +29,104 @@ echo "check_git_changes: No uncommitted changes"
 exit 0
 """
 
-EMIT_RESULTS = r"""const fs = require("fs");
-const path = require("path");
+EMIT_RESULTS = r"""import sys
+import xml.etree.ElementTree as ET
 
-const resultsFile = process.argv[2];
-const root = process.argv[3];
+path = sys.argv[1]
 
-let report;
-try {
-  report = JSON.parse(fs.readFileSync(resultsFile, "utf8"));
-} catch (err) {
-  process.stdout.write("MSWEBENCH_EMIT_ERROR " + err.message + "\n");
-  process.exit(0);
-}
+try:
+    tree = ET.parse(path)
+except Exception as exc:
+    sys.stdout.write("MSWEBENCH_EMIT_ERROR %s\n" % exc)
+    sys.exit(0)
 
-let total = 0;
-for (const suite of report.testResults || []) {
-  const file = path.relative(root, suite.name).split(path.sep).join("/");
-  for (const assertion of suite.assertionResults || []) {
-    let status = "SKIPPED";
-    if (assertion.status === "passed") {
-      status = "PASSED";
-    } else if (assertion.status === "failed") {
-      status = "FAILED";
-    }
-    const title = (assertion.fullName || assertion.title || "").replace(/\s+/g, " ").trim();
-    process.stdout.write("TESTCASE " + file + "::" + title + " " + status + "\n");
-    total += 1;
-  }
-}
+total = 0
+for tc in tree.getroot().iter("testcase"):
+    classname = tc.get("classname") or ""
+    name = tc.get("name") or ""
+    filename = tc.get("file") or ""
 
-process.stdout.write("MSWEBENCH_TOTAL " + total + "\n");
+    if not filename and classname:
+        filename = classname.replace(".", "/") + ".py"
+    if not filename or not name:
+        continue
+
+    cls = ""
+    if classname:
+        module = classname.replace(".", "/")
+        if filename.endswith(".py") and module.startswith(filename[:-3]):
+            tail = module[len(filename) - 3:].lstrip("/")
+            cls = tail
+
+    status = "PASSED"
+    for child in tc:
+        if child.tag in ("failure", "error"):
+            status = "FAILED"
+            break
+        if child.tag == "skipped":
+            status = "SKIPPED"
+            break
+
+    name = name.replace("\r", " ").replace("\n", " ")
+    node_id = filename + "::" + (cls + "::" if cls else "") + name
+    sys.stdout.write("TESTCASE " + node_id + " " + status + "\n")
+    total += 1
+
+sys.stdout.write("MSWEBENCH_TOTAL %d\n" % total)
 """
 
 PROVISION_BODY = r"""export DEBIAN_FRONTEND=noninteractive
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
-export npm_config_update_notifier=false
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+export PIP_ROOT_USER_ACTION=ignore
 
-npm install -g "npm@${NPM_VERSION}"
+python -m pip install --ignore-requires-python --target /opt/uv --python-version 3.8 --only-binary=:all: --no-deps "uv==${UV_VERSION}"
+export PATH="/opt/uv/bin:${PATH}"
 
-ERA_CUTOFF="$(git show -s --format=%cI HEAD)"
-npm install --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund --no-package-lock
+PYTHON_BIN="$(command -v python)"
+UV_INSTALL=(uv pip install --python "${PYTHON_BIN}" --exclude-newer "${ERA_CUTOFF}" --exclude-newer-package "atomicwrites=${ATOMICWRITES_CUTOFF}" --exclude-newer-package "mistletoe-ebp=${MISTLETOE_EBP_CUTOFF}")
 
-cat > /home/sync_deps.js <<'MSWEBENCH_JS_EOF'
-const fs = require("fs");
-const path = require("path");
+"${UV_INSTALL[@]}" --reinstall setuptools wheel
+"${UV_INSTALL[@]}" "mistletoe-ebp==${MISTLETOE_EBP_VERSION}"
 
-const root = process.argv[2];
-const manifests = [path.join(root, "package.json")];
-const packagesDir = path.join(root, "packages");
-if (fs.existsSync(packagesDir)) {
-  for (const entry of fs.readdirSync(packagesDir)) {
-    const manifest = path.join(packagesDir, entry, "package.json");
-    if (fs.existsSync(manifest)) {
-      manifests.push(manifest);
-    }
-  }
-}
+python - > /home/requirements-myst.txt <<'MSWEBENCH_PY_EOF'
+import runpy
+import setuptools
 
-const missing = new Set();
-for (const manifest of manifests) {
-  const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
-  const deps = Object.assign({}, pkg.devDependencies, pkg.dependencies);
-  for (const name of Object.keys(deps)) {
-    try {
-      require.resolve(name + "/package.json", { paths: [path.dirname(manifest)] });
-    } catch (err) {
-      missing.add(name + "@" + deps[name]);
-    }
-  }
-}
+captured = {}
+setuptools.setup = lambda **kwargs: captured.update(kwargs)
+runpy.run_path("setup.py", run_name="__main__")
+for extra in ("testing", "sphinx"):
+    for requirement in captured["extras_require"][extra]:
+        print(requirement)
+MSWEBENCH_PY_EOF
 
-process.stdout.write(Array.from(missing).join(" "));
-MSWEBENCH_JS_EOF
-
-MISSING_DEPS="$(node /home/sync_deps.js "$REPO_DIR")"
-if [ -n "$MISSING_DEPS" ]; then
-    npm install --no-save --no-package-lock --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund $MISSING_DEPS
-fi
-
-(
-    cd packages/react-scripts
-    yarn link
-)
+"${UV_INSTALL[@]}" -r /home/requirements-myst.txt
+python -m pip install --no-deps --no-build-isolation -e .
 """
 
-GATE_BODY = r"""YARN_LINK_DIR="$(dirname "$(yarn global dir)")/link"
-test -L "${YARN_LINK_DIR}/react-scripts"
-test -x node_modules/.bin/jest
-test -s packages/react-error-overlay/lib/index.js
-test -z "$(node /home/sync_deps.js "$REPO_DIR")"
-node -e "require('jest/package.json'); require('execa'); require('tempy'); require('fs-extra'); require('get-port'); require('strip-ansi'); require('wait-for-localhost'); require('babel-preset-react-app/create'); require.resolve('react-scripts/bin/react-scripts.js'); console.log('DEPS_OK')"
+GATE_BODY = r"""python -m pytest --version
+python -c "import mistletoe, myst_parser, sphinx, docutils, yaml, bs4, pytest, pytest_cov, pytest_regressions; from myst_parser.html_renderer import HTMLRenderer; from myst_parser.block_tokens import Document; assert myst_parser.__file__.startswith('/home/MyST-Parser/'), myst_parser.__file__; print('DEPS_OK')"
 """
 
-TEST_BODY = r"""export CI=false
-export SKIP_PREFLIGHT_CHECK=true
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
-export npm_config_update_notifier=false
+TEST_BODY = r"""export CI=true
 
 cd "$REPO_DIR"
 
-ERA_CUTOFF="$(git show -s --format=%cI HEAD)"
-MISSING_DEPS="$(node /home/sync_deps.js "$REPO_DIR")"
-if [ -n "$MISSING_DEPS" ]; then
-    npm install --no-save --no-package-lock --before="${ERA_CUTOFF}" --legacy-peer-deps --no-audit --no-fund $MISSING_DEPS
-fi
-
-rm -f /home/results.json
-
-cd "$REPO_DIR/test"
+rm -f /home/results.xml
 
 set +e
-timeout --kill-after=60 3600 ../node_modules/.bin/jest --ci -w 2 --json --outputFile=/home/results.json
+python -m pytest -v --cov=myst_parser --cov-report= --junitxml=/home/results.xml
 set -e
 
-test -s /home/results.json
+test -s /home/results.xml
 
 echo "===== BEGIN TEST DETAIL ====="
-node /home/emit_results.js /home/results.json "$REPO_DIR"
+python /home/emit_results.py /home/results.xml
 echo "===== END TEST DETAIL ====="
 """
 
 
-class ImageBaseYarnWS(Image):
+class MystParserImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -161,7 +140,7 @@ class ImageBaseYarnWS(Image):
         return self._config
 
     def dependency(self) -> "str | Image":
-        return NODE_IMAGE
+        return PY_IMAGE
 
     def image_tag(self) -> str:
         return BASE_TAG
@@ -238,7 +217,7 @@ CMD ["/bin/bash"]
 """
 
 
-class ImageDefaultYarnWS(Image):
+class MystParserImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -252,7 +231,7 @@ class ImageDefaultYarnWS(Image):
         return self._config
 
     def dependency(self) -> "str | Image":
-        return ImageBaseYarnWS(self.pr, self.config)
+        return MystParserImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -267,7 +246,11 @@ class ImageDefaultYarnWS(Image):
         prepare += "set -euo pipefail\n"
         prepare += "\n"
         prepare += f'REPO_DIR="{repo_dir}"\n'
-        prepare += f'NPM_VERSION="{NPM_VERSION}"\n'
+        prepare += f'UV_VERSION="{UV_VERSION}"\n'
+        prepare += f'ERA_CUTOFF="{ERA_CUTOFF}"\n'
+        prepare += f'ATOMICWRITES_CUTOFF="{ATOMICWRITES_CUTOFF}"\n'
+        prepare += f'MISTLETOE_EBP_CUTOFF="{MISTLETOE_EBP_CUTOFF}"\n'
+        prepare += f'MISTLETOE_EBP_VERSION="{MISTLETOE_EBP_VERSION}"\n'
         prepare += "\n"
         prepare += f"cd {repo_dir}\n"
         prepare += "\n"
@@ -278,9 +261,9 @@ class ImageDefaultYarnWS(Image):
         prepare += f"git checkout --detach {self.pr.base.sha}\n"
         prepare += f"bash /home/check_git_changes.sh {repo_dir}\n"
         prepare += "\n"
-        prepare += "cat > /home/emit_results.js <<'MSWEBENCH_JS_EOF'\n"
+        prepare += "cat > /home/emit_results.py <<'MSWEBENCH_PY_EOF'\n"
         prepare += EMIT_RESULTS
-        prepare += "MSWEBENCH_JS_EOF\n"
+        prepare += "MSWEBENCH_PY_EOF\n"
         prepare += "\n"
         prepare += PROVISION_BODY
         prepare += "\n"
@@ -374,7 +357,7 @@ RUN if [ -f .gitmodules ]; then \\
 """
 
 
-class CreateReactAppYarnWSInstance(Instance):
+class MystParserInstance(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -385,7 +368,7 @@ class CreateReactAppYarnWSInstance(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return ImageDefaultYarnWS(self.pr, self._config)
+        return MystParserImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -451,6 +434,6 @@ class CreateReactAppYarnWSInstance(Instance):
         )
 
 
-@Instance.register("facebook", "create_react_app_3718_to_13737")
-class CREATE_REACT_APP_3718_TO_13737(CreateReactAppYarnWSInstance):
+@Instance.register("executablebooks", "myst_parser_106_to_106")
+class MYST_PARSER_106_TO_106(MystParserInstance):
     pass
