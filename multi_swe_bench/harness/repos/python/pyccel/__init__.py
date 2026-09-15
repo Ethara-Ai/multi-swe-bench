@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.python.pyccel.pyccel import *
 from multi_swe_bench.harness.repos.python.pyccel.pyccel_2377_to_2363 import *
 from multi_swe_bench.harness.repos.python.pyccel.pyccel_2313_to_2188 import *
 from multi_swe_bench.harness.repos.python.pyccel.pyccel_2185_to_2070 import *

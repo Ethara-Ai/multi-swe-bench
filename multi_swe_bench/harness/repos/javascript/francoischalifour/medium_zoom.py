@@ -13,20 +13,6 @@ REPO_ROOT = "/home/medium-zoom/"
 
 
 class MediumZoomImageBase(Image):
-    """Repo-level base: node 10 + a hardened clone of medium-zoom.
-
-    `.nvmrc` at the base commit pins 10.16.0 and `package.json` pins
-    jest@23.6.0 / babel-core@6.26.3, so a modern node image cannot run this
-    suite. `node:10-buster` is the last official image for that era; the OS
-    variant is pinned deliberately -- Debian 10's apt repos are archived, so
-    this image must never run `apt-get update`. It does not need to:
-    node:10-buster already ships git and yarn, which is all the build uses.
-
-    `dependency()` returns a str, which is what makes DockerfileEnhancer
-    generate the clone + `git checkout ${BASE_COMMIT}` + history-hardening
-    pass. That generated block ends the file, so dependency install belongs in
-    the per-PR prepare.sh, not here.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -76,7 +62,6 @@ RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr
 
 
 class MediumZoomImageDefault(Image):
-    """PR-specific image: FROM the hardened base, add patches + scripts + install."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -301,13 +286,6 @@ class MediumZoom(Instance):
         return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        """Prefer jest's --json report; fall back to the verbose reporter.
-
-        Both paths build the SAME id shape -- `path/to/suite.js::describe > test`
-        -- because a stage that fell back to the reporter must still produce ids
-        comparable with a stage that read the JSON. Different shapes across
-        stages would make every test look new and manufacture a transition.
-        """
         clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
         passed_tests: set[str] = set()
@@ -377,7 +355,6 @@ class MediumZoom(Instance):
         failed_tests: set[str],
         skipped_tests: set[str],
     ) -> None:
-        """Fallback for when no JSON report reached the log."""
         re_suite = re.compile(r"^\s*(PASS|FAIL)\s+(\S+\.jsx?)\s*(?:\(.*\))?\s*$")
         re_test = re.compile(
             r"^(\s*)([✓✔√✕✖×○✎])\s+"

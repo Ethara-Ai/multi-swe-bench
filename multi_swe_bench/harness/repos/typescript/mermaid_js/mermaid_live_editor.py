@@ -1,5 +1,3 @@
-"""mermaid-js/mermaid-live-editor harness config (yarn 1 + vitest 0.22.1, jsdom)."""
-
 import re
 from typing import Optional
 
@@ -235,7 +233,6 @@ class MermaidLiveEditor(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        """Parse `vitest run --reporter=verbose` output (vitest 0.22.1, flat layout)."""
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
