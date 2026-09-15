@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.golang.celestiaorg.celestia_node_3539_to_3539 import *
 from multi_swe_bench.harness.repos.golang.celestiaorg.celestia_node import *
 from multi_swe_bench.harness.repos.golang.celestiaorg.celestia_app import *
 from multi_swe_bench.harness.repos.golang.celestiaorg.go_square import *
