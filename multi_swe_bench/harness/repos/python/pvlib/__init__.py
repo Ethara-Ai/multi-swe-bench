@@ -8,3 +8,4 @@ from multi_swe_bench.harness.repos.python.pvlib.pvlib_python_938_to_816 import *
 from multi_swe_bench.harness.repos.python.pvlib.pvlib_python_815_to_599 import *
 from multi_swe_bench.harness.repos.python.pvlib.pvlib_python_218_to_108 import *
 from multi_swe_bench.harness.repos.python.pvlib.pvlib_python_100_to_7 import *
+from multi_swe_bench.harness.repos.python.pvlib.pvlib_python_2072 import *  # noqa: F401,F403

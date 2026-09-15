@@ -130,8 +130,6 @@ from multi_swe_bench.harness.repos.python.intel import *
 from multi_swe_bench.harness.repos.python.ipfs_shipyard import *
 from multi_swe_bench.harness.repos.python.ipython import *
 from multi_swe_bench.harness.repos.python.isi_vista import *
-# [neutralized: module python/iterative does not exist (registration pushed without the file) - blocks the whole registry import]
-# from multi_swe_bench.harness.repos.python.iterative import *
 from multi_swe_bench.harness.repos.python.jackdewinter import *
 from multi_swe_bench.harness.repos.python.jaraco import *
 from multi_swe_bench.harness.repos.python.jazzband import *
@@ -189,6 +187,7 @@ from multi_swe_bench.harness.repos.python.novaweb_mobi import *
 from multi_swe_bench.harness.repos.python.numba import *
 from multi_swe_bench.harness.repos.python.obspy import *
 from multi_swe_bench.harness.repos.python.oceanprotocol import *
+from multi_swe_bench.harness.repos.python.oils_for_unix import *
 from multi_swe_bench.harness.repos.python.OCR_D import *
 from multi_swe_bench.harness.repos.python.openai import *
 from multi_swe_bench.harness.repos.python.omry import *
@@ -247,10 +246,12 @@ from multi_swe_bench.harness.repos.python.pymc_devs import *
 from multi_swe_bench.harness.repos.python.pyodide import *
 from multi_swe_bench.harness.repos.python.Pyomo import *
 from multi_swe_bench.harness.repos.python.pypa import *
+from multi_swe_bench.harness.repos.python.pyqtgraph import *
 from multi_swe_bench.harness.repos.python.pyscf import *
 from multi_swe_bench.harness.repos.python.pytest_dev import *
 from multi_swe_bench.harness.repos.python.python import *
 from multi_swe_bench.harness.repos.python.python_cmd2 import *
+from multi_swe_bench.harness.repos.python.python_gitlab import *
 from multi_swe_bench.harness.repos.python.python_pillow import *
 from multi_swe_bench.harness.repos.python.python_poetry import *
 from multi_swe_bench.harness.repos.python.python_telegram_bot import *
