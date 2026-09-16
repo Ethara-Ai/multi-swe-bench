@@ -447,3 +447,5 @@ from multi_swe_bench.harness.repos.python.DjangoGirls import *
 from multi_swe_bench.harness.repos.python.CuriousLearner import *
 
 from multi_swe_bench.harness.repos.python.altdesktop import *
+
+from multi_swe_bench.harness.repos.python.alandtse import *
