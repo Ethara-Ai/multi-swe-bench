@@ -193,10 +193,6 @@ export NPM_CONFIG_AUDIT=false
 export NPM_CONFIG_FUND=false
 export NODE_OPTIONS="--max-old-space-size=__NODE_HEAP__"
 
-# Registry fetches inside the build VM drop sockets part-way through a long
-# install (ERR_SOCKET_TIMEOUT / FETCH_ERROR), which fails the whole image.
-# Raise npm's own per-request retry budget, then wrap the install in a
-# whole-command retry for the failures npm cannot recover from itself.
 export NPM_CONFIG_FETCH_RETRIES=5
 export NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000
 export NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
@@ -261,13 +257,6 @@ bash /home/run_tests.sh
 """
 
 _APPLY_PATCH = """
-# Apply a patch as robustly as the raw dataset allows.  A few entries carry
-# patches generated against a slightly different commit than the recorded
-# base_sha (ant-design PR 45245's package.json hunk trails stale context:
-# it expects rc-textarea ~1.4.0 where the base has ~1.5.1), so a strict
-# context match rejects an otherwise perfectly good patch.  Escalate only on
-# failure: exact match first, 3-way next, fuzzy context last.  Every fallback
-# still has to locate the changed lines, so a genuinely wrong patch fails.
 apply_patch() {
     f="$1"
     git apply --whitespace=nowarn "$f" 2>/dev/null && return 0
@@ -294,13 +283,6 @@ cd /home/__REPO__
 apply_patch /home/test.patch
 apply_patch /home/fix.patch
 
-# Deps were installed from the BASE commit's package.json in prepare.sh. When the
-# fix patch bumps a dependency (e.g. ant-design PR 41584 moves rc-picker
-# ~3.3.4 -> ~3.5.0), the patched source calls an API that the installed version
-# does not have yet.  The new props are then silently ignored, tests that passed
-# at baseline start failing, and the instance is rejected as "fix patch broke a
-# passing test" when the fix itself is fine.  Re-install whenever the fix patch
-# actually touched package.json; it is a no-op for every other PR.
 if ! git diff --quiet HEAD -- package.json; then
     echo "fix patch changed package.json, reinstalling dependencies..."
     export NPM_CONFIG_FETCH_RETRIES=5

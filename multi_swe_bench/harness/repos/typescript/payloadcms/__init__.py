@@ -3,3 +3,4 @@ from multi_swe_bench.harness.repos.typescript.payloadcms.payload_0_to_3409 impor
 from multi_swe_bench.harness.repos.typescript.payloadcms.payload_3424_to_99999 import *
 from multi_swe_bench.harness.repos.typescript.payloadcms.payload_6782_to_4291 import *  # noqa: F401,F403
 from multi_swe_bench.harness.repos.typescript.payloadcms.payload_10533_to_7293 import *  # noqa: F401,F403
+from multi_swe_bench.harness.repos.typescript.payloadcms.payload_12530_to_13298 import *  # noqa: F401,F403

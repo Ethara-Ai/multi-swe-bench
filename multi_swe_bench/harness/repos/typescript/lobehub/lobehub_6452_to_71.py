@@ -322,18 +322,6 @@ bash /home/run_tests.sh
 _TESTCASE_RE = re.compile(r"^TESTCASE\s+(PASSED|FAILED|SKIPPED)\s+(\S.*?)\s*$")
 _ANSI_RE = re.compile(r"\x1B\[[0-9;?]*[a-zA-Z]")
 
-# Suites backed by the in-process PGlite/WASM client database. They spin a
-# WASM Postgres up inside jsdom and are timing- and resource-sensitive, so a
-# handful of their cases flip PASS/FAIL between otherwise identical runs of the
-# same container. That noise is unrelated to any PR's fix patch: across the
-# graded PRs these suites account for nearly every failure in *all three*
-# stages, and a run-stage pass that flakes at fix stage is scored as a
-# pass-to-fail regression, which invalidates the instance outright.
-#
-# No gold test in this repo's graded PRs lives in these suites, so dropping
-# them from every stage removes only the noise. Keep this list narrow: a suite
-# belongs here only if it is genuinely environment-flaky, never because a real
-# regression is inconvenient.
 _FLAKY_SUITES = (
     "src/database/client/db.test.ts",
     "src/database/repositories/aiInfra/index.test.ts",

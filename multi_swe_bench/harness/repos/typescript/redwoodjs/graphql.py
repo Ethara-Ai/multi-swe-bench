@@ -9,7 +9,24 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-_NODE_IMAGE = "node:14-bullseye"
+_YARN_BERRY_FIRST_PR = 3000
+
+_SHARED_BASE_IMAGE = "node:16-bullseye"
+_BASE_IMAGE_TAG = "base"
+
+_LEGACY_NODE_VERSION = "14.21.3"
+_LEGACY_YARN_VERSION = "1.22.19"
+_LEGACY_NODE_PREFIX = "/opt/node14"
+
+_TARGET_PACKAGES: dict[int, tuple[str, ...]] = {
+    1854: ("packages/cli",),
+    3536: ("packages/cli",),
+    3598: ("packages/cli",),
+    3616: ("packages/cli",),
+    3772: ("packages/router", "packages/testing"),
+}
+
+_DEFAULT_TARGET_PACKAGES: tuple[str, ...] = ("packages/cli",)
 
 _JSON_BEGIN = "===== MSB-JEST-BEGIN"
 _JSON_END = "===== MSB-JEST-END"
@@ -48,210 +65,125 @@ def _test_files(pr: PullRequest) -> list[str]:
     return sorted(set(out))
 
 
-def _sh_list(names: list[str]) -> str:
-    return " ".join(f'"{n}"' for n in names)
+def _target_packages(number: int) -> tuple[str, ...]:
+    return _TARGET_PACKAGES.get(number, _DEFAULT_TARGET_PACKAGES)
 
 
-_CHECK_GIT_CHANGES_SH = r"""#!/bin/bash
-set -euo pipefail
-
-cd [[ROOT]]
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    echo "check_git_changes: not inside a git repository"
-    exit 1
-fi
-
-git update-index -q --really-refresh || true
-
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-    echo "check_git_changes: work tree dirty"
-    git status --porcelain --untracked-files=no
-    exit 1
-fi
-
-echo "check_git_changes: no uncommitted changes"
-"""
+def _stage_env(number: int) -> str:
+    lines = [
+        "export CI=true",
+        'export NODE_OPTIONS="--max-old-space-size=4096"',
+    ]
+    if _uses_legacy_node(number):
+        lines.append(f'export PATH="{_LEGACY_NODE_PREFIX}/bin:$PATH"')
+    if _uses_yarn_berry(number):
+        lines.append("export YARN_ENABLE_IMMUTABLE_INSTALLS=false")
+        lines.append("export YARN_NODE_LINKER=node-modules")
+        lines.append("export YARN_HTTP_TIMEOUT=600000")
+    return "\n".join(lines)
 
 
-_COMPILE_SH = r"""#!/bin/bash
-set +e
+def _install_command(number: int) -> str:
+    if _uses_yarn_berry(number):
+        return "yarn install"
+    return "yarn install --frozen-lockfile"
 
-ROOT=[[ROOT]]
-cd "$ROOT" || exit 0
+def _test_body(pr: PullRequest) -> str:
+    packages = " ".join(_target_packages(pr.number))
+    return f"""
+PACKAGES="{packages}"
 
-if [ "$(node -e "process.stdout.write((((require('./package.json').scripts)||{}).build)?'1':'')" 2>/dev/null)" = "1" ]; then
-    yarn build 2>&1 | tail -n 40
-fi
-
-exit 0
-"""
-
-
-_RUN_TESTS_SH = r"""#!/bin/bash
-set -eo pipefail
-
-ROOT=[[ROOT]]
-cd "$ROOT"
-
-export CI=true
-export NO_COLOR=1
-export FORCE_COLOR=0
-export npm_config_color=false
-export npm_config_progress=false
-export NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=4096"
-
-for i in 1 2 3 4 5; do
-    yarn install --frozen-lockfile --offline --ignore-engines --network-timeout 600000 > /tmp/msb_install.log 2>&1 && break
-    yarn install --frozen-lockfile --ignore-engines --network-timeout 600000 > /tmp/msb_install.log 2>&1 && break
-    yarn install --ignore-engines --network-timeout 600000 > /tmp/msb_install.log 2>&1 && break
-    sleep 15
-done
-tail -n 5 /tmp/msb_install.log
-
-bash /home/compile.sh
-
-TEST_PATHS=( [[TEST_PATHS]] )
-
-declare -A MSB_GROUPS
-ORDER=()
-
-for p in "${TEST_PATHS[@]}"; do
-    [ -f "$ROOT/$p" ] || continue
-
-    d=$(dirname "$p")
-    pkg=""
-    while [ "$d" != "." ] && [ "$d" != "/" ]; do
-        if [ -f "$ROOT/$d/package.json" ]; then
-            pkg="$d"
-            break
-        fi
-        d=$(dirname "$d")
-    done
-    if [ -z "$pkg" ]; then
-        echo "run_tests: no workspace package owns $p" >&2
-        continue
+for pkg in $PACKAGES; do
+    cd /home/{pr.repo}/$pkg
+    set +e
+    yarn build:js
+    BUILD_RC=$?
+    set -e
+    if [ "$BUILD_RC" -ne 0 ]; then
+        echo "NOTE: yarn build:js exited $BUILD_RC in $pkg; the suite runs against the previously built output"
     fi
-
-    if [ -z "${MSB_GROUPS[$pkg]+set}" ]; then
-        ORDER+=("$pkg")
-        MSB_GROUPS[$pkg]=""
-    fi
-    MSB_GROUPS[$pkg]="${MSB_GROUPS[$pkg]} ${p#$pkg/}"
 done
 
-if [ ${#ORDER[@]} -eq 0 ]; then
-    echo "run_tests: none of this PR's test files exist at this commit" >&2
-    exit 0
-fi
-
-for pkg in "${ORDER[@]}"; do
-    cd "$ROOT/$pkg"
-
-    slug=$(printf '%s' "$pkg" | tr '/' '_')
-    out="/tmp/msb_jest_${slug}.json"
-    log="/tmp/msb_jest_${slug}.log"
-    rm -f "$out" "$log"
-
-    if yarn jest --ci --colors=false \
-        --json --outputFile="$out" \
-        --runTestsByPath ${MSB_GROUPS[$pkg]} > "$log" 2>&1; then
-        :
-    else
-        :
+for pkg in $PACKAGES; do
+    cd /home/{pr.repo}/$pkg
+    REPORT="/tmp/jest-$(echo $pkg | tr / _).json"
+    rm -f "$REPORT"
+    set +e
+    yarn jest src --json --outputFile="$REPORT" --colors=false --maxWorkers=2
+    JEST_RC=$?
+    set -e
+    if [ ! -s "$REPORT" ]; then
+        echo "Error: jest wrote no report for $pkg (exit $JEST_RC)" >&2
+        exit 1
     fi
-
-    tail -n 200 "$log"
-
-    echo "[[BEGIN]] $pkg ====="
-    if [ -s "$out" ]; then
-        cat "$out"
-    else
-        echo '{}'
-    fi
-    echo ""
-    echo "[[END]] $pkg ====="
-
-    cd "$ROOT"
+    echo "{_JSON_BEGIN}"
+    cat "$REPORT"
+    echo
+    echo "{_JSON_END}"
 done
-
-exit 0
 """
 
 
-_PREPARE_SH = r"""#!/bin/bash
-set -e
+def parse_jest_json_log(log: str, repo: str) -> TestResult:
+    clean = _ANSI_ESCAPE.sub("", log)
 
-git config --global user.name "msb"
-git config --global user.email "msb@example.com"
-git config --global init.defaultBranch main
-git config --global core.hooksPath /dev/null
-git config --global url."https://github.com/".insteadOf "git://github.com/"
-git config --global --add url."https://github.com/".insteadOf "git@github.com:"
-git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+    passed_tests: set[str] = set()
+    failed_tests: set[str] = set()
+    skipped_tests: set[str] = set()
+    occurrences: dict[str, int] = {}
 
-cd [[ROOT]]
-git reset --hard
-git clean -fdx
-bash /home/check_git_changes.sh
+    prefix = f"/home/{repo}/"
 
-git remote add origin https://github.com/[[ORG]]/[[REPO]].git 2>/dev/null || true
-git rev-parse --verify --quiet "[[SHA]]^{commit}" > /dev/null 2>&1 \
-    || git fetch --depth=1 origin [[SHA]] \
-    || git fetch origin
-git checkout --detach [[SHA]]
-bash /home/check_git_changes.sh
+    for block in _JSON_BLOCK.findall(clean):
+        try:
+            report = json.loads(block)
+        except ValueError:
+            continue
 
-export CI=true
-export NO_COLOR=1
-export FORCE_COLOR=0
-export npm_config_color=false
-export npm_config_progress=false
-export NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=4096"
+        for suite in report.get("testResults") or []:
+            path = (suite.get("name") or "").replace("\\", "/")
+            if path.startswith(prefix):
+                path = path[len(prefix) :]
 
-for i in 1 2 3 4 5; do
-    yarn install --frozen-lockfile --ignore-engines --network-timeout 600000 && break
-    yarn install --ignore-engines --network-timeout 600000 && break
-    echo "yarn install attempt $i failed; retrying in 15s" >&2
-    sleep 15
-done
+            assertions = suite.get("assertionResults") or []
+            if not assertions:
+                if suite.get("status") == "failed":
+                    failed_tests.add(path)
+                continue
 
-bash /home/compile.sh
+            for assertion in assertions:
+                titles = [t for t in (assertion.get("ancestorTitles") or []) if t]
+                name = " > ".join([path] + titles + [assertion.get("title") or ""])
 
-node -e "require.resolve('jest'); console.log('prepare: DEPS_OK')"
-"""
+                occurrences[name] = occurrences.get(name, 0) + 1
+                if occurrences[name] > 1:
+                    name = f"{name} #{occurrences[name]}"
 
+                status = assertion.get("status")
+                if status == "passed":
+                    passed_tests.add(name)
+                elif status == "failed":
+                    failed_tests.add(name)
+                else:
+                    skipped_tests.add(name)
 
-_RUN_SH = """#!/bin/bash
-set -eo pipefail
+    passed_tests -= failed_tests
+    passed_tests -= skipped_tests
+    skipped_tests -= failed_tests
 
-bash /home/run_tests.sh
-"""
+    return TestResult(
+        passed_count=len(passed_tests),
+        failed_count=len(failed_tests),
+        skipped_count=len(skipped_tests),
+        passed_tests=passed_tests,
+        failed_tests=failed_tests,
+        skipped_tests=skipped_tests,
+    )
 
-_TEST_RUN_SH = """#!/bin/bash
-set -eo pipefail
-
-cd [[ROOT]]
-if ! git apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
-bash /home/run_tests.sh
-"""
-
-_FIX_RUN_SH = """#!/bin/bash
-set -eo pipefail
-
-cd [[ROOT]]
-if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
-bash /home/run_tests.sh
-"""
 
 
 class RedwoodjsGraphqlImageBase(Image):
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -277,84 +209,90 @@ class RedwoodjsGraphqlImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        base_image = self.dependency()
 
-        if self.config.need_clone:
-            code = (
-                f'RUN git config --global http.postBuffer 1048576000 && '
-                f'git config --global http.lowSpeedLimit 100 && '
-                f'git config --global http.lowSpeedTime 600 && '
-                f'for i in $(seq 1 6); do '
-                f'git clone "${{REPO_URL}}" /home/{self.pr.repo} && break; '
-                f'echo "clone attempt $i failed; retrying"; rm -rf /home/{self.pr.repo}; sleep 15; '
-                f'done; test -d /home/{self.pr.repo}/.git'
-            )
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        sections = [f"FROM {base_image}"]
+        if self.global_env:
+            sections.append(self.global_env)
+        sections.append(
+            "WORKDIR /home/\nENV DEBIAN_FRONTEND=noninteractive\nENV LANG=C.UTF-8"
+        )
+        sections.append(_APT_PACKAGES)
+        sections.append(_LEGACY_NODE_SETUP)
+        if self.clear_env:
+            sections.append(self.clear_env)
+        sections.append('CMD ["/bin/bash"]')
 
-        return f"""# syntax=docker/dockerfile:1.6
+        return "\n\n".join(sections) + "\n"
 
-FROM {image_name}
 
-ARG TARGETARCH
-ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
-ARG BASE_COMMIT
+_PREPARE_TEMPLATE = """#!/bin/bash
+set -e
+{env}
 
-ARG http_proxy=""
-ARG https_proxy=""
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG no_proxy="localhost,127.0.0.1,::1"
-ARG NO_PROXY="localhost,127.0.0.1,::1"
-ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+git config --global --add safe.directory /home/{repo}
+git config --global url."https://github.com/".insteadOf "git://github.com/"
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC \\
-    http_proxy=${{http_proxy}} \\
-    https_proxy=${{https_proxy}} \\
-    HTTP_PROXY=${{HTTP_PROXY}} \\
-    HTTPS_PROXY=${{HTTPS_PROXY}} \\
-    no_proxy=${{no_proxy}} \\
-    NO_PROXY=${{NO_PROXY}} \\
-    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
-    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    NODE_EXTRA_CA_CERTS=${{CA_CERT_PATH}} \\
-    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    NODE_OPTIONS=--dns-result-order=ipv4first \\
-    CI=true \\
-    NO_COLOR=1 \\
-    FORCE_COLOR=0 \\
-    NPM_CONFIG_COLOR=false \\
-    NPM_CONFIG_PROGRESS=false \\
-    NPM_CONFIG_FUND=false \\
-    NPM_CONFIG_AUDIT=false
+git config --global http.postBuffer 524288000
+git config --global http.lowSpeedLimit 1000
+git config --global http.lowSpeedTime 300
 
-LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
-      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
-      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
-      org.opencontainers.image.authors="https://www.ethara.ai/"
+for attempt in 1 2 3 4 5; do
+    rm -rf /home/{repo}
+    if git clone "{repo_url}" /home/{repo}; then
+        break
+    fi
+    echo "clone attempt $attempt failed; retrying in 20s" >&2
+    sleep 20
+done
+if [ ! -d /home/{repo}/.git ]; then
+    echo "FATAL: git clone failed after 5 attempts" >&2
+    exit 1
+fi
+cd /home/{repo}
 
-RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+git checkout --detach {sha}
+git remote remove origin 2>/dev/null || true
+git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+    | xargs -r -n1 git update-ref -d
+git reflog expire --expire=now --all
+git reflog expire --expire-unreachable=now --all
+git gc --prune=now --aggressive
+git repack -a -d -l --quiet
+rm -f .git/objects/info/alternates
+git config --local gc.auto 0
+git config --local fetch.recurseSubmodules false
+git config --local remote.pushDefault ""
 
-WORKDIR /home/
+test "$(git rev-parse HEAD)" = "$(git rev-parse {sha})"
+test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"
+test -z "$(git remote)"
+test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates build-essential \\
-    && rm -rf /var/lib/apt/lists/*
+if [ -f .gitmodules ]; then
+    git submodule foreach --recursive '
+        git checkout --detach HEAD;
+        git remote remove origin 2>/dev/null || true;
+        git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+            | xargs -r -n1 git update-ref -d;
+        git reflog expire --expire=now --all;
+        git reflog expire --expire-unreachable=now --all;
+        git gc --prune=now --aggressive;
+        rm -f .git/objects/info/alternates;
+    '
+fi
 
-{code}
+git reset --hard
+bash /home/check_git_changes.sh
 
-CMD ["/bin/bash"]
+for attempt in 1 2 3; do
+    if {install}; then
+        break
+    fi
+    echo "install attempt $attempt failed; retrying in 20s" >&2
+    sleep 20
+done
+yarn build || true
 """
 
 
@@ -492,75 +430,8 @@ class RedwoodjsGraphql(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
+        return parse_jest_json_log(test_log, self.pr.repo)
 
-        text = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-        prefix = _REPO_ROOT + "/"
 
-        blob_re = re.compile(
-            re.escape(_JSON_BEGIN)
-            + r"\s+(?P<pkg>\S+)\s+=====\s*(?P<body>.*?)"
-            + re.escape(_JSON_END),
-            re.S,
-        )
 
-        for match in blob_re.finditer(text):
-            body = match.group("body")
-            start = body.find("{")
-            if start == -1:
-                continue
 
-            try:
-                data = json.loads(body[start:])
-            except Exception:
-                end = body.rfind("}")
-                if end <= start:
-                    continue
-                try:
-                    data = json.loads(body[start : end + 1])
-                except Exception:
-                    continue
-
-            for suite in data.get("testResults") or []:
-                path = suite.get("name") or ""
-                if prefix in path:
-                    path = path.split(prefix, 1)[1]
-                path = path.replace("\\", "/")
-
-                assertions = suite.get("assertionResults") or []
-
-                if not assertions:
-                    if suite.get("status") == "failed" or suite.get("message"):
-                        failed_tests.add(f"jest::{path}::<suite failed to load>")
-                    continue
-
-                for a in assertions:
-                    ancestors = [t for t in (a.get("ancestorTitles") or []) if t]
-                    title = a.get("title") or ""
-                    full = a.get("fullName") or " > ".join(ancestors + [title])
-                    if not full:
-                        continue
-                    test_id = f"jest::{path}::{full}" if path else f"jest::{full}"
-                    status = (a.get("status") or "").lower()
-
-                    if status == "passed":
-                        passed_tests.add(test_id)
-                    elif status == "failed":
-                        failed_tests.add(test_id)
-                    else:
-                        skipped_tests.add(test_id)
-
-        failed_tests -= passed_tests
-        skipped_tests -= passed_tests
-        skipped_tests -= failed_tests
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
