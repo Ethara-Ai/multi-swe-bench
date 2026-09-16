@@ -101,3 +101,4 @@ from multi_swe_bench.harness.repos.java.jtablesaw import *
 # from multi_swe_bench.harness.repos.java.Wynntils import *
 from multi_swe_bench.harness.repos.java.Discord4J import *
 from multi_swe_bench.harness.repos.java.Vonage import *
+from multi_swe_bench.harness.repos.java.a2aproject import *

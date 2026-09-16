@@ -101,3 +101,4 @@ from multi_swe_bench.harness.repos.rust.pnpm import *
 from multi_swe_bench.harness.repos.rust.denoland import *
 from multi_swe_bench.harness.repos.rust.modular_bitfield import *
 from multi_swe_bench.harness.repos.rust.alex_dukhno import *
+from multi_swe_bench.harness.repos.rust.aaif_goose import *
