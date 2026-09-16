@@ -31,54 +31,6 @@ _NO_PRUNE_HARDENING = chr(10).join(
 
 
 class KarporImageBase(Image):
-    """The heavy environment image: toolchain + source. ONE, shared by all five.
-
-    Carries `golang:1.22` and the cloned repo with its history intact, and
-    deliberately pins NOTHING -- the checkout to a record's base.sha happens in
-    prepare.sh, per record. That split is what lets a single tag serve every
-    record, so the repo is cloned once per dataset build instead of once per
-    record.
-
-    Why the pin cannot live here
-    ----------------------------
-    Images dedupe on image_full_name, so one tag is built exactly once.
-    build_dataset passes BASE_COMMIT as a build arg to every image whose
-    dependency() is a string (build_dataset.py:623-629), i.e. this one, and
-    Image._HARDENING_BLOCK detaches to it and runs `git gc --prune=now`,
-    dropping every object unreachable from that commit. A shared base that also
-    pinned would freeze on whichever record built first.
-
-    Measured against a clean full clone with all PR refs fetched: #556's base
-    bc2b3582 is contained by 5 refs (all under refs/remotes/origin/pr/*), is NOT
-    an ancestor of main, and is NOT an ancestor of #128, #564, #797 or #827. No
-    commit in the repo has all five base commits as ancestors, so no single
-    pinned image can hold them. Pinning here would cost that record.
-
-    Why the leading `# syntax` directive is load-bearing
-    ----------------------------------------------------
-    DockerfileEnhancer.enhance early-returns on `if SYNTAX_DIRECTIVE in raw`
-    (image.py:317-318), so emitting it here opts this file out of the enhancer,
-    and everything the enhancer would have contributed is written out by hand
-    below. That opt-out is what keeps this base unpinned: _inject_final_sanitize
-    (image.py:389-395) fires on ANY Dockerfile containing `git clone`/`git
-    fetch`/`git remote add` and appends Image._HARDENING_BLOCK unconditionally --
-    precisely the pin-and-prune this image must not have.
-
-    Why the refs/pull fetch is here
-    ------------------------------
-    #556's commit arrives with the clone only because a clone transfers whole
-    packfiles, unreachable objects included; nothing on a branch points at it, so
-    it is one `git gc` away from disappearing. refs/pull/<n>/head does point at
-    it, so fetching those refs turns an accident into a guarantee. Once, here,
-    rather than five times downstream.
-
-    KNOWN TRADE-OFF: the destructive scrub -- ref deletion, `git gc --prune=now`
-    and the four integrity asserts -- does not run, here or downstream, because
-    it can only be anchored to one commit. These images therefore ship the repo's
-    full history, and the Dockerfile QC's D13/D14/D15 fail on this file by
-    design. Keeping ONE base image with all five records intact was chosen over
-    that scrub; a `base-pr-<N>` tag is what would buy it back.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -166,8 +118,6 @@ RUN git clone "${{REPO_URL}}" /home/{repo}
 
 WORKDIR /home/{repo}
 
-# refs/pull/<n>/head is the only thing pointing at #556's base commit -- see the
-# class docstring. --no-tags keeps the 119 upstream tags out of the image.
 RUN git fetch --no-tags origin "+refs/pull/*/head:refs/remotes/origin/pr/*"
 
 RUN git reset --hard
@@ -221,12 +171,6 @@ class KarporImageDefault(Image):
                 """#!/bin/bash
 set -e
 
-# Integrity guard for prepare.sh: assert we are inside a git work tree and that
-# the tree is clean. prepare.sh calls this once after `git reset --hard` and
-# again after `git checkout <base.sha>`, so a dirty or drifted tree aborts the
-# image build instead of being baked in and silently mismeasured by all three
-# graded stages. `git reset --hard` alone does not remove untracked files, so
-# the porcelain check (which lists them) is what actually closes that hole.
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "check_git_changes: not inside a git work tree: $(pwd)" >&2
@@ -253,10 +197,6 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# Warm the module cache and the build cache so the three graded stages measure
-# the test suite instead of a cold `go mod download`. `|| true` is correct here
-# and only here: a package that does not compile at the base commit is expected
-# (the fix patch is what makes it compile) and must not fail the image build.
 go mod download || true
 go build ./... || true
 go test -count=1 -gcflags=all=-l -run XXX_NO_SUCH_TEST ./pkg/... || true
@@ -369,14 +309,6 @@ class Karpor(Instance):
 
     @classmethod
     def _qualify(cls, pkg: str, test: str) -> str:
-        """Build a name that is unique across packages and stable across stages.
-
-        `go test -json` reports Package and Test separately, and a bare test
-        name is NOT unique here -- TestNewCache, TestNew and friends recur in
-        several of the 21 selected packages. The stage comparison unions names
-        across run/test/fix, so a collision would let one package's pass mask
-        another package's failure. Subtests keep their full "TestX/sub" path.
-        """
         short = cls._MODULE_PREFIX.sub("", pkg)
         return f"{short}::{test}"
 

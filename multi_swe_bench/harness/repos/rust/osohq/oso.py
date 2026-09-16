@@ -20,12 +20,6 @@ class OsoImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # Pinned: the repo has no rust-toolchain file, and Cargo.lock is from
-        # early 2021 (proc-macro2 1.0.24, syn 1.0.58, criterion 0.3.3, half 1.6.0).
-        # Those pins do not survive a current rustc, so `rust:latest` is out.
-        # 1.75 is the sweet spot: old enough for the 2018-edition sources and the
-        # locked crates, new enough that cargo defaults to the sparse crates.io
-        # registry (>= 1.70) instead of cloning the multi-GB git index.
         return "rust:1.75"
 
     def image_tag(self) -> str:
@@ -42,10 +36,6 @@ class OsoImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        # Base image must stay plain: no `# syntax=` directive and a literal
-        # clone URL (not "${REPO_URL}"). Either would disable DockerfileEnhancer,
-        # dropping proxy/CA-cert injection, `git checkout ${BASE_COMMIT}`, and the
-        # history-hardening block. See harness/image.py::DockerfileEnhancer.
         if self.config.need_clone:
             code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
@@ -133,10 +123,6 @@ bash /home/check_git_changes.sh
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# Warm the cargo registry and target dir. The repo root is the cargo workspace
-# (members: polar-core, polar-c-api, polar-wasm-api, languages/rust/oso,
-# languages/rust/oso-derive) and `oso` is the only member either patch touches,
-# so build just that package and its path deps.
 cargo test -p oso --lib --tests --no-run || true
 
 """.format(pr=self.pr),
@@ -254,14 +240,6 @@ class Oso(Instance):
         re_fail = re.compile(r"test (\S+) \.\.\. FAILED")
         re_skip = re.compile(r"test (\S+) \.\.\. ignored")
 
-        # Integration tests are printed as a bare fn name with no binary context,
-        # and `oso` has a genuine collision: `test_anything_works` is defined in
-        # both tests/test_polar.rs and tests/test_polar_rust.rs. Prefix each name
-        # with the binary cargo announces so the two stay distinct. Only the
-        # stable part is captured — the `-<hash>` suffix changes per build and
-        # would desync names across the run/test/fix stages.
-        #     Running tests/test_oso.rs (target/debug/deps/test_oso-9a1b2c3d)
-        #     Running unittests src/lib.rs (target/debug/deps/oso-4e5f6a7b)
         re_binary = re.compile(
             r"Running (?:tests/(\S+\.rs)|unittests \S+ \(target/debug/deps/(\S+?)(?:-[0-9a-f]+)?\))"
         )
@@ -288,7 +266,6 @@ class Oso(Instance):
             if match:
                 skipped_tests.add(current_binary + match.group(1))
 
-        # Deduplicate — worst result wins
         passed_tests -= failed_tests
         passed_tests -= skipped_tests
         skipped_tests -= failed_tests

@@ -5,12 +5,6 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# The full suite is run with --continue-on-collection-errors on purpose.
-# At the base commit `skills/wattcoin/wattcoin.py` has a SyntaxError
-# ("expected 'except' or 'finally' block"), so tests/test_wattcoin_skill.py and
-# tests/test_wattcoin_node_earnings.py fail to import. Without the flag pytest
-# aborts the whole session ("Interrupted: 2 errors during collection") and
-# reports nothing at all; with it the other 60 tests still run and report.
 PYTEST_CMD = (
     "python -m pytest tests/ -v --no-header -rA --tb=no "
     "-p no:cacheprovider --continue-on-collection-errors"
@@ -31,10 +25,6 @@ class ImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        # requirements.txt needs flask>=3.0 and solders/solana wheels; the fix
-        # patch also uses PEP 585 builtin generics in a module-level annotation
-        # (`dict[tuple[str, int], ...]`), which is evaluated at import time and
-        # so requires 3.9+. 3.11 has wheels for every pinned dependency.
         return "python:3.11-slim"
 
     def image_tag(self) -> str:
@@ -47,29 +37,10 @@ class ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        # Must NOT emit a `# syntax=...` directive or bake hardening inline:
-        # DockerfileEnhancer.enhance() treats that directive as a sentinel
-        # (image.py: `if SYNTAX_DIRECTIVE in raw: return raw`) and skips the
-        # whole file, silently dropping proxy/CA-cert/git-scrub injection.
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        # The repo fetch is written in DockerfileEnhancer's OWN standardized
-        # form on purpose. _standardize_repo_fetch() (image.py) rewrites
-        #     RUN git clone <url> /home/<repo>      (and  COPY <repo> /home/<repo>)
-        # into clone + `git checkout ${BASE_COMMIT}` + hardening, but its regex
-        # carries a negative lookahead `(?!"\\$\\{REPO_URL\\}")` -- a clone already
-        # in standardized form is left alone. We need that opt-out here because
-        # PR #106's base commit is DANGLING: WattCoin-Org rewrote `main` after
-        # the PR merged, so 90700943... is not reachable from any ref and a
-        # plain clone cannot check it out ("fatal: unable to read tree").
-        # `git fetch origin <sha>` still retrieves it from GitHub, so we clone,
-        # fetch the sha explicitly, then reproduce the checkout + hardening the
-        # enhancer would otherwise have appended.
-        #
-        # This also makes the `need_clone=False` case moot: the enhancer rewrites
-        # COPY into a clone anyway, so both paths use the same fetch-aware form.
         return f"""FROM {image_name}
 
 {self.global_env}
@@ -163,20 +134,10 @@ set -e
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-# PR #106's base commit is dangling (main was rewritten after the merge), so a
-# plain clone cannot reach it -- "fatal: unable to read tree". The base image
-# already fetched it by sha, and the enhancer's hardening block then removed the
-# `origin` remote, so fetch ONLY if the object is genuinely missing; otherwise
-# `git fetch origin` would die with "'origin' does not appear to be a git
-# repository".
 git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null || git fetch origin {pr.base.sha}
 git checkout {pr.base.sha}
 bash /home/check_git_changes.sh
 
-# `|| true` per harness convention: native/compiled wheels (solders is a Rust
-# extension) can fail to build on arm64, and that must not abort the image
-# build. A genuinely broken install still surfaces as collection errors in the
-# smoke run below.
 pip install --no-cache-dir -r requirements.txt || true
 
 {pytest_cmd} || true
@@ -281,32 +242,16 @@ class Wattcoin(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Strip ANSI colour codes FIRST. pytest emits them whenever stdout is a
-        # TTY; without this they are captured *into* the test name, so the same
-        # test can carry a different name in different stages and Report's
-        # cross-stage union splits it into two entries.
         test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        # Both patterns are anchored per line and matched against one line at a
-        # time. An unanchored whole-log scan is the standard failure mode here:
-        # in the `-rA` summary block the test name ending a PASSED line binds to
-        # the status word starting the next line, putting the same test in both
-        # passed and failed -- which TestResult.__post_init__ rejects outright.
-        #
-        # Progress form: tests/test_x.py::test_y PASSED   [ 50%]
         re_progress = re.compile(
             r"^(\S+::\S+)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b"
         )
-        # Summary form: FAILED tests/test_x.py::test_y - AssertionError: ...
         re_summary = re.compile(
             r"^(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\s+(\S+::\S+)"
         )
 
         def record(status: str, name: str) -> None:
-            # Requiring "::" keeps file-level collection errors
-            # (`ERROR tests/test_wattcoin_skill.py`) out of the counts -- those
-            # are import failures, not tests, and they are present identically
-            # in the run/test/fix states.
             if "::" not in name:
                 return
             if status == "PASSED":

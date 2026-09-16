@@ -20,20 +20,9 @@ class ProjectyWebImageBase(Image):
         return self._config
 
     def dependency(self) -> str | Image:
-        # JDK 11, matching .github/workflows/gradle.yml ("Set up JDK 11").
-        # Not a free choice: build.gradle still uses the `compile` /
-        # `testCompile` configurations, which Gradle 7 removed, so the pinned
-        # wrapper (gradle-6.5-bin.zip) has to stay -- and Gradle 6.5 supports
-        # Java 14 at most. 11 is the version CI actually proved this tree on.
         return "eclipse-temurin:11-jdk"
 
     def image_tag(self) -> str:
-        # PR-scoped, not a bare "base". The tag is what the PR layer's FROM
-        # resolves to (image_full_name() = image_name():image_tag()), so a
-        # repo-wide "base" would have every PR of this repo write and read one
-        # mutable image -- each pinned to its own BASE_COMMIT. Building a second
-        # PR would overwrite it and the earlier PR layer would then apply its
-        # patches onto the wrong tree, silently and without an error.
         return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
@@ -47,10 +36,6 @@ class ProjectyWebImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        # Base image must stay plain: no `# syntax=` directive and a literal
-        # clone URL (not "${REPO_URL}"). Either would disable DockerfileEnhancer,
-        # dropping proxy/CA-cert injection, `git checkout ${BASE_COMMIT}`, and the
-        # history-hardening block. See harness/image.py::DockerfileEnhancer.
         if self.config.need_clone:
             code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
         else:
@@ -160,10 +145,6 @@ bash /home/check_git_changes.sh
 
 chmod +x gradlew
 
-# Warm the Gradle distribution (6.5, fetched by the wrapper) and the whole
-# dependency graph. Running the suite rather than `testClasses` is deliberate:
-# the test runtime classpath (h2, spring-security-test, assertj) is only
-# resolved once tests actually execute.
 ./gradlew test --no-daemon --init-script /home/test-logging.gradle || true
 
 """.format(pr=self.pr),
@@ -191,24 +172,9 @@ export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-# These suites reference production symbols that only fix.patch adds --
-# Notification, NotificationType, NotificationObjectType and
-# TeamRoleService#patchTeamRole. Gradle compiles every test source in a single
-# :compileTestJava task, so leaving them in place fails the whole compile with
-# 27 errors and not a single test runs -- every test reports NONE for this
-# stage. Removing them lets the remaining suites compile and emit real
-# PASS/FAIL. All of it stays in fix-run.sh, where fix.patch supplies the
-# symbols. The three below are new files created by test.patch, so there is no
-# earlier revision to fall back to and deletion is the only option.
 rm -f src/test/java/com/projecty/projectyweb/notification/NotificationServiceTests.java
 rm -f src/test/java/com/projecty/projectyweb/notification/ProjectNotificationAspectTests.java
 rm -f src/test/java/com/projecty/projectyweb/notification/TeamNotificationAspectTests.java
-# TeamRoleServiceTests is the one of the four that already existed at
-# base.sha -- it holds 7 passing tests, and test.patch only *adds* cases to
-# it that call TeamRoleService#patchTeamRole (a fix.patch symbol). Deleting
-# the file would drop those 7 from this stage too, so they would report NONE
-# here despite passing both before and after the fix. Restoring the base
-# revision keeps them measured and removes only the uncompilable additions.
 git checkout HEAD -- src/test/java/com/projecty/projectyweb/team/TeamRoleServiceTests.java
 ./gradlew cleanTest test --no-daemon --init-script /home/test-logging.gradle
 
@@ -293,11 +259,6 @@ class ProjectyWeb(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        # One line per case, emitted by the injected testLogging block:
-        #     com.projecty.projectyweb.team.TeamRoleServiceTests > shouldAddRole PASSED
-        # The name is kept whole (class + " > " + method) because method names
-        # such as `shouldReturnNotFound` repeat across test classes and would
-        # otherwise merge into a single entry.
         re_case = re.compile(
             r"^(?P<name>\S.*?\s>\s.+?)\s+(?P<status>PASSED|FAILED|SKIPPED)$"
         )
@@ -305,9 +266,6 @@ class ProjectyWeb(Instance):
         for line in clean_log.splitlines():
             line = line.strip()
 
-            # `> Task :test FAILED` is the task result, not a case. It carries no
-            # " > " separator so re_case misses it anyway, but skip it explicitly
-            # so a future Gradle format change cannot silently inflate the counts.
             if line.startswith("> Task"):
                 continue
 
@@ -325,7 +283,6 @@ class ProjectyWeb(Instance):
             else:
                 passed_tests.add(name)
 
-        # Deduplicate - worst result wins.
         passed_tests -= failed_tests
         passed_tests -= skipped_tests
         skipped_tests -= failed_tests
