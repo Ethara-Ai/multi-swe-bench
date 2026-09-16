@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
@@ -96,35 +97,38 @@ _SUBMODULE_SCRUB_BLOCK = """RUN if [ -f .gitmodules ]; then \\
     fi"""
 
 
-_ORG = "sharkdp"
-_REPO = "bat"
-_LEGACY_TOOLCHAIN_MAX_PR = 2999
-_LEGACY_RUST = "1.70"
-_MODERN_RUST = "1.85"
+_ORG = "serverless"
+_REPO = "serverless-google-cloudfunctions"
+_NODE_IMAGE = "node:18-bookworm"
+_NPM_BEFORE = "2021-04-03T11:41:58Z"
+_JEST = "node_modules/.bin/jest --no-watchman --verbose --no-color --ci --runInBand"
 
 _SCRIPT_ENV = (
     "export CI=true\n"
-    "export CARGO_TERM_COLOR=never\n"
-    "export CARGO_INCREMENTAL=0\n"
-    "export RUST_BACKTRACE=1\n"
-    "export NO_COLOR=1"
+    "export NODE_ENV=test\n"
+    "export NODE_OPTIONS=--max-old-space-size=4096\n"
+    "export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt\n"
+    "export HUSKY_SKIP_INSTALL=1\n"
+    "export SLS_TELEMETRY_DISABLED=1\n"
+    "export SLS_TRACKING_DISABLED=1\n"
+    "export NO_UPDATE_NOTIFIER=1\n"
+    "export NPM_CONFIG_UPDATE_NOTIFIER=false\n"
+    "export NPM_CONFIG_FUND=false\n"
+    "export NPM_CONFIG_AUDIT=false"
 )
 
-_CARGO_TEST = "cargo test --locked --offline"
+_GATE_JS = (
+    'require("./package.json"); require("googleapis/package.json"); require("sinon");'
+    ' require("jest/package.json"); console.log("DEPS_OK");'
+)
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
-_TARGET_RE = re.compile(r"^\s*Running\s+(?:unittests\s+)?(\S+)\s+\(")
-_DOC_RE = re.compile(r"^\s*Doc-tests\s+(\S+)")
-_RESULT_RE = re.compile(r"^test\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored)\b")
-
-
-def _rust_version(pr: PullRequest) -> str:
-    if pr.number <= _LEGACY_TOOLCHAIN_MAX_PR:
-        return _LEGACY_RUST
-    return _MODERN_RUST
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_SUITE_HEADER_RE = re.compile(r"^(?:PASS|FAIL)\s+(\S+\.[cm]?[jt]sx?)(?:\s+\(.*\))?\s*$")
+_RESULT_LINE_RE = re.compile(r"^([✓✕○✎])\s+(.*)$")
+_DURATION_RE = re.compile(r"\s+\(\d+(?:\.\d+)?\s*m?s\)$")
 
 
-class BatImageBase(Image):
+class ServerlessGoogleCloudfunctionsImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -138,13 +142,13 @@ class BatImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return f"rust:{_rust_version(self.pr)}-bookworm"
+        return _NODE_IMAGE
 
     def image_tag(self) -> str:
-        return f"base-rust{_rust_version(self.pr)}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-rust{_rust_version(self.pr)}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -155,7 +159,7 @@ class BatImageBase(Image):
 
         return f"""# syntax=docker/dockerfile:1.6
 
-FROM {self.dependency()}
+FROM {_NODE_IMAGE}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
@@ -184,7 +188,7 @@ CMD ["/bin/bash"]
 """
 
 
-class BatImageDefault(Image):
+class ServerlessGoogleCloudfunctionsImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -198,7 +202,7 @@ class BatImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return BatImageBase(self.pr, self.config)
+        return ServerlessGoogleCloudfunctionsImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -252,11 +256,9 @@ bash /home/check_git_changes.sh
 git checkout --detach {sha}
 bash /home/check_git_changes.sh
 
-cargo fetch --locked
-cargo test --locked --offline --no-run
+npm install --no-audit --no-fund --no-save --no-package-lock --before={_NPM_BEFORE}
 
-test -x target/debug/bat
-echo "DEPS_OK"
+node -e '{_GATE_JS}'
 """,
             ),
             File(
@@ -270,7 +272,7 @@ cd /home/{repo}
 git reset --hard
 git clean -fd
 
-{_CARGO_TEST} 2>&1
+{_JEST} 2>&1
 """,
             ),
             File(
@@ -285,7 +287,7 @@ git reset --hard
 git clean -fd
 git apply --whitespace=nowarn /home/test.patch
 
-{_CARGO_TEST} 2>&1
+{_JEST} 2>&1
 """,
             ),
             File(
@@ -300,7 +302,7 @@ git reset --hard
 git clean -fd
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
-{_CARGO_TEST} 2>&1
+{_JEST} 2>&1
 """,
             ),
         ]
@@ -332,7 +334,7 @@ RUN git checkout ${{BASE_COMMIT}}
 
 
 @Instance.register(_ORG, _REPO)
-class Bat(Instance):
+class ServerlessGoogleCloudfunctions(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -343,7 +345,7 @@ class Bat(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return BatImageDefault(self.pr, self._config)
+        return ServerlessGoogleCloudfunctionsImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -360,37 +362,43 @@ class Bat(Instance):
             return fix_patch_run_cmd
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, test_log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
-        current_target = ""
+    def parse_log(self, log: str) -> TestResult:
+        final_status: dict[str, str] = {}
+        current_file: Optional[str] = None
+        in_tree = False
+        groups: list[tuple[int, str]] = []
 
-        for raw in _ANSI_RE.sub("", test_log).splitlines():
+        for raw in _ANSI_RE.sub("", log).splitlines():
             line = raw.rstrip()
-
-            target = _TARGET_RE.match(line)
-            if target:
-                current_target = target.group(1)
+            header = _SUITE_HEADER_RE.match(line)
+            if header:
+                current_file = header.group(1)
+                in_tree = True
+                groups = []
                 continue
-
-            doc = _DOC_RE.match(line)
-            if doc:
-                current_target = f"doc-tests {doc.group(1)}"
+            if not in_tree:
                 continue
-
-            result = _RESULT_RE.match(line.strip())
+            stripped = line.strip()
+            if not stripped or stripped.startswith("●"):
+                in_tree = False
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            while groups and groups[-1][0] >= indent:
+                groups.pop()
+            result = _RESULT_LINE_RE.match(stripped)
             if not result:
+                groups.append((indent, stripped))
                 continue
+            symbol, title = result.groups()
+            if symbol in ("○", "✎"):
+                title = re.sub(r"^(?:skipped|todo)\s+", "", title)
+            title = _DURATION_RE.sub("", title).strip()
+            name = " > ".join([current_file] + [g for _, g in groups] + [title])
+            final_status[name] = {"✓": "PASS", "✕": "FAIL"}.get(symbol, "SKIP")
 
-            name = f"{current_target}::{result.group(1)}" if current_target else result.group(1)
-            status = result.group(2)
-            if status == "ok":
-                passed_tests.add(name)
-            elif status == "FAILED":
-                failed_tests.add(name)
-            else:
-                skipped_tests.add(name)
+        passed_tests: set[str] = {n for n, s in final_status.items() if s == "PASS"}
+        failed_tests: set[str] = {n for n, s in final_status.items() if s == "FAIL"}
+        skipped_tests: set[str] = {n for n, s in final_status.items() if s == "SKIP"}
 
         passed_tests -= failed_tests
         skipped_tests -= failed_tests

@@ -153,6 +153,7 @@ from multi_swe_bench.harness.repos.typescript.realworld_apps import *
 from multi_swe_bench.harness.repos.typescript.recharts import *
 from multi_swe_bench.harness.repos.typescript.reduxjs import *
 from multi_swe_bench.harness.repos.typescript.redwoodjs import *
+from multi_swe_bench.harness.repos.typescript.redpanda_data import *
 from multi_swe_bench.harness.repos.typescript.refined_github import *
 from multi_swe_bench.harness.repos.typescript.refinedev import *
 from multi_swe_bench.harness.repos.typescript.remix_run import *

@@ -96,35 +96,48 @@ _SUBMODULE_SCRUB_BLOCK = """RUN if [ -f .gitmodules ]; then \\
     fi"""
 
 
-_ORG = "sharkdp"
-_REPO = "bat"
-_LEGACY_TOOLCHAIN_MAX_PR = 2999
-_LEGACY_RUST = "1.70"
-_MODERN_RUST = "1.85"
+_ORG = "shakedzy"
+_REPO = "dython"
+_PYTHON_IMAGE = "python:3.10-slim-bookworm"
+
+_PINNED_DEPS = (
+    "numpy==1.23.2 "
+    "pandas==1.4.4 "
+    "seaborn==0.11.2 "
+    "scipy==1.9.1 "
+    "matplotlib==3.5.3 "
+    "scikit-learn==1.1.2 "
+    "scikit-plot==0.3.7 "
+    "psutil==5.9.2 "
+    "pytest==7.1.3 "
+    "hypothesis==6.54.5"
+)
+
+_PYTEST = "python -m pytest -p no:cacheprovider -rA --tb=short --color=no"
 
 _SCRIPT_ENV = (
     "export CI=true\n"
-    "export CARGO_TERM_COLOR=never\n"
-    "export CARGO_INCREMENTAL=0\n"
-    "export RUST_BACKTRACE=1\n"
-    "export NO_COLOR=1"
+    "export MPLBACKEND=Agg\n"
+    "export PYTHONDONTWRITEBYTECODE=1\n"
+    "export PYTHONUNBUFFERED=1\n"
+    "export PIP_DISABLE_PIP_VERSION_CHECK=1\n"
+    "export PIP_NO_CACHE_DIR=1"
 )
 
-_CARGO_TEST = "cargo test --locked --offline"
+_GATE_PY = (
+    "import numpy, pandas, scipy, seaborn, matplotlib, sklearn, scikitplot, psutil, pytest, hypothesis; "
+    "import dython, dython.nominal; print(\"DEPS_OK\")"
+)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
-_TARGET_RE = re.compile(r"^\s*Running\s+(?:unittests\s+)?(\S+)\s+\(")
-_DOC_RE = re.compile(r"^\s*Doc-tests\s+(\S+)")
-_RESULT_RE = re.compile(r"^test\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored)\b")
+_NODE = r"[^\s\[]+::[^\s\[]+(?:\[[^\]]*\])?"
+_STATUSES = r"PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS"
+_PROGRESS_RE = re.compile(rf"^(?P<node>{_NODE})\s+(?P<status>{_STATUSES})\b")
+_SUMMARY_RE = re.compile(rf"^(?P<status>{_STATUSES})\s+(?P<node>{_NODE})(?:\s+-\s+.*)?$")
+_COLLECT_ERROR_RE = re.compile(r"^ERROR\s+(?P<node>\S+\.py)(?:\s+-\s+.*)?$")
 
 
-def _rust_version(pr: PullRequest) -> str:
-    if pr.number <= _LEGACY_TOOLCHAIN_MAX_PR:
-        return _LEGACY_RUST
-    return _MODERN_RUST
-
-
-class BatImageBase(Image):
+class DythonImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -138,13 +151,13 @@ class BatImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return f"rust:{_rust_version(self.pr)}-bookworm"
+        return _PYTHON_IMAGE
 
     def image_tag(self) -> str:
-        return f"base-rust{_rust_version(self.pr)}"
+        return "base"
 
     def workdir(self) -> str:
-        return f"base-rust{_rust_version(self.pr)}"
+        return "base"
 
     def files(self) -> list[File]:
         return []
@@ -155,7 +168,7 @@ class BatImageBase(Image):
 
         return f"""# syntax=docker/dockerfile:1.6
 
-FROM {self.dependency()}
+FROM {_PYTHON_IMAGE}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
@@ -184,7 +197,7 @@ CMD ["/bin/bash"]
 """
 
 
-class BatImageDefault(Image):
+class DythonImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -198,7 +211,7 @@ class BatImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return BatImageBase(self.pr, self.config)
+        return DythonImageBase(self.pr, self.config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -252,11 +265,11 @@ bash /home/check_git_changes.sh
 git checkout --detach {sha}
 bash /home/check_git_changes.sh
 
-cargo fetch --locked
-cargo test --locked --offline --no-run
+python -m pip install "pip<24.1" "setuptools<70" wheel
+python -m pip install {_PINNED_DEPS}
+python -m pip install --no-deps --no-build-isolation -e .
 
-test -x target/debug/bat
-echo "DEPS_OK"
+python -c '{_GATE_PY}'
 """,
             ),
             File(
@@ -270,7 +283,7 @@ cd /home/{repo}
 git reset --hard
 git clean -fd
 
-{_CARGO_TEST} 2>&1
+{_PYTEST} 2>&1
 """,
             ),
             File(
@@ -285,7 +298,7 @@ git reset --hard
 git clean -fd
 git apply --whitespace=nowarn /home/test.patch
 
-{_CARGO_TEST} 2>&1
+{_PYTEST} 2>&1
 """,
             ),
             File(
@@ -300,7 +313,7 @@ git reset --hard
 git clean -fd
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
-{_CARGO_TEST} 2>&1
+{_PYTEST} 2>&1
 """,
             ),
         ]
@@ -332,7 +345,7 @@ RUN git checkout ${{BASE_COMMIT}}
 
 
 @Instance.register(_ORG, _REPO)
-class Bat(Instance):
+class Dython(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -343,7 +356,7 @@ class Bat(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return BatImageDefault(self.pr, self._config)
+        return DythonImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -360,40 +373,31 @@ class Bat(Instance):
             return fix_patch_run_cmd
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, test_log: str) -> TestResult:
+    def parse_log(self, log: str) -> TestResult:
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-        current_target = ""
+        buckets = {
+            "PASSED": passed_tests,
+            "XPASS": passed_tests,
+            "FAILED": failed_tests,
+            "ERROR": failed_tests,
+            "SKIPPED": skipped_tests,
+            "XFAIL": skipped_tests,
+        }
 
-        for raw in _ANSI_RE.sub("", test_log).splitlines():
-            line = raw.rstrip()
-
-            target = _TARGET_RE.match(line)
-            if target:
-                current_target = target.group(1)
+        for raw in _ANSI_RE.sub("", log).splitlines():
+            line = raw.strip()
+            match = _PROGRESS_RE.match(line) or _SUMMARY_RE.match(line)
+            if match:
+                buckets[match.group("status")].add(match.group("node"))
                 continue
+            collect = _COLLECT_ERROR_RE.match(line)
+            if collect:
+                failed_tests.add(collect.group("node"))
 
-            doc = _DOC_RE.match(line)
-            if doc:
-                current_target = f"doc-tests {doc.group(1)}"
-                continue
-
-            result = _RESULT_RE.match(line.strip())
-            if not result:
-                continue
-
-            name = f"{current_target}::{result.group(1)}" if current_target else result.group(1)
-            status = result.group(2)
-            if status == "ok":
-                passed_tests.add(name)
-            elif status == "FAILED":
-                failed_tests.add(name)
-            else:
-                skipped_tests.add(name)
-
-        passed_tests -= failed_tests
         skipped_tests -= failed_tests
+        passed_tests -= failed_tests
         passed_tests -= skipped_tests
 
         return TestResult(

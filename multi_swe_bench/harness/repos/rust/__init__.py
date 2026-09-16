@@ -59,6 +59,7 @@ from multi_swe_bench.harness.repos.rust.seanmonstar import *
 from multi_swe_bench.harness.repos.rust.SeaQL import *
 from multi_swe_bench.harness.repos.rust.serde_rs import *
 from multi_swe_bench.harness.repos.rust.servo import *
+from multi_swe_bench.harness.repos.rust.screenpipe import *
 from multi_swe_bench.harness.repos.rust.sharkdp import *
 from multi_swe_bench.harness.repos.rust.starship import *
 from multi_swe_bench.harness.repos.rust.surrealdb import *

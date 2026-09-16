@@ -1,16 +1,14 @@
 import re
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-
-_PYTEST = (
-    "pytest -v --no-header -rA --tb=no -p no:cacheprovider "
-    "satpy/tests/writer_tests/test_cf.py"
-)
-
-PYTHON_IMAGE = "python:3.8-slim-bullseye"
+GO_IMAGE = "golang:1.20"
+BACKEND_DIR = "backend"
+TEST_CMD = "go test -v -count=1 ./..."
+GATE_CMD = "go test -count=1 -run '^$' ./... && echo DEPS_OK"
 
 BASE_DOCKERFILE = """# syntax=docker/dockerfile:1.6
 
@@ -54,24 +52,20 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
     ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
     ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
+ENV CGO_ENABLED=0
+ENV GOFLAGS=-mod=mod
+ENV GOTOOLCHAIN=local
+
 WORKDIR /home/
 
-RUN printf 'deb http://archive.debian.org/debian bullseye main\\n' > /etc/apt/sources.list
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    ca-certificates \\
-    build-essential \\
-    git \\
-    pkg-config \\
-    libhdf4-dev \\
-    libhdf5-dev \\
-    libnetcdf-dev \\
-    libproj-dev \\
-    proj-bin \\
-    proj-data \\
-    libjpeg-dev \\
-    zlib1g-dev \\
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \\
+    for i in 1 2 3; do \\
+        apt-get update && \\
+        apt-get install -y --no-install-recommends --fix-missing \\
+            ca-certificates curl git make \\
+        && break || {{ echo "apt attempt $i failed, retrying"; sleep 10; }}; \\
+    done; \\
+    rm -rf /var/lib/apt/lists/*
 
 RUN git clone "${{REPO_URL}}" /home/{repo}
 
@@ -80,10 +74,7 @@ WORKDIR /home/{repo}
 CMD ["/bin/bash"]
 """
 
-GIT_PIN_AND_HARDENING = """RUN git reset --hard
-RUN git checkout ${BASE_COMMIT}
-
-RUN set -eux; \\
+GIT_HARDENING = """RUN set -eux; \\
     git checkout --detach "${BASE_COMMIT}"; \\
     git remote remove origin 2>/dev/null || true; \\
     git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
@@ -123,82 +114,7 @@ RUN if [ -f .gitmodules ]; then \\
     fi
 """
 
-
-class SatpyImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> str | Image:
-        return "python:3.8-slim-bullseye"
-
-    def image_tag(self) -> str:
-        return f"base-pr-{self.pr.number}"
-
-    def workdir(self) -> str:
-        return f"base-pr-{self.pr.number}"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        base_image = self.dependency()
-        if isinstance(base_image, Image):
-            base_image = base_image.image_full_name()
-
-        return BASE_DOCKERFILE.format(
-            base_image=base_image,
-            org=self.pr.org,
-            repo=self.pr.repo,
-        )
-
-
-class SatpyImageDefault(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image | None:
-        return SatpyImageBase(self.pr, self.config)
-
-    def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
+CHECK_GIT_CHANGES_SH = """#!/bin/bash
 set -e
 
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
@@ -213,116 +129,147 @@ fi
 
 echo "check_git_changes: No uncommitted changes"
 exit 0
+"""
 
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
+PREPARE_SH = """#!/bin/bash
 set -e
+export CI=true
 
-cd /home/{pr.repo}
+cd /home/[[REPO]]
 git reset --hard
+git clean -fd
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach [[SHA]]
 bash /home/check_git_changes.sh
 
-printf '%s\\n' 'numpy==1.19.5' 'Cython<3' > /home/constraints.txt
-export PIP_CONSTRAINT=/home/constraints.txt
-export DISABLE_NUMCODECS_CEXT=1
+cd /home/[[REPO]]/[[BACKEND]]
+go mod download
 
-pip install --no-cache-dir \\
-    'numpy==1.19.5' \\
-    'Cython<3' \\
-    'wheel' \\
-    'setuptools_scm==3.5.0' \\
-    'setuptools-scm-git-archive==1.1'
+[[GATE]]
+"""
 
-pip install --no-cache-dir --no-build-isolation --no-binary numcodecs \\
-    'cftime==1.2.1' \\
-    'numcodecs==0.7.3'
-
-pip install --no-cache-dir --no-build-isolation \\
-    --no-binary pykdtree,h5py,netCDF4 \\
-    'pykdtree==1.3.4' \\
-    'h5py==2.10.0' \\
-    'netCDF4==1.5.3'
-
-INCLUDE_DIRS=/usr/include/hdf LIBRARY_DIRS=/usr/lib \\
-pip install --no-cache-dir --no-build-isolation --no-binary pyhdf \\
-    'pyhdf==0.10.3'
-
-pip install --no-cache-dir \\
-    'scipy==1.5.4' \\
-    'pandas==1.1.5' \\
-    'xarray==0.15.1' \\
-    'dask[array]==2.30.0' \\
-    'pyproj==2.6.1.post1' \\
-    'pyresample==1.16.0' \\
-    'configobj==5.0.6' \\
-    'trollimage==1.11.0' \\
-    'trollsift==0.3.4' \\
-    'PyYAML==5.4.1' \\
-    'zarr==2.4.0' \\
-    'h5netcdf==0.8.1' \\
-    'fsspec==0.8.7' \\
-    'partd==1.1.0' \\
-    'cloudpickle==1.6.0' \\
-    'mock==4.0.2' \\
-    'pytest==6.2.5'
-
-SETUPTOOLS_SCM_PRETEND_VERSION=0.19.1 pip install --no-cache-dir --no-deps -e .
-
-python -c "import satpy, pyproj, pyresample, xarray, netCDF4, h5py; print(satpy.__version__, xarray.__version__)"
-python -c "import satpy.tests"
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
+RUN_SH = """#!/bin/bash
 set -eo pipefail
 export CI=true
 
-cd /home/{pr.repo}
+cd /home/[[REPO]]
 git reset --hard
 git clean -fd
-{pytest}
 
-""".format(pr=self.pr, pytest=_PYTEST),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
+cd /home/[[REPO]]/[[BACKEND]]
+[[TEST_CMD]]
+"""
+
+TEST_RUN_SH = """#!/bin/bash
 set -eo pipefail
 export CI=true
 
-cd /home/{pr.repo}
+cd /home/[[REPO]]
 git reset --hard
 git clean -fd
-git apply --whitespace=nowarn /home/test.patch
-{pytest}
+if ! git apply --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1
+fi
 
-""".format(pr=self.pr, pytest=_PYTEST),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
+cd /home/[[REPO]]/[[BACKEND]]
+[[TEST_CMD]]
+"""
+
+FIX_RUN_SH = """#!/bin/bash
 set -eo pipefail
 export CI=true
 
-cd /home/{pr.repo}
+cd /home/[[REPO]]
 git reset --hard
 git clean -fd
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-{pytest}
+if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1
+fi
 
-""".format(pr=self.pr, pytest=_PYTEST),
-            ),
+cd /home/[[REPO]]/[[BACKEND]]
+[[TEST_CMD]]
+"""
+
+
+def render_script(template: str, repo: str, sha: str = "") -> str:
+    return (
+        template.replace("[[REPO]]", repo)
+        .replace("[[SHA]]", sha)
+        .replace("[[BACKEND]]", BACKEND_DIR)
+        .replace("[[GATE]]", GATE_CMD)
+        .replace("[[TEST_CMD]]", TEST_CMD)
+    )
+
+
+class ConsoleImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        return GO_IMAGE
+
+    def image_tag(self) -> str:
+        return "base"
+
+    def workdir(self) -> str:
+        return "base"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        return BASE_DOCKERFILE.format(
+            base_image=GO_IMAGE,
+            org=self.pr.org,
+            repo=self.pr.repo,
+        )
+
+
+class ConsoleImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return ConsoleImageBase(self.pr, self._config)
+
+    def image_tag(self) -> str:
+        return "pr-{number}".format(number=self.pr.number)
+
+    def workdir(self) -> str:
+        return "pr-{number}".format(number=self.pr.number)
+
+    def files(self) -> list[File]:
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+
+        return [
+            File(".", "fix.patch", self.pr.fix_patch),
+            File(".", "test.patch", self.pr.test_patch),
+            File(".", "check_git_changes.sh", CHECK_GIT_CHANGES_SH),
+            File(".", "prepare.sh", render_script(PREPARE_SH, repo, sha)),
+            File(".", "run.sh", render_script(RUN_SH, repo)),
+            File(".", "test-run.sh", render_script(TEST_RUN_SH, repo)),
+            File(".", "fix-run.sh", render_script(FIX_RUN_SH, repo)),
         ]
 
     def dockerfile(self) -> str:
@@ -332,17 +279,17 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
         copy_commands = ""
         for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+            copy_commands += "COPY {name} /home/\n".format(name=file.name)
 
-        sections = [f"FROM {name}:{tag}"]
+        sections = ["FROM {name}:{tag}".format(name=name, tag=tag)]
 
         if self.global_env:
             sections.append(self.global_env)
 
-        sections.append(f'ARG BASE_COMMIT="{self.pr.base.sha}"')
+        sections.append('ARG BASE_COMMIT="{sha}"'.format(sha=self.pr.base.sha))
         sections.append(copy_commands.strip())
         sections.append("RUN bash /home/prepare.sh")
-        sections.append(GIT_PIN_AND_HARDENING.strip())
+        sections.append(GIT_HARDENING.strip())
 
         if self.clear_env:
             sections.append(self.clear_env)
@@ -350,8 +297,8 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
         return "\n\n".join(sections) + "\n"
 
 
-@Instance.register("pytroll", "satpy")
-class Satpy(Instance):
+@Instance.register("redpanda-data", "console")
+class Console(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -361,8 +308,8 @@ class Satpy(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Image | None:
-        return SatpyImageDefault(self.pr, self._config)
+    def dependency(self) -> Optional[Image]:
+        return ConsoleImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -383,34 +330,32 @@ class Satpy(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
+        clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        pattern1 = re.compile(r"(satpy/tests/[^ \t]+)\s+(PASSED|FAILED|SKIPPED|ERROR)")
-        pattern2 = re.compile(r"\b(PASSED|FAILED|SKIPPED|ERROR)\s+(satpy/tests/[^ \t]+)")
-        for line in log.splitlines():
-            m = pattern1.search(line)
-            if m:
-                test_name, status = m.group(1).strip(), m.group(2)
-            else:
-                m = pattern2.search(line)
-                if not m:
-                    continue
-                status, test_name = m.group(1), m.group(2).strip()
+        status_re = re.compile(
+            r"^\s*--- (PASS|FAIL|SKIP): (\S+) \(\d+(?:\.\d+)?s\)\s*$"
+        )
 
-            if status == "PASSED":
-                passed_tests.add(test_name)
-            elif status in ("FAILED", "ERROR"):
-                failed_tests.add(test_name)
-            elif status == "SKIPPED":
-                skipped_tests.add(test_name)
+        for line in clean_log.splitlines():
+            match = status_re.match(line)
+            if not match:
+                continue
+
+            status, name = match.group(1), match.group(2)
+            if status == "PASS":
+                passed_tests.add(name)
+            elif status == "FAIL":
+                failed_tests.add(name)
+            else:
+                skipped_tests.add(name)
 
         passed_tests -= failed_tests
-        passed_tests -= skipped_tests
         skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
