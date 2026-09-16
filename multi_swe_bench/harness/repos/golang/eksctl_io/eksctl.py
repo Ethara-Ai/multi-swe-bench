@@ -1,7 +1,7 @@
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -63,17 +63,19 @@ FROM {image_name}
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 
+{DockerfileEnhancer._PROXY_ARGS}
+
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
 
+{DockerfileEnhancer._CERT_SYMLINKS}
+
 {self.global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
+{DockerfileEnhancer._ENV_BLOCK}
 ENV LC_ALL=C.UTF-8
-ENV TZ=UTC
 ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 RUN git config --global --add safe.directory '*'
