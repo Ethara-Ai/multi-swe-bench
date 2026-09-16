@@ -5,88 +5,44 @@ from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Imag
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-NODE_IMAGE = "node:18-bookworm"
+NODE_IMAGE = "node:20-bookworm"
 
-_APT_PACKAGES = [
-    "ca-certificates",
-    "curl",
-    "build-essential",
-    "git",
-    "gnupg",
-    "make",
-    "python3",
-    "sudo",
-    "wget",
-    "pkg-config",
-    "libcairo2-dev",
-    "libjpeg-dev",
-    "libpango1.0-dev",
-    "libgif-dev",
-    "librsvg2-dev",
+_BASE_RESOLVE = [
+    "jest",
+    "jest-environment-jsdom",
+    "babel-jest",
+    "@babel/preset-env",
+    "@babel/preset-typescript",
+    "@babel/preset-react",
+    "babel-plugin-transform-vite-meta-env",
+    "@testing-library/react",
+    "@testing-library/jest-dom",
+    "react",
+    "react-dom",
+    "styled-components",
 ]
-
-_SCRIPT_HEADER = "#!/bin/bash\nset -eo pipefail\n\nexport CI=true\nexport HUSKY=0\n\n"
-
-_NPM_CI_FN = (
-    "npm_ci() {\n"
-    "    local attempt\n"
-    "    for attempt in 1 2 3; do\n"
-    "        if npm ci --no-audit --no-fund; then return 0; fi\n"
-    '        echo "npm ci attempt $attempt failed; retrying in 15s" >&2\n'
-    "        sleep 15\n"
-    "    done\n"
-    '    echo "npm ci failed 3 times" >&2\n'
-    "    return 1\n"
-    "}\n"
-)
-
-_NPM_INSTALL_FN = (
-    "npm_install() {\n"
-    "    local attempt\n"
-    "    for attempt in 1 2 3; do\n"
-    "        if npm install --no-audit --no-fund; then return 0; fi\n"
-    '        echo "npm install attempt $attempt failed; retrying in 15s" >&2\n'
-    "        sleep 15\n"
-    "    done\n"
-    '    echo "npm install failed 3 times" >&2\n'
-    "    return 1\n"
-    "}\n"
-)
-
-_APPLY_PATCH_FN = (
-    "apply_patch() {\n"
-    '    local patch="$1"\n'
-    "    local excludes=()\n"
-    "    local path\n"
-    "    while IFS= read -r path; do\n"
-    '        [ -n "$path" ] && excludes+=("--exclude=$path")\n'
-    "    done < <(sed -n -E \\\n"
-    "        -e 's#^Binary files a/(.+) and (b/.+|/dev/null) differ$#\\1#p' \\\n"
-    "        -e 's#^Binary files /dev/null and b/(.+) differ$#\\1#p' \"$patch\")\n"
-    '    git apply --whitespace=nowarn "${excludes[@]}" "$patch"\n'
-    "}\n"
-    "\n"
-    "touches_deps() {\n"
-    "    grep -qE '^diff --git a/package(-lock)?\\.json b/' \"$@\"\n"
-    "}\n"
-)
+_PR_RESOLVE: dict[int, list[str]] = {
+    831: [
+        "@mui/material/IconButton",
+        "@mui/material/InputBase",
+        "@mui/material/Paper",
+    ],
+}
 
 _TEST_CMD = (
     "rm -f /tmp/jest-results.json\n"
-    "JEST_ARGS=(--ci --silent --runInBand --no-cache --coverage=false "
-    "--json --outputFile=/tmp/jest-results.json)\n"
-    "if node -e 'const [a, b] = require(\"./node_modules/jest/package.json\").version"
-    ".split(\".\").map(Number); process.exit(a > 24 || (a === 24 && b >= 9) ? 0 : 1)'; then\n"
-    "    JEST_ARGS+=(--testTimeout=120000)\n"
-    "fi\n"
     "rc=0\n"
-    'timeout -k 30 900 node_modules/.bin/jest "${JEST_ARGS[@]}" || rc=$?\n'
+    "NODE_ENV=test node_modules/.bin/jest --ci --silent --coverage=false --no-cache "
+    '--transformIgnorePatterns "node_modules/(?!@ngrx|(?!d3-force-3d)|ng-dynamic)/" '
+    "--json --outputFile=/tmp/jest-results.json || rc=$?\n"
     "node /home/jest-report.js /tmp/jest-results.json\n"
     "if [ ! -s /tmp/jest-results.json ]; then\n"
     '    echo "jest exited with code $rc without writing /tmp/jest-results.json" >&2\n'
     '    exit "$(( rc == 0 ? 1 : rc ))"\n'
     "fi\n"
 )
+
+_SCRIPT_HEADER = "#!/bin/bash\nset -eo pipefail\n\nexport CI=true\n\n"
 
 _JEST_REPORT_JS = r"""const fs = require('fs');
 
@@ -117,15 +73,9 @@ for (const suite of report.testResults || []) {
         console.log('FAILED ' + file + ' > <suite failed to run>');
         continue;
     }
-    // Identical file > describe > title names would merge in parse_log's sets, so the
-    // 2nd+ occurrence gets a declaration-order suffix (stable across stages).
-    const seen = new Map();
     for (const a of results) {
-        let name = [file].concat(a.ancestorTitles || [], [a.title]).join(' > ');
-        const n = (seen.get(name) || 0) + 1;
-        seen.set(name, n);
-        if (n > 1) name += ' #' + n;
-        console.log((STATUS[a.status] || 'SKIPPED') + ' ' + name);
+        const parts = [file].concat(a.ancestorTitles || [], [a.title]);
+        console.log((STATUS[a.status] || 'SKIPPED') + ' ' + parts.join(' > '));
     }
 }
 
@@ -135,16 +85,6 @@ console.log('jest-report: suites=' + (report.numTotalTestSuites || 0) +
             ' failed=' + (report.numFailedTests || 0) +
             ' pending=' + (report.numPendingTests || 0));
 """
-
-_GATE_DEPS_JS = (
-    "const fs = require('fs');\n"
-    "const pkg = require('./package.json');\n"
-    "const names = Object.keys(Object.assign({}, pkg.dependencies, pkg.devDependencies));\n"
-    "const missing = names.filter((n) => !fs.existsSync('node_modules/' + n + '/package.json'));\n"
-    "if (missing.length) { console.error('missing dependencies: ' + missing.join(', ')); process.exit(1); }\n"
-    "console.log('dependencies present: ' + names.length);\n"
-    "console.log('babel-jest -> ' + require.resolve('babel-jest'));\n"
-)
 
 _CHECK_GIT_CHANGES = """#!/bin/bash
 set -e
@@ -165,8 +105,7 @@ exit 0
 """
 
 
-class ImageBase(Image):
-
+class SphinxNavFiberImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -179,7 +118,7 @@ class ImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
+    def dependency(self) -> str | Image:
         return NODE_IMAGE
 
     def image_tag(self) -> str:
@@ -192,6 +131,10 @@ class ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
         org = self.pr.org
         repo = self.pr.repo
         enh = DockerfileEnhancer
@@ -202,13 +145,10 @@ class ImageBase(Image):
             f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
             f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
         )
-        apt_command = self._get_apt_update_command(
-            " \\\n    ".join(_APT_PACKAGES), NODE_IMAGE
-        )
 
         return f"""{enh.SYNTAX_DIRECTIVE}
 
-FROM {NODE_IMAGE}
+FROM {image_name}
 
 {enh._TARGETARCH_ARG}
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
@@ -224,7 +164,7 @@ ARG BASE_COMMIT
 
 {self.global_env}
 
-{apt_command}
+RUN corepack enable || (rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg && corepack enable)
 
 RUN git config --global --add safe.directory '*'
 
@@ -238,8 +178,7 @@ CMD ["/bin/bash"]
 """
 
 
-class ImageDefault(Image):
-
+class SphinxNavFiberImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -253,7 +192,7 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return ImageBase(self.pr, self._config)
+        return SphinxNavFiberImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -263,12 +202,13 @@ class ImageDefault(Image):
 
     def _prepare_sh(self) -> str:
         repo = self.pr.repo
+        resolve = _BASE_RESOLVE + _PR_RESOLVE.get(self.pr.number, [])
+        resolve_js = ", ".join(f"'{m}'" for m in resolve)
+
         jest_report_js = _JEST_REPORT_JS.replace("__REPO__", repo)
 
         return (
             f"{_SCRIPT_HEADER}"
-            f"{_NPM_CI_FN}"
-            "\n"
             "# --- 1. pin ---\n"
             f"cd /home/{repo}\n"
             "git reset --hard\n"
@@ -284,22 +224,35 @@ class ImageDefault(Image):
             "__JEST_REPORT_EOF__\n"
             "\n"
             "node --version\n"
-            "npm --version\n"
-            "test -f package-lock.json\n"
-            "npm_ci\n"
+            "\n"
+            "# Run the vendored yarn named by .yarnrc.yml (the release packageManager pins)\n"
+            "# directly, so the install never depends on corepack fetching yarn. The Cypress\n"
+            "# binary is only needed for e2e/component tests, and husky's postinstall hook\n"
+            "# setup is irrelevant in the image.\n"
+            "YARN_JS=$(sed -n 's/^yarnPath: *//p' .yarnrc.yml)\n"
+            'test -f "$YARN_JS"\n'
+            'node "$YARN_JS" --version\n'
+            "export CYPRESS_INSTALL_BINARY=0\n"
+            "export HUSKY=0\n"
+            "installed=0\n"
+            "for attempt in 1 2 3; do\n"
+            '    if node "$YARN_JS" install --immutable; then installed=1; break; fi\n'
+            '    echo "prepare: yarn install attempt $attempt failed; retrying in 15s"\n'
+            "    sleep 15\n"
+            "done\n"
+            'if [ "$installed" != 1 ]; then\n'
+            '    echo "prepare: yarn install --immutable failed 3 times" >&2\n'
+            "    exit 1\n"
+            "fi\n"
             "\n"
             "# --- 3. gate ---\n"
-            "# The reporter, the test runner, every declared dependency, and jest's own\n"
-            "# config resolving to a non-empty test list.\n"
+            "# The reporter the run scripts need, the test runner and every module the graded\n"
+            "# command loads, and jest's own config resolving to a non-empty test list.\n"
             "test -s /home/jest-report.js\n"
             "test -x node_modules/.bin/jest\n"
-            "node -e \"$(cat <<'__GATE_EOF__'\n"
-            f"{_GATE_DEPS_JS}"
-            "__GATE_EOF__\n"
-            ')"\n'
+            f'node -e "require(\'./package.json\'); for (const m of [{resolve_js}]) console.log(m + \' -> \' + require.resolve(m))"\n'
             "node_modules/.bin/jest --version\n"
-            "# Count non-empty lines only: an empty test list can still print one blank line.\n"
-            "test_files=$(node_modules/.bin/jest --ci --listTests | awk 'NF' | wc -l)\n"
+            "test_files=$(NODE_ENV=test node_modules/.bin/jest --ci --listTests | wc -l)\n"
             'echo "jest --listTests: $test_files files"\n'
             'test "$test_files" -gt 0\n'
             'echo "DEPS_OK"\n'
@@ -315,29 +268,18 @@ class ImageDefault(Image):
     def _test_run_sh(self) -> str:
         return (
             f"{_SCRIPT_HEADER}"
-            f"{_NPM_INSTALL_FN}"
-            "\n"
-            f"{_APPLY_PATCH_FN}"
-            "\n"
             f"cd /home/{self.pr.repo}\n"
             "git reset --hard\n"
-            "apply_patch /home/test.patch\n"
-            "if touches_deps /home/test.patch; then npm_install; fi\n"
+            "git apply --whitespace=nowarn /home/test.patch\n"
             f"{_TEST_CMD}"
         )
 
     def _fix_run_sh(self) -> str:
         return (
             f"{_SCRIPT_HEADER}"
-            f"{_NPM_INSTALL_FN}"
-            "\n"
-            f"{_APPLY_PATCH_FN}"
-            "\n"
             f"cd /home/{self.pr.repo}\n"
             "git reset --hard\n"
-            "apply_patch /home/test.patch\n"
-            "apply_patch /home/fix.patch\n"
-            "if touches_deps /home/test.patch /home/fix.patch; then npm_install; fi\n"
+            "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
             f"{_TEST_CMD}"
         )
 
@@ -354,9 +296,12 @@ class ImageDefault(Image):
 
     def dockerfile(self) -> str:
         image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
         copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
 
-        return f"""FROM {image.image_name()}:{image.image_tag()}
+        return f"""FROM {name}:{tag}
 
 ARG BASE_COMMIT="{self.pr.base.sha}"
 
@@ -375,8 +320,8 @@ WORKDIR /home/{self.pr.repo}
 """
 
 
-@Instance.register("trekhleb", "javascript-algorithms")
-class JavascriptAlgorithms(Instance):
+@Instance.register("stakwork", "sphinx-nav-fiber")
+class SphinxNavFiber(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -387,7 +332,7 @@ class JavascriptAlgorithms(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+        return SphinxNavFiberImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -404,8 +349,8 @@ class JavascriptAlgorithms(Instance):
             return fix_patch_run_cmd
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, test_log: str) -> TestResult:
-        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+    def parse_log(self, log: str) -> TestResult:
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()

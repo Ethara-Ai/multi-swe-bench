@@ -186,6 +186,7 @@ from multi_swe_bench.harness.repos.typescript.streamich import *
 from multi_swe_bench.harness.repos.typescript.streetmix import *
 from multi_swe_bench.harness.repos.typescript.styleguidist import *
 from multi_swe_bench.harness.repos.typescript.super_productivity import *
+from multi_swe_bench.harness.repos.typescript.supermacro import *
 from multi_swe_bench.harness.repos.typescript.sveltejs import *
 from multi_swe_bench.harness.repos.typescript.SwissDataScienceCenter import *
 from multi_swe_bench.harness.repos.typescript.TanStack import *
@@ -268,3 +269,4 @@ from multi_swe_bench.harness.repos.typescript.jupyterlab import *
 from multi_swe_bench.harness.repos.typescript.stx_labs import *
 from multi_swe_bench.harness.repos.typescript.BuilderIO import *
 from multi_swe_bench.harness.repos.typescript.ocean_ds import *
+from multi_swe_bench.harness.repos.typescript.tsparticles import *

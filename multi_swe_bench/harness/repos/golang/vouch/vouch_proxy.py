@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Optional
 
@@ -5,51 +6,43 @@ from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Imag
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-GO_IMAGE = "golang:1.23.6-bookworm"
-BUN_IMAGE = "oven/bun:1.2.3-debian"
+GO_IMAGE = "golang:1.14"
 
-_JS_DIR = "d2js/js"
+_GO_MOD = """module github.com/vouch/vouch-proxy
 
-_ENV = (
-    "export CI=true\n"
-    "export CGO_ENABLED=0\n"
-    "export GOTOOLCHAIN=local\n"
-    "export GOFLAGS=-mod=readonly\n"
+go 1.14
+
+require (
+	github.com/dgrijalva/jwt-go v3.2.0+incompatible
+	github.com/gorilla/mux v1.7.4
+	github.com/gorilla/sessions v1.2.0
+	github.com/karupanerura/go-mock-http-response v0.0.0-20171201120521-7c242a447d45
+	github.com/mitchellh/mapstructure v1.2.2
+	github.com/patrickmn/go-cache v2.1.0+incompatible
+	github.com/spf13/viper v1.6.3
+	github.com/stretchr/testify v1.5.1
+	github.com/theckman/go-securerandom v0.1.1
+	github.com/tsenart/vegeta v0.0.0-20200307100307-e516e0bac62f
+	go.uber.org/zap v1.15.0
+	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
 )
+"""
 
-_BUILD_CMD = (
-    "GOOS=js GOARCH=wasm go build -ldflags='-s -w' -trimpath "
-    f"-o {_JS_DIR}/wasm/d2.wasm ./d2js\n"
-    f"(cd {_JS_DIR} && bun build.js)\n"
-)
 
-_TEST_CMD = (
-    f"{_BUILD_CMD}"
-    "rm -f /tmp/bun-test.log\n"
-    "set +e\n"
-    f"(cd {_JS_DIR} && bun test test/unit) 2>&1 | tee /tmp/bun-test.log\n"
-    "bun_rc=${PIPESTATUS[0]}\n"
-    "set -e\n"
-    'echo "bun test exit code: $bun_rc"\n'
-    "grep -Eq '^Ran [0-9]+ tests? across [0-9]+ files?\\.' /tmp/bun-test.log\n"
-)
+def _go_env(repo: str) -> str:
+    return (
+        "export GO111MODULE=on\n"
+        "export GOFLAGS=-mod=readonly\n"
+        "export GOPROXY=off\n"
+        "export CGO_ENABLED=0\n"
+        f"export VOUCH_ROOT=/home/{repo}/\n"
+        f"export VOUCH_CONFIG=/home/{repo}/config/testing/test_config.yml\n"
+    )
 
-_NO_DEPS_JS = (
-    "const p = require('./package.json'); "
-    "const deps = Object.keys({ ...p.dependencies, ...p.devDependencies, ...p.peerDependencies, "
-    "...p.optionalDependencies }).filter((n) => n !== 'bun'); "
-    "if (deps.length) { console.error('d2js: dependencies need an install: ' + deps.join(', ')); process.exit(1); } "
-    "console.log('d2js: no npm dependencies to install');"
-)
 
-_SMOKE_JS = (
-    "const { D2 } = await import('./dist/node-esm/index.js'); "
-    "const d2 = new D2(); "
-    "const r = await d2.compile('x -> y'); "
-    "await d2.worker.terminate(); "
-    "if (!r.diagram) { console.error('d2js smoke: no diagram'); process.exit(1); } "
-    "console.log('d2js smoke: compile ok');"
-)
+_UNGRADED_TESTS = {"handlers::TestValidateRequestHandlerPerf"}
+
+_SCRIPT_HEADER = "#!/bin/bash\nset -eo pipefail\n\nexport CI=true\n\n"
 
 _CHECK_GIT_CHANGES = """#!/bin/bash
 set -e
@@ -70,7 +63,20 @@ exit 0
 """
 
 
-class D2ImageBase(Image):
+def _test_cmd() -> str:
+    return (
+        "rm -f /tmp/go-test.json /tmp/go-test.stderr\n"
+        "rc=0\n"
+        "go test -json -count=1 ./... 2>/tmp/go-test.stderr | tee /tmp/go-test.json || rc=$?\n"
+        "cat /tmp/go-test.stderr >&2\n"
+        "if ! grep -q '\"Action\"' /tmp/go-test.json; then\n"
+        '    echo "go test exited with code $rc without emitting any test events" >&2\n'
+        '    exit "$(( rc == 0 ? 1 : rc ))"\n'
+        "fi\n"
+    )
+
+
+class VouchProxyImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -83,7 +89,7 @@ class D2ImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
+    def dependency(self) -> str | Image:
         return GO_IMAGE
 
     def image_tag(self) -> str:
@@ -96,6 +102,10 @@ class D2ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
         org = self.pr.org
         repo = self.pr.repo
         enh = DockerfileEnhancer
@@ -109,7 +119,7 @@ class D2ImageBase(Image):
 
         return f"""{enh.SYNTAX_DIRECTIVE}
 
-FROM {self.dependency()}
+FROM {image_name}
 
 {enh._TARGETARCH_ARG}
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
@@ -125,10 +135,6 @@ ARG BASE_COMMIT
 
 {self.global_env}
 
-COPY --from={BUN_IMAGE} /usr/local/bin/bun /usr/local/bin/bun
-
-RUN go version && bun --version
-
 RUN git config --global --add safe.directory '*'
 
 WORKDIR /home/
@@ -141,7 +147,7 @@ CMD ["/bin/bash"]
 """
 
 
-class D2ImageDefault(Image):
+class VouchProxyImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -155,7 +161,7 @@ class D2ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return D2ImageBase(self.pr, self._config)
+        return VouchProxyImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -165,14 +171,9 @@ class D2ImageDefault(Image):
 
     def _prepare_sh(self) -> str:
         repo = self.pr.repo
-
         return (
-            "#!/bin/bash\n"
-            "set -eo pipefail\n"
-            "\n"
-            f"{_ENV}"
-            "\n"
-            "# --- pin ---\n"
+            f"{_SCRIPT_HEADER}"
+            "# --- 1. pin ---\n"
             f"cd /home/{repo}\n"
             "git reset --hard\n"
             "git clean -fdx\n"
@@ -180,9 +181,15 @@ class D2ImageDefault(Image):
             f"git checkout --detach {self.pr.base.sha}\n"
             "bash /home/check_git_changes.sh\n"
             "\n"
-            "# --- provision ---\n"
+            "# --- 2. provision ---\n"
             "go version\n"
-            "bun --version\n"
+            "export GO111MODULE=on\n"
+            "export CGO_ENABLED=0\n"
+            "# Pinned module list (untracked; the run scripts' `git reset --hard` keeps it).\n"
+            "cat > go.mod <<'__GO_MOD_EOF__'\n"
+            f"{_GO_MOD}"
+            "__GO_MOD_EOF__\n"
+            "rm -f go.sum\n"
             "downloaded=0\n"
             "for attempt in 1 2 3; do\n"
             "    if go mod download; then downloaded=1; break; fi\n"
@@ -193,60 +200,59 @@ class D2ImageDefault(Image):
             '    echo "prepare: go mod download failed 3 times" >&2\n'
             "    exit 1\n"
             "fi\n"
-            "# No bun/npm install: d2js/js declares no dependencies except `bun` itself, which\n"
-            "# the base image provides, and the unit tests import only bun:test and the built\n"
-            "# dist/. The gate below asserts package.json still declares nothing else.\n"
-            "#\n"
-            "# Builds the base-commit wasm and bundle once, warming the Go build cache the\n"
-            "# run scripts reuse offline. build.js regenerates the TRACKED files\n"
-            "# d2js/js/src/platform.js and src/worker.js (upstream's Makefile restores them with\n"
-            "# `git checkout` afterwards), so from here on the tree is intentionally dirty.\n"
-            f"{_BUILD_CMD}"
+            "# Record go.sum for every package the test binaries load. go.mod must come out\n"
+            "# byte-identical: any requirement Go had to add would be an unpinned resolution.\n"
+            "cp go.mod /tmp/go.mod.pinned\n"
+            "go list -mod=mod -deps -test ./... > /dev/null\n"
+            "if ! cmp -s go.mod /tmp/go.mod.pinned; then\n"
+            '    echo "prepare: pinned go.mod is incomplete; go resolved extra requirements:" >&2\n'
+            "    diff /tmp/go.mod.pinned go.mod >&2 || true\n"
+            "    exit 1\n"
+            "fi\n"
             "\n"
-            "# --- gate ---\n"
-            f'(cd {_JS_DIR} && bun -e "{_NO_DEPS_JS}")\n'
-            f"test -s {_JS_DIR}/wasm/d2.wasm\n"
-            f"for f in index.js worker.js d2.wasm wasm_exec.js elk.js; do test -s {_JS_DIR}/dist/node-esm/$f; done\n"
-            f"unit_tests=$(ls {_JS_DIR}/test/unit/*.test.js | wc -l)\n"
-            'echo "bun unit test files: $unit_tests"\n'
-            'test "$unit_tests" -gt 0\n'
-            f'(cd {_JS_DIR} && bun -e "{_SMOKE_JS}")\n'
+            "# --- 3. gate ---\n"
+            "# The graded environment (offline, read-only go.mod) must compile every package and\n"
+            "# every test binary, and `go test` must see a non-empty test list.\n"
+            f"{_go_env(repo)}"
+            "test -s go.mod\n"
+            "test -s go.sum\n"
+            "go build ./...\n"
+            "go test -count=1 -run '^$' ./...\n"
+            "test_files=$(find . -name '*_test.go' -not -path './.git/*' | wc -l)\n"
+            'echo "test files: $test_files"\n'
+            'test "$test_files" -gt 0\n'
             'echo "DEPS_OK"\n'
         )
 
     def _run_sh(self) -> str:
+        repo = self.pr.repo
         return (
-            "#!/bin/bash\n"
-            "set -eo pipefail\n"
-            f"{_ENV}"
-            "export GOPROXY=off\n"
-            "\n"
-            f"cd /home/{self.pr.repo}\n"
-            f"{_TEST_CMD}"
+            f"{_SCRIPT_HEADER}"
+            f"{_go_env(repo)}\n"
+            f"cd /home/{repo}\n"
+            f"{_test_cmd()}"
         )
 
     def _test_run_sh(self) -> str:
+        repo = self.pr.repo
         return (
-            "#!/bin/bash\n"
-            "set -eo pipefail\n"
-            f"{_ENV}"
-            "export GOPROXY=off\n"
-            "\n"
-            f"cd /home/{self.pr.repo}\n"
+            f"{_SCRIPT_HEADER}"
+            f"{_go_env(repo)}\n"
+            f"cd /home/{repo}\n"
+            "git reset --hard\n"
             "git apply --whitespace=nowarn /home/test.patch\n"
-            f"{_TEST_CMD}"
+            f"{_test_cmd()}"
         )
 
     def _fix_run_sh(self) -> str:
+        repo = self.pr.repo
         return (
-            "#!/bin/bash\n"
-            "set -eo pipefail\n"
-            f"{_ENV}"
-            "export GOPROXY=off\n"
-            "\n"
-            f"cd /home/{self.pr.repo}\n"
+            f"{_SCRIPT_HEADER}"
+            f"{_go_env(repo)}\n"
+            f"cd /home/{repo}\n"
+            "git reset --hard\n"
             "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
-            f"{_TEST_CMD}"
+            f"{_test_cmd()}"
         )
 
     def files(self) -> list[File]:
@@ -286,8 +292,8 @@ WORKDIR /home/{self.pr.repo}
 """
 
 
-@Instance.register("terrastruct", "d2")
-class D2(Instance):
+@Instance.register("vouch", "vouch-proxy")
+class VouchProxy(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -298,7 +304,7 @@ class D2(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return D2ImageDefault(self.pr, self._config)
+        return VouchProxyImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -322,27 +328,36 @@ class D2(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        file_re = re.compile(r"^(\S.*\.test\.[cm]?[jt]sx?):$")
-        result_re = re.compile(r"^\((pass|fail|skip|todo)\) (.+?)(?: \[[\d.]+m?s\])?$")
-        recap_re = re.compile(r"^\d+ tests? (failed|skipped|todo):?$")
+        module = "github.com/vouch/vouch-proxy"
 
-        current_file = ""
         for line in log.splitlines():
-            line = line.rstrip()
-            if recap_re.match(line):
-                current_file = ""
+            line = line.strip()
+            start = line.find('{"Time"')
+            if start == -1:
                 continue
-            m = file_re.match(line)
-            if m:
-                current_file = m.group(1)
+            try:
+                event = json.loads(line[start:])
+            except ValueError:
                 continue
-            m = result_re.match(line)
-            if not m or not current_file:
+            if not isinstance(event, dict):
                 continue
-            status, name = m.group(1), f"{current_file} > {m.group(2)}"
-            if status == "pass":
+            action = event.get("Action")
+            test = event.get("Test")
+            if not test or action not in ("pass", "fail", "skip"):
+                continue
+
+            pkg = event.get("Package") or ""
+            if pkg == module:
+                pkg = "."
+            elif pkg.startswith(module + "/"):
+                pkg = pkg[len(module) + 1 :]
+            name = f"{pkg}::{test}"
+            if f"{pkg}::{test.split('/', 1)[0]}" in _UNGRADED_TESTS:
+                continue
+
+            if action == "pass":
                 passed_tests.add(name)
-            elif status == "fail":
+            elif action == "fail":
                 failed_tests.add(name)
             else:
                 skipped_tests.add(name)

@@ -5,51 +5,43 @@ from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Imag
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-GO_IMAGE = "golang:1.23.6-bookworm"
-BUN_IMAGE = "oven/bun:1.2.3-debian"
+PYTHON_IMAGE = "python:3.8-bookworm"
 
-_JS_DIR = "d2js/js"
-
-_ENV = (
-    "export CI=true\n"
-    "export CGO_ENABLED=0\n"
-    "export GOTOOLCHAIN=local\n"
-    "export GOFLAGS=-mod=readonly\n"
-)
-
-_BUILD_CMD = (
-    "GOOS=js GOARCH=wasm go build -ldflags='-s -w' -trimpath "
-    f"-o {_JS_DIR}/wasm/d2.wasm ./d2js\n"
-    f"(cd {_JS_DIR} && bun build.js)\n"
-)
+_CONSTRAINTS = """\
+ansible==2.10.5
+ansible-base==2.10.5
+Jinja2==2.11.2
+MarkupSafe==1.1.1
+cryptography==3.3.1
+cffi==1.14.4
+pycparser==2.20
+six==1.15.0
+PyYAML==5.3.1
+pytest==6.2.1
+attrs==20.3.0
+iniconfig==1.1.1
+packaging==20.8
+pluggy==0.13.1
+py==1.10.0
+pyparsing==2.4.7
+toml==0.10.2
+setuptools_scm==5.0.1
+wheel==0.36.2
+"""
 
 _TEST_CMD = (
-    f"{_BUILD_CMD}"
-    "rm -f /tmp/bun-test.log\n"
-    "set +e\n"
-    f"(cd {_JS_DIR} && bun test test/unit) 2>&1 | tee /tmp/bun-test.log\n"
-    "bun_rc=${PIPESTATUS[0]}\n"
-    "set -e\n"
-    'echo "bun test exit code: $bun_rc"\n'
-    "grep -Eq '^Ran [0-9]+ tests? across [0-9]+ files?\\.' /tmp/bun-test.log\n"
+    "rc=0\n"
+    "python -m pytest tests/unit -v -p no:cacheprovider "
+    "-o console_output_style=classic --continue-on-collection-errors || rc=$?\n"
+    "# pytest exit 1 = some tests failed (expected in the graded stages); 2-5 mean the\n"
+    "# run itself broke (interrupted, internal error, usage error, nothing collected).\n"
+    'if [ "$rc" -gt 1 ]; then\n'
+    '    echo "pytest exited with code $rc" >&2\n'
+    '    exit "$rc"\n'
+    "fi\n"
 )
 
-_NO_DEPS_JS = (
-    "const p = require('./package.json'); "
-    "const deps = Object.keys({ ...p.dependencies, ...p.devDependencies, ...p.peerDependencies, "
-    "...p.optionalDependencies }).filter((n) => n !== 'bun'); "
-    "if (deps.length) { console.error('d2js: dependencies need an install: ' + deps.join(', ')); process.exit(1); } "
-    "console.log('d2js: no npm dependencies to install');"
-)
-
-_SMOKE_JS = (
-    "const { D2 } = await import('./dist/node-esm/index.js'); "
-    "const d2 = new D2(); "
-    "const r = await d2.compile('x -> y'); "
-    "await d2.worker.terminate(); "
-    "if (!r.diagram) { console.error('d2js smoke: no diagram'); process.exit(1); } "
-    "console.log('d2js smoke: compile ok');"
-)
+_SCRIPT_HEADER = "#!/bin/bash\nset -eo pipefail\n\nexport CI=true\n\n"
 
 _CHECK_GIT_CHANGES = """#!/bin/bash
 set -e
@@ -70,7 +62,7 @@ exit 0
 """
 
 
-class D2ImageBase(Image):
+class XoperaOperaImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -83,8 +75,8 @@ class D2ImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return GO_IMAGE
+    def dependency(self) -> str | Image:
+        return PYTHON_IMAGE
 
     def image_tag(self) -> str:
         return "base"
@@ -96,6 +88,10 @@ class D2ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
         org = self.pr.org
         repo = self.pr.repo
         enh = DockerfileEnhancer
@@ -109,7 +105,7 @@ class D2ImageBase(Image):
 
         return f"""{enh.SYNTAX_DIRECTIVE}
 
-FROM {self.dependency()}
+FROM {image_name}
 
 {enh._TARGETARCH_ARG}
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
@@ -125,9 +121,10 @@ ARG BASE_COMMIT
 
 {self.global_env}
 
-COPY --from={BUN_IMAGE} /usr/local/bin/bun /usr/local/bin/bun
-
-RUN go version && bun --version
+ENV PYTHONUNBUFFERED=1 \\
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \\
+    PIP_NO_CACHE_DIR=1 \\
+    PIP_ROOT_USER_ACTION=ignore
 
 RUN git config --global --add safe.directory '*'
 
@@ -141,7 +138,7 @@ CMD ["/bin/bash"]
 """
 
 
-class D2ImageDefault(Image):
+class XoperaOperaImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -155,7 +152,7 @@ class D2ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return D2ImageBase(self.pr, self._config)
+        return XoperaOperaImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -167,12 +164,8 @@ class D2ImageDefault(Image):
         repo = self.pr.repo
 
         return (
-            "#!/bin/bash\n"
-            "set -eo pipefail\n"
-            "\n"
-            f"{_ENV}"
-            "\n"
-            "# --- pin ---\n"
+            f"{_SCRIPT_HEADER}"
+            "# --- 1. pin ---\n"
             f"cd /home/{repo}\n"
             "git reset --hard\n"
             "git clean -fdx\n"
@@ -180,71 +173,85 @@ class D2ImageDefault(Image):
             f"git checkout --detach {self.pr.base.sha}\n"
             "bash /home/check_git_changes.sh\n"
             "\n"
-            "# --- provision ---\n"
-            "go version\n"
-            "bun --version\n"
-            "downloaded=0\n"
+            "# --- 2. provision ---\n"
+            "# setup.cfg and the Pipfile pin nothing (ansible >= 2.8, pyyaml >= 3.10, pytest = *),\n"
+            "# so every package this install resolves - opera's deps, ansible's deps, pytest and\n"
+            "# its plugins, the build tooling - is pinned to its release as of the PR (Jan 2021).\n"
+            "# Written outside the repo so the tree stays untouched by it.\n"
+            "cat > /home/constraints.txt <<'__CONSTRAINTS_EOF__'\n"
+            f"{_CONSTRAINTS}"
+            "__CONSTRAINTS_EOF__\n"
+            "\n"
+            "python --version\n"
+            "pip --version\n"
+            "\n"
+            "# setup.py derives its version with setuptools_scm (setup_requires), so the build\n"
+            "# tooling is installed first and the editable install runs without build isolation\n"
+            "# to use it. This writes only gitignored output (src/*.egg-info).\n"
+            "installed=0\n"
             "for attempt in 1 2 3; do\n"
-            "    if go mod download; then downloaded=1; break; fi\n"
-            '    echo "prepare: go mod download attempt $attempt failed; retrying in 15s"\n'
+            "    if pip install -c /home/constraints.txt setuptools_scm wheel \\\n"
+            "        && pip install -c /home/constraints.txt --no-build-isolation -e . pytest; then\n"
+            "        installed=1\n"
+            "        break\n"
+            "    fi\n"
+            '    echo "prepare: pip install attempt $attempt failed; retrying in 15s"\n'
             "    sleep 15\n"
             "done\n"
-            'if [ "$downloaded" != 1 ]; then\n'
-            '    echo "prepare: go mod download failed 3 times" >&2\n'
+            'if [ "$installed" != 1 ]; then\n'
+            '    echo "prepare: pip install failed 3 times" >&2\n'
             "    exit 1\n"
             "fi\n"
-            "# No bun/npm install: d2js/js declares no dependencies except `bun` itself, which\n"
-            "# the base image provides, and the unit tests import only bun:test and the built\n"
-            "# dist/. The gate below asserts package.json still declares nothing else.\n"
-            "#\n"
-            "# Builds the base-commit wasm and bundle once, warming the Go build cache the\n"
-            "# run scripts reuse offline. build.js regenerates the TRACKED files\n"
-            "# d2js/js/src/platform.js and src/worker.js (upstream's Makefile restores them with\n"
-            "# `git checkout` afterwards), so from here on the tree is intentionally dirty.\n"
-            f"{_BUILD_CMD}"
             "\n"
-            "# --- gate ---\n"
-            f'(cd {_JS_DIR} && bun -e "{_NO_DEPS_JS}")\n'
-            f"test -s {_JS_DIR}/wasm/d2.wasm\n"
-            f"for f in index.js worker.js d2.wasm wasm_exec.js elk.js; do test -s {_JS_DIR}/dist/node-esm/$f; done\n"
-            f"unit_tests=$(ls {_JS_DIR}/test/unit/*.test.js | wc -l)\n"
-            'echo "bun unit test files: $unit_tests"\n'
-            'test "$unit_tests" -gt 0\n'
-            f'(cd {_JS_DIR} && bun -e "{_SMOKE_JS}")\n'
+            "# --- 3. gate ---\n"
+            "# opera must import from this checkout (not a site-packages copy), with the pinned\n"
+            "# dependencies, and pytest must collect a non-empty unit suite.\n"
+            'python -c "'
+            "import os, opera, yaml, ansible, pytest; "
+            f"p = os.path.realpath(opera.__path__[0]); print('opera ->', p); "
+            f"assert p == '/home/{repo}/src/opera', p; "
+            "print('PyYAML', yaml.__version__, '| pytest', pytest.__version__)"
+            '"\n'
+            "command -v opera\n"
+            "pip check\n"
+            "# Every resolved distribution must come from the constraints file (no modern stragglers).\n"
+            "python - <<'__PIN_CHECK_EOF__'\n"
+            "import importlib.metadata as md\n"
+            "norm = lambda n: n.lower().replace('_', '-')\n"
+            "pins = {norm(l.split('==')[0]) for l in open('/home/constraints.txt') if '==' in l}\n"
+            "extra = sorted({norm(d.metadata['Name']) for d in md.distributions()}\n"
+            "               - pins - {'pip', 'setuptools', 'opera'})\n"
+            "assert not extra, 'prepare: installed packages missing from constraints: %s' % extra\n"
+            "print('all installed packages pinned:', len(pins))\n"
+            "__PIN_CHECK_EOF__\n"
+            "collected=$(python -m pytest tests/unit --collect-only -q -p no:cacheprovider "
+            "| grep -c '::')\n"
+            'echo "pytest --collect-only: $collected tests"\n'
+            'test "$collected" -gt 0\n'
             'echo "DEPS_OK"\n'
         )
 
     def _run_sh(self) -> str:
         return (
-            "#!/bin/bash\n"
-            "set -eo pipefail\n"
-            f"{_ENV}"
-            "export GOPROXY=off\n"
-            "\n"
+            f"{_SCRIPT_HEADER}"
             f"cd /home/{self.pr.repo}\n"
             f"{_TEST_CMD}"
         )
 
     def _test_run_sh(self) -> str:
         return (
-            "#!/bin/bash\n"
-            "set -eo pipefail\n"
-            f"{_ENV}"
-            "export GOPROXY=off\n"
-            "\n"
+            f"{_SCRIPT_HEADER}"
             f"cd /home/{self.pr.repo}\n"
+            "git reset --hard\n"
             "git apply --whitespace=nowarn /home/test.patch\n"
             f"{_TEST_CMD}"
         )
 
     def _fix_run_sh(self) -> str:
         return (
-            "#!/bin/bash\n"
-            "set -eo pipefail\n"
-            f"{_ENV}"
-            "export GOPROXY=off\n"
-            "\n"
+            f"{_SCRIPT_HEADER}"
             f"cd /home/{self.pr.repo}\n"
+            "git reset --hard\n"
             "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
             f"{_TEST_CMD}"
         )
@@ -286,8 +293,8 @@ WORKDIR /home/{self.pr.repo}
 """
 
 
-@Instance.register("terrastruct", "d2")
-class D2(Instance):
+@Instance.register("xlab-si", "xopera-opera")
+class XoperaOpera(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -298,7 +305,7 @@ class D2(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return D2ImageDefault(self.pr, self._config)
+        return XoperaOperaImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -322,27 +329,19 @@ class D2(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        file_re = re.compile(r"^(\S.*\.test\.[cm]?[jt]sx?):$")
-        result_re = re.compile(r"^\((pass|fail|skip|todo)\) (.+?)(?: \[[\d.]+m?s\])?$")
-        recap_re = re.compile(r"^\d+ tests? (failed|skipped|todo):?$")
+        result_re = re.compile(
+            r"^(tests/\S+\.py::.*?)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)"
+            r"(?:\s+\[\s*\d+%\])?\s*$"
+        )
 
-        current_file = ""
         for line in log.splitlines():
-            line = line.rstrip()
-            if recap_re.match(line):
-                current_file = ""
+            m = result_re.match(line.rstrip())
+            if not m:
                 continue
-            m = file_re.match(line)
-            if m:
-                current_file = m.group(1)
-                continue
-            m = result_re.match(line)
-            if not m or not current_file:
-                continue
-            status, name = m.group(1), f"{current_file} > {m.group(2)}"
-            if status == "pass":
+            name, status = m.group(1), m.group(2)
+            if status in ("PASSED", "XPASS"):
                 passed_tests.add(name)
-            elif status == "fail":
+            elif status in ("FAILED", "ERROR"):
                 failed_tests.add(name)
             else:
                 skipped_tests.add(name)

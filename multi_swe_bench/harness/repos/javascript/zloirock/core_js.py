@@ -1,17 +1,76 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# Era boundary: PRs <= 1036 use lerna + webpack (Era 1)
-#               PRs >= 1279 use npm workspaces + qunit CLI (Era 2)
-ERA_1_MAX_PR = 1036
+ERA_MAX_PR = 1036
+
+NODE_IMAGE = "node:14.21.3-bullseye"
+
+_SCRIPT_HEADER = "#!/bin/bash\nset -eo pipefail\n\nexport CI=true\n\n"
+
+_BUILD = (
+    "node_modules/.bin/zx scripts/generate-indexes.mjs\n"
+    "node_modules/.bin/zx scripts/clean-and-copy.mjs\n"
+    "node_modules/.bin/zx scripts/build-compat-data.mjs\n"
+    "node_modules/.bin/zx scripts/build-compat-entries.mjs\n"
+    "node_modules/.bin/zx scripts/build-compat-modules-by-versions.mjs\n"
+    "node_modules/.bin/zx scripts/bundle.mjs\n"
+)
+
+_TEST_CMD = (
+    "QUNIT=node_modules/qunit/bin/qunit.js\n"
+    "missing_plan=0\n"
+    "plans=0\n"
+    "run_bundle() {\n"
+    '    local name="$1" entry="$2" output="$3"\n'
+    "    shift 3\n"
+    '    echo "=== core-js qunit bundle: $name ==="\n'
+    "    local build_rc=0\n"
+    '    node_modules/.bin/webpack --entry "$entry" --output-filename "$output" || build_rc=$?\n'
+    '    if [ "$build_rc" != 0 ]; then\n'
+    '        echo "webpack exited with code $build_rc for the $name bundle" >&2\n'
+    '        echo "not ok 0 <bundle failed to build>"\n'
+    "        return 0\n"
+    "    fi\n"
+    "    local rc=0\n"
+    '    node "$QUNIT" "$@" 2>&1 | tee "/tmp/qunit-$name.tap" || rc=$?\n'
+    '    if grep -Eq "^1\\.\\.[0-9]+$" "/tmp/qunit-$name.tap"; then\n'
+    "        plans=$((plans + 1))\n"
+    "    else\n"
+    '        echo "qunit exited with code $rc without a TAP plan for the $name bundle" >&2\n'
+    "        missing_plan=1\n"
+    "    fi\n"
+    "}\n"
+    "run_bundle global ./tests/tests/index.js tests.js packages/core-js-bundle/index.js tests/bundles/tests.js\n"
+    "run_bundle pure ./tests/pure/index.js pure.js tests/bundles/pure.js\n"
+    'if [ "$missing_plan" != 0 ] || [ "$plans" = 0 ]; then\n'
+    "    exit 1\n"
+    "fi\n"
+)
+
+_CHECK_GIT_CHANGES = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  git status --porcelain | head -20
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+"""
 
 
 class CoreJsImageBase(Image):
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -24,8 +83,8 @@ class CoreJsImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:18"
+    def dependency(self) -> str | Image:
+        return NODE_IMAGE
 
     def image_tag(self) -> str:
         return "base"
@@ -41,30 +100,48 @@ class CoreJsImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org = self.pr.org
+        repo = self.pr.repo
+        enh = DockerfileEnhancer
 
-        return f"""FROM {image_name}
+        label_block = (
+            f'LABEL org.opencontainers.image.title="{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.description="{org}/{repo} Docker image" \\\n'
+            f'      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\\n'
+            f'      org.opencontainers.image.authors="https://www.ethara.ai/"'
+        )
+
+        return f"""{enh.SYNTAX_DIRECTIVE}
+
+FROM {image_name}
+
+{enh._TARGETARCH_ARG}
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+{enh._PROXY_ARGS}
+
+{enh._ENV_BLOCK}
+
+{label_block}
+
+{enh._CERT_SYMLINKS}
 
 {self.global_env}
 
+RUN git config --global --add safe.directory '*'
+
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
-{self.clear_env}
+WORKDIR /home/{repo}
 
+CMD ["/bin/bash"]
 """
 
 
 class CoreJsImageDefault(Image):
-
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -77,7 +154,7 @@ class CoreJsImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Image:
         return CoreJsImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -86,197 +163,113 @@ class CoreJsImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
-    def _is_era1(self) -> bool:
-        return self.pr.number <= ERA_1_MAX_PR
+    def _prepare_sh(self) -> str:
+        repo = self.pr.repo
+        return (
+            f"{_SCRIPT_HEADER}"
+            "# --- 1. pin ---\n"
+            f"cd /home/{repo}\n"
+            "git reset --hard\n"
+            "git clean -fdx\n"
+            "bash /home/check_git_changes.sh\n"
+            f"git checkout --detach {self.pr.base.sha}\n"
+            "bash /home/check_git_changes.sh\n"
+            "\n"
+            "# --- 2. provision ---\n"
+            "node --version\n"
+            "npm --version\n"
+            "\n"
+            "# No lockfile is committed (.npmrc: package-lock=false), so resolve every range as\n"
+            "# of the base commit's date instead of today. --ignore-scripts skips the browser\n"
+            "# downloads (puppeteer, playwright, phantomjs) that only the karma suites use; no\n"
+            "# dependency of the node unit tests needs an install script.\n"
+            'export npm_config_before="$(git log -1 --format=%cI HEAD)"\n'
+            'echo "prepare: resolving npm dependencies as of $npm_config_before"\n'
+            "installed=0\n"
+            "for attempt in 1 2 3; do\n"
+            "    if npm install --ignore-scripts --no-audit --no-fund; then installed=1; break; fi\n"
+            '    echo "prepare: npm install attempt $attempt failed; retrying in 15s"\n'
+            "    rm -rf node_modules\n"
+            "    sleep 15\n"
+            "done\n"
+            'if [ "$installed" != 1 ]; then\n'
+            '    echo "prepare: npm install failed 3 times" >&2\n'
+            "    exit 1\n"
+            "fi\n"
+            "\n"
+            "# `npm run bootstrap`: installs core-js-builder / core-js-compat dependencies and\n"
+            "# symlinks the local packages, so the bundle is built from this checkout's modules.\n"
+            "bootstrapped=0\n"
+            "for attempt in 1 2 3; do\n"
+            "    if node_modules/.bin/lerna bootstrap --no-ci --ignore-scripts; then bootstrapped=1; break; fi\n"
+            '    echo "prepare: lerna bootstrap attempt $attempt failed; retrying in 15s"\n'
+            "    sleep 15\n"
+            "done\n"
+            'if [ "$bootstrapped" != 1 ]; then\n'
+            '    echo "prepare: lerna bootstrap failed 3 times" >&2\n'
+            "    exit 1\n"
+            "fi\n"
+            "\n"
+            "# Build the bundles once so the gate can check them; the run scripts rebuild after\n"
+            "# applying patches.\n"
+            f"{_BUILD}"
+            "node_modules/.bin/webpack --entry ./tests/tests/index.js --output-filename tests.js\n"
+            "node_modules/.bin/webpack --entry ./tests/pure/index.js --output-filename pure.js\n"
+            "\n"
+            "# --- 3. gate ---\n"
+            "# Node without native atob/btoa (the polyfill under test), QUnit's TAP CLI, the\n"
+            "# builder linked to this checkout, and every bundle the run scripts load.\n"
+            "node -e \"if (typeof atob !== 'undefined' || typeof btoa !== 'undefined') { console.error('native atob/btoa present'); process.exit(1); }\"\n"
+            "node node_modules/qunit/bin/qunit.js --version\n"
+            "test -x node_modules/.bin/webpack\n"
+            "test -x node_modules/.bin/zx\n"
+            'test "$(readlink packages/core-js-builder/node_modules/core-js)" = "../../core-js"\n'
+            'test "$(readlink packages/core-js-builder/node_modules/core-js-compat)" = "../../core-js-compat"\n'
+            "node -e \"console.log('builder webpack ' + require(require.resolve('webpack/package.json', { paths: ['packages/core-js-builder'] })).version)\"\n"
+            "test -s packages/core-js-compat/modules.json\n"
+            "test -s tests/bundles/tests.js\n"
+            "test -s tests/bundles/pure.js\n"
+            "node -e \"require('./packages/core-js-bundle/index.js'); if (typeof Array.prototype.at !== 'function') process.exit(1);\"\n"
+            'echo "DEPS_OK"\n'
+        )
 
-    def _prepare_script(self) -> str:
-        if self._is_era1():
-            # Era 1: lerna monorepo with webpack bundling
-            # - puppeteer env vars prevent chromium download failures
-            # - --legacy-peer-deps + --ignore-scripts for clean npm install
-            # - lerna@4 needed because lerna v7+ removed bootstrap
-            # - PATH must include node_modules/.bin for run-p/run-s (npm-run-all)
-            # - Individual build steps instead of npm run init/bundle (which use run-p not in PATH)
-            # - Install qunit@2.25.0 CLI to get TAP v13 output (original uses node-qunit with table format)
-            return """#!/bin/bash
-set -e
+    def _run_sh(self) -> str:
+        return (
+            f"{_SCRIPT_HEADER}"
+            f"cd /home/{self.pr.repo}\n"
+            f"{_BUILD}"
+            f"{_TEST_CMD}"
+        )
 
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
+    def _test_run_sh(self) -> str:
+        return (
+            f"{_SCRIPT_HEADER}"
+            f"cd /home/{self.pr.repo}\n"
+            "git reset --hard\n"
+            "git apply --whitespace=nowarn /home/test.patch\n"
+            f"{_BUILD}"
+            f"{_TEST_CMD}"
+        )
 
-export PUPPETEER_SKIP_DOWNLOAD=true
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-export PATH="$PWD/node_modules/.bin:$PATH"
-
-npm install --legacy-peer-deps --ignore-scripts || true
-npx lerna@4 bootstrap --no-ci || true
-
-zx scripts/generate-indexes.mjs
-zx scripts/clean-and-copy.mjs
-zx scripts/build-compat-data.mjs
-zx scripts/build-compat-entries.mjs
-zx scripts/build-compat-modules-by-versions.mjs
-zx scripts/bundle.mjs
-
-webpack --entry ./tests/helpers/qunit-helpers.js --output-filename qunit-helpers.js
-webpack --entry ./tests/tests/index.js --output-filename tests.js
-webpack --entry ./tests/pure/index.js --output-filename pure.js
-
-npm install qunit@2.25.0 --legacy-peer-deps --ignore-scripts || true
-
-""".format(pr=self.pr)
-        else:
-            return """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-npm install || true
-npm run prepare || true
-npm run bundle-tests || true
-
-""".format(pr=self.pr)
-
-    def _run_script(self) -> str:
-        if self._is_era1():
-            return """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-export PATH="$PWD/node_modules/.bin:$PATH"
-npx qunit packages/core-js-bundle/index.js tests/bundles/tests.js 2>&1 || true
-
-""".format(pr=self.pr)
-        else:
-            return """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-npx qunit packages/core-js/index.js tests/bundles/unit-global.js 2>&1 || true
-
-""".format(pr=self.pr)
-
-    def _test_run_script(self) -> str:
-        if self._is_era1():
-            # Regenerate indexes (scans dirs for new test files) and rebuild webpack bundles
-            return """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-export PATH="$PWD/node_modules/.bin:$PATH"
-git apply --whitespace=nowarn /home/test.patch
-
-zx scripts/generate-indexes.mjs
-webpack --entry ./tests/tests/index.js --output-filename tests.js
-webpack --entry ./tests/pure/index.js --output-filename pure.js
-
-npx qunit packages/core-js-bundle/index.js tests/bundles/tests.js 2>&1 || true
-
-""".format(pr=self.pr)
-        else:
-            return """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch
-npm run bundle-tests || true
-
-npx qunit packages/core-js/index.js tests/bundles/unit-global.js 2>&1 || true
-
-""".format(pr=self.pr)
-
-    def _fix_run_script(self) -> str:
-        if self._is_era1():
-            # Full rebuild needed: fix patch may add source modules that need bundling
-            return """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-export PATH="$PWD/node_modules/.bin:$PATH"
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
-zx scripts/generate-indexes.mjs
-zx scripts/clean-and-copy.mjs
-zx scripts/bundle.mjs
-webpack --entry ./tests/tests/index.js --output-filename tests.js
-webpack --entry ./tests/pure/index.js --output-filename pure.js
-
-npx qunit packages/core-js-bundle/index.js tests/bundles/tests.js 2>&1 || true
-
-""".format(pr=self.pr)
-        else:
-            return """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-npm run prepare || true
-npm run bundle-tests || true
-
-npx qunit packages/core-js/index.js tests/bundles/unit-global.js 2>&1 || true
-
-""".format(pr=self.pr)
+    def _fix_run_sh(self) -> str:
+        return (
+            f"{_SCRIPT_HEADER}"
+            f"cd /home/{self.pr.repo}\n"
+            "git reset --hard\n"
+            "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
+            f"{_BUILD}"
+            f"{_TEST_CMD}"
+        )
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                self._prepare_script(),
-            ),
-            File(
-                ".",
-                "run.sh",
-                self._run_script(),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                self._test_run_script(),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                self._fix_run_script(),
-            ),
+            File(".", "fix.patch", self.pr.fix_patch),
+            File(".", "test.patch", self.pr.test_patch),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES),
+            File(".", "prepare.sh", self._prepare_sh()),
+            File(".", "run.sh", self._run_sh()),
+            File(".", "test-run.sh", self._test_run_sh()),
+            File(".", "fix-run.sh", self._fix_run_sh()),
         ]
 
     def dockerfile(self) -> str:
@@ -284,19 +277,21 @@ exit 0
         name = image.image_name()
         tag = image.image_tag()
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
+        copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
 
         return f"""FROM {name}:{tag}
+
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
 {self.global_env}
 
 {copy_commands}
 
-{prepare_commands}
+RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{Image._HARDENING_BLOCK}
 
 {self.clear_env}
 
@@ -305,9 +300,13 @@ exit 0
 
 @Instance.register("zloirock", "core-js")
 class CoreJs(Instance):
-
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
+        if pr.number > ERA_MAX_PR:
+            raise ValueError(
+                f"zloirock/core-js #{pr.number}: this config covers the lerna + webpack "
+                f"layout (PRs <= {ERA_MAX_PR}) only"
+            )
         self._pr = pr
         self._config = config
 
@@ -333,43 +332,43 @@ class CoreJs(Instance):
             return fix_patch_run_cmd
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, test_log: str) -> TestResult:
+    def parse_log(self, log: str) -> TestResult:
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
+
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # TAP v13: "ok <N> <name>", "not ok <N> <name>", directives "# SKIP" / "# TODO"
-        re_ok = re.compile(r"^ok\s+\d+\s+(.+)$")
-        re_not_ok = re.compile(r"^not ok\s+\d+\s+(.+)$")
-        re_directive = re.compile(r"^(.+?)\s+#\s+(SKIP|TODO)\b.*$")
+        bundle_re = re.compile(r"^=== core-js qunit bundle: (\S+) ===$")
+        result_re = re.compile(r"^(ok|not ok) \d+ (?:# (SKIP|TODO) )?(.*\S)$")
 
-        for line in test_log.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-
-            m = re_not_ok.match(line)
+        bundle = None
+        seen: dict[str, int] = {}
+        for line in log.splitlines():
+            line = line.rstrip()
+            m = bundle_re.match(line)
             if m:
-                test_name = m.group(1).strip()
-                d = re_directive.match(test_name)
-                if d:
-                    skipped_tests.add(d.group(1).strip())
-                else:
-                    failed_tests.add(test_name)
+                bundle = m.group(1)
                 continue
-
-            m = re_ok.match(line)
-            if m:
-                test_name = m.group(1).strip()
-                d = re_directive.match(test_name)
-                if d:
-                    skipped_tests.add(d.group(1).strip())
-                else:
-                    passed_tests.add(test_name)
+            if bundle is None:
                 continue
+            m = result_re.match(line)
+            if not m:
+                continue
+            status, directive, title = m.groups()
+            name = f"{bundle} > {title}"
+            seen[name] = seen.get(name, 0) + 1
+            if seen[name] > 1:
+                name = f"{name} #{seen[name]}"
+            if directive:
+                skipped_tests.add(name)
+            elif status == "ok":
+                passed_tests.add(name)
+            else:
+                failed_tests.add(name)
 
-        failed_tests -= skipped_tests
         passed_tests -= failed_tests
+        skipped_tests -= failed_tests
         passed_tests -= skipped_tests
 
         return TestResult(
