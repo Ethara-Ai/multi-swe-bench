@@ -5,3 +5,4 @@ from multi_swe_bench.harness.repos.python.open_telemetry.opentelemetry_python_56
 from multi_swe_bench.harness.repos.python.open_telemetry.opentelemetry_python_311_to_235 import *
 from multi_swe_bench.harness.repos.python.open_telemetry.opentelemetry_python_4208_to_348 import *
 from multi_swe_bench.harness.repos.python.open_telemetry.opentelemetry_python_contrib import *  # noqa: F401,F403
+from multi_swe_bench.harness.repos.python.open_telemetry.opentelemetry_python_contrib_3584_to_1645 import *  # noqa: F401,F403
