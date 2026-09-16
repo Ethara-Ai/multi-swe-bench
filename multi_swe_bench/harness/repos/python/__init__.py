@@ -420,7 +420,6 @@ from multi_swe_bench.harness.repos.python.tlsfuzzer import *
 from multi_swe_bench.harness.repos.python.pytorch.vision import *
 from multi_swe_bench.harness.repos.python.novaweb_mobi import *
 from multi_swe_bench.harness.repos.python.histolab import *
-from multi_swe_bench.harness.repos.python.kornia_rs import *
 from multi_swe_bench.harness.repos.python.speechbrain import *
 from multi_swe_bench.harness.repos.python.CycloneDX import *
 from multi_swe_bench.harness.repos.python.benthayer import *
@@ -453,3 +452,7 @@ from multi_swe_bench.harness.repos.python.alandtse import *
 from multi_swe_bench.harness.repos.python.dstl import *
 from multi_swe_bench.harness.repos.python.dry_python import returns_1199  # noqa: F401
 from multi_swe_bench.harness.repos.python.xlab_si import *
+
+from multi_swe_bench.harness.repos.python.kr8s_org import *
+
+from multi_swe_bench.harness.repos.python.lemon24 import *

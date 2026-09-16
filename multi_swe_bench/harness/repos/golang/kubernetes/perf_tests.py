@@ -359,33 +359,51 @@ def run_tests_sh(
 
 
 # ---------------------------------------------------------------------------
-# kubescape/kubescape — a Go CLI with a second module under httphandler/ and a git2go
-# submodule that must be built statically before anything compiles.
+# kubernetes/perf-tests — a Go monorepo with SEVEN independent modules (clusterloader2,
+# perfdash, network, slo-monitor, _logviewer, util-images/*). There is no root go.mod, so
+# `go test ./...` at the repo root is meaningless.
 #
 # Architecture: shared base (req.txt / QC Reference A) — see the SHARED BUILD BLOCKS section below.
+#
+# Scope: the clusterloader2 module. That is where the gold test_patch's only _test.go file
+# lives (pkg/measurement/common/slos/api_responsiveness_prometheus_test.go) and it holds all
+# nine unit-test files in the tree. The patch's second file,
+# network/benchmarks/netperf/nptest/nptest.go, is production code that the collector's path
+# heuristic filed under test_patch because its NAME contains "test"; it carries no tests and
+# is never compiled here.
 
-# go.mod declares `go 1.19`, and the dependency graph needs it: go-git-url and regolibrary
-# call `url.JoinPath`, which landed in Go 1.19. Building this tree on 1.18 fails with
-# "undefined: url.JoinPath" across most packages — including core/pkg/fixhandler, where the
-# gold test lives — so only a handful of tests ever ran and no transition could be observed.
-LANG_IMAGE = "golang:1.19-bullseye"
+# clusterloader2/go.mod declares `go 1.13` and replaces the whole k8s tree at v0.18.0 (March
+# 2020). Go 1.16 flipped the -mod=vendor/GO111MODULE defaults and started rejecting the
+# implicit-dependency patterns this era relies on, so the toolchain follows the tree rather
+# than the calendar. 1.15 is the last release in that band and the last with a `-buster`
+# variant.
+LANG_IMAGE = "golang:1.15-buster"
 
-APT = ["bash", "ca-certificates", "cmake", "git", "libssl-dev", "pkg-config"]
+MODULE_DIR = "clusterloader2"
 
-# -json        : machine-readable, package-qualified records. Plain `--- PASS: TestX` console
-#                lines carry no package, and this repo repeats test names across packages.
-# -count=1     : defeat the build cache, so stage N does not replay stage N-1's verdicts.
-# -tags static : required by the git2go CGO binding built in prepare.sh.
-TEST_CMD = "go test -tags static -json -count=1 ./..."
+# -json   : machine-readable, package-qualified records. Plain `--- PASS: TestX` console
+#           lines carry no package, and this module has nine test packages that can and do
+#           repeat a test name.
+# -count=1: defeat the build cache, so stage N does not replay stage N-1's verdicts.
+TEST_CMD = f"cd /home/perf-tests/{MODULE_DIR} && go test -json -count=1 ./..."
 
-# git2go is a submodule and must be built statically before any package compiles.
-PROVISION = """git submodule update --init --recursive
-(cd git2go && make install-static)
+# clusterloader2 vendors its full k8s v0.18 dependency tree. Resolving from the network
+# instead would make a 2020 module graph a live dependency of every run.
+GO_ENV = """export GO111MODULE=on
+export GOFLAGS=-mod=vendor
+export GOPROXY=off
+export GOSUMDB=off"""
 
-go mod download
-if [ -f httphandler/go.mod ]; then (cd httphandler && go mod download); fi"""
+PROVISION = f"""{GO_ENV}
 
-GATE = """go build -tags static ./..."""
+cd /home/perf-tests/{MODULE_DIR}
+test -d vendor
+go build ./..."""
+
+# `go vet` is deliberately not run: the gold fix_patch is an errcheck-linter sweep, so a vet
+# finding is the thing under test, not a build prerequisite.
+GATE = f"""cd /home/perf-tests/{MODULE_DIR} \\
+    && go test -count=1 -run XXX_NO_MATCH ./... > /dev/null"""
 
 
 class ImageBase(Image):
@@ -414,12 +432,11 @@ class ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        # bullseye=True: that suite's pool has been pruned upstream — see
-        # apt_block above. Reproduced on golang:1.19-bullseye for arm64 as well as
-        # amd64, so it bites the native second pass of a cross-arch build too.
-        return base_dockerfile(
-            self.pr, self.dependency(), apt_packages=APT, bullseye=True
-        )
+        # No apt block: the full golang image already carries git, ca-certificates, make and
+        # a C toolchain, and buster's repositories have moved to archive.debian.org — an
+        # `apt-get update` here would be a live network dependency on a deprecated mirror
+        # for packages that are already present.
+        return base_dockerfile(self.pr, self.dependency())
 
 
 class ImageDefault(Image):
@@ -453,11 +470,7 @@ class ImageDefault(Image):
             File(
                 ".",
                 "run_tests.sh",
-                # The httphandler module is a separate go.mod; its results are appended to
-                # the same JSON stream so one parse covers both.
-                run_tests_sh(
-                    self.pr.repo, TEST_CMD, go=True, extra_go_module="httphandler"
-                ),
+                run_tests_sh(self.pr.repo, TEST_CMD, env=GO_ENV, go=True),
             ),
             File(
                 ".",
@@ -475,11 +488,11 @@ class ImageDefault(Image):
         return pr_dockerfile(self.pr, self.dependency().image_full_name(), self.files())
 
 
-# One PR in this dataset (#1184), so there is no interval to name. Instance.create
+# One PR in this dataset (#1426), so there is no interval to name. Instance.create
 # derives the key from {org}/{repo} when number_interval is unset
-# (instance.py:41-51), so "kubescape/kubescape" is the only key a record here can resolve to.
-@Instance.register("kubescape", "kubescape")
-class KUBESCAPE_KUBESCAPE(Instance):
+# (instance.py:41-51), so "kubernetes/perf-tests" is the only key a record here can resolve to.
+@Instance.register("kubernetes", "perf-tests")
+class KUBERNETES_PERF_TESTS(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr

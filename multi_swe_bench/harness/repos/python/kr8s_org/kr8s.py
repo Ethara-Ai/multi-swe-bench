@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import re
+import xml.etree.ElementTree as ET
 from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -28,12 +28,6 @@ from multi_swe_bench.harness.pull_request import PullRequest
 SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1.6"
 BEGIN_MARKER = "===== BEGIN TEST DETAIL ====="
 END_MARKER = "===== END TEST DETAIL ====="
-
-# Stripped before any matching. `go test -json` emits structured JSON and this parser reads
-# only Action/Test/Package, so ANSI is not expected here — but a colour sequence leaking onto
-# a line would defeat the `startswith("{")` guard below and silently drop that record, and
-# Check 4C requires the strip unconditionally.
-_ANSI_RE = re.compile(r"\x1B\[[0-?9;]*[mK]")
 
 
 def _arg_env_label(org: str, repo: str) -> str:
@@ -358,34 +352,142 @@ def run_tests_sh(
     return out
 
 
+_ANSI_RE = re.compile(r"\x1B\[[0-?9;]*[mK]")
+
+
 # ---------------------------------------------------------------------------
-# kubescape/kubescape — a Go CLI with a second module under httphandler/ and a git2go
-# submodule that must be built statically before anything compiles.
+# kr8s-org/kr8s — an async Kubernetes API library.
 #
 # Architecture: shared base (req.txt / QC Reference A) — see the SHARED BUILD BLOCKS section below.
+#
+# Scope: the single file the gold test_patch adds. The rest of kr8s/tests talks to a live
+# cluster (see CONFTEST_STUB) and cannot run in a grading container.
 
-# go.mod declares `go 1.19`, and the dependency graph needs it: go-git-url and regolibrary
-# call `url.JoinPath`, which landed in Go 1.19. Building this tree on 1.18 fails with
-# "undefined: url.JoinPath" across most packages — including core/pkg/fixhandler, where the
-# gold test lives — so only a handful of tests ever ran and no transition could be observed.
-LANG_IMAGE = "golang:1.19-bullseye"
+# pyproject declares requires-python >=3.8; ruff targets py310. The runtime deps of this era
+# (httpx-ws>=0.5.1, python-box>=7, anyio>=3.7) are all wheels on 3.11, the newest interpreter
+# this 2024-04 tree was exercised against.
+LANG_IMAGE = "python:3.11-slim-bookworm"
 
-APT = ["bash", "ca-certificates", "cmake", "git", "libssl-dev", "pkg-config"]
+APT = ["bash", "ca-certificates", "git"]
 
-# -json        : machine-readable, package-qualified records. Plain `--- PASS: TestX` console
-#                lines carry no package, and this repo repeats test names across packages.
-# -count=1     : defeat the build cache, so stage N does not replay stage N-1's verdicts.
-# -tags static : required by the git2go CGO binding built in prepare.sh.
-TEST_CMD = "go test -tags static -json -count=1 ./..."
+# hatch-vcs derives the package version from git tags. HEAD is detached by the time
+# prepare.sh installs, and the PR layer's prune block later deletes every ref, so leaving
+# version discovery to git invites "unable to determine version". hatch-vcs delegates to
+# setuptools_scm, so both pretend-version variables are honoured. Cosmetic: nothing in the
+# suite asserts on kr8s.__version__.
+PRETEND_VERSION = "0.14.0"
 
-# git2go is a submodule and must be built statically before any package compiles.
-PROVISION = """git submodule update --init --recursive
-(cd git2go && make install-static)
+# --junitxml    : machine-readable; see parse_junit_log below.
+# --override-ini: pyproject's addopts carry `--keep-cluster` (a pytest-kind option) and
+#                 `--cov`; with neither plugin installed an unknown option is a hard usage
+#                 error, not a warning.
+# --continue-on-collection-errors : at the test stage `kr8s._config` does not exist yet, so
+#                 this module is SUPPOSED to fail to import.
+TEST_CMD = (
+    "python -m pytest kr8s/tests/test_config.py -v --tb=short "
+    "--override-ini=addopts= -p no:cacheprovider "
+    "--continue-on-collection-errors "
+    "--junitxml=/home/results.xml"
+)
 
-go mod download
-if [ -f httphandler/go.mod ]; then (cd httphandler && go mod download); fi"""
+# The upstream root conftest.py stands up a real KIND cluster (Docker-in-Docker) in a
+# session-scoped autouse fixture, and kr8s/conftest.py hangs an autouse `ns` fixture off it
+# that shells out to kubectl. Neither is available inside a grading container, and both run
+# for ANY test collected under the repo root.
+#
+# The graded tests do not need a cluster: `temp_kubeconfig` only copies the BYTES of
+# k8s_cluster.kubeconfig_path, and KubeConfig/KubeConfigSet are pure file+YAML
+# (anyio.open_file + yaml.safe_load / safe_dump) with no socket in sight. So the fixture is
+# replaced with a static kubeconfig on disk and a no-op kubectl. This is a harness
+# substitution, not a test rewrite: the assertions, the module under test and the three-stage
+# comparison are untouched, and the substitution is identical across all three stages.
+CONFTEST_STUB = '''# Replaced by the Multi-SWE-Bench harness. See the config module for the
+# rationale: the graded kubeconfig tests parse a file and never contact a cluster, so the
+# KIND (Docker-in-Docker) session fixture is stubbed out.
+import os
 
-GATE = """go build -tags static ./..."""
+import pytest
+
+KUBECONFIG = """apiVersion: v1
+kind: Config
+preferences: {}
+extensions: []
+current-context: pytest-kind-cluster
+clusters:
+- name: pytest-kind-cluster
+  cluster:
+    server: https://127.0.0.1:6443
+    certificate-authority-data: RkFLRS1DQQ==
+contexts:
+- name: pytest-kind-cluster
+  context:
+    cluster: pytest-kind-cluster
+    user: pytest-kind-cluster
+users:
+- name: pytest-kind-cluster
+  user:
+    client-certificate-data: RkFLRS1DRVJU
+    client-key-data: RkFLRS1LRVk=
+"""
+
+
+class StubCluster:
+    """Stands in for pytest_kind.cluster.KindCluster.
+
+    Only the surface the suite actually touches: ``kubeconfig_path`` (read by
+    temp_kubeconfig) and ``kubectl`` (called by the autouse ``ns`` fixture in
+    kr8s/conftest.py, which creates and deletes a namespace nothing graded looks at).
+    """
+
+    def __init__(self, kubeconfig_path):
+        self.kubeconfig_path = kubeconfig_path
+        self.kubectl_path = "/bin/true"
+
+    def kubectl(self, *args, **kwargs):
+        return ""
+
+
+@pytest.fixture(scope="session", autouse=True)
+def k8s_cluster(tmp_path_factory):
+    path = tmp_path_factory.mktemp("kubeconfig") / "config"
+    path.write_text(KUBECONFIG)
+    os.environ["KUBECONFIG"] = str(path)
+    yield StubCluster(path)
+    os.environ.pop("KUBECONFIG", None)
+'''
+
+# asyncio_mode=auto in pyproject means the bare `async def` tests need pytest-asyncio;
+# without it they are collected, skipped with a warning, and every stage reports the same
+# nothing.
+#
+# sniffio is a genuine UNDECLARED dependency: kr8s/_portforward.py imports it directly but
+# pyproject never lists it. In 2024 it arrived transitively via anyio; anyio dropped that
+# requirement later (4.15.1 requires only exceptiongroup/idna/typing_extensions), so
+# resolving this unpinned tree today yields an anyio without sniffio and `import kr8s` dies
+# with ModuleNotFoundError.
+#
+# trio is needed only so the gate can sweep the whole kr8s/tests directory: test_io.py
+# imports it at module scope, and without it that one module raises during collection and
+# pytest exits 2 even though 122 other tests collect fine. It is a declared [test] extra, so
+# installing it is faithful rather than a workaround.
+PROVISION = f"""export SETUPTOOLS_SCM_PRETEND_VERSION="{PRETEND_VERSION}"
+export HATCH_VCS_PRETEND_VERSION="{PRETEND_VERSION}"
+
+pip install --no-cache-dir pytest pytest-asyncio sniffio trio
+pip install --no-cache-dir -e /home/kr8s
+
+cp /home/conftest_stub.py /home/kr8s/conftest.py"""
+
+# test_config.py does not exist at the base commit (the gold test_patch adds it), so the gate
+# sweeps the suite directory instead — which is also what proves the stubbed conftest imports
+# cleanly.
+GATE = """python -c "import kr8s, anyio, yaml, pytest; print('imports ok')"
+cd /home/kr8s && python -m pytest kr8s/tests --collect-only -q \\
+    --override-ini=addopts= -p no:cacheprovider"""
+
+# Re-applied every stage: a stage that silently ran against the real KIND fixture would hang,
+# not fail loudly.
+RUN_PREFIX = "cp /home/conftest_stub.py /home/kr8s/conftest.py"
 
 
 class ImageBase(Image):
@@ -414,11 +516,11 @@ class ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        # bullseye=True: that suite's pool has been pruned upstream — see
-        # apt_block above. Reproduced on golang:1.19-bullseye for arm64 as well as
-        # amd64, so it bites the native second pass of a cross-arch build too.
         return base_dockerfile(
-            self.pr, self.dependency(), apt_packages=APT, bullseye=True
+            self.pr,
+            self.dependency(),
+            apt_packages=APT,
+            extra_run="RUN pip install --no-cache-dir --upgrade pip setuptools wheel",
         )
 
 
@@ -450,14 +552,11 @@ class ImageDefault(Image):
             File(".", "fix.patch", self.pr.fix_patch),
             File(".", "test.patch", self.pr.test_patch),
             File(".", "check_git_changes.sh", CHECK_GIT_CHANGES),
+            File(".", "conftest_stub.py", CONFTEST_STUB),
             File(
                 ".",
                 "run_tests.sh",
-                # The httphandler module is a separate go.mod; its results are appended to
-                # the same JSON stream so one parse covers both.
-                run_tests_sh(
-                    self.pr.repo, TEST_CMD, go=True, extra_go_module="httphandler"
-                ),
+                run_tests_sh(self.pr.repo, TEST_CMD, prefix=RUN_PREFIX),
             ),
             File(
                 ".",
@@ -475,11 +574,11 @@ class ImageDefault(Image):
         return pr_dockerfile(self.pr, self.dependency().image_full_name(), self.files())
 
 
-# One PR in this dataset (#1184), so there is no interval to name. Instance.create
+# One PR in this dataset (#347), so there is no interval to name. Instance.create
 # derives the key from {org}/{repo} when number_interval is unset
-# (instance.py:41-51), so "kubescape/kubescape" is the only key a record here can resolve to.
-@Instance.register("kubescape", "kubescape")
-class KUBESCAPE_KUBESCAPE(Instance):
+# (instance.py:41-51), so "kr8s-org/kr8s" is the only key a record here can resolve to.
+@Instance.register("kr8s-org", "kr8s")
+class KR8S_ORG_KR8S(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -506,48 +605,55 @@ class KUBESCAPE_KUBESCAPE(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Only the `go test -json` stream between the markers is parsed: the stderr block
-        # echoed just above it carries compiler diagnostics whose text can contain anything,
-        # including strings that look like results.
-        in_detail = False
-        for line in _ANSI_RE.sub("", test_log).splitlines():
-            stripped = line.strip()
-            if stripped.startswith(BEGIN_MARKER):
-                in_detail = True
-                continue
-            if stripped.startswith(END_MARKER):
-                in_detail = False
-                continue
-            if not in_detail or not stripped.startswith("{"):
-                continue
-            try:
-                event = json.loads(stripped)
-            except ValueError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            if event.get("Action") not in ("pass", "fail", "skip"):
-                continue
-            # Package-level roll-ups carry no "Test" key; counting them would add one
-            # synthetic result per package on top of the real tests.
-            test = event.get("Test")
-            if not test:
-                continue
-            # Package-qualified: Go repos of this size repeat test names across packages,
-            # and an unqualified name would collide between them.
-            package = event.get("Package") or ""
-            name = f"{package}::{test}" if package else test
+        # run_tests.sh cats the junit XML between the markers and this parses it directly —
+        # the same job the old shipped parse_junit.py did inside the container, moved here so
+        # it is ordinary code rather than a Python string rendered to a file and run by a
+        # shell. Console `-v` text is still never parsed: pytest's short summary prints
+        # `FAILED tests/x.py::test_y - AssertionError: ...`, and a regex over that captures
+        # the error message INTO the test id, so the same test would get a different name at
+        # the test stage than at the fix stage and the transition would be silently lost.
+        text = _ANSI_RE.sub("", test_log)
+        if BEGIN_MARKER not in text or END_MARKER not in text:
+            return TestResult(0, 0, 0, set(), set(), set())
+        xml = text.split(BEGIN_MARKER, 1)[1].split(END_MARKER, 1)[0].strip()
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            # A truncated or interleaved document yields no results rather than a crash;
+            # Report.check rule 1 then rejects the instance loudly instead of scoring a
+            # partial read.
+            return TestResult(0, 0, 0, set(), set(), set())
 
-            action = event["Action"]
-            if action == "pass":
-                passed_tests.add(name)
-            elif action == "fail":
-                failed_tests.add(name)
+        for tc in root.iter("testcase"):
+            # @file gives a real, rerunnable node id (tests/x.py::test_y[param]); classname
+            # is the fallback for runners that omit it.
+            path = tc.get("file")
+            if not path:
+                classname = tc.get("classname") or ""
+                path = classname.replace(".", "/") + ".py"
+            # Newlines are flattened to keep ids byte-identical to what the previous
+            # line-oriented parser produced, so verdicts do not shift on this change.
+            name = (tc.get("name") or "").replace("\r", " ").replace("\n", " ")
+
+            status = "PASSED"
+            for child in tc:
+                if child.tag in ("failure", "error"):
+                    status = "FAILED"
+                    break
+                if child.tag == "skipped":
+                    status = "SKIPPED"
+                    break
+
+            full = path + "::" + name
+            if status == "PASSED":
+                passed_tests.add(full)
+            elif status == "FAILED":
+                failed_tests.add(full)
             else:
-                skipped_tests.add(name)
+                skipped_tests.add(full)
 
-        # Failure wins; each test lands in exactly one bucket. A parent test emits its own
-        # pass/fail alongside its subtests, and a parent can fail while some subtests pass.
+        # Failure wins; each test lands in exactly one bucket. TestResult.__post_init__
+        # rejects any overlap outright, so this normalisation is load-bearing, not defensive.
         passed_tests -= failed_tests
         skipped_tests -= passed_tests
         skipped_tests -= failed_tests

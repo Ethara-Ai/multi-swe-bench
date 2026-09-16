@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import re
+import xml.etree.ElementTree as ET
 from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -28,12 +28,6 @@ from multi_swe_bench.harness.pull_request import PullRequest
 SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1.6"
 BEGIN_MARKER = "===== BEGIN TEST DETAIL ====="
 END_MARKER = "===== END TEST DETAIL ====="
-
-# Stripped before any matching. `go test -json` emits structured JSON and this parser reads
-# only Action/Test/Package, so ANSI is not expected here — but a colour sequence leaking onto
-# a line would defeat the `startswith("{")` guard below and silently drop that record, and
-# Check 4C requires the strip unconditionally.
-_ANSI_RE = re.compile(r"\x1B\[[0-?9;]*[mK]")
 
 
 def _arg_env_label(org: str, repo: str) -> str:
@@ -358,34 +352,88 @@ def run_tests_sh(
     return out
 
 
+_ANSI_RE = re.compile(r"\x1B\[[0-?9;]*[mK]")
+
+
 # ---------------------------------------------------------------------------
-# kubescape/kubescape — a Go CLI with a second module under httphandler/ and a git2go
-# submodule that must be built statically before anything compiles.
+# kornia/kornia-rs — a Rust computer-vision core with PyO3 Python bindings built by maturin.
 #
 # Architecture: shared base (req.txt / QC Reference A) — see the SHARED BUILD BLOCKS section below.
+#
+# The gold fix_patch edits Rust crates, so every graded stage must REBUILD the extension
+# (`maturin develop`) before pytest runs — otherwise all three stages would exercise the
+# binary built at prepare time and the fix would be invisible.
+#
+# Scope: kornia-py/tests/test_apriltag.py, the single file the gold test_patch touches. That
+# matters for more than noise here: the other eight test modules import `torch`, a ~2GB wheel
+# this PR does not need. test_apriltag.py imports only numpy and pytest.
 
-# go.mod declares `go 1.19`, and the dependency graph needs it: go-git-url and regolibrary
-# call `url.JoinPath`, which landed in Go 1.19. Building this tree on 1.18 fails with
-# "undefined: url.JoinPath" across most packages — including core/pkg/fixhandler, where the
-# gold test lives — so only a handful of tests ever ran and no transition could be observed.
-LANG_IMAGE = "golang:1.19-bullseye"
+# Cargo's 2024-era crate graph; bookworm carries a python3.11 new enough for the PyO3 wheel
+# maturin produces.
+LANG_IMAGE = "rust:1.98-bookworm"
 
-APT = ["bash", "ca-certificates", "cmake", "git", "libssl-dev", "pkg-config"]
+APT = [
+    "build-essential",
+    "ca-certificates",
+    "cmake",
+    "curl",
+    "git",
+    "libgstreamer1.0-dev",
+    "libgstreamer-plugins-base1.0-dev",
+    "libunwind-dev",
+    "nasm",
+    "pkg-config",
+    "python3",
+    "python3-dev",
+    "python3-pip",
+    "python3-venv",
+]
 
-# -json        : machine-readable, package-qualified records. Plain `--- PASS: TestX` console
-#                lines carry no package, and this repo repeats test names across packages.
-# -count=1     : defeat the build cache, so stage N does not replay stage N-1's verdicts.
-# -tags static : required by the git2go CGO binding built in prepare.sh.
-TEST_CMD = "go test -tags static -json -count=1 ./..."
+EXTRA_ENV = """ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \\
+    PYTHONDONTWRITEBYTECODE=1 \\
+    CARGO_HOME=/usr/local/cargo \\
+    RUSTUP_HOME=/usr/local/rustup \\
+    PATH=/usr/local/cargo/bin:$PATH"""
 
-# git2go is a submodule and must be built statically before any package compiles.
+# --junitxml    : machine-readable; see parse_junit_log below.
+# --override-ini: pytest-run-parallel is in the [dev] extra and is not installed here, so any
+#                 addopts referencing it would be a hard usage error.
+TEST_CMD = (
+    "python -m pytest kornia-py/tests/test_apriltag.py -v --tb=short "
+    "--override-ini=addopts= -p no:cacheprovider "
+    "--continue-on-collection-errors "
+    "--junitxml=/home/results.xml"
+)
+
+# The [dev] extra is pytest + pytest-run-parallel + numpy + torch, and it lives in
+# pyproject.toml — `kornia-py/requirements-dev.txt` does NOT exist at this commit. The
+# previous config installed that missing file with `|| true`, which is precisely why pytest
+# was never present and all three stages silently reported zero tests.
+# `tests/data/apriltag-imgs` is a SUBMODULE (.gitmodules -> kornia/apriltag-imgs), and
+# test_apriltag.py reads tag36h11/tag36_11_00005.png out of it. Without the init the file is
+# absent and test_apriltag_decoder dies with FileNotFoundError in all three stages — an
+# environment defect masquerading as a stable test failure. Placed in Section 2, after the
+# pin: `git clean -fdx` in Section 1 would otherwise wipe the submodule contents, and
+# `--init` resolves the gitlink recorded at THIS base commit, so the data matches the era.
 PROVISION = """git submodule update --init --recursive
-(cd git2go && make install-static)
 
-go mod download
-if [ -f httphandler/go.mod ]; then (cd httphandler && go mod download); fi"""
+python3 -m venv /home/kornia-rs/.venv
+/home/kornia-rs/.venv/bin/python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+/home/kornia-rs/.venv/bin/python -m pip install --no-cache-dir \\
+    pytest numpy "maturin[patchelf]==1.5.1"
 
-GATE = """go build -tags static ./..."""
+. /home/kornia-rs/.venv/bin/activate && maturin develop -m kornia-py/Cargo.toml"""
+
+GATE = """. /home/kornia-rs/.venv/bin/activate \\
+    && python -c "import kornia_rs, numpy, pytest; print('imports ok')"
+cd /home/kornia-rs && . /home/kornia-rs/.venv/bin/activate \\
+    && python -m pytest kornia-py/tests/test_apriltag.py --collect-only -q \\
+    --override-ini=addopts= -p no:cacheprovider"""
+
+# The fix_patch edits Rust crates; without this rebuild every stage would run the extension
+# built at prepare time and no transition could ever be observed.
+RUN_PREFIX = """. /home/kornia-rs/.venv/bin/activate
+maturin develop -m kornia-py/Cargo.toml"""
 
 
 class ImageBase(Image):
@@ -414,11 +462,8 @@ class ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        # bullseye=True: that suite's pool has been pruned upstream — see
-        # apt_block above. Reproduced on golang:1.19-bullseye for arm64 as well as
-        # amd64, so it bites the native second pass of a cross-arch build too.
         return base_dockerfile(
-            self.pr, self.dependency(), apt_packages=APT, bullseye=True
+            self.pr, self.dependency(), apt_packages=APT, extra_env=EXTRA_ENV
         )
 
 
@@ -453,11 +498,7 @@ class ImageDefault(Image):
             File(
                 ".",
                 "run_tests.sh",
-                # The httphandler module is a separate go.mod; its results are appended to
-                # the same JSON stream so one parse covers both.
-                run_tests_sh(
-                    self.pr.repo, TEST_CMD, go=True, extra_go_module="httphandler"
-                ),
+                run_tests_sh(self.pr.repo, TEST_CMD, prefix=RUN_PREFIX),
             ),
             File(
                 ".",
@@ -475,11 +516,11 @@ class ImageDefault(Image):
         return pr_dockerfile(self.pr, self.dependency().image_full_name(), self.files())
 
 
-# One PR in this dataset (#1184), so there is no interval to name. Instance.create
+# One PR in this dataset (#636), so there is no interval to name. Instance.create
 # derives the key from {org}/{repo} when number_interval is unset
-# (instance.py:41-51), so "kubescape/kubescape" is the only key a record here can resolve to.
-@Instance.register("kubescape", "kubescape")
-class KUBESCAPE_KUBESCAPE(Instance):
+# (instance.py:41-51), so "kornia/kornia-rs" is the only key a record here can resolve to.
+@Instance.register("kornia", "kornia-rs")
+class KORNIA_KORNIA_RS(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -506,48 +547,55 @@ class KUBESCAPE_KUBESCAPE(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Only the `go test -json` stream between the markers is parsed: the stderr block
-        # echoed just above it carries compiler diagnostics whose text can contain anything,
-        # including strings that look like results.
-        in_detail = False
-        for line in _ANSI_RE.sub("", test_log).splitlines():
-            stripped = line.strip()
-            if stripped.startswith(BEGIN_MARKER):
-                in_detail = True
-                continue
-            if stripped.startswith(END_MARKER):
-                in_detail = False
-                continue
-            if not in_detail or not stripped.startswith("{"):
-                continue
-            try:
-                event = json.loads(stripped)
-            except ValueError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            if event.get("Action") not in ("pass", "fail", "skip"):
-                continue
-            # Package-level roll-ups carry no "Test" key; counting them would add one
-            # synthetic result per package on top of the real tests.
-            test = event.get("Test")
-            if not test:
-                continue
-            # Package-qualified: Go repos of this size repeat test names across packages,
-            # and an unqualified name would collide between them.
-            package = event.get("Package") or ""
-            name = f"{package}::{test}" if package else test
+        # run_tests.sh cats the junit XML between the markers and this parses it directly —
+        # the same job the old shipped parse_junit.py did inside the container, moved here so
+        # it is ordinary code rather than a Python string rendered to a file and run by a
+        # shell. Console `-v` text is still never parsed: pytest's short summary prints
+        # `FAILED tests/x.py::test_y - AssertionError: ...`, and a regex over that captures
+        # the error message INTO the test id, so the same test would get a different name at
+        # the test stage than at the fix stage and the transition would be silently lost.
+        text = _ANSI_RE.sub("", test_log)
+        if BEGIN_MARKER not in text or END_MARKER not in text:
+            return TestResult(0, 0, 0, set(), set(), set())
+        xml = text.split(BEGIN_MARKER, 1)[1].split(END_MARKER, 1)[0].strip()
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            # A truncated or interleaved document yields no results rather than a crash;
+            # Report.check rule 1 then rejects the instance loudly instead of scoring a
+            # partial read.
+            return TestResult(0, 0, 0, set(), set(), set())
 
-            action = event["Action"]
-            if action == "pass":
-                passed_tests.add(name)
-            elif action == "fail":
-                failed_tests.add(name)
+        for tc in root.iter("testcase"):
+            # @file gives a real, rerunnable node id (tests/x.py::test_y[param]); classname
+            # is the fallback for runners that omit it.
+            path = tc.get("file")
+            if not path:
+                classname = tc.get("classname") or ""
+                path = classname.replace(".", "/") + ".py"
+            # Newlines are flattened to keep ids byte-identical to what the previous
+            # line-oriented parser produced, so verdicts do not shift on this change.
+            name = (tc.get("name") or "").replace("\r", " ").replace("\n", " ")
+
+            status = "PASSED"
+            for child in tc:
+                if child.tag in ("failure", "error"):
+                    status = "FAILED"
+                    break
+                if child.tag == "skipped":
+                    status = "SKIPPED"
+                    break
+
+            full = path + "::" + name
+            if status == "PASSED":
+                passed_tests.add(full)
+            elif status == "FAILED":
+                failed_tests.add(full)
             else:
-                skipped_tests.add(name)
+                skipped_tests.add(full)
 
-        # Failure wins; each test lands in exactly one bucket. A parent test emits its own
-        # pass/fail alongside its subtests, and a parent can fail while some subtests pass.
+        # Failure wins; each test lands in exactly one bucket. TestResult.__post_init__
+        # rejects any overlap outright, so this normalisation is load-bearing, not defensive.
         passed_tests -= failed_tests
         skipped_tests -= passed_tests
         skipped_tests -= failed_tests

@@ -228,3 +228,4 @@ from multi_swe_bench.harness.repos.golang.bebop import *
 from multi_swe_bench.harness.repos.golang.vllm_project import *
 from multi_swe_bench.harness.repos.golang.cuducos import *
 from multi_swe_bench.harness.repos.golang.eclipse_paho import *
+from multi_swe_bench.harness.repos.golang.kubernetes import *
