@@ -473,3 +473,13 @@ class Netbird(Instance):
             failed_tests=failed_tests,
             skipped_tests=skipped_tests,
         )
+
+
+# === bundle number_interval routing (prs_in_bundle dash-joined) ===
+# Single-era repo -> every bundle key routes to the one Netbird class.
+# Original "netbirdio/netbird" registration above is kept.
+_BUNDLE_NIS_NETBIRD = [
+    "4083-4145",
+]
+for _ni in _BUNDLE_NIS_NETBIRD:
+    Instance.register("netbirdio", _ni)(Netbird)
