@@ -8,31 +8,10 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# ---------------------------------------------------------------------------
-# SHARED BUILD BLOCKS — inlined so this config is self-contained, matching every other file
-# under harness/repos/**. The architecture is fixed by req.txt:
-#   1. the BASE Dockerfile carries content only up to `git clone`, then CMD ["/bin/bash"];
-#   2. git stripping/hardening lives in the PR Dockerfile — never in the base, never in
-#      prepare.sh.
-# That is the shared-base shape of QC_PROMPT_BASE_PR_PREPARE.md (Reference A).
-#
-# The prune block below ships FOUR canonical assertions (HEAD, refs, remotes, rev-list) and
-# BOTH `git reflog expire` variants. Deleting refs alone does not delete commits — the reflog
-# is itself a reachability root — so dropping either expire line silently leaks the fix
-# commit into a shipped image that still builds and still passes.
-# ---------------------------------------------------------------------------
-# The DockerfileEnhancer opt-out (image.py:317). Load-bearing on a shared base: without it
-# `_standardize_repo_fetch` rewrites the clone into `git checkout ${BASE_COMMIT}` + the
-# hardening block, pinning the shared base to whichever PR built it first and breaking every
-# other PR in the shard — while the committed config still looks correct.
 SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1.6"
 BEGIN_MARKER = "===== BEGIN TEST DETAIL ====="
 END_MARKER = "===== END TEST DETAIL ====="
 
-# Stripped before any matching. `go test -json` emits structured JSON and this parser reads
-# only Action/Test/Package, so ANSI is not expected here — but a colour sequence leaking onto
-# a line would defeat the `startswith("{")` guard below and silently drop that record, and
-# Check 4C requires the strip unconditionally.
 _ANSI_RE = re.compile(r"\x1B\[[0-?9;]*[mK]")
 
 
@@ -40,9 +19,6 @@ def _arg_env_label(org: str, repo: str) -> str:
     return f'''ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 ARG BASE_COMMIT
-# ^ Declared, never referenced. The harness passes BASE_COMMIT to every base build
-#   (build_dataset.py:612-619); declaring it silences BuildKit's unused-arg warning, while
-#   CONSUMING it is what would pin this shared base to a single PR.
 
 ARG http_proxy=""
 ARG https_proxy=""
@@ -81,18 +57,6 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
 
 
 def apt_block(packages: list[str], *, bullseye: bool = False) -> str:
-    """An apt install, optionally with the Debian-bullseye archive workaround.
-
-    `bullseye=True` drops the security suite first. Bullseye's security pool has been
-    pruned while its index still advertises the removed .debs, so *every* `apt-get install`
-    on a bullseye image 404s — reproducible on a stock `python:3.8-slim-bullseye`, nothing
-    to do with any repo. Dropping the suite resolves the same packages from the main
-    bullseye pool one security revision older, which is correct for an image pinned to a
-    historical source tree anyway.
-
-    `Acquire::Retries` is unconditional: a transient CDN drop mid-download has failed a
-    base build here with "Error reading from server. Remote end closed connection".
-    """
     pkgs = " \\\n    ".join(sorted(packages))
     sed = (
         "sed -i '/security.debian.org/d; /debian-security/d' /etc/apt/sources.list \\\n    && "
@@ -116,7 +80,6 @@ def base_dockerfile(
     extra_env: str = "",
     extra_run: str = "",
 ) -> str:
-    """Render the shared base: everything up to the clone, then CMD (req.txt #1)."""
     sections = [
         f"{SYNTAX_DIRECTIVE}\nFROM {image_name}",
         _arg_env_label(pr.org, pr.repo),
@@ -127,13 +90,9 @@ def base_dockerfile(
         sections.append(apt_block(apt_packages, bullseye=bullseye))
     if extra_run:
         sections.append(extra_run)
-    # git >= 2.35.2 refuses to operate on a tree owned by another uid; the graded stages run
-    # as root over a tree written at build time, so declare it safe once here.
     sections.append("RUN git config --global --add safe.directory '*'")
     sections.append("WORKDIR /home/")
     sections.append(
-        "# Full-history clone, kept intact: NO checkout and NO scrub here — both are\n"
-        "# per-PR and belong to the PR layer (req.txt #2).\n"
         f'RUN git clone "${{REPO_URL}}" /home/{pr.repo} \\\n'
         f"    && cd /home/{pr.repo} \\\n"
         "    && git rev-parse HEAD >/dev/null"
@@ -143,17 +102,6 @@ def base_dockerfile(
 
 
 def _prune_block(repo: str, sha: str) -> str:
-    """The git stripping — owned by the PR layer per req.txt #2.
-
-    Four canonical assertions (HEAD, refs, remotes, rev-list) and BOTH `git reflog expire`
-    variants: deleting refs alone does not delete commits, because the reflog is itself a
-    reachability root and every fix commit would stay recoverable.
-
-    Deliberately contains no `git reset`, no `git clean` and no path-scoped checkout.
-    prepare.sh is permitted to leave the tree intentionally dirty (a patched test config, a
-    generated version file, a stubbed conftest) and any of those commands would silently
-    revert exactly that work, surfacing much later as unrelated test errors.
-    """
     return f'''RUN set -eux; \\
     cd /home/{repo}; \\
     test "$(git rev-parse HEAD)" = "{sha}"; \\
@@ -173,7 +121,6 @@ def _prune_block(repo: str, sha: str) -> str:
     test -z "$(git remote)"; \\
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
-# Submodules carry their own history and their own leak. No-op when absent.
 RUN if [ -f /home/{repo}/.gitmodules ]; then \\
         cd /home/{repo} && git submodule foreach --recursive ' \\
             git checkout --detach HEAD; \\
@@ -189,15 +136,10 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 
 
 def pr_dockerfile(pr: PullRequest, base_full_name: str, files) -> str:
-    """Render the PR layer. Never enhanced — `enhance()` returns raw the moment the
-    dependency is an Image rather than a str (image.py:315-316) — so everything this layer
-    needs is written out here and nothing is injected."""
     copy_commands = "".join(f"COPY {f.name} /home/\n" for f in files)
     return f"""FROM {base_full_name}
 
 {copy_commands}
-# BUILD time: prepare.sh pins this PR's base commit and installs the era's dependencies, so
-# the shipped image is already provisioned before the agent starts.
 RUN bash /home/prepare.sh
 
 {_prune_block(pr.repo, pr.base.sha)}
@@ -224,17 +166,6 @@ exit 0
 
 
 def pin_section(repo: str, sha: str) -> str:
-    """Section 1 of prepare.sh: make the tree pristine, assert it, land detached on this
-    PR's base commit, assert again.
-
-    The `.git/info/attributes` write is what MAKES the tree pristine on a repo that ships
-    `.gitattributes` with `text`/`eol` rules. `git apply` matches patch context against BLOB
-    bytes, but an eol filter produces a working tree that differs from the index by line
-    endings alone — a tree that reads as modified at HEAD no matter how often it is reset,
-    so the pristine assertion below can never pass and CRLF hunks fail to apply.
-    lemon24/reader hits this squarely (`*.bat text eol=crlf` plus an unnormalised
-    docs/make.bat that the gold fix_patch rewrites). A harmless no-op everywhere else.
-    """
     return f"""# ---------- Section 1: PIN the tree to this PR's base commit ----------
 cd /home/{repo}
 
@@ -250,8 +181,6 @@ bash /home/check_git_changes.sh          # ASSERT pristine AT the base commit
 
 
 def prepare_sh(repo: str, sha: str, *, provision: str, gate: str, env: str = "") -> str:
-    """Assemble the three canonical sections. No patch is ever applied here (that is what
-    the three graded stages are for) and no history is scrubbed (req.txt #2)."""
     head = "#!/bin/bash\nset -euo pipefail\n\n"
     if env:
         head += env.rstrip("\n") + "\n\n"
@@ -270,13 +199,6 @@ def prepare_sh(repo: str, sha: str, *, provision: str, gate: str, env: str = "")
 
 
 def stage_scripts(repo: str) -> dict[str, str]:
-    """run.sh / test-run.sh / fix-run.sh — the three graded stages.
-
-    All three delegate to the single run_tests.sh so the test command cannot drift between
-    stages; they differ only in which patches are applied first. A failed `git apply` is a
-    hard error: silently grading an unpatched tree would report a clean run and destroy the
-    f2p signal.
-    """
     common = f"#!/bin/bash\nset -eo pipefail\n\ncd /home/{repo}\n"
     return {
         "run.sh": common + "bash /home/run_tests.sh\n",
@@ -304,12 +226,6 @@ def run_tests_sh(
     go: bool = False,
     extra_go_module: str = "",
 ) -> str:
-    """The ONE place the suite is invoked; all three stages delegate here.
-
-    `set -e` is lifted only around the test call: at the test stage the suite is SUPPOSED to
-    fail, and dying before the results are printed would report zero tests and satisfy
-    report.py's "the fix must fix something" check vacuously.
-    """
     out = "#!/bin/bash\nset -eo pipefail\n\nexport CI=true\n"
     if env:
         out += env.rstrip("\n") + "\n"
@@ -358,27 +274,13 @@ def run_tests_sh(
     return out
 
 
-# ---------------------------------------------------------------------------
-# kubescape/kubescape — a Go CLI with a second module under httphandler/ and a git2go
-# submodule that must be built statically before anything compiles.
-#
-# Architecture: shared base (req.txt / QC Reference A) — see the SHARED BUILD BLOCKS section below.
 
-# go.mod declares `go 1.19`, and the dependency graph needs it: go-git-url and regolibrary
-# call `url.JoinPath`, which landed in Go 1.19. Building this tree on 1.18 fails with
-# "undefined: url.JoinPath" across most packages — including core/pkg/fixhandler, where the
-# gold test lives — so only a handful of tests ever ran and no transition could be observed.
 LANG_IMAGE = "golang:1.19-bullseye"
 
 APT = ["bash", "ca-certificates", "cmake", "git", "libssl-dev", "pkg-config"]
 
-# -json        : machine-readable, package-qualified records. Plain `--- PASS: TestX` console
-#                lines carry no package, and this repo repeats test names across packages.
-# -count=1     : defeat the build cache, so stage N does not replay stage N-1's verdicts.
-# -tags static : required by the git2go CGO binding built in prepare.sh.
 TEST_CMD = "go test -tags static -json -count=1 ./..."
 
-# git2go is a submodule and must be built statically before any package compiles.
 PROVISION = """git submodule update --init --recursive
 (cd git2go && make install-static)
 
@@ -414,9 +316,6 @@ class ImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        # bullseye=True: that suite's pool has been pruned upstream — see
-        # apt_block above. Reproduced on golang:1.19-bullseye for arm64 as well as
-        # amd64, so it bites the native second pass of a cross-arch build too.
         return base_dockerfile(
             self.pr, self.dependency(), apt_packages=APT, bullseye=True
         )
@@ -453,8 +352,6 @@ class ImageDefault(Image):
             File(
                 ".",
                 "run_tests.sh",
-                # The httphandler module is a separate go.mod; its results are appended to
-                # the same JSON stream so one parse covers both.
                 run_tests_sh(
                     self.pr.repo, TEST_CMD, go=True, extra_go_module="httphandler"
                 ),
@@ -475,9 +372,6 @@ class ImageDefault(Image):
         return pr_dockerfile(self.pr, self.dependency().image_full_name(), self.files())
 
 
-# One PR in this dataset (#1184), so there is no interval to name. Instance.create
-# derives the key from {org}/{repo} when number_interval is unset
-# (instance.py:41-51), so "kubescape/kubescape" is the only key a record here can resolve to.
 @Instance.register("kubescape", "kubescape")
 class KUBESCAPE_KUBESCAPE(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
@@ -506,9 +400,6 @@ class KUBESCAPE_KUBESCAPE(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # Only the `go test -json` stream between the markers is parsed: the stderr block
-        # echoed just above it carries compiler diagnostics whose text can contain anything,
-        # including strings that look like results.
         in_detail = False
         for line in _ANSI_RE.sub("", test_log).splitlines():
             stripped = line.strip()
@@ -528,13 +419,9 @@ class KUBESCAPE_KUBESCAPE(Instance):
                 continue
             if event.get("Action") not in ("pass", "fail", "skip"):
                 continue
-            # Package-level roll-ups carry no "Test" key; counting them would add one
-            # synthetic result per package on top of the real tests.
             test = event.get("Test")
             if not test:
                 continue
-            # Package-qualified: Go repos of this size repeat test names across packages,
-            # and an unqualified name would collide between them.
             package = event.get("Package") or ""
             name = f"{package}::{test}" if package else test
 
@@ -546,8 +433,6 @@ class KUBESCAPE_KUBESCAPE(Instance):
             else:
                 skipped_tests.add(name)
 
-        # Failure wins; each test lands in exactly one bucket. A parent test emits its own
-        # pass/fail alongside its subtests, and a parent can fail while some subtests pass.
         passed_tests -= failed_tests
         skipped_tests -= passed_tests
         skipped_tests -= failed_tests

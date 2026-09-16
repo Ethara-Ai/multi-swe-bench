@@ -8,23 +8,6 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# ---------------------------------------------------------------------------
-# SHARED BUILD BLOCKS — inlined so this config is self-contained, matching every other file
-# under harness/repos/**. The architecture is fixed by req.txt:
-#   1. the BASE Dockerfile carries content only up to `git clone`, then CMD ["/bin/bash"];
-#   2. git stripping/hardening lives in the PR Dockerfile — never in the base, never in
-#      prepare.sh.
-# That is the shared-base shape of QC_PROMPT_BASE_PR_PREPARE.md (Reference A).
-#
-# The prune block below ships FOUR canonical assertions (HEAD, refs, remotes, rev-list) and
-# BOTH `git reflog expire` variants. Deleting refs alone does not delete commits — the reflog
-# is itself a reachability root — so dropping either expire line silently leaks the fix
-# commit into a shipped image that still builds and still passes.
-# ---------------------------------------------------------------------------
-# The DockerfileEnhancer opt-out (image.py:317). Load-bearing on a shared base: without it
-# `_standardize_repo_fetch` rewrites the clone into `git checkout ${BASE_COMMIT}` + the
-# hardening block, pinning the shared base to whichever PR built it first and breaking every
-# other PR in the shard — while the committed config still looks correct.
 SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1.6"
 BEGIN_MARKER = "===== BEGIN TEST DETAIL ====="
 END_MARKER = "===== END TEST DETAIL ====="
@@ -34,9 +17,6 @@ def _arg_env_label(org: str, repo: str) -> str:
     return f'''ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 ARG BASE_COMMIT
-# ^ Declared, never referenced. The harness passes BASE_COMMIT to every base build
-#   (build_dataset.py:612-619); declaring it silences BuildKit's unused-arg warning, while
-#   CONSUMING it is what would pin this shared base to a single PR.
 
 ARG http_proxy=""
 ARG https_proxy=""
@@ -75,18 +55,6 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
 
 
 def apt_block(packages: list[str], *, bullseye: bool = False) -> str:
-    """An apt install, optionally with the Debian-bullseye archive workaround.
-
-    `bullseye=True` drops the security suite first. Bullseye's security pool has been
-    pruned while its index still advertises the removed .debs, so *every* `apt-get install`
-    on a bullseye image 404s — reproducible on a stock `python:3.8-slim-bullseye`, nothing
-    to do with any repo. Dropping the suite resolves the same packages from the main
-    bullseye pool one security revision older, which is correct for an image pinned to a
-    historical source tree anyway.
-
-    `Acquire::Retries` is unconditional: a transient CDN drop mid-download has failed a
-    base build here with "Error reading from server. Remote end closed connection".
-    """
     pkgs = " \\\n    ".join(sorted(packages))
     sed = (
         "sed -i '/security.debian.org/d; /debian-security/d' /etc/apt/sources.list \\\n    && "
@@ -110,7 +78,6 @@ def base_dockerfile(
     extra_env: str = "",
     extra_run: str = "",
 ) -> str:
-    """Render the shared base: everything up to the clone, then CMD (req.txt #1)."""
     sections = [
         f"{SYNTAX_DIRECTIVE}\nFROM {image_name}",
         _arg_env_label(pr.org, pr.repo),
@@ -121,13 +88,9 @@ def base_dockerfile(
         sections.append(apt_block(apt_packages, bullseye=bullseye))
     if extra_run:
         sections.append(extra_run)
-    # git >= 2.35.2 refuses to operate on a tree owned by another uid; the graded stages run
-    # as root over a tree written at build time, so declare it safe once here.
     sections.append("RUN git config --global --add safe.directory '*'")
     sections.append("WORKDIR /home/")
     sections.append(
-        "# Full-history clone, kept intact: NO checkout and NO scrub here — both are\n"
-        "# per-PR and belong to the PR layer (req.txt #2).\n"
         f'RUN git clone "${{REPO_URL}}" /home/{pr.repo} \\\n'
         f"    && cd /home/{pr.repo} \\\n"
         "    && git rev-parse HEAD >/dev/null"
@@ -137,17 +100,6 @@ def base_dockerfile(
 
 
 def _prune_block(repo: str, sha: str) -> str:
-    """The git stripping — owned by the PR layer per req.txt #2.
-
-    Four canonical assertions (HEAD, refs, remotes, rev-list) and BOTH `git reflog expire`
-    variants: deleting refs alone does not delete commits, because the reflog is itself a
-    reachability root and every fix commit would stay recoverable.
-
-    Deliberately contains no `git reset`, no `git clean` and no path-scoped checkout.
-    prepare.sh is permitted to leave the tree intentionally dirty (a patched test config, a
-    generated version file, a stubbed conftest) and any of those commands would silently
-    revert exactly that work, surfacing much later as unrelated test errors.
-    """
     return f'''RUN set -eux; \\
     cd /home/{repo}; \\
     test "$(git rev-parse HEAD)" = "{sha}"; \\
@@ -167,7 +119,6 @@ def _prune_block(repo: str, sha: str) -> str:
     test -z "$(git remote)"; \\
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
-# Submodules carry their own history and their own leak. No-op when absent.
 RUN if [ -f /home/{repo}/.gitmodules ]; then \\
         cd /home/{repo} && git submodule foreach --recursive ' \\
             git checkout --detach HEAD; \\
@@ -183,15 +134,10 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 
 
 def pr_dockerfile(pr: PullRequest, base_full_name: str, files) -> str:
-    """Render the PR layer. Never enhanced — `enhance()` returns raw the moment the
-    dependency is an Image rather than a str (image.py:315-316) — so everything this layer
-    needs is written out here and nothing is injected."""
     copy_commands = "".join(f"COPY {f.name} /home/\n" for f in files)
     return f"""FROM {base_full_name}
 
 {copy_commands}
-# BUILD time: prepare.sh pins this PR's base commit and installs the era's dependencies, so
-# the shipped image is already provisioned before the agent starts.
 RUN bash /home/prepare.sh
 
 {_prune_block(pr.repo, pr.base.sha)}
@@ -218,17 +164,6 @@ exit 0
 
 
 def pin_section(repo: str, sha: str) -> str:
-    """Section 1 of prepare.sh: make the tree pristine, assert it, land detached on this
-    PR's base commit, assert again.
-
-    The `.git/info/attributes` write is what MAKES the tree pristine on a repo that ships
-    `.gitattributes` with `text`/`eol` rules. `git apply` matches patch context against BLOB
-    bytes, but an eol filter produces a working tree that differs from the index by line
-    endings alone — a tree that reads as modified at HEAD no matter how often it is reset,
-    so the pristine assertion below can never pass and CRLF hunks fail to apply.
-    lemon24/reader hits this squarely (`*.bat text eol=crlf` plus an unnormalised
-    docs/make.bat that the gold fix_patch rewrites). A harmless no-op everywhere else.
-    """
     return f"""# ---------- Section 1: PIN the tree to this PR's base commit ----------
 cd /home/{repo}
 
@@ -244,8 +179,6 @@ bash /home/check_git_changes.sh          # ASSERT pristine AT the base commit
 
 
 def prepare_sh(repo: str, sha: str, *, provision: str, gate: str, env: str = "") -> str:
-    """Assemble the three canonical sections. No patch is ever applied here (that is what
-    the three graded stages are for) and no history is scrubbed (req.txt #2)."""
     head = "#!/bin/bash\nset -euo pipefail\n\n"
     if env:
         head += env.rstrip("\n") + "\n\n"
@@ -264,13 +197,6 @@ def prepare_sh(repo: str, sha: str, *, provision: str, gate: str, env: str = "")
 
 
 def stage_scripts(repo: str) -> dict[str, str]:
-    """run.sh / test-run.sh / fix-run.sh — the three graded stages.
-
-    All three delegate to the single run_tests.sh so the test command cannot drift between
-    stages; they differ only in which patches are applied first. A failed `git apply` is a
-    hard error: silently grading an unpatched tree would report a clean run and destroy the
-    f2p signal.
-    """
     common = f"#!/bin/bash\nset -eo pipefail\n\ncd /home/{repo}\n"
     return {
         "run.sh": common + "bash /home/run_tests.sh\n",
@@ -298,12 +224,6 @@ def run_tests_sh(
     go: bool = False,
     extra_go_module: str = "",
 ) -> str:
-    """The ONE place the suite is invoked; all three stages delegate here.
-
-    `set -e` is lifted only around the test call: at the test stage the suite is SUPPOSED to
-    fail, and dying before the results are printed would report zero tests and satisfy
-    report.py's "the fix must fix something" check vacuously.
-    """
     out = "#!/bin/bash\nset -eo pipefail\n\nexport CI=true\n"
     if env:
         out += env.rstrip("\n") + "\n"
@@ -355,21 +275,7 @@ def run_tests_sh(
 _ANSI_RE = re.compile(r"\x1B\[[0-?9;]*[mK]")
 
 
-# ---------------------------------------------------------------------------
-# kornia/kornia-rs — a Rust computer-vision core with PyO3 Python bindings built by maturin.
-#
-# Architecture: shared base (req.txt / QC Reference A) — see the SHARED BUILD BLOCKS section below.
-#
-# The gold fix_patch edits Rust crates, so every graded stage must REBUILD the extension
-# (`maturin develop`) before pytest runs — otherwise all three stages would exercise the
-# binary built at prepare time and the fix would be invisible.
-#
-# Scope: kornia-py/tests/test_apriltag.py, the single file the gold test_patch touches. That
-# matters for more than noise here: the other eight test modules import `torch`, a ~2GB wheel
-# this PR does not need. test_apriltag.py imports only numpy and pytest.
 
-# Cargo's 2024-era crate graph; bookworm carries a python3.11 new enough for the PyO3 wheel
-# maturin produces.
 LANG_IMAGE = "rust:1.98-bookworm"
 
 APT = [
@@ -395,9 +301,6 @@ EXTRA_ENV = """ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \\
     RUSTUP_HOME=/usr/local/rustup \\
     PATH=/usr/local/cargo/bin:$PATH"""
 
-# --junitxml    : machine-readable; see parse_junit_log below.
-# --override-ini: pytest-run-parallel is in the [dev] extra and is not installed here, so any
-#                 addopts referencing it would be a hard usage error.
 TEST_CMD = (
     "python -m pytest kornia-py/tests/test_apriltag.py -v --tb=short "
     "--override-ini=addopts= -p no:cacheprovider "
@@ -405,16 +308,6 @@ TEST_CMD = (
     "--junitxml=/home/results.xml"
 )
 
-# The [dev] extra is pytest + pytest-run-parallel + numpy + torch, and it lives in
-# pyproject.toml — `kornia-py/requirements-dev.txt` does NOT exist at this commit. The
-# previous config installed that missing file with `|| true`, which is precisely why pytest
-# was never present and all three stages silently reported zero tests.
-# `tests/data/apriltag-imgs` is a SUBMODULE (.gitmodules -> kornia/apriltag-imgs), and
-# test_apriltag.py reads tag36h11/tag36_11_00005.png out of it. Without the init the file is
-# absent and test_apriltag_decoder dies with FileNotFoundError in all three stages — an
-# environment defect masquerading as a stable test failure. Placed in Section 2, after the
-# pin: `git clean -fdx` in Section 1 would otherwise wipe the submodule contents, and
-# `--init` resolves the gitlink recorded at THIS base commit, so the data matches the era.
 PROVISION = """git submodule update --init --recursive
 
 python3 -m venv /home/kornia-rs/.venv
@@ -430,8 +323,6 @@ cd /home/kornia-rs && . /home/kornia-rs/.venv/bin/activate \\
     && python -m pytest kornia-py/tests/test_apriltag.py --collect-only -q \\
     --override-ini=addopts= -p no:cacheprovider"""
 
-# The fix_patch edits Rust crates; without this rebuild every stage would run the extension
-# built at prepare time and no transition could ever be observed.
 RUN_PREFIX = """. /home/kornia-rs/.venv/bin/activate
 maturin develop -m kornia-py/Cargo.toml"""
 
@@ -516,9 +407,6 @@ class ImageDefault(Image):
         return pr_dockerfile(self.pr, self.dependency().image_full_name(), self.files())
 
 
-# One PR in this dataset (#636), so there is no interval to name. Instance.create
-# derives the key from {org}/{repo} when number_interval is unset
-# (instance.py:41-51), so "kornia/kornia-rs" is the only key a record here can resolve to.
 @Instance.register("kornia", "kornia-rs")
 class KORNIA_KORNIA_RS(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
@@ -547,13 +435,6 @@ class KORNIA_KORNIA_RS(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # run_tests.sh cats the junit XML between the markers and this parses it directly —
-        # the same job the old shipped parse_junit.py did inside the container, moved here so
-        # it is ordinary code rather than a Python string rendered to a file and run by a
-        # shell. Console `-v` text is still never parsed: pytest's short summary prints
-        # `FAILED tests/x.py::test_y - AssertionError: ...`, and a regex over that captures
-        # the error message INTO the test id, so the same test would get a different name at
-        # the test stage than at the fix stage and the transition would be silently lost.
         text = _ANSI_RE.sub("", test_log)
         if BEGIN_MARKER not in text or END_MARKER not in text:
             return TestResult(0, 0, 0, set(), set(), set())
@@ -561,20 +442,13 @@ class KORNIA_KORNIA_RS(Instance):
         try:
             root = ET.fromstring(xml)
         except ET.ParseError:
-            # A truncated or interleaved document yields no results rather than a crash;
-            # Report.check rule 1 then rejects the instance loudly instead of scoring a
-            # partial read.
             return TestResult(0, 0, 0, set(), set(), set())
 
         for tc in root.iter("testcase"):
-            # @file gives a real, rerunnable node id (tests/x.py::test_y[param]); classname
-            # is the fallback for runners that omit it.
             path = tc.get("file")
             if not path:
                 classname = tc.get("classname") or ""
                 path = classname.replace(".", "/") + ".py"
-            # Newlines are flattened to keep ids byte-identical to what the previous
-            # line-oriented parser produced, so verdicts do not shift on this change.
             name = (tc.get("name") or "").replace("\r", " ").replace("\n", " ")
 
             status = "PASSED"
@@ -594,8 +468,6 @@ class KORNIA_KORNIA_RS(Instance):
             else:
                 skipped_tests.add(full)
 
-        # Failure wins; each test lands in exactly one bucket. TestResult.__post_init__
-        # rejects any overlap outright, so this normalisation is load-bearing, not defensive.
         passed_tests -= failed_tests
         skipped_tests -= passed_tests
         skipped_tests -= failed_tests
