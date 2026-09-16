@@ -151,13 +151,14 @@ from multi_swe_bench.harness.repos.python.langflow_ai import *
 from multi_swe_bench.harness.repos.python.learningequality import *
 from multi_swe_bench.harness.repos.python.LiberTEM import *
 from multi_swe_bench.harness.repos.python.Lightning_AI import *
-from multi_swe_bench.harness.repos.python.litestar_org import *
 from multi_swe_bench.harness.repos.python.locustio import *
 from multi_swe_bench.harness.repos.python.mabel_dev import *
 from multi_swe_bench.harness.repos.python.mandiant import *
 from multi_swe_bench.harness.repos.python.ManimCommunity import *
 from multi_swe_bench.harness.repos.python.mantidproject import *
+from multi_swe_bench.harness.repos.python.mansenfranzen import *
 from multi_swe_bench.harness.repos.python.marimo_team import *
+from multi_swe_bench.harness.repos.python.marrink_lab import *
 from multi_swe_bench.harness.repos.python.materialsproject import *
 from multi_swe_bench.harness.repos.python.matplotlib import *
 from multi_swe_bench.harness.repos.python.matrix_org import *
