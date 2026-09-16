@@ -62,12 +62,20 @@ RUST_TOOLCHAIN = "nightly-2022-11-24"
 # short summary is the only place a PASS gets its full node id). `-p no:cacheprovider` stops
 # .pytest_cache appearing in the tree between stages. `-p no:randomly` is deliberately absent -
 # the plugin is not in requirements-dev.txt.
-PYTEST_CMD = "pytest tests/unit/ -v -rA --tb=no -p no:cacheprovider"
+PYTEST_CMD = "pytest tests/unit/ -v -rA --tb=no -p no:cacheprovider --continue-on-collection-errors"
 
 # Rebuild step, identical in all three graded stages. `--` separates maturin's args from
 # cargo's; nothing extra is passed, so the default feature set (all + nightly) is used, exactly
 # as the project's workflow does.
 MATURIN_BUILD = "maturin develop"
+
+# Graded-stage rebuild. The base image's warm-up already populated ~/.cargo with every crate
+# the base commit's Cargo.lock resolves, so an offline build succeeds for the common case (the
+# fix/test patches change Rust source, not dependencies) and skips the slow git fetch of the
+# crates.io-index that the pinned nightly cargo would otherwise do on every stage. If a patch
+# does change dependencies, the offline build fails and the online fallback fetches as before -
+# correctness is preserved, only the fast path is added.
+MATURIN_GRADED = "CARGO_NET_OFFLINE=true maturin develop || maturin develop"
 
 # Exported by every script rather than declared as ENV in the base image, so the generated
 # Dockerfile carries exactly one ENV instruction - the one DockerfileEnhancer injects.
@@ -205,7 +213,26 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \\
     && /root/.cargo/bin/rustc --version \\
     && /root/.cargo/bin/cargo --version
 
-RUN git -C /home clone "${{REPO_URL}}" {self.pr.repo}
+RUN git config --global http.postBuffer 1048576000 \\
+    && git config --global http.lowSpeedLimit 1000 \\
+    && git config --global http.lowSpeedTime 600 \\
+    && for i in 1 2 3 4 5 6; do \\
+         rm -rf /home/{self.pr.repo}; \\
+         git -C /home clone "${{REPO_URL}}" {self.pr.repo} && break; \\
+         echo "clone attempt $i failed - retry in 15s"; sleep 15; \\
+       done \\
+    && test -d /home/{self.pr.repo}/.git
+
+# Warm the crates.io index (the ~1GB git-index clone that old cargo does) and
+# download all crate sources ONCE in the shared base, so every PR image inherits
+# /root/.cargo/registry and skips the multi-minute index clone + fetch. Uses the
+# git CLI for the index fetch (more reliable/faster than cargo's libgit2 here).
+# Best-effort (|| true): a partial warm still saves the bulk; the PR's own
+# maturin/cargo re-resolves the exact lockfile delta.
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
+RUN cd /home/{self.pr.repo}/py-polars \\
+    && (/root/.cargo/bin/cargo fetch 2>&1 | tail -3 || true) \\
+    && (/root/.cargo/bin/cargo metadata --format-version 1 >/dev/null 2>&1 || true)
 
 CMD ["/bin/bash"]
 """
@@ -302,7 +329,7 @@ warm() {{
   fi
 }}
 
-warm deps 1800 "pip install --upgrade 'pip<23' && pip install -r $(test -f requirements-dev.txt && echo requirements-dev.txt || echo build.requirements.txt)"
+warm deps 1800 "export PIP_RETRIES=8 PIP_DEFAULT_TIMEOUT=180; pip install --upgrade 'pip<23'; echo 'maturin<1.5' > /tmp/constraints.txt; grep -viE '^[[:space:]]*connectorx' $(test -f requirements-dev.txt && echo requirements-dev.txt || echo build.requirements.txt) > /tmp/reqs.txt; for i in 1 2 3 4 5 6; do pip install -c /tmp/constraints.txt -r /tmp/reqs.txt && break; sleep 15; done"
 
 # Compiling polars is the expensive step by a wide margin, which is exactly why it is done here
 # rather than left to the first graded stage: the target/ directory it fills makes each stage's
@@ -345,7 +372,7 @@ set -eo pipefail
 cd /home/{pr.repo}/py-polars
 {maturin}
 {pytest}
-""".format(pr=self.pr, shell_env=SHELL_ENV, maturin=MATURIN_BUILD, pytest=PYTEST_CMD),
+""".format(pr=self.pr, shell_env=SHELL_ENV, maturin=MATURIN_GRADED, pytest=PYTEST_CMD),
             ),
             File(
                 ".",
@@ -364,7 +391,7 @@ git apply --whitespace=nowarn /home/test.patch
 cd /home/{pr.repo}/py-polars
 {maturin}
 {pytest}
-""".format(pr=self.pr, shell_env=SHELL_ENV, maturin=MATURIN_BUILD, pytest=PYTEST_CMD),
+""".format(pr=self.pr, shell_env=SHELL_ENV, maturin=MATURIN_GRADED, pytest=PYTEST_CMD),
             ),
             File(
                 ".",
@@ -387,7 +414,7 @@ git apply --whitespace=nowarn /home/fix.patch
 cd /home/{pr.repo}/py-polars
 {maturin}
 {pytest}
-""".format(pr=self.pr, shell_env=SHELL_ENV, maturin=MATURIN_BUILD, pytest=PYTEST_CMD),
+""".format(pr=self.pr, shell_env=SHELL_ENV, maturin=MATURIN_GRADED, pytest=PYTEST_CMD),
             ),
         ]
 
