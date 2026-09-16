@@ -44,27 +44,73 @@ class ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
+            code = (
+                f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo} && \\\n'
+                f"    cd /home/{self.pr.repo} && git rev-parse HEAD >/dev/null"
+            )
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    NODE_PATH=/usr/local/lib/node_modules \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
 {self.global_env}
 
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates chromium \\
+    && npm install -g puppeteer-core \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git config --global --add safe.directory '*'
+
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-ENV NODE_PATH=/usr/local/lib/node_modules
-RUN apt-get update && apt-get install -y --no-install-recommends chromium && \\
-    npm install -g puppeteer-core && \\
-    rm -rf /var/lib/apt/lists/*
 
 {code}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -322,22 +368,50 @@ function createServer(rootDir) {{
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -e
+set -euo pipefail
 
+# ---------- Section 1: PIN the tree to this PR's base commit ----------
+# The shared base kept full history and is pinned to nothing, so this layer owns
+# the pin. --detach is required, not stylistic: the prune block in the PR
+# Dockerfile ASSERTS HEAD == BASE_COMMIT rather than re-establishing it, and then
+# deletes every ref. An attached HEAD would have its branch deleted out from under
+# it, or would keep post-fix history reachable inside the shipped image.
 cd /home/{pr.repo}
+
 git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git clean -fdx
 bash /home/check_git_changes.sh
 
+git checkout --detach {pr.base.sha}
+bash /home/check_git_changes.sh
+
+# ---------- Section 2: PROVISION ----------
+# Intentionally empty. There is no package.json at this base commit -- the suite is
+# a browser Mocha page (src/common/test/index.html) with its libraries vendored into
+# the tree, so the repo has no era-specific install step. The single runtime
+# dependency, puppeteer-core, is identical for every PR of this repo and therefore
+# belongs in the shared base, where it is paid once.
+
+# ---------- Section 3: HARD GATE ----------
+# Non-tolerant, last, and deep enough to catch a partial base build: a silently
+# failed `npm install -g` or a missing chromium must fail HERE, at build time,
+# rather than three stages later behind an empty report that reads as "0 failures".
+test -x /usr/bin/chromium
+test -f /home/{pr.repo}/src/common/test/index.html
+node -e "require('puppeteer-core'); console.log('DEPS_OK')"
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
+# Baseline stage: NO patch applied. This is load-bearing, not informational --
+# Report.check() step 6 (report.py:269-313) falls back to `test.run` to decide
+# whether a credited test is F2P or P2P, so a baseline that fails to run silently
+# corrupts the classification.
 cd /home/{pr.repo}
 node /home/run-mocha-headless.js
 """.format(pr=self.pr),
@@ -346,25 +420,34 @@ node /home/run-mocha-headless.js
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
+# test.patch ONLY. The trailing `|| true` that used to sit here was removed
+# deliberately: a run script has no hard gate to redeem a swallowed failure, so an
+# unapplied test.patch would make this stage identical to the baseline, no test
+# would transition !PASS -> PASS, and Report.check() rule 3 (report.py:217) would
+# discard the instance with nothing in the log explaining why. The --3way retry is
+# kept -- it is a genuine second attempt, and its failure still aborts.
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch || git apply --whitespace=nowarn --3way /home/test.patch || true
+git apply --whitespace=nowarn /home/test.patch || git apply --whitespace=nowarn --3way /home/test.patch
 node /home/run-mocha-headless.js
-
 """.format(pr=self.pr),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
+# test.patch FIRST, then fix.patch. Order matters: the fix must land on a tree that
+# already carries the new tests. Same reasoning as test-run.sh for the removed
+# `|| true`.
 cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch || git apply --whitespace=nowarn --3way /home/test.patch || true
-git apply --whitespace=nowarn /home/fix.patch || git apply --whitespace=nowarn --3way /home/fix.patch || true
+git apply --whitespace=nowarn /home/test.patch || git apply --whitespace=nowarn --3way /home/test.patch
+git apply --whitespace=nowarn /home/fix.patch || git apply --whitespace=nowarn --3way /home/fix.patch
 node /home/run-mocha-headless.js
-
 """.format(pr=self.pr),
             ),
         ]
@@ -378,18 +461,46 @@ node /home/run-mocha-headless.js
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
         return f"""FROM {name}:{tag}
 
 {self.global_env}
 
 {copy_commands}
+RUN bash /home/prepare.sh
 
-{prepare_commands}
+RUN set -eux; \\
+    cd /home/{self.pr.repo}; \\
+    test "$(git rev-parse HEAD)" = "{self.pr.base.sha}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "{self.pr.base.sha}"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/{self.pr.repo}/.gitmodules ]; then \\
+        cd /home/{self.pr.repo} && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
 
 {self.clear_env}
-
 """
 
 
@@ -445,12 +556,9 @@ class MarkdownHere(Instance):
                 test_name = line[len("SKIP: "):]
                 skipped_tests.add(test_name)
 
-        # If a test appears in both passed and failed (e.g. Mocha retries or
-        # duplicate it() blocks), treat it as failed to avoid framework
-        # rejection ("should not have common items").
-        overlap = passed_tests & failed_tests
-        if overlap:
-            passed_tests -= overlap
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
