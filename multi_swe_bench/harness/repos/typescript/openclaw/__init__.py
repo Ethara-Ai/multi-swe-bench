@@ -6,3 +6,4 @@ from multi_swe_bench.harness.repos.typescript.openclaw.openclaw_32546_to_29941 i
 from multi_swe_bench.harness.repos.typescript.openclaw.openclaw_38292_to_32706 import *
 from multi_swe_bench.harness.repos.typescript.openclaw.openclaw_40409_to_39906 import *
 from multi_swe_bench.harness.repos.typescript.openclaw.openclaw_52516_to_51490 import *  
+from multi_swe_bench.harness.repos.typescript.openclaw.openclaw_47719_to_45689 import *  # noqa: F401,F403

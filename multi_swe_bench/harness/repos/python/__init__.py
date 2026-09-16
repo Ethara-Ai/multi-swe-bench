@@ -449,3 +449,5 @@ from multi_swe_bench.harness.repos.python.CuriousLearner import *
 from multi_swe_bench.harness.repos.python.altdesktop import *
 
 from multi_swe_bench.harness.repos.python.alandtse import *
+from multi_swe_bench.harness.repos.python.dstl import *
+from multi_swe_bench.harness.repos.python.dry_python import returns_1199  # noqa: F401

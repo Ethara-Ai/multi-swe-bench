@@ -46,7 +46,6 @@ class ImageBase(Image):
         # injects its git-hardening block just before our trailing CMD); env installs sit
         # after checkout so `pip install -e .` sees the checked-out source.
         return f"""FROM {image_name}
-ENV DEBIAN_FRONTEND=noninteractive
 # build-essential + libffi-dev needed to build misaka/cffi; libpq for psycopg2 fallbacks.
 RUN apt-get update && apt-get install -y git build-essential libffi-dev libpq-dev && rm -rf /var/lib/apt/lists/*
 
