@@ -1,20 +1,3 @@
-"""TheAlgorithms/Java harness config — PRs #3464 to #6566.
-
-Two JDK eras served by ONE shared base image:
-
-  * #3464 / #4230 / #4384 / #4392  (2022-10 .. 2023-09) -> maven.compiler.release 17, surefire 2.22.2
-  * #6566                          (2025-10)            -> maven.compiler.release 21, surefire 3.5.4
-
-Both JDKs are installed in the base and prepare.sh points JAVA_HOME at the one
-this PR's pom requires, so a single base covers the whole range.
-
-Artifact split:
-  base Dockerfile -> toolchain + git clone, then CMD. Nothing after the clone.
-  PR Dockerfile   -> FROM base, 7 COPY lines, RUN prepare.sh, then the git strip.
-  prepare.sh      -> JDK selection, dependency warm-up, cd/reset/checkout with
-                     check_git_changes asserts. No stripping here.
-"""
-
 import re
 from typing import Optional, Union
 
@@ -22,7 +5,6 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# maven.compiler.release read from each base commit's pom.xml, not guessed.
 _JDK21_FROM = 5142
 
 
@@ -31,12 +13,6 @@ def _jdk_for(number: int) -> str:
 
 
 class TheAlgorithmsJavaImageBase(Image):
-    """Shared base: JDK 17 + JDK 21 + Maven, then the clone. Nothing else.
-
-    The syntax directive is emitted here so DockerfileEnhancer returns this file
-    verbatim (image.py:316). Without it the enhancer rewrites the clone into
-    clone+checkout+hardening, and the hardening must live in the PR layer.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -135,12 +111,6 @@ CMD ["/bin/bash"]
 
 
 class TheAlgorithmsJavaImageDefault(Image):
-    """PR layer: FROM base, exactly 7 COPYs, prepare.sh, then the git strip.
-
-    dependency() returns an Image, so the enhancer emits this verbatim -- no
-    ARG/ENV/WORKDIR/CMD is injected, and the hardening below is the only git
-    activity in the file.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -202,26 +172,16 @@ cd /home/[[REPO]]
 git reset --hard
 bash /home/check_git_changes.sh
 
-# The base image clones the default branch; this PR's sha may not be an
-# ancestor of it, so fetch the exact object before checkout. One base serves
-# every PR in the range this way.
 git remote add origin https://github.com/[[ORG]]/[[REPO]].git 2>/dev/null || true
 git fetch --depth=1 origin [[SHA]] 2>/dev/null || git fetch origin 2>/dev/null || true
 git checkout -f [[SHA]]
 bash /home/check_git_changes.sh
 
-# JAVA_HOME is arch-suffixed, so it must be resolved at runtime for the image to
-# work on both amd64 and arm64. JDK [[JDK]] matches this commit's
-# maven.compiler.release.
 cat > /home/java_env.sh <<'ENVEOF'
 export JAVA_HOME="/usr/lib/jvm/java-[[JDK]]-openjdk-$(dpkg --print-architecture)"
 export PATH="$JAVA_HOME/bin:$PATH"
 ENVEOF
 
-# Surefire writes one XML per test class with a <testcase> per METHOD. Parsing
-# those gives classname.method ids; parsing Maven's console "[INFO] Running X"
-# lines instead yields only CLASS ids, which is what left an earlier Java
-# dataset (guava) valid but with zero usable gating tests.
 cat > /home/emit_results.py <<'PYEOF'
 import glob, os, xml.etree.ElementTree as ET
 
@@ -234,8 +194,6 @@ for path in sorted(glob.glob("target/surefire-reports/TEST-*.xml")):
         cls, name = tc.get("classname") or "", tc.get("name") or ""
         if not cls or not name:
             continue
-        # Strip surefire's parametrized suffix noise but keep the invocation id
-        # so distinct parameter cases stay distinct.
         tid = f"{cls}.{name}"
         kids = {child.tag for child in tc}
         if "failure" in kids or "error" in kids:
@@ -251,15 +209,10 @@ source /home/java_env.sh
 java -version 2>&1 | head -1
 mvn -v 2>&1 | head -1
 
-# Warm the local repository so the graded runs need no network. Static-analysis
-# plugins are skipped everywhere: a checkstyle/spotbugs violation would fail the
-# build before surefire writes any XML, producing a silent zero-test stage.
 mvn -B -q -Dstyle.color=never \
     -Dcheckstyle.skip=true -Dpmd.skip=true -Dspotbugs.skip=true -Djacoco.skip=true \
     dependency:go-offline test-compile || true
 
-# Maven writes target/ (gitignored) but plugins can also touch tracked files;
-# restore them so every `git apply` in the run scripts sees exactly BASE_COMMIT.
 git checkout -- .
 bash /home/check_git_changes.sh
 """.replace("[[REPO]]", repo)
@@ -338,9 +291,6 @@ python3 /home/emit_results.py
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        # Strip runs AFTER prepare.sh: prepare.sh fetches this PR's sha, and
-        # stripping first would prune the objects it needs. The sha is inlined so
-        # this layer declares no ARG/ENV of its own.
         return f"""FROM {name}:{tag}
 
 {copy_commands}
@@ -382,7 +332,6 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 
 @Instance.register("TheAlgorithms", "TheAlgorithms_Java_6566_to_3464")
 class TheAlgorithmsJava6566To3464(Instance):
-    """Harness instance for TheAlgorithms/Java — PRs #3464 to #6566."""
 
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -412,12 +361,6 @@ class TheAlgorithmsJava6566To3464(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        """Parse the `STATUS classname.method` lines emitted by emit_results.py.
-
-        Ids are METHOD-level. Class-level ids (Maven's "[INFO] Running X") would
-        collapse every method of a test class into one entry, which is how a
-        previous Java dataset ended up with zero gating tests.
-        """
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
@@ -437,8 +380,6 @@ class TheAlgorithmsJava6566To3464(Instance):
             else:
                 skipped_tests.add(tid)
 
-        # TestResult.__post_init__ rejects overlapping sets: a retried test can
-        # appear twice. Failure wins over a later pass, then skip.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
         passed_tests -= skipped_tests

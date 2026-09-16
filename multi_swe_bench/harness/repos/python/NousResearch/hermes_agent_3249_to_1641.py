@@ -1,23 +1,3 @@
-"""NousResearch/hermes-agent harness config — PRs #1641 to #3249.
-
-Registered under the number_interval key ``hermes_agent_3249_to_1641``, NOT
-under ``NousResearch/hermes-agent``. ``Instance.register`` writes straight into
-``_registry[f"{org}/{repo}"]`` with no collision check, so a second class on the
-plain key would silently replace ``hermes_agent.py`` and break every PR already
-routed through it. Routing to this file is by ``number_interval`` on the dataset
-records (``Instance.create``, instance.py:42).
-
-Environment is inherited from the proven generic config: python:3.11,
-``pip install -e ".[dev]"``, pytest over ``tests/``.
-
-Differences from hermes_agent.py:
-  * exactly 7 COPY files (the contract), so ``wire_test_worktree.py`` is not
-    copied. It is a PR-specific device that rewrites a test file's standalone
-    reimplementations into adapters; it applies to one file in one PR and is
-    not carried into a 10-PR range.
-  * base stops at ``git clone`` then CMD; the git strip lives in the PR layer.
-"""
-
 import re
 from typing import Optional, Union
 
@@ -27,12 +7,6 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 class HermesAgentEraImageBase(Image):
-    """python:3.11 + toolchain, then the clone. Nothing after it.
-
-    Emitting the syntax directive keeps DockerfileEnhancer from rewriting the
-    clone into clone+checkout+hardening (image.py:316) -- the hardening belongs
-    to the PR layer.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -129,7 +103,6 @@ CMD ["/bin/bash"]
 
 
 class HermesAgentEraImageDefault(Image):
-    """PR layer: FROM base, exactly 7 COPYs, prepare.sh, then the git strip."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -157,8 +130,6 @@ class HermesAgentEraImageDefault(Image):
         org = self.pr.org
         sha = self.pr.base.sha
 
-        # Identical in all three stages (QC P7): the only difference between
-        # them is which patch was applied first.
         test_cmd = """python -m pytest tests \\
     -p no:cacheprovider -n 0 \\
     -v --no-header -rA --tb=no --continue-on-collection-errors 2>&1
@@ -206,35 +177,15 @@ bash /home/check_git_changes.sh
 
 python -V
 python -m pip install --no-cache-dir --upgrade pip setuptools wheel
-# ".[all]", not ".[dev]": tests/acp imports `agent-client-protocol`, which lives
-# in the [acp] extra, so a dev-only install fails collection with
-# "ModuleNotFoundError: No module named 'acp'" across tests/acp/*. [all] bundles
-# the 15 light extras (acp, mcp, cli, pty, voice, ...) and deliberately does NOT
-# include [rl], whose deps are git checkouts of atroposlib/tinker plus wandb.
-# Degrade rather than fail outright if one optional extra cannot build; the
-# collect-only check below is the real gate.
 python -m pip install --no-cache-dir -e ".[all]" \
     || python -m pip install --no-cache-dir -e ".[dev,acp]" \
     || python -m pip install --no-cache-dir -e ".[dev]"
 python -m pip install --no-cache-dir pytest-xdist
 
-# The [acp] extra pins agent-client-protocol>=0.8.1,<1.0 and pip takes the
-# newest match (0.12.1), but acp_adapter/server.py imports AuthMethod from
-# acp.schema and that name was dropped in 0.9.0 -- verified across 0.8.1 /
-# 0.9.0 / 0.10.0 / 0.11.0 / 0.12.1, where only 0.8.1 still exports it. Without
-# this pin, tests/acp/test_server.py fails collection and takes the whole
-# collect-only gate down with it. Re-pin AFTER the extras install so nothing
-# resolves it forward again.
 python -m pip install --no-cache-dir "agent-client-protocol==0.8.1" 2>/dev/null || true
 
-# Collect once at the base commit: a collection error here is an environment
-# problem and should fail the build loudly, rather than surfacing later as a
-# stage that silently reports 0/0/0.
 python -m pytest tests --collect-only -q -p no:cacheprovider -n 0
 
-# `pip install -e .` writes an egg-info dir into the tree; restoring tracked
-# files leaves the install intact while returning the worktree to exactly
-# BASE_COMMIT -- the state every `git apply` in the run scripts expects.
 git checkout -- .
 git clean -fdq -e '*.egg-info' -e '*.egg-link'
 bash /home/check_git_changes.sh
@@ -293,9 +244,6 @@ fi
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        # Strip AFTER prepare.sh: prepare.sh fetches this PR's sha, and
-        # stripping first would prune the objects it needs. The sha is inlined
-        # so this layer declares no ARG/ENV of its own.
         return f"""FROM {name}:{tag}
 
 {copy_commands}
@@ -337,7 +285,6 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 
 @Instance.register("NousResearch", "hermes_agent_3249_to_1641")
 class HermesAgent3249To1641(Instance):
-    """Harness instance for NousResearch/hermes-agent — PRs #1641 to #3249."""
 
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -367,25 +314,12 @@ class HermesAgent3249To1641(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        """Parse pytest -rA output into file-qualified test ids.
-
-        Ids keep the FILE PATH ("tests/x.py::test_y"), never the bare name after
-        "::". Two same-named tests in different files would otherwise collapse
-        into one id and land in two status sets, which TestResult.__post_init__
-        rejects outright -- that crash took out an earlier Python dataset.
-        """
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
         log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        # Two formats, because the run scripts pass BOTH -v and -rA:
-        #   -v  prints  "tests/x.py::test_y PASSED [ 12%]"   (id first, streamed)
-        #   -rA prints  "PASSED tests/x.py::test_y"          (status first, at the end)
-        # The verbose form is the load-bearing one: it appears as each test
-        # finishes, so a run that is cut short still yields results, whereas the
-        # -rA summary only exists if pytest reaches the end.
         inline_re = re.compile(
             r"^(?P<id>\S+\.py::\S+?)\s+"
             r"(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b",
@@ -405,14 +339,9 @@ class HermesAgent3249To1641(Instance):
             else:
                 skipped_tests.add(tid)
 
-        # A suite that fails to import prints "ERROR tests/x.py" with no "::".
-        # Record the FILE so the stage still carries that signal instead of
-        # going silently empty.
         for m in re.finditer(r"^ERROR\s+(\S+\.py)\s*(?:-.*)?$", log, re.MULTILINE):
             failed_tests.add(m.group(1))
 
-        # TestResult.__post_init__ enforces disjoint sets. Failure wins over a
-        # retry that later passed, then skip.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
         passed_tests -= skipped_tests

@@ -1,33 +1,3 @@
-"""keyshade-xyz/keyshade harness config — PRs #382 to #427.
-
-Differs from ``keyshade.py`` (written for PR #370) in two ways that this PR
-range forces:
-
-1. **Both packages are graded.** #387 and #394 touch only
-   ``apps/api/**.e2e.spec.ts``; grading ``packages/api-client`` alone would give
-   them zero gating tests. So each stage runs ``apps/api``'s e2e suite *and*
-   ``packages/api-client``, announced with the ``===== PACKAGE: ... =====``
-   marker that ``parse_jest_verbose_log`` keys on.
-
-2. **apps/api is rebuilt every stage.** keyshade.py builds it once at image
-   build time, on the grounds that "the fix patch does not touch apps/api" --
-   true for #370, false for four of these five (#382/#387/#394/#427 all edit
-   ``apps/api/src``). Building once would leave the API server serving BASE code
-   at the fix stage, so the api-client specs could never observe the fix.
-   ``apps/api``'s own e2e specs are unaffected either way: ts-jest compiles from
-   source, not from dist.
-
-Artifact split (current contract):
-  base Dockerfile -> toolchain + services + git clone, then CMD. Nothing after.
-  PR Dockerfile   -> FROM base, 7 COPY lines, RUN prepare.sh, then the git strip.
-  prepare.sh      -> fetch/checkout the base sha, pnpm install, prisma generate,
-                     with check_git_changes asserts. No stripping.
-
-keyshade squash-merges, so a base sha is reachable from no branch -- only under
-``refs/pull/*/head``. Fetching it by full sha still works (verified 2026-09-05),
-which is what lets prepare.sh do the fetch rather than the clone.
-"""
-
 from typing import Optional, Union
 
 from multi_swe_bench.harness.image import Config, File, Image
@@ -41,8 +11,6 @@ _API_DIR = "apps/api"
 _CLIENT_DIR = "packages/api-client"
 
 
-# Shared verbatim by run.sh / test-run.sh / fix-run.sh so the only difference
-# between graded stages is which patch was applied first (QC P7).
 _TEST_BODY = r"""
 export CI=true
 export NODE_ENV=e2e
@@ -71,17 +39,12 @@ su postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='prisma'\"" \
     || su postgres -c "psql -c \"CREATE USER prisma WITH PASSWORD 'prisma' SUPERUSER;\""
 
 reset_db() {
-    # Rebuilt before each suite: otherwise the second suite would inherit the
-    # first one's rows, and the fix stage would inherit the test stage's.
     su postgres -c "psql -c 'DROP DATABASE IF EXISTS tests;'" > /dev/null
     su postgres -c "psql -c 'CREATE DATABASE tests OWNER prisma;'" > /dev/null
     cd /home/[[REPO]]/apps/api
-    # Project-local prisma, never `pnpm dlx prisma`: the repo pins 5.13.0 and
-    # dlx would fetch the current major against a 5.x schema.
     ./node_modules/.bin/prisma migrate deploy --schema=src/prisma/schema.prisma > /dev/null
 }
 
-########## suite 1: apps/api e2e (in-process, ts-jest -- no build needed) ##########
 reset_db
 cd /home/[[REPO]]/[[API_DIR]]
 echo "===== PACKAGE: [[API_DIR]] ====="
@@ -99,12 +62,8 @@ cat /tmp/jest-api.out
 echo "jest exit code (api): ${API_RC}"
 grep -qE '^(Test Suites|Tests):' /tmp/jest-api.out
 
-########## suite 2: packages/api-client (HTTP client -- needs a live server) ##########
 reset_db
 
-# Rebuilt HERE, not in prepare.sh: four of the five PRs in this range edit
-# apps/api/src, and a build baked at image time would serve BASE code from dist
-# at the fix stage.
 cd /home/[[REPO]]
 pnpm exec turbo run build --filter=api > /tmp/build.out 2>&1 || {
     echo "FATAL: apps/api build failed"; tail -n 100 /tmp/build.out; exit 1;
@@ -135,8 +94,6 @@ fi
 cd /home/[[REPO]]/[[CLIENT_DIR]]
 echo "===== PACKAGE: [[CLIENT_DIR]] ====="
 set +e
-# Displaces tests/config/{setup,teardown}.ts, which shell out to `docker
-# compose` and call process.exit(0).
 pnpm exec jest \
     --runInBand \
     --ci \
@@ -154,21 +111,11 @@ wait "$API_PID" 2>/dev/null || true
 cat /tmp/jest-client.out
 echo "jest exit code (client): ${CLIENT_RC}"
 
-# A non-zero rc is the honest outcome of a stage with failing tests and must not
-# abort it -- the harness grades from the log text. A runner that never started
-# prints no summary line; failing here turns that into a loud stage failure
-# instead of a silent 0/0/0.
 grep -qE '^(Test Suites|Tests):' /tmp/jest-client.out
 """.replace("[[API_DIR]]", _API_DIR).replace("[[CLIENT_DIR]]", _CLIENT_DIR)
 
 
 class KeyshadeEraImageBase(Image):
-    """node:20-bookworm + Postgres 15 + Redis + pnpm, then the clone.
-
-    Emitting the syntax directive makes DockerfileEnhancer return this file
-    verbatim (image.py:316), so the enhancer does not rewrite the clone into
-    clone+checkout+hardening. The hardening belongs to the PR layer.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -183,8 +130,6 @@ class KeyshadeEraImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # bookworm, not alpine: the Prisma engines are glibc binaries, and
-        # Debian 12 is what makes the /etc/postgresql/15 paths correct.
         return "node:20-bookworm"
 
     def image_tag(self) -> str:
@@ -274,7 +219,6 @@ CMD ["/bin/bash"]
 
 
 class KeyshadeEraImageDefault(Image):
-    """PR layer: FROM base, exactly 7 COPYs, prepare.sh, then the git strip."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -340,9 +284,6 @@ git reset --hard
 git clean -fdx
 bash /home/check_git_changes.sh
 
-# keyshade squash-merges, so this sha sits under refs/pull/*/head and is an
-# ancestor of no branch. Fetching it by full sha works; a plain clone cannot
-# check it out.
 git remote add origin https://github.com/[[ORG]]/[[REPO]].git 2>/dev/null || true
 git fetch --no-tags --depth=1 origin [[SHA]] 2>/dev/null \\
     || git fetch --no-tags origin '+refs/pull/*/head:refs/remotes/origin/pr/*/head' 2>/dev/null \\
@@ -350,14 +291,11 @@ git fetch --no-tags --depth=1 origin [[SHA]] 2>/dev/null \\
 git checkout -f [[SHA]]
 bash /home/check_git_changes.sh
 
-# `|| true` only here: a native-module compile failure must not abort the build.
 pnpm install --frozen-lockfile || pnpm install || true
 
 cd /home/[[REPO]]/apps/api
 ./node_modules/.bin/prisma generate --schema=src/prisma/schema.prisma
 
-# apps/api is deliberately NOT built here -- the run scripts rebuild it per
-# stage so the fix patch's apps/api changes reach the served dist.
 
 cd /home/[[REPO]]
 git checkout -- .
@@ -452,7 +390,6 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 
 @Instance.register("keyshade-xyz", "keyshade_427_to_382")
 class Keyshade427To382(Instance):
-    """Harness instance for keyshade-xyz/keyshade — PRs #382 to #427."""
 
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -482,7 +419,4 @@ class Keyshade427To382(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        # Shared with keyshade.py: emits one entry per suite file (the only
-        # signal when a file fails to compile) plus one per test, both prefixed
-        # by the announced package so ids stay repo-root-relative.
         return parse_jest_verbose_log(log)

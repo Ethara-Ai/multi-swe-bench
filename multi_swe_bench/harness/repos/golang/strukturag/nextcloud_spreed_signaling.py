@@ -7,10 +7,6 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 BASE_IMAGE = "golang:1.23"
-# The repo's Makefile runs `go test -timeout 60s`, but several suites start an
-# embedded etcd server, which is far slower under an emulated arm64 build than
-# on CI. A longer timeout keeps the three stages comparable instead of turning
-# emulation latency into spurious failures.
 GO_TEST_CMD = "go test -json -count=1 -timeout 900s ./... 2>&1"
 
 
@@ -223,17 +219,9 @@ class NEXTCLOUD_SPREED_SIGNALING(Instance):
 
         log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
-        # `go test -json` emits one JSON object per line. Test-level events carry
-        # both Package and Test, so the name is unique across packages (Go allows
-        # the same TestX in several) and subtests keep their "TestX/sub" path.
         pkg_actions: dict[str, str] = {}
         pkg_has_tests: set[str] = set()
 
-        # A package that fails to COMPILE produces no json event at all -- go
-        # writes the compile errors to stderr as plain text and closes with
-        # "FAIL <pkg> [build failed]". The package-level guard below therefore
-        # never sees it, and every test in that package would vanish from the
-        # stage with no signal at all. Catch the plain-text form here.
         build_failed_re = re.compile(r"^FAIL\s+(\S+)\s+\[build failed\]")
 
         for raw in log.split("\n"):
@@ -269,9 +257,6 @@ class NEXTCLOUD_SPREED_SIGNALING(Instance):
             else:
                 skipped_tests.add(name)
 
-        # A package that failed without producing any test event did not build
-        # (or died in TestMain). Surface it so the stage is not silently
-        # credited with zero tests.
         for pkg, action in pkg_actions.items():
             if action == "fail" and pkg not in pkg_has_tests:
                 failed_tests.add(f"{pkg}::[build]")

@@ -6,11 +6,6 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 BASE_IMAGE = "python:3.10-slim-bullseye"
-# The Rust toolchain is lifted out of the official image rather than fetched
-# with `curl | sh`: the version is pinned by the tag, nothing is piped into a
-# shell, and it is not a network RUN. rust:1.65 is contemporary with this PR's
-# 2022-10 base commit (Cargo.toml declares rust-version = "1.57" as the floor).
-# The tag is multi-arch, so the builder pulls the layer matching TARGETARCH.
 RUST_IMAGE = "rust:1.65-slim-bullseye"
 VENV = "/home/venv"
 PYTEST_CMD = (
@@ -256,9 +251,6 @@ class DATAFUSION_PYTHON(Instance):
 
         log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
-        # pytest -rA emits skip/xfail summaries as "SKIPPED [1] file.py:76: reason".
-        # The "[1]" is a COUNT, not a test id -- the real test is captured from its
-        # verbose line -- so reject a name that starts with "[".
         summary_re = re.compile(
             r"^(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\s+(?!\[)(\S+)"
         )

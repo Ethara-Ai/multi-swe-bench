@@ -8,51 +8,10 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# ---------------------------------------------------------------------------
-# livepeer/go-livepeer  —  Go, but NOT a pure-Go build.
-#
-# 1. FFMPEG IS MANDATORY, AND IT MUST BE LIVEPEER'S FORK.
-#    The graded package `common` imports github.com/livepeer/lpms/ffmpeg, which
-#    is CGO. Building it against Debian's ffmpeg dev packages fails at link
-#    time (verified in-container):
-#        undefined reference to `avfilter_compare_sign_bypath'
-#        undefined reference to `avfilter_compare_sign_bybuff'
-#    Those symbols exist only in livepeer's FFmpeg fork, which the repo's own
-#    install_ffmpeg.sh builds from source (nasm, x264, x265, libvpx, then the
-#    pinned fork). Livepeer publish a prebuilt `livepeer/ffmpeg-base` image but
-#    it is a single-platform amd64 manifest, so it cannot serve the arm64 half
-#    of the multi-arch build — the source build is the only portable option.
-#
-#    Measured: ~10 min on amd64. The arm64 leg is slower under emulation but
-#    works — nasm/x264/x265/libvpx all build on aarch64 and FFmpeg compiles its
-#    native aarch64 NEON assembly, so no cross-arch patching is needed.
-#
-#    It lives in the BASE image on purpose. It is PR-independent and expensive,
-#    so paying it once per repo (not once per PR, and not again on every edit to
-#    a run script) is the whole point of the base/PR split.
-#
-# 2. SCOPE IS ./common/... — the only package test.patch touches.
-#    Running the repo's full test.sh is not appropriate here: it pulls in
-#    network-dependent packages and race-detector reruns whose flakiness would
-#    land as a PASS(test) -> FAIL(fix) transition and trip Report.check() rule 2,
-#    rejecting the whole instance. `common` holds ParseAccelDevices (the graded
-#    function) plus 43 existing tests, which is the p2p body.
-#
-# 3. EXPECTED SHAPE: n2p, not f2p. test.patch's five new tests reference the
-#    package-level seams `getGPU` / `getPCI`, which fix.patch introduces
-#    (`var getGPU = getGPUDefault`). At the test stage the package therefore
-#    fails to COMPILE, go emits no per-test JSON for it, and the new tests read
-#    NONE -> NONE -> PASS. parse_log below turns that compile failure into an
-#    explicit `<pkg>::[build]` entry so the stage is never silently empty.
-# ---------------------------------------------------------------------------
 
 REPO_DIR = "/home/go-livepeer"
 FFMPEG_ROOT = "/root"
 
-# -count=1 disables Go's test result cache: a cached PASS from an earlier stage
-# would otherwise be replayed instead of the current tree being exercised.
-# 2>&1 folds the compile errors (which go writes to stderr as plain text, not
-# JSON) into the same stream parse_log reads, so a build failure is visible.
 GO_TEST_CMD = "go test -json -count=1 ./common/... 2>&1"
 
 
@@ -70,9 +29,6 @@ class GoLivepeerImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # go.mod declares `go 1.13`, but that is only the language-compat floor.
-        # .github/workflows/test.yaml pins actions/setup-go to 1.17, which is
-        # what this commit is actually tested against.
         return "golang:1.17-bullseye"
 
     def image_tag(self) -> str:
@@ -94,11 +50,6 @@ class GoLivepeerImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        # These are install_ffmpeg.sh's build dependencies, taken from the
-        # repo's own CI step. clang is required by x265's cmake probe; nasm and
-        # yasm are used by the x86 assembler paths and are simply unused on
-        # aarch64 (both ship for arm64 on Debian, so one package list serves
-        # both arches — no TARGETARCH branching, and nothing arch-pinned).
         return f"""FROM {image_name}
 
 {self.global_env}
@@ -116,11 +67,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 {code}
 
-# lpms/ffmpeg is CGO against livepeer's FFmpeg fork; Debian's libav*-dev does
-# not provide avfilter_compare_sign_bypath/_bybuff and fails at link time.
 RUN cd {REPO_DIR} && ./install_ffmpeg.sh {FFMPEG_ROOT}
 
-# Warm the module cache so the graded stages do not re-download on every run.
 RUN cd {REPO_DIR} && go mod download
 
 {self.clear_env}
@@ -186,10 +134,6 @@ bash /home/check_git_changes.sh
 git checkout {sha}
 bash /home/check_git_changes.sh
 
-# Pre-build the graded package's dependency tree so the run stage is not
-# paying for CGO compilation of lpms/ffmpeg. `|| true` because this is only a
-# warm-up: a build error here must surface in the graded stage, where it is
-# recorded as a result, rather than killing the image build.
 go build ./common/... || true
 """.format(repo_dir=REPO_DIR, sha=self.pr.base.sha),
             ),
@@ -249,10 +193,6 @@ fi
         name = image.image_name()
         tag = image.image_tag()
 
-        # prepare.sh needs only itself and check_git_changes.sh, so those are
-        # copied first and everything else lands in a cheap layer AFTER the
-        # `RUN prepare.sh`. Editing a run script then costs a trivial COPY
-        # rebuild instead of re-running the whole prepare step on both arches.
         prepare_inputs = {"prepare.sh", "check_git_changes.sh"}
         pre, post = "", ""
         for file in self.files():
@@ -305,20 +245,9 @@ class GO_LIVEPEER(Instance):
 
         log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        # `go test -json` emits one JSON object per line. Test-level events
-        # carry both Package and Test, so the ID is unique across packages (Go
-        # permits the same TestX in many packages) and subtests keep their
-        # "TestX/sub" path. Package-level events have no Test field. Nothing
-        # variable (elapsed time, output) enters the ID, so the same test parses
-        # identically in all three stages.
         pkg_actions: dict[str, str] = {}
         pkg_has_tests: set[str] = set()
 
-        # A package that fails to COMPILE emits no JSON at all — go writes the
-        # compile errors to stderr as plain text and closes with
-        # "FAIL <pkg> [build failed]". That is exactly this PR's test stage
-        # (test.patch calls getGPU/getPCI, which fix.patch adds), so without
-        # this branch the stage would be silently empty.
         build_failed_re = re.compile(r"^FAIL\s+(\S+)\s+\[build failed\]")
 
         for raw in log.split("\n"):
@@ -354,15 +283,10 @@ class GO_LIVEPEER(Instance):
             else:
                 skipped_tests.add(name)
 
-        # A package that failed without producing a single test event did not
-        # build (or died in TestMain). Surface it so the stage is not credited
-        # with zero tests and mistaken for "the runner never started".
         for pkg, action in pkg_actions.items():
             if action == "fail" and pkg not in pkg_has_tests:
                 failed_tests.add(f"{pkg}::[build]")
 
-        # TestResult.__post_init__ rejects overlapping sets; a retried test may
-        # appear twice, and failure wins over a later pass, then skip.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
         passed_tests -= skipped_tests

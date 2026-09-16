@@ -8,53 +8,12 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# ---------------------------------------------------------------------------
-# CherryHQ/cherry-studio  —  Electron + React desktop app, TypeScript.
-#
-# Toolchain at the graded era (base 1cb2af57, PR #11305):
-#   * node   >= 22          (package.json "engines")
-#   * yarn   4.9.1 berry    (packageManager + .yarnrc.yml yarnPath ->
-#                            .yarn/releases/yarn-4.9.1.cjs, nodeLinker:
-#                            node-modules, enableImmutableInstalls: false)
-#   * vitest 3.2.4          driven by vitest.config.ts, which declares THREE
-#                           projects: main (node), renderer (jsdom), scripts.
-#
-# Scope: only the `renderer` project is graded. The PR's test.patch lands in
-# src/renderer/**, the renderer project holds 140 test files (a healthy p2p
-# body), and confining the run keeps the electron/main project — which wants a
-# real electron runtime — out of the graded signal entirely.
-#
-# Reporting: vitest's JSON reporter, dumped between markers, NOT the console
-# reporter. Console output carries per-test timing ("(123ms)") that varies
-# between the run / test / fix stages, and with `projects` it also prefixes
-# every line with "|renderer|". Both would make the SAME test parse to a
-# DIFFERENT name in different stages, which Report.__post_init__ unions into
-# two half-present entries and Report.check() then rejects as an anomalous
-# NONE->FAIL. The JSON reporter carries no timing and no project tag.
-#
-# Test IDs are built as "<repo-relative path> > <ancestor> > ... > <title>",
-# the shape report.py::_test_name_matches_files recognises for JS/TS via its
-# `test_name.startswith(f + " > ")` branch — so n2p/f2p attribution back to
-# test_patch_files works without relying on diff-content matching alone.
-# ---------------------------------------------------------------------------
 
 REPO_DIR = "/home/cherry-studio"
 RESULTS_JSON = "/home/vitest-results.json"
 BEGIN_MARKER = "===== BEGIN TEST RESULTS ====="
 END_MARKER = "===== END TEST RESULTS ====="
 
-# `|| rc=$?` (not `|| true`) — the exit code is preserved and echoed, so a
-# runner that never STARTED is still visible in the log instead of being
-# silently swallowed. vitest writes --outputFile before exiting non-zero on a
-# failing suite, which is exactly the test-stage state we must capture.
-#
-# --retry=2 is load-flake insurance, not leniency. Verified against this tree:
-# ShikiStreamTokenizer > streaming > "should handle a single chunk of complex
-# code" passes 5/5 in isolation but failed once inside the full 1400-test
-# renderer run. A flake that lands in the FIX stage alone is fatal here — it
-# reads PASS(test) -> FAIL(fix), which is Report.check() rule 2 ("no new
-# failures") and rejects the whole instance. Retrying costs nothing when the
-# suite is green and removes a coin-flip that would silently bin the dataset.
 TEST_CMD = f"""rm -f {RESULTS_JSON}
 find {REPO_DIR} -name 'vitest-results.json' -delete 2>/dev/null || true
 
@@ -84,13 +43,9 @@ class CherryStudioImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # engines.node ">=22.0.0"; bookworm (not alpine) because the dependency
-        # tree pulls native node-gyp addons that have no musl prebuilds.
         return "node:22-bookworm"
 
     def image_tag(self) -> str:
-        # base-pr-<N>, matching the tag the shipped datasets and the ECR push
-        # script expect (mswebench_<org>_m_<repo>_base-pr-<N>.tar).
         return f"base-pr-{self.pr.number}"
 
     def workdir(self) -> str:
@@ -121,17 +76,11 @@ ENV YARN_ENABLE_IMMUTABLE_INSTALLS=false
 ENV YARN_NODE_LINKER=node-modules
 ENV NODE_OPTIONS=--max-old-space-size=4096
 
-# node-gyp needs a C toolchain + python3 for registry-js / selection-hook,
-# which do build here. Electron's own GTK/NSS runtime libs are deliberately
-# NOT installed: the graded project is `renderer`, which vitest runs under
-# jsdom, and ELECTRON_SKIP_BINARY_DOWNLOAD keeps the runtime out entirely.
 WORKDIR /home/
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     git ca-certificates curl build-essential python3 pkg-config \\
     && rm -rf /var/lib/apt/lists/*
 
-# yarn 4.9.1 is resolved by corepack from packageManager/.yarnrc.yml yarnPath;
-# the repo ships .yarn/releases/yarn-4.9.1.cjs so no network pin is needed.
 RUN corepack enable
 
 {code}
@@ -199,10 +148,6 @@ bash /home/check_git_changes.sh
 git checkout {sha}
 bash /home/check_git_changes.sh
 
-# `|| true`: native node-gyp addons in this tree (libsecret bindings, swc,
-# esbuild) routinely fail to compile on arm64 while the jsdom renderer suite
-# that we actually grade does not import them. A hard failure here would kill
-# the image build for a dependency the graded tests never touch.
 yarn install --mode=skip-build || true
 yarn install || true
 """.format(repo_dir=REPO_DIR, sha=self.pr.base.sha),
@@ -313,23 +258,16 @@ class CHERRY_STUDIO(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # ANSI first — --no-color is passed, but a wrapper (yarn, tsx) can still
-        # colourise, and a stray escape breaks every anchor below.
         clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
         payload = self._extract_json_payload(clean)
         if payload is not None:
             self._collect_from_json(payload, passed_tests, failed_tests, skipped_tests)
         else:
-            # Fallback: vitest console reporter. Only reached when the JSON
-            # reporter produced nothing parseable (e.g. vitest died before
-            # writing --outputFile); keeps a partial signal rather than none.
             self._collect_from_console(
                 clean, passed_tests, failed_tests, skipped_tests
             )
 
-        # TestResult.__post_init__ rejects overlapping sets. A test that is
-        # retried can legitimately appear twice; failure wins, then skip.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
         passed_tests -= skipped_tests
@@ -343,11 +281,9 @@ class CHERRY_STUDIO(Instance):
             skipped_tests=skipped_tests,
         )
 
-    # -- helpers ---------------------------------------------------------
 
     @staticmethod
     def _extract_json_payload(clean_log: str) -> Optional[dict]:
-        """Pull the JSON object printed between the run-script markers."""
         start = clean_log.find(BEGIN_MARKER)
         if start == -1:
             return None
@@ -357,8 +293,6 @@ class CHERRY_STUDIO(Instance):
         blob = blob.strip()
         if not blob:
             return None
-        # The marker block holds exactly one JSON document, but be defensive
-        # about trailing shell noise by cutting at the outermost braces.
         first = blob.find("{")
         last = blob.rfind("}")
         if first == -1 or last == -1 or last <= first:
@@ -371,7 +305,6 @@ class CHERRY_STUDIO(Instance):
 
     @staticmethod
     def _relative_path(name: str) -> str:
-        """Absolute in-container path -> repo-relative, forward-slashed."""
         p = (name or "").replace("\\", "/")
         prefix = REPO_DIR + "/"
         if p.startswith(prefix):
@@ -393,10 +326,6 @@ class CHERRY_STUDIO(Instance):
             assertions = suite.get("assertionResults") or []
 
             if not assertions:
-                # A file that failed to collect (import/transform error) has no
-                # assertions. Record the FILE as failed so the stage is not
-                # silently empty; a file-level ID can never collide with the
-                # "path > title" IDs below.
                 if (suite.get("status") or "").lower() == "failed" and rel:
                     failed.add(rel)
                 continue
@@ -427,9 +356,6 @@ class CHERRY_STUDIO(Instance):
         failed: set[str],
         skipped: set[str],
     ) -> None:
-        # " ✓ |renderer| src/a/b.test.ts > suite > case 12ms"
-        # The project tag and the trailing duration are both stripped: keeping
-        # either would make the same test parse differently across stages.
         line_re = re.compile(
             r"^\s*(?P<mark>[✓√✔×✗❌↓○⊘])\s+"
             r"(?:\|[^|]*\|\s+)?"

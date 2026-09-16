@@ -7,57 +7,9 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# ---------------------------------------------------------------------------
-# React95/React95 #147 ("useClippy") — lerna + yarn-workspaces monorepo, jest 25.
-#
-# Three things about this PR shape the config; each was measured in-container
-# against base 49f75626 (2020-05-26) before being written here.
-#
-# 1. THE FIX PATCH CREATES A NEW WORKSPACE.
-#    packages/clippy/ does not exist at base — fix.patch adds the whole package
-#    (package.json, src/, index.js). The graded tests live in
-#    packages/clippy/tests/, so they cannot even resolve until that package is
-#    linked into node_modules. A prepare-time `yarn install` is NOT enough: at
-#    image-build time the package does not exist yet. Every run script therefore
-#    re-runs `yarn install` AFTER applying patches, which is what makes
-#    `import ... from '@react95/clippy'` resolvable in the fix stage. Without it
-#    the fix stage fails with:
-#        Cannot find module '@react95/clippy' from 'useClippy.test.js'
-#    and the instance would look broken when it is actually fine.
-#
-# 2. THE FIX PATCH ALSO MOVES THE JEST CONFIG.
-#    At base, only packages/core/jest.config.js exists and there is no root
-#    `test` script. fix.patch DELETES that file and introduces
-#    jest/config/config.js plus a root `test` script. So no single fixed
-#    --config path is valid in all three stages:
-#        run  : packages/core/jest.config.js   (jest/config/* absent)
-#        test : packages/core/jest.config.js   (same)
-#        fix  : jest/config/config.js          (packages/core/... deleted)
-#    The command below picks whichever exists. The three run scripts share ONE
-#    identical command string, so QC P7 holds — the branch is inside the command,
-#    not between the scripts.
-#
-# 3. THE PATCHES CONTAIN A BINARY FILE.
-#    fix.patch carries packages/clippy/Clippy.gif, and git refuses it:
-#        cannot apply binary patch to '...Clippy.gif' without full index line
-#    That aborts the WHOLE apply (git apply is atomic), so the fix stage would
-#    never run. filter_binary drops binary sections before applying — the same
-#    approach the open-policy-agent config uses, and what QC check 3B advises.
-#    The .gif is an asset; no test reads it.
-#
-# MEASURED BASELINE (in-container, per stage):
-#    run   63 passed / 8 failed        (18 core suites; clippy absent)
-#    test  71 passed core + clippy 2 suites FAIL  (module not found)
-#    fix   75 passed / 0 failed        (20 suites = 18 core + 2 clippy)
-# The 8 run-stage failures are stale snapshots that test.patch refreshes; they
-# are FAIL->PASS between run and test, so they land in p2p, not in the gating
-# set. The 4 gating tests are the clippy ones.
-# ---------------------------------------------------------------------------
 
 REPO_DIR = "/home/React95"
 
-# Shared by prepare.sh and all three run scripts so the binary-stripping logic
-# cannot drift between them.
 _FILTER_BINARY = r"""filter_binary() {
   awk '
     function flush() { if (section != "" && !isbin) printf "%s", section }
@@ -69,25 +21,12 @@ _FILTER_BINARY = r"""filter_binary() {
   ' "$1"
 }"""
 
-# One command string, interpolated verbatim into run.sh / test-run.sh /
-# fix-run.sh, so the graded command is identical across stages (QC P7).
-# --verbose is REQUIRED, not cosmetic. Without it jest prints per-test "✓ name"
-# lines ONLY for failing suites, so a fully green stage yields nothing for
-# parse_log to match and the stage reports 0/0/0. Measured on this repo: 15
-# per-test lines without it, 84 with it — which is why the first build came back
-# run=(0,0,0) fix=(0,0,0) and was rejected as an invalid report.
-TEST_CMD = r"""# Relink workspaces: fix.patch adds packages/clippy as a NEW workspace, and
-# jest cannot resolve '@react95/clippy' until yarn links it. Harmless no-op in
-# the run/test stages where the package does not exist.
-yarn install --ignore-scripts >/dev/null 2>&1
+TEST_CMD = r"""yarn install --ignore-scripts >/dev/null 2>&1
 
 JEST=node_modules/.bin/jest
 if [ -f jest/config/config.js ]; then
-    # Post-fix layout: one config covering core + clippy.
     "$JEST" --config jest/config/config.js --ci --verbose 2>&1
 else
-    # Base layout: core owns the only jest config. Run clippy separately when
-    # test.patch has put tests there but fix.patch has not yet added the config.
     "$JEST" --config packages/core/jest.config.js --rootDir packages/core --ci --verbose 2>&1
     if [ -d packages/clippy ]; then
         "$JEST" --rootDir packages/clippy --ci --verbose 2>&1
@@ -109,9 +48,6 @@ class React95ImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        # node 14 is the era-appropriate runtime for a 2020-05 tree on jest 25;
-        # package.json declares no `engines`. Verified in-container: yarn
-        # install and the full suite both succeed on node:14-bullseye.
         return "node:14-bullseye"
 
     def image_tag(self) -> str:
@@ -211,9 +147,6 @@ bash /home/check_git_changes.sh
 git checkout {sha}
 bash /home/check_git_changes.sh
 
-# Warm the module cache. `|| true` because this is a warm-up, never a graded
-# command: a resolution failure must surface in the graded stage where it is
-# recorded as a result, not kill the image build.
 yarn install --frozen-lockfile --ignore-scripts || true
 """.format(repo_dir=REPO_DIR, sha=self.pr.base.sha),
             ),
@@ -280,9 +213,6 @@ fi
         name = image.image_name()
         tag = image.image_tag()
 
-        # prepare.sh reads only itself and its helper, so those are copied
-        # first; the patches and run scripts land AFTER `RUN prepare.sh` in a
-        # layer that costs nothing to rebuild.
         prepare_inputs = {"prepare.sh", "check_git_changes.sh"}
         pre, post = "", ""
         for file in self.files():
@@ -333,19 +263,8 @@ class REACT95(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
-        # ANSI first — jest colourises the ✓/✕ markers and PASS/FAIL words.
         log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        # IDs are "<suite file> > <test name>". The file prefix is essential:
-        # this is a component library where the same `it()` text recurs across
-        # suites, and a bare name would merge distinct tests into one id — which
-        # both loses p2p entries and can force a passing test to be recorded as
-        # failed once the disjoint-set dedup runs.
-        # `(?:\S+\s+)?` absorbs jest's optional displayName. packages/core's
-        # jest.config.js sets `displayName: 'core'`, so the real output is
-        #     PASS core packages/core/components/Icon/Icon.test.jsx (23.1s)
-        # not `PASS <path>`. Without this the path never matches, every test id
-        # loses its file prefix, and the stage parses as empty.
         suite_re = re.compile(r"^(PASS|FAIL)\s+(?:\S+\s+)?(\S+\.[jt]sx?)\b")
         case_re = re.compile(
             r"^\s+(?P<mark>[✓✔✕×✗○])\s+(?:skipped\s+)?(?P<name>.+?)"
@@ -357,11 +276,6 @@ class REACT95(Instance):
             sm = suite_re.match(line)
             if sm:
                 current = sm.group(2)
-                # A suite that cannot even load (missing module, transform
-                # error) prints FAIL with no per-test lines beneath it. Record
-                # the FILE so the stage still carries that signal instead of
-                # appearing empty — this is exactly the test stage here, where
-                # the clippy suites fail on `Cannot find module`.
                 if sm.group(1) == "FAIL":
                     failed_tests.add(current)
                 continue
@@ -379,8 +293,6 @@ class REACT95(Instance):
             else:
                 skipped_tests.add(tid)
 
-        # TestResult.__post_init__ rejects overlapping sets; failure wins over a
-        # retry that later passed, then skip.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
         passed_tests -= skipped_tests

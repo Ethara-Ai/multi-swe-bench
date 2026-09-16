@@ -1,34 +1,3 @@
-"""huggingface/transformers harness config — PRs #30772 to #36555.
-
-Registered under the number_interval key ``transformers_36555_to_30772``.
-``Instance.register`` writes straight into ``_registry[f"{org}/{repo}"]`` with no
-collision check, so registering on the plain ``huggingface/transformers`` key
-would silently replace the existing generic config. Note also that the existing
-``transformers_44040_to_3323`` interval *contains* this range: routing is by
-exact ``number_interval`` match (instance.py:42), so the explicit key below is
-what keeps these ten PRs on this file.
-
-Architecture: SHARED base (A-series of the Dockerfile QC).
-  base  -> toolchain + full-history clone, pinned to nothing, then CMD.
-           `# syntax` on line 1 is the DockerfileEnhancer opt-out (image.py:317);
-           without it the enhancer rewrites the clone into
-           `git checkout ${BASE_COMMIT}` + scrub, which would pin this one shared
-           image to whichever PR the build `set` happened to keep and break every
-           other PR in the shard.
-           ARG BASE_COMMIT is DECLARED (silences BuildKit's unused-arg warning,
-           since the harness passes it regardless) but never REFERENCED — A3.
-  PR    -> 7 COPYs, prepare.sh, then the checkout+prune the shared base cannot do.
-
-Layer-leak disclosure (A6): the base clones full history and the PR layer prunes
-in a later RUN, so the pre-prune history still exists in the base layer's blob.
-This is a DISTRIBUTION concern only — the base tag must never be published; PR
-images are what ship. Containers run unprivileged with no socket or volumes
-(utils/docker_util.py:314), so an agent inside cannot reach lower layers.
-
-Test scoping is essential here: transformers' full suite is far too large to run,
-so each stage runs only the test files the test patch touches.
-"""
-
 import re
 from typing import Optional, Union
 
@@ -38,14 +7,6 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 def _strip_binary_diffs(patch: str) -> str:
-    """Drop diff sections for binary files.
-
-    Test patches in this repo carry hunks for images/audio fixtures that lack the
-    full index line `git apply` needs for binary blobs, which aborts the whole
-    apply and leaves the tree unpatched. These files never affect pytest
-    outcomes, so dropping their sections turns the apply back into a no-op for
-    them.
-    """
     out, skip = [], False
     for line in patch.splitlines(True):
         if line.startswith("diff --git "):
@@ -61,19 +22,6 @@ def _strip_binary_diffs(patch: str) -> str:
     return "".join(out)
 
 
-# Shared verbatim by run.sh / test-run.sh / fix-run.sh, so the only difference
-# between graded stages is which patch was applied first (QC P7).
-#
-# Only the test files the test patch touches are run. transformers' full suite is
-# tens of thousands of tests and assumes GPUs; running it would time out and
-# drown the gating signal in unrelated failures.
-# PRs whose graded tests are all @slow-gated. transformers skips @slow unless
-# RUN_SLOW is set, so without it every stage returns an identical result and the
-# instance is ungradeable. #31499 ("Add FA2 and sdpa support for SigLIP") is the
-# case: its sdpa tests are additionally gated on the model class declaring
-# _supports_sdpa, which the fix patch is what flips -- so they go SKIP -> PASS
-# (s2p) purely because of the fix. Enabled per PR, not globally: un-gating @slow
-# everywhere would pull real model weights from the hub for the other instances.
 _SLOW_REQUIRED = {31499}
 
 _TEST_BODY = r"""
@@ -101,7 +49,6 @@ python -m pytest -v -rA --no-header --tb=short -p no:cacheprovider -p no:rich \
 
 
 class TransformersEraImageBase(Image):
-    """python:3.10-slim + toolchain, then a full-history clone. Nothing after it."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -207,7 +154,6 @@ CMD ["/bin/bash"]
 
 
 class TransformersEraImageDefault(Image):
-    """PR layer: FROM base, exactly 7 COPYs, prepare.sh, then checkout+prune."""
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -244,24 +190,12 @@ git reset --hard
 git clean -fdx
 bash /home/check_git_changes.sh
 
-# --detach, not a branch: the prune below asserts HEAD == BASE_SHA rather than
-# re-establishing it, and then deletes every ref. An attached HEAD would either
-# lose its branch out from under it or keep extra history reachable.
 git remote add origin https://github.com/[[ORG]]/[[REPO]].git 2>/dev/null || true
 git fetch --no-tags --depth=1 origin [[SHA]] 2>/dev/null || git fetch --no-tags origin 2>/dev/null || true
 git checkout --detach [[SHA]]
 test "$(git rev-parse HEAD)" = "$(git rev-parse [[SHA]])"
 bash /home/check_git_changes.sh
 
-# ---------------------------------------------------------------------------
-# Dependencies, pinned to what THIS commit declares. The pins are read out of
-# the checkout instead of hand-mapped, so each PR in this interval gets its own
-# era (the span here is transformers 4.42 -> 4.56). transformers reaches into
-# huggingface_hub private modules (utils._deprecation, file_download.http_get),
-# so hub is pinned to the minor series its authors developed against rather
-# than the table's loose <1.0 upper bound. pip writes egg-info into the tree,
-# so NO clean-tree assert runs after this point.
-# ---------------------------------------------------------------------------
 python - <<'PYEOF'
 import pathlib, re
 
@@ -273,7 +207,6 @@ minor = int(re.search(
     pathlib.Path("src/transformers/__init__.py").read_text()).group(1))
 
 def series(name):
-    # `huggingface-hub>=0.23.2,<1.0` -> `huggingface-hub==0.23.*`
     spec = deps.get(name)
     if not spec:
         return None
@@ -298,10 +231,6 @@ read TORCH_V VISION_V DATASETS_SPEC < /home/torch_pin.txt
 echo "=== era pins (torch==$TORCH_V torchvision==$VISION_V $DATASETS_SPEC) ==="
 cat /home/era_pins.txt
 
-# torch FIRST, and only from the CPU index. accelerate declares a torch
-# dependency, so installing it earlier makes pip resolve torch off the default
-# index -- that is the CUDA build, ~554 MB plus ~1.6 GB of nvidia_* wheels that
-# nothing in a CPU container can use.
 pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
     "torch==$TORCH_V" "torchvision==$VISION_V"
 
@@ -312,14 +241,6 @@ pip install --no-cache-dir boto3 importlib_metadata sacremoses
 pip install --no-deps --no-cache-dir evaluate
 pip install --no-deps --no-cache-dir -e .
 
-# ---------------------------------------------------------------------------
-# Hard gate (QC P14). NOT tolerant, and it asserts the real entry points plus
-# the test-only dependencies -- a bare `import transformers` passes while every
-# test errors on a missing parameterized/datasets. Importing transformers also
-# runs the repo's own dependency_versions_check against the table above, so
-# this line doubles as proof the pins really are the declared ones. That check
-# is deliberately left enabled rather than patched out.
-# ---------------------------------------------------------------------------
 python -c "import transformers, torch, pytest, parameterized, datasets, PIL; print('DEPS_OK', transformers.__version__, torch.__version__)"
 """
 
@@ -406,12 +327,6 @@ fi
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        # Prune runs AFTER prepare.sh: prepare.sh fetches and checks out this PR's
-        # sha, so pruning first would delete the objects it needs. The opening
-        # commit-scoped `checkout --detach` is a same-tree no-op that preserves
-        # prepare.sh's tracked-file edits while guaranteeing HEAD is detached
-        # before every ref is deleted (QC P12). No reset/clean/path-scoped
-        # checkout appears here -- those would discard that work.
         return f"""FROM {name}:{tag}
 
 {copy_commands}
@@ -453,7 +368,6 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 
 @Instance.register("huggingface", "transformers_36555_to_30772")
 class Transformers36555To30772(Instance):
-    """Harness instance for huggingface/transformers — PRs #30772 to #36555."""
 
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -483,18 +397,6 @@ class Transformers36555To30772(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        """Parse pytest output into file-qualified ids.
-
-        Both formats are matched because the run scripts pass -v AND -rA:
-          -v   "tests/x.py::test_y PASSED"   streamed as each test finishes
-          -rA  "PASSED tests/x.py::test_y"   only printed if the run completes
-        The inline form is the load-bearing one -- a run cut short still yields
-        results. Matching only the summary form silently reports zero.
-
-        Ids keep the FILE PATH. Bare names after "::" collapse same-named tests
-        from different model dirs into one id that then lands in two status sets,
-        which TestResult.__post_init__ rejects outright.
-        """
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
@@ -520,14 +422,9 @@ class Transformers36555To30772(Instance):
             else:
                 skipped_tests.add(tid)
 
-        # A module that fails to import prints "ERROR tests/x.py" with no "::".
-        # Record the FILE so the stage still carries that signal instead of
-        # going silently empty.
         for m in re.finditer(r"^ERROR\s+(\S+\.py)\s*(?:-.*)?$", log, re.MULTILINE):
             failed_tests.add(m.group(1))
 
-        # TestResult.__post_init__ enforces disjoint sets. Failure wins over a
-        # retry that later passed, then skip.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
         passed_tests -= skipped_tests

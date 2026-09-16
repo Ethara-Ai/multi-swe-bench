@@ -1,22 +1,3 @@
-"""langchain-ai/langchain harness config — PRs #260 to #19331.
-
-Spans two repo layouts with one shared base image:
-
-  * flat era   (#260 Dec-2022, #7089 Jul-2023): package + tests/ at the repo root
-  * monorepo   (#17386, #18960, #19331 2024):   libs/<pkg>/tests/unit_tests
-
-Both eras build with poetry on python:3.11-slim, so a single base serves all
-five PRs; prepare.sh moves the checkout to each PR's own base sha. Test
-discovery is layout-agnostic (find every tests/unit_tests dir), which is what
-lets one config cover both eras.
-
-Artifact split:
-  base Dockerfile -> toolchain, proxy/CA, clone, reset, checkout ${BASE_COMMIT},
-                     hardening block + 4 asserts, submodule scrub
-  PR Dockerfile   -> FROM base, 7 COPY lines, RUN bash /home/prepare.sh
-  prepare.sh      -> deps, cd repo, reset, checkout <sha>, check_git_changes asserts
-"""
-
 import re
 from typing import Optional, Union
 
@@ -26,15 +7,6 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 
 class LangchainEraImageBase(Image):
-    """Shared base: toolchain + clone. One image for every PR in the range.
-
-    dependency() returns a STRING, which is what makes DockerfileEnhancer own
-    this file (image.py:314 returns raw untouched when dependency() is an
-    Image). The enhancer rewrites the `git clone` line below into
-    clone -> WORKDIR -> git reset --hard -> git checkout ${BASE_COMMIT} ->
-    _HARDENING_BLOCK (all 4 asserts) -> submodule scrub, so none of that is
-    written by hand here.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -52,10 +24,6 @@ class LangchainEraImageBase(Image):
         return "python:3.11-slim"
 
     def image_tag(self) -> str:
-        # base-<name> per the artifact contract. QC P1 asks for base-pr-<N>,
-        # but a per-PR base contradicts "one base image for every PR"; the
-        # shared-base form is the deliberate choice, as in the reference's
-        # base-jest. Named for the build tool both eras share.
         return "base-poetry"
 
     def workdir(self) -> str:
@@ -74,13 +42,6 @@ class LangchainEraImageBase(Image):
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
-        # Emitting the syntax directive ourselves makes DockerfileEnhancer
-        # return this file verbatim (image.py:316). That is deliberate: the
-        # enhancer's _standardize_repo_fetch would otherwise rewrite the clone
-        # into clone+checkout+hardening, and the hardening must live in the PR
-        # layer, not here. Everything the enhancer would have contributed
-        # (ARGs, proxy, CA farm, OCI labels) is therefore written out below.
-        # Content stops at the clone, then CMD.
         return f"""# syntax=docker/dockerfile:1.6
 
 FROM {image_name}
@@ -149,16 +110,6 @@ CMD ["/bin/bash"]
 
 
 class LangchainEraImageDefault(Image):
-    """PR layer: FROM base, exactly 7 COPY lines, RUN bash /home/prepare.sh.
-
-    dependency() returns an Image, so DockerfileEnhancer returns this file
-    verbatim (image.py:314). Nothing is injected — no ARG, no ENV, no WORKDIR,
-    no git, no CMD — which is why the hardening lives wholly in the base.
-
-    Only 7 files are copied. strip_binaries.sh and run_tests.sh are *generated*
-    by prepare.sh at build time rather than copied, to keep the COPY list at
-    the 7 the artifact contract allows.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -219,10 +170,6 @@ cd /home/[[REPO]]
 git reset --hard
 bash /home/check_git_changes.sh
 
-# The base image is hardened: its remote is removed and history pruned to a
-# single commit's ancestry, so this PR's sha is usually absent. Re-attach the
-# remote and fetch the exact object before checkout -- that is what lets one
-# base image serve every PR in the range.
 git remote add origin https://github.com/[[ORG]]/[[REPO]].git 2>/dev/null || true
 git fetch --depth=1 origin [[SHA]] 2>/dev/null || git fetch origin 2>/dev/null || true
 git checkout -f [[SHA]]
@@ -242,9 +189,6 @@ STRIP_EOF
 
 cat > /home/run_tests.sh <<'RUNTESTS_EOF'
 #!/bin/bash
-# Layout-agnostic: discovers every tests/unit_tests dir, so the same script
-# serves the flat era (tests/unit_tests at the repo root) and the monorepo era
-# (libs/<pkg>/tests/unit_tests) without branching on repo shape.
 set +e
 cd /home/[[REPO]]
 ran_any=0
@@ -259,8 +203,6 @@ while IFS= read -r tdir; do
     if poetry run python -c "import pytest_socket" >/dev/null 2>&1; then
         SOCKET_FLAGS="--disable-socket --allow-unix-socket"
     fi
-    # -o addopts= drops per-package inifile addopts (coverage/snapshot/socket),
-    # which otherwise error out when their plugin failed to install.
     poetry run pytest -o addopts= --no-header -rA --tb=no -p no:cacheprovider \
         --continue-on-collection-errors $SOCKET_FLAGS tests/unit_tests/ 2>&1 \
         | sed -E "s#^(PASSED|FAILED|ERROR|XFAIL|XPASS)[[:space:]]+#\1 [$rel] #; s#^(SKIPPED \[[0-9]+\])[[:space:]]+#\1 [$rel] #"
@@ -279,9 +221,6 @@ while IFS= read -r tdir; do
         cd "$pkg"
         poetry install --with test --no-interaction || true
         poetry run pip install -e . --no-deps 2>/dev/null || true
-        # pytest<8 and pytest-asyncio<0.24 are the last pair that work together
-        # here; newer pytest-asyncio needs pytest>=8.2, which drags in pytest 9
-        # whose deprecations are errors under this era's filterwarnings.
         if ! poetry run python -c "import pytest_socket, pytest_asyncio, pytest_mock" 2>/dev/null; then
             poetry run pip install "pytest<8" "pytest-asyncio<0.24" \
                 pytest-socket pytest-mock pytest-cov pytest-dotenv freezegun \
@@ -291,9 +230,6 @@ while IFS= read -r tdir; do
     )
 done < <(find /home/[[REPO]] -maxdepth 5 -type d -path '*/tests/unit_tests' -not -path '*/.venv/*' 2>/dev/null | sort)
 
-# poetry rewrites poetry.lock during install. Restoring tracked files returns
-# the tree to exactly the base sha -- the state every `git apply` in the three
-# run scripts expects -- while leaving the gitignored .venv dirs in place.
 cd /home/[[REPO]]
 git checkout -- .
 bash /home/check_git_changes.sh
@@ -354,13 +290,6 @@ bash /home/run_tests.sh
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        # The history strip / hardening lives here, not in the base and not in
-        # prepare.sh. It runs AFTER prepare.sh, because prepare.sh is what moves
-        # the checkout to this PR's sha -- stripping before that would delete the
-        # very objects prepare.sh needs to fetch.
-        #
-        # The sha is inlined rather than taken from an ARG so this layer needs no
-        # ARG/ENV of its own; the base's ${BASE_COMMIT} is not this PR's commit.
         return f"""FROM {name}:{tag}
 
 {copy_commands}
@@ -402,7 +331,6 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 
 @Instance.register("langchain-ai", "langchain_19331_to_260")
 class Langchain19331To260(Instance):
-    """Harness instance for langchain-ai/langchain — PRs #260 to #19331."""
 
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -432,20 +360,12 @@ class Langchain19331To260(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        """Parse pytest -rA output, ids prefixed with their package.
-
-        run_tests.sh tags every status line with "[<pkg>] " so that same-named
-        test files in different libs/* packages stay distinct ids.
-        """
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
 
         test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        # Parametrized ids can contain spaces (test_foo[a b c]), so capture to
-        # end of line minus the optional " - <reason>" trailer rather than to
-        # the next whitespace.
         re_pass = re.compile(r"^PASSED\s+(.+?)\s*$")
         re_fail = re.compile(r"^FAILED\s+(.+?)(?:\s+-\s.*)?\s*$")
         re_error = re.compile(r"^ERROR\s+(.+?)(?:\s+-\s.*)?\s*$")
@@ -472,8 +392,6 @@ class Langchain19331To260(Instance):
                     bucket.add(m.group(1))
                     break
 
-        # TestResult.__post_init__ rejects overlapping sets. Failure wins over a
-        # later pass, then skip.
         passed_tests -= failed_tests
         skipped_tests -= failed_tests
         passed_tests -= skipped_tests

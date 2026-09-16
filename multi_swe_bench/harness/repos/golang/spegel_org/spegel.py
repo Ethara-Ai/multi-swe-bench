@@ -219,18 +219,9 @@ class SPEGEL(Instance):
 
         log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log)
 
-        # `go test -json` emits one JSON object per line. Test-level events
-        # carry both Package and Test, so the name is unique across packages
-        # (Go allows the same TestX in many packages) and subtests keep their
-        # "TestX/sub" path. Package-level events have no Test field.
         pkg_actions: dict[str, str] = {}
         pkg_has_tests: set[str] = set()
 
-        # A package that fails to COMPILE produces no json event at all -- go
-        # writes the compile errors to stderr as plain text and closes with
-        # "FAIL <pkg> [build failed]". The package-level guard below therefore
-        # never sees it, and every test in that package would vanish from the
-        # stage with no signal at all. Catch the plain-text form here.
         build_failed_re = re.compile(r"^FAIL\s+(\S+)\s+\[build failed\]")
 
         for raw in log.split("\n"):
@@ -266,9 +257,6 @@ class SPEGEL(Instance):
             else:
                 skipped_tests.add(name)
 
-        # A package that failed without producing any test event did not
-        # build (or died in TestMain). Surface it as a failure so the stage
-        # is not silently credited with zero tests.
         for pkg, action in pkg_actions.items():
             if action == "fail" and pkg not in pkg_has_tests:
                 failed_tests.add(f"{pkg}::[build]")
