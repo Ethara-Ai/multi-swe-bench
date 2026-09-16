@@ -1,118 +1,14 @@
+import posixpath
 import re
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_BASE_TAG = "base-0_to_16976"
-_JDK_PACKAGE = "openjdk-8-jdk"
-_JDK_HOME = "/usr/lib/jvm/java-8-openjdk"
-_JDK_ARCH_DIR = "/usr/lib/jvm/java-8-openjdk"
-_MAVEN_VERSION = "3.8.8"
-
-_NON_MODULE_DIRS = frozenset(
-    {
-        ".mvn",
-        ".github",
-        ".gitignore",
-        ".gitattributes",
-        ".git",
-        "codestyle",
-        "dev",
-        "docs",
-        "licenses",
-        "publications",
-        "website",
-        "hooks",
-        ".editorconfig",
-        ".licenserc.yaml",
-    }
-)
-
-_GROUPING_DIRS = frozenset(
-    {
-        "cloud",
-        "extensions",
-        "extensions-contrib",
-        "extensions-core",
-    }
-)
-
-_EXCLUDED_MODULES = frozenset({"integration-tests"})
-
-_MVN_FLAGS = (
-    "-B -fn -Dsurefire.useFile=false -Dmaven.test.skip=false "
-    "-DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false"
-)
-
-
-def _patch_paths(patch_text: str) -> list[str]:
-    paths = []
-    for match in re.finditer(r"^diff --git a/\S+ b/(\S+)$", patch_text or "", re.M):
-        paths.append(match.group(1))
-    return paths
-
-
-def _module_of(path: str) -> str:
-    segments = path.split("/")
-    if len(segments) < 2:
-        return ""
-    top = segments[0]
-    if top in _NON_MODULE_DIRS:
-        return ""
-    if top in _GROUPING_DIRS:
-        if len(segments) >= 3:
-            return f"{segments[0]}/{segments[1]}"
-        return ""
-    return top
-
-
-def _extract_modules_from_patch(patch_text: str) -> set[str]:
-    modules = set()
-    for path in _patch_paths(patch_text):
-        module = _module_of(path)
-        if module:
-            modules.add(module)
-    return modules
-
-
-def _build_pl_flag(pr: PullRequest, excluded: frozenset = frozenset()) -> str:
-    modules = _extract_modules_from_patch(pr.fix_patch) | _extract_modules_from_patch(pr.test_patch)
-    modules -= set(excluded)
-    modules.discard("pom.xml")
-    modules.discard("")
-    if not modules:
-        return ""
-    return "-pl " + ",".join(sorted(modules)) + " -am"
-
-
-def _extract_test_classes_from_patch(patch_text: str, excluded: frozenset = frozenset()) -> set[str]:
-    classes = set()
-    for path in _patch_paths(patch_text):
-        if "/src/test/" not in path or not path.endswith(".java"):
-            continue
-        if _module_of(path) in set(excluded):
-            continue
-        classes.add(path.rsplit("/", 1)[-1][: -len(".java")])
-    return classes
-
-
-def _build_test_flag(pr: PullRequest, excluded: frozenset = frozenset()) -> str:
-    classes = _extract_test_classes_from_patch(pr.test_patch, excluded)
-    if not classes:
-        return ""
-    return "-Dtest=" + ",".join(f"{c}*" for c in sorted(classes))
-
-
-def _scope_flags(pr: PullRequest) -> str:
-    return " ".join(
-        flag
-        for flag in (
-            _build_pl_flag(pr, _EXCLUDED_MODULES),
-            _build_test_flag(pr, _EXCLUDED_MODULES),
-        )
-        if flag
-    )
+_BASE_TAG = "base-17441_to_20822"
+_RUSTUP_VERSION = "1.28.2"
+_UV_VERSION = "0.12.14"
+_EXCLUDED_REQUIREMENTS = "connectorx|polars-cloud|pyiceberg"
 
 
 _BASE_DOCKERFILE = r"""# syntax=docker/dockerfile:1.6
@@ -144,9 +40,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SSL_CERT_FILE=${CA_CERT_PATH} \
     REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \
     CURL_CA_BUNDLE=${CA_CERT_PATH} \
-    JAVA_HOME=__JDK_HOME__ \
-    MAVEN_OPTS=-Xmx2g \
-    PATH=/opt/maven/bin:__JDK_HOME__/bin:${PATH}
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:${PATH}
 
 LABEL org.opencontainers.image.title="__ORG__/__REPO__" \
       org.opencontainers.image.description="__ORG__/__REPO__ Docker image" \
@@ -162,16 +60,16 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
     ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git __JDK_PACKAGE__ \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -s __JDK_ARCH_DIR__-$(dpkg --print-architecture) __JDK_HOME__ \
-    && java -version
+        build-essential ca-certificates cmake curl git pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL "https://archive.apache.org/dist/maven/maven-3/__MAVEN_VERSION__/binaries/apache-maven-__MAVEN_VERSION__-bin.tar.gz" -o /tmp/maven.tar.gz \
-    && mkdir -p /opt/maven \
-    && tar -xzf /tmp/maven.tar.gz -C /opt/maven --strip-components=1 --no-same-owner \
-    && rm -f /tmp/maven.tar.gz \
-    && mvn --version
+RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && case "${arch}" in amd64) rust_arch=x86_64 ;; arm64) rust_arch=aarch64 ;; *) echo "unsupported architecture ${arch}" >&2; exit 1 ;; esac \
+    && curl -fsSL "https://static.rust-lang.org/rustup/archive/__RUSTUP_VERSION__/${rust_arch}-unknown-linux-gnu/rustup-init" -o /tmp/rustup-init \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none \
+    && rm -f /tmp/rustup-init \
+    && rustup toolchain list
 
 __GLOBAL_ENV__
 
@@ -225,24 +123,43 @@ exit 0
 """
 
 
-_SHELL_ENV = r"""export JAVA_HOME=__JDK_HOME__
-export PATH="/opt/maven/bin:${JAVA_HOME}/bin:${PATH}"
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-export MAVEN_OPTS=-Xmx2g"""
+_SHELL_ENV = r"""export CI=true
+export VIRTUAL_ENV=/opt/venv
+export PATH="/opt/venv/bin:${PATH}"
+export RUSTFLAGS="-C debuginfo=0"
+export CARGO_INCREMENTAL=0
+export CARGO_TERM_COLOR=never
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
+export POLARS_TIMEOUT_MS=60000"""
 
 
-_TEST_BLOCK = r"""find . -path '*/target/surefire-reports' -type d -prune -exec rm -rf {} +
+_BUILD = r"""build_features="$(awk 'match($0, /maturin develop.*--features[= ][A-Za-z0-9_,-]+/) { s = substr($0, RSTART, RLENGTH); sub(/.*--features[= ]/, "", s); print s; exit }' /home/__REPO__/.github/workflows/test-python.yml)"
 
-set +e
-mvn test __MVN_FLAGS__ __SCOPE_FLAGS__
-mvn_status=$?
-set -e
+if [ -f runtime/Cargo.toml ]; then
+    maturin develop --manifest-path runtime/Cargo.toml ${build_features:+--features "${build_features}"}
+else
+    maturin develop ${build_features:+--features "${build_features}"}
+fi"""
 
-test -n "$(find . -path '*/target/surefire-reports/TEST-*.xml' -print -quit)"
-find . -path '*/target/surefire-reports/TEST-*.xml' -exec cat {} +
 
-exit ${mvn_status}
+_TEST_BLOCK = r"""test_targets=()
+for test_file in __TEST_FILES__; do
+    if [ -f "${test_file}" ]; then
+        test_targets+=("${test_file}")
+    fi
+done
+
+if [ "${#test_targets[@]}" -eq 0 ]; then
+    for test_file in __TEST_FILES__; do
+        test_dir="$(dirname "${test_file}")"
+        case " ${test_targets[*]} " in
+            *" ${test_dir} "*) ;;
+            *) test_targets+=("${test_dir}") ;;
+        esac
+    done
+fi
+
+python -m pytest -n auto --dist loadgroup -m "not release and not benchmark and not docs" -v -rA --tb=no --color=no -p no:cacheprovider "${test_targets[@]}"
 """
 
 
@@ -262,13 +179,40 @@ bash /home/check_git_changes.sh
 
 __SHELL_ENV__
 
-java -version
-mvn --version
+git config --global url."https://github.com/PyO3/rust-numpy.git".insteadOf "https://github.com/stinodego/rust-numpy.git"
 
-mvn clean test __MVN_FLAGS__ __SCOPE_FLAGS__ || true
+toolchain="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
+test -n "${toolchain}"
+rustup toolchain install "${toolchain}" --profile minimal
+rustc --version
+cargo --version
 
-mvn test-compile -o -B __PL_FLAG__
+python -m venv /opt/venv
+python -m pip install "uv==__UV_VERSION__"
+uv --version
 
+cutoff="$(git show -s --format=%cI HEAD)"
+
+cd /home/__REPO__/py-polars
+
+grep -vE '^[[:space:]]*(__EXCLUDED_REQUIREMENTS__)([^A-Za-z0-9_.-]|$)' requirements-dev.txt > /tmp/requirements-dev.txt
+uv pip install --exclude-newer "${cutoff}" --only-binary :all: -r /tmp/requirements-dev.txt
+rm -f /tmp/requirements-dev.txt
+
+if [ -f runtime/Cargo.toml ]; then
+    uv pip install --exclude-newer "${cutoff}" --no-deps -e .
+fi
+
+(cd /home/__REPO__ && bash /home/check_git_changes.sh)
+
+__BUILD__
+
+python -c "import polars, pytest, xdist, hypothesis, numpy, pandas, pyarrow; print('polars', polars.__version__)"
+python -m pytest --version
+
+uv cache clean
+
+cd /home/__REPO__
 bash /home/check_git_changes.sh
 """
 
@@ -279,6 +223,8 @@ set -eo pipefail
 cd /home/__REPO__
 
 __SHELL_ENV__
+
+cd /home/__REPO__/py-polars
 
 __TEST_BLOCK__"""
 
@@ -292,6 +238,8 @@ __SHELL_ENV__
 
 git apply --whitespace=nowarn /home/test.patch
 
+cd /home/__REPO__/py-polars
+
 __TEST_BLOCK__"""
 
 
@@ -304,10 +252,26 @@ __SHELL_ENV__
 
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
+cd /home/__REPO__/py-polars
+
+__BUILD__
+
 __TEST_BLOCK__"""
 
 
-class DruidJdk8ImageBase(Image):
+def _test_files(pr: PullRequest) -> str:
+    files = {}
+    for section in re.split(r"(?=^diff --git )", pr.test_patch or "", flags=re.M):
+        match = re.match(r"diff --git a/\S+ b/py-polars/(\S+)\n", section)
+        if match and re.search(r"(^|/)test_[^/]*\.py$", match.group(1)):
+            header = section.split("\n@@", 1)[0]
+            files[match.group(1)] = files.get(match.group(1), True) and "\nnew file mode" in header
+    if files and all(files.values()):
+        return " ".join(sorted({f"{posixpath.dirname(path)}/." for path in files}))
+    return " ".join(sorted(files))
+
+
+class PolarsImageBase_17441_TO_20822(Image):
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -322,7 +286,7 @@ class DruidJdk8ImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "ubuntu:22.04"
+        return "python:3.12.8-bookworm"
 
     def image_tag(self) -> str:
         return _BASE_TAG
@@ -338,10 +302,7 @@ class DruidJdk8ImageBase(Image):
 
         return (
             _BASE_DOCKERFILE.replace("__BASE_IMAGE__", self.dependency())
-            .replace("__JDK_PACKAGE__", _JDK_PACKAGE)
-            .replace("__MAVEN_VERSION__", _MAVEN_VERSION)
-            .replace("__JDK_ARCH_DIR__", _JDK_ARCH_DIR)
-            .replace("__JDK_HOME__", _JDK_HOME)
+            .replace("__RUSTUP_VERSION__", _RUSTUP_VERSION)
             .replace("__GLOBAL_ENV__", self.global_env)
             .replace("__CLEAR_ENV__", self.clear_env)
             .replace("__CODE__", code)
@@ -350,7 +311,7 @@ class DruidJdk8ImageBase(Image):
         )
 
 
-class DruidJdk8ImageDefault(Image):
+class PolarsImageDefault_17441_TO_20822(Image):
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -365,7 +326,7 @@ class DruidJdk8ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return DruidJdk8ImageBase(self.pr, self._config)
+        return PolarsImageBase_17441_TO_20822(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -375,12 +336,12 @@ class DruidJdk8ImageDefault(Image):
 
     def _render(self, template: str) -> str:
         return (
-            template.replace("__TEST_BLOCK__", _TEST_BLOCK)
-            .replace("__SHELL_ENV__", _SHELL_ENV)
-            .replace("__MVN_FLAGS__", _MVN_FLAGS)
-            .replace("__SCOPE_FLAGS__", _scope_flags(self.pr))
-            .replace("__PL_FLAG__", _build_pl_flag(self.pr, _EXCLUDED_MODULES))
-            .replace("__JDK_HOME__", _JDK_HOME)
+            template.replace("__SHELL_ENV__", _SHELL_ENV)
+            .replace("__BUILD__", _BUILD)
+            .replace("__TEST_BLOCK__", _TEST_BLOCK)
+            .replace("__UV_VERSION__", _UV_VERSION)
+            .replace("__EXCLUDED_REQUIREMENTS__", _EXCLUDED_REQUIREMENTS)
+            .replace("__TEST_FILES__", _test_files(self.pr))
             .replace("__REPO__", self.pr.repo)
             .replace("__BASE_SHA__", self.pr.base.sha)
         )
@@ -420,14 +381,13 @@ class DruidJdk8ImageDefault(Image):
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-_CASE_RE = re.compile(r"<testcase\b([^>]*?)(/>|>(.*?)</testcase>)", re.S)
-_ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
-_COMPILE_FAIL_RE = re.compile(
-    r"testCompile \(default-testCompile\) on project ([A-Za-z0-9_.-]+)"
+_XDIST_RE = re.compile(
+    r"^\[gw\d+\] \[\s*\d+%\] (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS) (\S+\.py::\S.*)$"
 )
-_RESOLVE_FAIL_RE = re.compile(
-    r"Could not resolve dependencies for project [A-Za-z0-9_.]+:([A-Za-z0-9_.-]+)"
+_VERBOSE_RE = re.compile(
+    r"^(\S+\.py::\S.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?: +\[\s*\d+%\])?$"
 )
+_SUMMARY_RE = re.compile(r"^(PASSED|FAILED|ERROR|XFAIL|XPASS) (\S+\.py(?:::\S.*?)?)(?: - .*)?$")
 
 
 def _parse_log(test_log: str) -> TestResult:
@@ -435,29 +395,41 @@ def _parse_log(test_log: str) -> TestResult:
     failed_tests: set[str] = set()
     skipped_tests: set[str] = set()
 
-    clean_log = _ANSI_RE.sub("", test_log)
-
-    for match in _CASE_RE.finditer(clean_log):
-        attrs = dict(_ATTR_RE.findall(match.group(1)))
-        method = attrs.get("name", "")
-        if not method:
-            continue
-        classname = attrs.get("classname", "")
-        name = f"{classname}.{method}" if classname else method
-        body = match.group(3) or ""
-
-        if "<failure" in body or "<error" in body:
-            failed_tests.add(name)
-        elif "<skipped" in body:
-            skipped_tests.add(name)
-        else:
+    def record(name: str, status: str) -> None:
+        if "::" not in name:
+            name = f"{name}::<collection error>"
+        if status in ("PASSED", "XFAIL", "XPASS"):
             passed_tests.add(name)
+        elif status in ("FAILED", "ERROR"):
+            failed_tests.add(name)
+        elif status == "SKIPPED":
+            skipped_tests.add(name)
 
-    if not passed_tests and not failed_tests and not skipped_tests:
-        for module in sorted(set(_COMPILE_FAIL_RE.findall(clean_log))):
-            failed_tests.add(f"{module}::<test compile failed>")
-        for module in sorted(set(_RESOLVE_FAIL_RE.findall(clean_log))):
-            failed_tests.add(f"{module}::<dependency resolution failed>")
+    xdist_seen = False
+    summary_entries = []
+
+    for raw_line in _ANSI_RE.sub("", test_log).replace("\r\n", "\n").splitlines():
+        line = raw_line.strip()
+
+        match = _XDIST_RE.match(line)
+        if match:
+            record(match.group(2), match.group(1))
+            xdist_seen = True
+            continue
+
+        match = _VERBOSE_RE.match(line)
+        if match:
+            record(match.group(1), match.group(2))
+            continue
+
+        match = _SUMMARY_RE.match(line)
+        if match:
+            summary_entries.append((match.group(2), match.group(1)))
+
+    for name, status in summary_entries:
+        if xdist_seen and "::" in name:
+            continue
+        record(name, status)
 
     passed_tests -= failed_tests
     passed_tests -= skipped_tests
@@ -473,8 +445,8 @@ def _parse_log(test_log: str) -> TestResult:
     )
 
 
-@Instance.register("apache", "druid_0_to_16976")
-class DruidJdk8(Instance):
+@Instance.register("pola-rs", "polars_17441_to_20822")
+class POLARS_17441_TO_20822(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -485,7 +457,7 @@ class DruidJdk8(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return DruidJdk8ImageDefault(self.pr, self._config)
+        return PolarsImageDefault_17441_TO_20822(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:

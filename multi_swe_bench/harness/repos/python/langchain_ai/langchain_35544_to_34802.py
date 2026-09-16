@@ -1,117 +1,52 @@
+import posixpath
 import re
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_BASE_TAG = "base-0_to_16976"
-_JDK_PACKAGE = "openjdk-8-jdk"
-_JDK_HOME = "/usr/lib/jvm/java-8-openjdk"
-_JDK_ARCH_DIR = "/usr/lib/jvm/java-8-openjdk"
-_MAVEN_VERSION = "3.8.8"
-
-_NON_MODULE_DIRS = frozenset(
-    {
-        ".mvn",
-        ".github",
-        ".gitignore",
-        ".gitattributes",
-        ".git",
-        "codestyle",
-        "dev",
-        "docs",
-        "licenses",
-        "publications",
-        "website",
-        "hooks",
-        ".editorconfig",
-        ".licenserc.yaml",
-    }
-)
-
-_GROUPING_DIRS = frozenset(
-    {
-        "cloud",
-        "extensions",
-        "extensions-contrib",
-        "extensions-core",
-    }
-)
-
-_EXCLUDED_MODULES = frozenset({"integration-tests"})
-
-_MVN_FLAGS = (
-    "-B -fn -Dsurefire.useFile=false -Dmaven.test.skip=false "
-    "-DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false"
-)
+_BASE_TAG = "base-35544_to_34802"
+_PYTHON_VERSION = "3.12"
+_UV_VERSION = "0.12.14"
 
 
-def _patch_paths(patch_text: str) -> list[str]:
-    paths = []
-    for match in re.finditer(r"^diff --git a/\S+ b/(\S+)$", patch_text or "", re.M):
-        paths.append(match.group(1))
-    return paths
-
-
-def _module_of(path: str) -> str:
+def _package_of(path: str) -> str:
     segments = path.split("/")
-    if len(segments) < 2:
-        return ""
-    top = segments[0]
-    if top in _NON_MODULE_DIRS:
-        return ""
-    if top in _GROUPING_DIRS:
-        if len(segments) >= 3:
-            return f"{segments[0]}/{segments[1]}"
-        return ""
-    return top
+    if len(segments) >= 3 and segments[0] == "libs" and segments[1] == "partners":
+        return "/".join(segments[:3])
+    if len(segments) >= 2 and segments[0] == "libs":
+        return "/".join(segments[:2])
+    return ""
 
 
-def _extract_modules_from_patch(patch_text: str) -> set[str]:
-    modules = set()
-    for path in _patch_paths(patch_text):
-        module = _module_of(path)
-        if module:
-            modules.add(module)
-    return modules
-
-
-def _build_pl_flag(pr: PullRequest, excluded: frozenset = frozenset()) -> str:
-    modules = _extract_modules_from_patch(pr.fix_patch) | _extract_modules_from_patch(pr.test_patch)
-    modules -= set(excluded)
-    modules.discard("pom.xml")
-    modules.discard("")
-    if not modules:
-        return ""
-    return "-pl " + ",".join(sorted(modules)) + " -am"
-
-
-def _extract_test_classes_from_patch(patch_text: str, excluded: frozenset = frozenset()) -> set[str]:
-    classes = set()
-    for path in _patch_paths(patch_text):
-        if "/src/test/" not in path or not path.endswith(".java"):
+def _unit_test_files(pr: PullRequest) -> list[str]:
+    files = []
+    for match in re.finditer(r"^diff --git a/\S+ b/(\S+)$", pr.test_patch or "", re.M):
+        path = match.group(1)
+        if "/integration_tests/" in path or not path.endswith(".py"):
             continue
-        if _module_of(path) in set(excluded):
+        if not posixpath.basename(path).startswith("test_"):
             continue
-        classes.add(path.rsplit("/", 1)[-1][: -len(".java")])
-    return classes
+        if path not in files:
+            files.append(path)
+    return sorted(files)
 
 
-def _build_test_flag(pr: PullRequest, excluded: frozenset = frozenset()) -> str:
-    classes = _extract_test_classes_from_patch(pr.test_patch, excluded)
-    if not classes:
+def _package(pr: PullRequest) -> str:
+    packages = {_package_of(path) for path in _unit_test_files(pr)}
+    packages.discard("")
+    if not packages:
         return ""
-    return "-Dtest=" + ",".join(f"{c}*" for c in sorted(classes))
+    return sorted(packages)[0]
 
 
-def _scope_flags(pr: PullRequest) -> str:
+def _test_files(pr: PullRequest) -> str:
+    package = _package(pr)
+    if not package:
+        return ""
+    prefix = f"{package}/"
     return " ".join(
-        flag
-        for flag in (
-            _build_pl_flag(pr, _EXCLUDED_MODULES),
-            _build_test_flag(pr, _EXCLUDED_MODULES),
-        )
-        if flag
+        path[len(prefix):] for path in _unit_test_files(pr) if path.startswith(prefix)
     )
 
 
@@ -144,9 +79,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SSL_CERT_FILE=${CA_CERT_PATH} \
     REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \
     CURL_CA_BUNDLE=${CA_CERT_PATH} \
-    JAVA_HOME=__JDK_HOME__ \
-    MAVEN_OPTS=-Xmx2g \
-    PATH=/opt/maven/bin:__JDK_HOME__/bin:${PATH}
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    UV_LINK_MODE=copy
 
 LABEL org.opencontainers.image.title="__ORG__/__REPO__" \
       org.opencontainers.image.description="__ORG__/__REPO__ Docker image" \
@@ -162,16 +97,11 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
     ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git __JDK_PACKAGE__ \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -s __JDK_ARCH_DIR__-$(dpkg --print-architecture) __JDK_HOME__ \
-    && java -version
+        ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL "https://archive.apache.org/dist/maven/maven-3/__MAVEN_VERSION__/binaries/apache-maven-__MAVEN_VERSION__-bin.tar.gz" -o /tmp/maven.tar.gz \
-    && mkdir -p /opt/maven \
-    && tar -xzf /tmp/maven.tar.gz -C /opt/maven --strip-components=1 --no-same-owner \
-    && rm -f /tmp/maven.tar.gz \
-    && mvn --version
+RUN pip install "uv==__UV_VERSION__" \
+    && uv --version
 
 __GLOBAL_ENV__
 
@@ -225,24 +155,34 @@ exit 0
 """
 
 
-_SHELL_ENV = r"""export JAVA_HOME=__JDK_HOME__
-export PATH="/opt/maven/bin:${JAVA_HOME}/bin:${PATH}"
-export LANG=C.UTF-8
+_SHELL_ENV = r"""export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
-export MAVEN_OPTS=-Xmx2g"""
+export UV_LINK_MODE=copy
+export UV_PYTHON=__PYTHON_VERSION__"""
 
 
-_TEST_BLOCK = r"""find . -path '*/target/surefire-reports' -type d -prune -exec rm -rf {} +
+_TEST_BLOCK = r"""if [ ! -d "__PACKAGE__" ]; then
+    echo "package __PACKAGE__ is not present at this stage"
+    exit 0
+fi
 
-set +e
-mvn test __MVN_FLAGS__ __SCOPE_FLAGS__
-mvn_status=$?
-set -e
+cd /home/__REPO__/__PACKAGE__
 
-test -n "$(find . -path '*/target/surefire-reports/TEST-*.xml' -print -quit)"
-find . -path '*/target/surefire-reports/TEST-*.xml' -exec cat {} +
+test_targets=()
+for test_file in __TEST_FILES__; do
+    if [ -f "${test_file}" ]; then
+        test_targets+=("${test_file}")
+    fi
+done
 
-exit ${mvn_status}
+if [ "${#test_targets[@]}" -eq 0 ]; then
+    echo "no test files are present at this stage"
+    exit 0
+fi
+
+uv sync --group test --frozen
+
+.venv/bin/python -m pytest -o addopts= --no-header -v -rA --tb=no --color=no -p no:cacheprovider --disable-socket --allow-unix-socket "${test_targets[@]}"
 """
 
 
@@ -262,13 +202,16 @@ bash /home/check_git_changes.sh
 
 __SHELL_ENV__
 
-java -version
-mvn --version
+uv --version
 
-mvn clean test __MVN_FLAGS__ __SCOPE_FLAGS__ || true
+if [ -d "__PACKAGE__" ]; then
+    cd /home/__REPO__/__PACKAGE__
+    uv sync --group test --frozen
+    .venv/bin/python -m pytest --version
+    .venv/bin/python -c "import pytest_socket"
+fi
 
-mvn test-compile -o -B __PL_FLAG__
-
+cd /home/__REPO__
 bash /home/check_git_changes.sh
 """
 
@@ -307,7 +250,7 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 __TEST_BLOCK__"""
 
 
-class DruidJdk8ImageBase(Image):
+class LangchainImageBase_35544_TO_34802(Image):
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -322,7 +265,7 @@ class DruidJdk8ImageBase(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "ubuntu:22.04"
+        return f"python:{_PYTHON_VERSION}-slim"
 
     def image_tag(self) -> str:
         return _BASE_TAG
@@ -338,10 +281,7 @@ class DruidJdk8ImageBase(Image):
 
         return (
             _BASE_DOCKERFILE.replace("__BASE_IMAGE__", self.dependency())
-            .replace("__JDK_PACKAGE__", _JDK_PACKAGE)
-            .replace("__MAVEN_VERSION__", _MAVEN_VERSION)
-            .replace("__JDK_ARCH_DIR__", _JDK_ARCH_DIR)
-            .replace("__JDK_HOME__", _JDK_HOME)
+            .replace("__UV_VERSION__", _UV_VERSION)
             .replace("__GLOBAL_ENV__", self.global_env)
             .replace("__CLEAR_ENV__", self.clear_env)
             .replace("__CODE__", code)
@@ -350,7 +290,7 @@ class DruidJdk8ImageBase(Image):
         )
 
 
-class DruidJdk8ImageDefault(Image):
+class LangchainImageDefault_35544_TO_34802(Image):
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -365,7 +305,7 @@ class DruidJdk8ImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return DruidJdk8ImageBase(self.pr, self._config)
+        return LangchainImageBase_35544_TO_34802(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -377,10 +317,9 @@ class DruidJdk8ImageDefault(Image):
         return (
             template.replace("__TEST_BLOCK__", _TEST_BLOCK)
             .replace("__SHELL_ENV__", _SHELL_ENV)
-            .replace("__MVN_FLAGS__", _MVN_FLAGS)
-            .replace("__SCOPE_FLAGS__", _scope_flags(self.pr))
-            .replace("__PL_FLAG__", _build_pl_flag(self.pr, _EXCLUDED_MODULES))
-            .replace("__JDK_HOME__", _JDK_HOME)
+            .replace("__PACKAGE__", _package(self.pr))
+            .replace("__TEST_FILES__", _test_files(self.pr))
+            .replace("__PYTHON_VERSION__", _PYTHON_VERSION)
             .replace("__REPO__", self.pr.repo)
             .replace("__BASE_SHA__", self.pr.base.sha)
         )
@@ -420,14 +359,11 @@ class DruidJdk8ImageDefault(Image):
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-_CASE_RE = re.compile(r"<testcase\b([^>]*?)(/>|>(.*?)</testcase>)", re.S)
-_ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
-_COMPILE_FAIL_RE = re.compile(
-    r"testCompile \(default-testCompile\) on project ([A-Za-z0-9_.-]+)"
+_VERBOSE_RE = re.compile(
+    r"^(\S+\.py::\S.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?: +\[\s*\d+%\])?$"
 )
-_RESOLVE_FAIL_RE = re.compile(
-    r"Could not resolve dependencies for project [A-Za-z0-9_.]+:([A-Za-z0-9_.-]+)"
-)
+_SUMMARY_PASS_RE = re.compile(r"^(PASSED|XPASS) (\S+\.py::\S.*)$")
+_SUMMARY_FAIL_RE = re.compile(r"^(FAILED|ERROR|XFAIL) (\S+\.py(?:::\S.*?)?)(?: - .*)?$")
 
 
 def _parse_log(test_log: str) -> TestResult:
@@ -435,29 +371,32 @@ def _parse_log(test_log: str) -> TestResult:
     failed_tests: set[str] = set()
     skipped_tests: set[str] = set()
 
-    clean_log = _ANSI_RE.sub("", test_log)
-
-    for match in _CASE_RE.finditer(clean_log):
-        attrs = dict(_ATTR_RE.findall(match.group(1)))
-        method = attrs.get("name", "")
-        if not method:
-            continue
-        classname = attrs.get("classname", "")
-        name = f"{classname}.{method}" if classname else method
-        body = match.group(3) or ""
-
-        if "<failure" in body or "<error" in body:
-            failed_tests.add(name)
-        elif "<skipped" in body:
-            skipped_tests.add(name)
-        else:
+    def record(name: str, status: str) -> None:
+        if "::" not in name:
+            name = f"{name}::<collection error>"
+        if status in ("PASSED", "XFAIL", "XPASS"):
             passed_tests.add(name)
+        elif status in ("FAILED", "ERROR"):
+            failed_tests.add(name)
+        elif status == "SKIPPED":
+            skipped_tests.add(name)
 
-    if not passed_tests and not failed_tests and not skipped_tests:
-        for module in sorted(set(_COMPILE_FAIL_RE.findall(clean_log))):
-            failed_tests.add(f"{module}::<test compile failed>")
-        for module in sorted(set(_RESOLVE_FAIL_RE.findall(clean_log))):
-            failed_tests.add(f"{module}::<dependency resolution failed>")
+    for raw_line in _ANSI_RE.sub("", test_log).replace("\r\n", "\n").splitlines():
+        line = raw_line.strip()
+
+        match = _VERBOSE_RE.match(line)
+        if match:
+            record(match.group(1), match.group(2))
+            continue
+
+        match = _SUMMARY_PASS_RE.match(line)
+        if match:
+            record(match.group(2), match.group(1))
+            continue
+
+        match = _SUMMARY_FAIL_RE.match(line)
+        if match:
+            record(match.group(2), match.group(1))
 
     passed_tests -= failed_tests
     passed_tests -= skipped_tests
@@ -473,8 +412,8 @@ def _parse_log(test_log: str) -> TestResult:
     )
 
 
-@Instance.register("apache", "druid_0_to_16976")
-class DruidJdk8(Instance):
+@Instance.register("langchain-ai", "langchain_35544_to_34802")
+class LANGCHAIN_35544_TO_34802(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -485,7 +424,7 @@ class DruidJdk8(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return DruidJdk8ImageDefault(self.pr, self._config)
+        return LangchainImageDefault_35544_TO_34802(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
