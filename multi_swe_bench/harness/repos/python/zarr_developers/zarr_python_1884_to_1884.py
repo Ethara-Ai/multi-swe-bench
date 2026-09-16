@@ -4,19 +4,20 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-PYTHON_IMAGE = "python:3.12-slim"
+PYTHON_IMAGE = "python:3.11-slim"
 UV_VERSION = "0.5.7"
 HATCH_ENV = "test"
-VENV_DIR = "/opt/marimo-venv"
+NUMPY_SERIES = "1.26"
+VENV_DIR = "/opt/zarr-venv"
 _BASE_APT = "build-essential ca-certificates git"
 
 _PYTEST_CMD = (
-    f"{VENV_DIR}/bin/python -m pytest tests -v -k 'not test_cli' "
-    "--continue-on-collection-errors --color=no -p no:cacheprovider"
+    f"{VENV_DIR}/bin/python -m pytest -v -rA --color=no -p no:cacheprovider "
+    "--continue-on-collection-errors"
 )
 
 
-class MarimoImageBase(Image):
+class ZarrV3ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -34,7 +35,7 @@ class MarimoImageBase(Image):
 
     def image_tag(self) -> str:
         interval = self.pr.number_interval or ""
-        _, _, span = interval.partition("_")
+        _, _, span = interval.rpartition("python_")
         return f"base-{span}" if span else "base"
 
     def workdir(self) -> str:
@@ -108,7 +109,7 @@ CMD ["/bin/bash"]
 """
 
 
-class MarimoImageDefault(Image):
+class ZarrV3ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -122,7 +123,7 @@ class MarimoImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return MarimoImageBase(self.pr, self._config)
+        return ZarrV3ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -162,37 +163,25 @@ class MarimoImageDefault(Image):
             "bash /home/check_git_changes.sh\n"
             "ERA_CUTOFF=\"$(TZ=UTC git show -s --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd HEAD)\"\n"
             f"uv venv --python /usr/local/bin/python3 {VENV_DIR}\n"
-            f"python3 - {HATCH_ENV} > {VENV_DIR}/hatch-requirements.txt <<'HATCH_ENV_REQS'\n"
+            f"python3 - {HATCH_ENV} {NUMPY_SERIES} > {VENV_DIR}/hatch-requirements.txt <<'HATCH_ENV_REQS'\n"
             "import sys, tomllib\n"
-            "data = tomllib.load(open('pyproject.toml', 'rb'))\n"
-            "envs = data['tool']['hatch']['envs']\n"
-            "chain, name = [], sys.argv[1]\n"
-            "while name and name not in chain:\n"
-            "    chain.append(name)\n"
-            "    name = envs.get(name, {}).get('template', 'default' if name != 'default' else None)\n"
-            "def pick(key):\n"
-            "    for env in chain:\n"
-            "        if key in envs.get(env, {}):\n"
-            "            return envs[env][key]\n"
-            "    return []\n"
-            "extras = ','.join(pick('features'))\n"
-            "print('-e .[' + extras + ']' if extras else '-e .')\n"
-            "for req in pick('dependencies') + pick('extra-dependencies'):\n"
-            "    print(req)\n"
+            "env = tomllib.load(open('pyproject.toml', 'rb'))['tool']['hatch']['envs'][sys.argv[1]]\n"
+            "features = sorted(set(env.get('features', [])) | {'optional'})\n"
+            "print('-e .[' + ','.join(features) + ']')\n"
+            "for req in env.get('dependencies', []) + env.get('extra-dependencies', []):\n"
+            "    print(req.replace('{matrix:numpy}', sys.argv[2]))\n"
             "HATCH_ENV_REQS\n"
             f"uv pip install --python {VENV_DIR}/bin/python "
             f'--exclude-newer "${{ERA_CUTOFF}}" -r {VENV_DIR}/hatch-requirements.txt\n'
-            "mkdir -p marimo/_static/assets\n"
-            "cp frontend/index.html marimo/_static/index.html\n"
-            "cp frontend/public/favicon.ico marimo/_static/favicon.ico\n"
-            f"{VENV_DIR}/bin/marimo --version\n"
-            f"{VENV_DIR}/bin/python - <<'DEPS_GATE'\n"
-            "import os\n"
-            "import marimo\n"
-            f"assert marimo.__file__.startswith('/home/{repo}/marimo/'), marimo.__file__\n"
-            "from marimo._cli.sandbox import _get_dependencies, _read_pyproject\n"
-            "import pytest, pytest_asyncio, pytest_timeout, hypothesis, httpx, matplotlib\n"
-            "assert os.path.isfile('marimo/_static/index.html')\n"
+            f"{VENV_DIR}/bin/python - {NUMPY_SERIES} <<'DEPS_GATE'\n"
+            "import sys\n"
+            "import zarr, zarr.v2\n"
+            f"assert zarr.__file__.startswith('/home/{repo}/src/zarr/'), zarr.__file__\n"
+            "from zarr import store, array, group\n"
+            "import numpy\n"
+            "assert numpy.__version__.startswith(sys.argv[1] + '.'), numpy.__version__\n"
+            "import numcodecs, crc32c, zstandard, donfig, fasteners, asciitree, msgpack, lmdb\n"
+            "import pytest, pytest_asyncio\n"
             "print('DEPS_OK')\n"
             "DEPS_GATE\n"
         )
@@ -201,8 +190,6 @@ class MarimoImageDefault(Image):
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             "export CI=true\n"
-            "export MARIMO_SKIP_UPDATE_CHECK=1\n"
-            f'export PATH="{VENV_DIR}/bin:${{PATH}}"\n'
             f"cd /home/{repo}\n"
             f"{_PYTEST_CMD}\n"
         )
@@ -210,8 +197,6 @@ class MarimoImageDefault(Image):
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             "export CI=true\n"
-            "export MARIMO_SKIP_UPDATE_CHECK=1\n"
-            f'export PATH="{VENV_DIR}/bin:${{PATH}}"\n'
             f"cd /home/{repo}\n"
             "git apply --whitespace=nowarn /home/test.patch\n"
             f"{_PYTEST_CMD}\n"
@@ -220,8 +205,6 @@ class MarimoImageDefault(Image):
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             "export CI=true\n"
-            "export MARIMO_SKIP_UPDATE_CHECK=1\n"
-            f'export PATH="{VENV_DIR}/bin:${{PATH}}"\n'
             f"cd /home/{repo}\n"
             "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
             f"{_PYTEST_CMD}\n"
@@ -289,8 +272,8 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 """
 
 
-@Instance.register("marimo-team", "marimo_3787_to_2949")
-class MARIMO_3787_TO_2949(Instance):
+@Instance.register("zarr-developers", "zarr_python_1884_to_1884")
+class ZARR_PYTHON_1884_TO_1884(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -301,7 +284,7 @@ class MARIMO_3787_TO_2949(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return MarimoImageDefault(self.pr, self._config)
+        return ZarrV3ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"

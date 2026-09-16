@@ -5,18 +5,14 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 PYTHON_IMAGE = "python:3.12-slim"
-UV_VERSION = "0.5.7"
-HATCH_ENV = "test"
-VENV_DIR = "/opt/marimo-venv"
+POETRY_VERSION = "1.8.5"
+POETRY_VENVS = "/opt/poetry-venvs"
 _BASE_APT = "build-essential ca-certificates git"
 
-_PYTEST_CMD = (
-    f"{VENV_DIR}/bin/python -m pytest tests -v -k 'not test_cli' "
-    "--continue-on-collection-errors --color=no -p no:cacheprovider"
-)
+_PYTEST_CMD = "poetry run pytest -v -rA --color=no -p no:cacheprovider"
 
 
-class MarimoImageBase(Image):
+class MeshtasticImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -66,8 +62,9 @@ ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
     TZ=UTC \\
     PYTHONUNBUFFERED=1 \\
-    UV_PYTHON_DOWNLOADS=never \\
-    UV_LINK_MODE=copy \\
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \\
+    POETRY_NO_INTERACTION=1 \\
+    POETRY_VIRTUALENVS_PATH={POETRY_VENVS} \\
     http_proxy=${{http_proxy}} \\
     https_proxy=${{https_proxy}} \\
     HTTP_PROXY=${{HTTP_PROXY}} \\
@@ -95,8 +92,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     {_BASE_APT} \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --no-cache-dir "uv=={UV_VERSION}" && \\
-    uv --version
+RUN python -m venv /opt/poetry && \\
+    /opt/poetry/bin/pip install --no-cache-dir "poetry=={POETRY_VERSION}" && \\
+    ln -s /opt/poetry/bin/poetry /usr/local/bin/poetry && \\
+    poetry --version
 
 RUN git config --global --add safe.directory '*'
 
@@ -108,7 +107,7 @@ CMD ["/bin/bash"]
 """
 
 
-class MarimoImageDefault(Image):
+class MeshtasticImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -122,7 +121,7 @@ class MarimoImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return MarimoImageBase(self.pr, self._config)
+        return MeshtasticImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -160,39 +159,18 @@ class MarimoImageDefault(Image):
             "bash /home/check_git_changes.sh\n"
             'git checkout --detach "${BASE_COMMIT}"\n'
             "bash /home/check_git_changes.sh\n"
-            "ERA_CUTOFF=\"$(TZ=UTC git show -s --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd HEAD)\"\n"
-            f"uv venv --python /usr/local/bin/python3 {VENV_DIR}\n"
-            f"python3 - {HATCH_ENV} > {VENV_DIR}/hatch-requirements.txt <<'HATCH_ENV_REQS'\n"
-            "import sys, tomllib\n"
-            "data = tomllib.load(open('pyproject.toml', 'rb'))\n"
-            "envs = data['tool']['hatch']['envs']\n"
-            "chain, name = [], sys.argv[1]\n"
-            "while name and name not in chain:\n"
-            "    chain.append(name)\n"
-            "    name = envs.get(name, {}).get('template', 'default' if name != 'default' else None)\n"
-            "def pick(key):\n"
-            "    for env in chain:\n"
-            "        if key in envs.get(env, {}):\n"
-            "            return envs[env][key]\n"
-            "    return []\n"
-            "extras = ','.join(pick('features'))\n"
-            "print('-e .[' + extras + ']' if extras else '-e .')\n"
-            "for req in pick('dependencies') + pick('extra-dependencies'):\n"
-            "    print(req)\n"
-            "HATCH_ENV_REQS\n"
-            f"uv pip install --python {VENV_DIR}/bin/python "
-            f'--exclude-newer "${{ERA_CUTOFF}}" -r {VENV_DIR}/hatch-requirements.txt\n'
-            "mkdir -p marimo/_static/assets\n"
-            "cp frontend/index.html marimo/_static/index.html\n"
-            "cp frontend/public/favicon.ico marimo/_static/favicon.ico\n"
-            f"{VENV_DIR}/bin/marimo --version\n"
-            f"{VENV_DIR}/bin/python - <<'DEPS_GATE'\n"
-            "import os\n"
-            "import marimo\n"
-            f"assert marimo.__file__.startswith('/home/{repo}/marimo/'), marimo.__file__\n"
-            "from marimo._cli.sandbox import _get_dependencies, _read_pyproject\n"
-            "import pytest, pytest_asyncio, pytest_timeout, hypothesis, httpx, matplotlib\n"
-            "assert os.path.isfile('marimo/_static/index.html')\n"
+            "poetry env use /usr/local/bin/python3\n"
+            "poetry install --all-extras --with dev,powermon\n"
+            "poetry run meshtastic --version\n"
+            "poetry run python - <<'DEPS_GATE'\n"
+            "import meshtastic\n"
+            f"assert meshtastic.__file__.startswith('/home/{repo}/meshtastic/'), meshtastic.__file__\n"
+            "from meshtastic.protobuf import mesh_pb2, config_pb2\n"
+            "from meshtastic import mesh_interface, node, __main__\n"
+            "import google.protobuf, pubsub, bleak, serial, yaml, tabulate, requests\n"
+            "import pyqrcode, print_color, dotmap, argcomplete, wcwidth, pandas, dash\n"
+            "import riden, ppk2_api, parse, pyarrow, platformdirs\n"
+            "import pytest, hypothesis\n"
             "print('DEPS_OK')\n"
             "DEPS_GATE\n"
         )
@@ -201,8 +179,6 @@ class MarimoImageDefault(Image):
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             "export CI=true\n"
-            "export MARIMO_SKIP_UPDATE_CHECK=1\n"
-            f'export PATH="{VENV_DIR}/bin:${{PATH}}"\n'
             f"cd /home/{repo}\n"
             f"{_PYTEST_CMD}\n"
         )
@@ -210,8 +186,6 @@ class MarimoImageDefault(Image):
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             "export CI=true\n"
-            "export MARIMO_SKIP_UPDATE_CHECK=1\n"
-            f'export PATH="{VENV_DIR}/bin:${{PATH}}"\n'
             f"cd /home/{repo}\n"
             "git apply --whitespace=nowarn /home/test.patch\n"
             f"{_PYTEST_CMD}\n"
@@ -220,8 +194,6 @@ class MarimoImageDefault(Image):
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             "export CI=true\n"
-            "export MARIMO_SKIP_UPDATE_CHECK=1\n"
-            f'export PATH="{VENV_DIR}/bin:${{PATH}}"\n'
             f"cd /home/{repo}\n"
             "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
             f"{_PYTEST_CMD}\n"
@@ -289,8 +261,8 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 """
 
 
-@Instance.register("marimo-team", "marimo_3787_to_2949")
-class MARIMO_3787_TO_2949(Instance):
+@Instance.register("meshtastic", "python_795_to_157")
+class PYTHON_795_TO_157(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -301,7 +273,7 @@ class MARIMO_3787_TO_2949(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return MarimoImageDefault(self.pr, self._config)
+        return MeshtasticImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"

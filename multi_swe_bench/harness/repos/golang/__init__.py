@@ -57,6 +57,8 @@ from multi_swe_bench.harness.repos.golang.crossplane import *
 from multi_swe_bench.harness.repos.golang.prometheus_operator import *
 from multi_swe_bench.harness.repos.golang.mattermost import *
 from multi_swe_bench.harness.repos.golang.mattermost_community import *
+from multi_swe_bench.harness.repos.golang.matterpoll import *
+from multi_swe_bench.harness.repos.golang.matrix_org import *
 from multi_swe_bench.harness.repos.golang.spf13 import *
 from multi_swe_bench.harness.repos.golang.open_telemetry import *
 from multi_swe_bench.harness.repos.golang.containerd import *

@@ -4,19 +4,15 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-PYTHON_IMAGE = "python:3.12-slim"
-UV_VERSION = "0.5.7"
-HATCH_ENV = "test"
-VENV_DIR = "/opt/marimo-venv"
-_BASE_APT = "build-essential ca-certificates git"
+GO_IMAGE = "golang:1.24.6"
+NODE_VERSION = "16.13.1"
+_BASE_APT = "ca-certificates curl git"
 
-_PYTEST_CMD = (
-    f"{VENV_DIR}/bin/python -m pytest tests -v -k 'not test_cli' "
-    "--continue-on-collection-errors --color=no -p no:cacheprovider"
-)
+_GO_TEST_CMD = "go test -v -count=1 ./..."
+_JEST_CMD = "npx jest --forceExit --detectOpenHandles --verbose"
 
 
-class MarimoImageBase(Image):
+class MattermostPluginGithubImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -30,12 +26,10 @@ class MarimoImageBase(Image):
         return self._config
 
     def dependency(self) -> str | Image:
-        return PYTHON_IMAGE
+        return GO_IMAGE
 
     def image_tag(self) -> str:
-        interval = self.pr.number_interval or ""
-        _, _, span = interval.partition("_")
-        return f"base-{span}" if span else "base"
+        return "base"
 
     def workdir(self) -> str:
         return self.image_tag()
@@ -65,9 +59,9 @@ ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 ENV DEBIAN_FRONTEND=noninteractive \\
     LANG=C.UTF-8 \\
     TZ=UTC \\
-    PYTHONUNBUFFERED=1 \\
-    UV_PYTHON_DOWNLOADS=never \\
-    UV_LINK_MODE=copy \\
+    GO111MODULE=on \\
+    GOTOOLCHAIN=local \\
+    CGO_ENABLED=1 \\
     http_proxy=${{http_proxy}} \\
     https_proxy=${{https_proxy}} \\
     HTTP_PROXY=${{HTTP_PROXY}} \\
@@ -95,8 +89,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     {_BASE_APT} \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --no-cache-dir "uv=={UV_VERSION}" && \\
-    uv --version
+RUN ARCH=$(dpkg --print-architecture) && \\
+    if [ "$ARCH" = "amd64" ]; then NODE_ARCH="x64"; else NODE_ARCH="$ARCH"; fi && \\
+    curl -fsSL "https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-linux-${{NODE_ARCH}}.tar.gz" \\
+    | tar -xz -C /usr/local --strip-components=1 && \\
+    node --version && npm --version
 
 RUN git config --global --add safe.directory '*'
 
@@ -108,7 +105,7 @@ CMD ["/bin/bash"]
 """
 
 
-class MarimoImageDefault(Image):
+class MattermostPluginGithubImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -122,7 +119,7 @@ class MarimoImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return MarimoImageBase(self.pr, self._config)
+        return MattermostPluginGithubImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -160,71 +157,60 @@ class MarimoImageDefault(Image):
             "bash /home/check_git_changes.sh\n"
             'git checkout --detach "${BASE_COMMIT}"\n'
             "bash /home/check_git_changes.sh\n"
-            "ERA_CUTOFF=\"$(TZ=UTC git show -s --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd HEAD)\"\n"
-            f"uv venv --python /usr/local/bin/python3 {VENV_DIR}\n"
-            f"python3 - {HATCH_ENV} > {VENV_DIR}/hatch-requirements.txt <<'HATCH_ENV_REQS'\n"
-            "import sys, tomllib\n"
-            "data = tomllib.load(open('pyproject.toml', 'rb'))\n"
-            "envs = data['tool']['hatch']['envs']\n"
-            "chain, name = [], sys.argv[1]\n"
-            "while name and name not in chain:\n"
-            "    chain.append(name)\n"
-            "    name = envs.get(name, {}).get('template', 'default' if name != 'default' else None)\n"
-            "def pick(key):\n"
-            "    for env in chain:\n"
-            "        if key in envs.get(env, {}):\n"
-            "            return envs[env][key]\n"
-            "    return []\n"
-            "extras = ','.join(pick('features'))\n"
-            "print('-e .[' + extras + ']' if extras else '-e .')\n"
-            "for req in pick('dependencies') + pick('extra-dependencies'):\n"
-            "    print(req)\n"
-            "HATCH_ENV_REQS\n"
-            f"uv pip install --python {VENV_DIR}/bin/python "
-            f'--exclude-newer "${{ERA_CUTOFF}}" -r {VENV_DIR}/hatch-requirements.txt\n'
-            "mkdir -p marimo/_static/assets\n"
-            "cp frontend/index.html marimo/_static/index.html\n"
-            "cp frontend/public/favicon.ico marimo/_static/favicon.ico\n"
-            f"{VENV_DIR}/bin/marimo --version\n"
-            f"{VENV_DIR}/bin/python - <<'DEPS_GATE'\n"
-            "import os\n"
-            "import marimo\n"
-            f"assert marimo.__file__.startswith('/home/{repo}/marimo/'), marimo.__file__\n"
-            "from marimo._cli.sandbox import _get_dependencies, _read_pyproject\n"
-            "import pytest, pytest_asyncio, pytest_timeout, hypothesis, httpx, matplotlib\n"
-            "assert os.path.isfile('marimo/_static/index.html')\n"
-            "print('DEPS_OK')\n"
-            "DEPS_GATE\n"
+            f"cd /home/{repo}/build/manifest\n"
+            "go build -o ../bin/manifest\n"
+            f"cd /home/{repo}\n"
+            "./build/bin/manifest apply\n"
+            "test -f webapp/src/manifest.ts\n"
+            "test -f server/plugin/manifest.go\n"
+            "go mod download\n"
+            "go build ./...\n"
+            f"cd /home/{repo}/webapp\n"
+            "npm ci --no-audit --no-fund\n"
+            f"cd /home/{repo}\n"
+            "go vet ./... >/dev/null\n"
+            f"cd /home/{repo}/webapp\n"
+            "npx jest --version\n"
+            "node -e \"require.resolve('jest');require.resolve('enzyme');"
+            "require.resolve('enzyme-adapter-react-16');"
+            "require.resolve('jest-environment-jsdom');"
+            "console.log('DEPS_OK')\"\n"
         )
 
         run_sh = (
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             "export CI=true\n"
-            "export MARIMO_SKIP_UPDATE_CHECK=1\n"
-            f'export PATH="{VENV_DIR}/bin:${{PATH}}"\n'
             f"cd /home/{repo}\n"
-            f"{_PYTEST_CMD}\n"
+            "rc=0\n"
+            f"{_GO_TEST_CMD} || rc=$?\n"
+            f"cd /home/{repo}/webapp\n"
+            f"{_JEST_CMD} || rc=$?\n"
+            "exit $rc\n"
         )
         test_run_sh = (
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             "export CI=true\n"
-            "export MARIMO_SKIP_UPDATE_CHECK=1\n"
-            f'export PATH="{VENV_DIR}/bin:${{PATH}}"\n'
             f"cd /home/{repo}\n"
             "git apply --whitespace=nowarn /home/test.patch\n"
-            f"{_PYTEST_CMD}\n"
+            "rc=0\n"
+            f"{_GO_TEST_CMD} || rc=$?\n"
+            f"cd /home/{repo}/webapp\n"
+            f"{_JEST_CMD} || rc=$?\n"
+            "exit $rc\n"
         )
         fix_run_sh = (
             "#!/bin/bash\n"
             "set -eo pipefail\n"
             "export CI=true\n"
-            "export MARIMO_SKIP_UPDATE_CHECK=1\n"
-            f'export PATH="{VENV_DIR}/bin:${{PATH}}"\n'
             f"cd /home/{repo}\n"
             "git apply --whitespace=nowarn /home/test.patch /home/fix.patch\n"
-            f"{_PYTEST_CMD}\n"
+            "rc=0\n"
+            f"{_GO_TEST_CMD} || rc=$?\n"
+            f"cd /home/{repo}/webapp\n"
+            f"{_JEST_CMD} || rc=$?\n"
+            "exit $rc\n"
         )
 
         return [
@@ -289,8 +275,8 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 """
 
 
-@Instance.register("marimo-team", "marimo_3787_to_2949")
-class MARIMO_3787_TO_2949(Instance):
+@Instance.register("mattermost", "mattermost-plugin-github")
+class MattermostPluginGithub(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -301,7 +287,7 @@ class MARIMO_3787_TO_2949(Instance):
         return self._pr
 
     def dependency(self) -> Image | None:
-        return MarimoImageDefault(self.pr, self._config)
+        return MattermostPluginGithubImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         return run_cmd or "bash /home/run.sh"
@@ -319,20 +305,27 @@ class MARIMO_3787_TO_2949(Instance):
         failed_tests = set()
         skipped_tests = set()
 
-        statuses = "PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS"
-        re_verbose = re.compile(
-            rf"^(\S+?::.+?)\s+({statuses})(?:\s+\[\s*\d+%\])?\s*$"
+        re_go = re.compile(r"^\s*--- (PASS|FAIL|SKIP): (\S+)")
+        re_go_pkg = re.compile(r"^(?:ok|FAIL|\?)\s*\t(\S+)")
+        re_suite = re.compile(r"^(PASS|FAIL)\s+(\S+\.[cm]?[jt]sx?)\b")
+        re_jest = re.compile(
+            "^( *)([✓✕✗○✎])\\s+(.+?)"
+            r"(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?$"
         )
-        re_summary = re.compile(
-            r"^(PASSED|FAILED|ERROR|XFAIL|XPASS)\s+(\S+?::.+?)(?:\s+-\s.*)?$"
-        )
+        jest_status = {
+            "✓": "PASS",
+            "✕": "FAIL",
+            "✗": "FAIL",
+            "○": "SKIP",
+            "✎": "SKIP",
+        }
 
         def record(name: str, status: str) -> None:
-            if status in ("FAILED", "ERROR"):
+            if status == "FAIL":
                 passed_tests.discard(name)
                 skipped_tests.discard(name)
                 failed_tests.add(name)
-            elif status in ("PASSED", "XPASS"):
+            elif status == "PASS":
                 if name in failed_tests:
                     return
                 skipped_tests.discard(name)
@@ -342,18 +335,63 @@ class MARIMO_3787_TO_2949(Instance):
                     return
                 skipped_tests.add(name)
 
-        for line in test_log.splitlines():
-            line = line.strip()
-            m = re_verbose.match(line)
-            if m:
-                record(m.group(1), m.group(2))
-                continue
-            m = re_summary.match(line)
-            if m:
-                record(m.group(2), m.group(1))
+        pending_go: list[tuple[str, str]] = []
+        suite = None
+        describes: list[str] = []
+        in_console = False
 
-        passed_tests -= failed_tests
-        skipped_tests -= passed_tests | failed_tests
+        for raw in test_log.splitlines():
+            line = raw.rstrip()
+            m = re_go.match(line)
+            if m:
+                pending_go.append((m.group(2), m.group(1)))
+                continue
+            m = re_go_pkg.match(line)
+            if m:
+                for name, status in pending_go:
+                    record(f"{m.group(1)}::{name}", status)
+                pending_go = []
+                suite = None
+                continue
+            m = re_suite.match(line)
+            if m:
+                suite = m.group(2)
+                describes = []
+                in_console = False
+                continue
+            if suite is None:
+                continue
+            stripped = line.strip()
+            if not stripped:
+                in_console = False
+                continue
+            if stripped.startswith("●"):
+                if stripped.startswith("● Console"):
+                    in_console = True
+                else:
+                    suite = None
+                continue
+            if in_console:
+                continue
+            m = re_jest.match(line)
+            if m:
+                depth = len(m.group(1)) // 2
+                leaf = m.group(3).strip()
+                for prefix in ("skipped ", "todo "):
+                    if leaf.startswith(prefix):
+                        leaf = leaf[len(prefix):]
+                name = " > ".join([suite] + describes[: max(depth - 1, 0)] + [leaf])
+                record(name, jest_status[m.group(2)])
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent >= 2 and indent % 2 == 0:
+                level = indent // 2
+                describes = describes[: level - 1] + [stripped]
+            elif indent == 0:
+                suite = None
+
+        for name, status in pending_go:
+            record(name, status)
 
         return TestResult(
             passed_count=len(passed_tests),
