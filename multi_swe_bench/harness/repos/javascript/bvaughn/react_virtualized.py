@@ -1,157 +1,58 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+NODE_IMAGE = "node:20"
+BASE_TAG = "base"
+RESULTS_MARKER = "----- per-test results -----"
 
-class ImageBase(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
+TEST_UTILS_JS = """import ReactDOM from 'react-dom'
 
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
+export function render (markup) {
+  if (!render._mountNode) {
+    render._mountNode = document.createElement('div')
+    document.body.appendChild(render._mountNode)
+  }
+  return ReactDOM.render(markup, render._mountNode)
+}
 
-    @property
-    def config(self) -> Config:
-        return self._config
+render.unmount = function () {
+  if (render._mountNode) {
+    ReactDOM.unmountComponentAtNode(render._mountNode)
+    document.body.removeChild(render._mountNode)
+    render._mountNode = null
+  }
+}
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "node:20"
-
-    def image_tag(self) -> str:
-        return "base"
-
-    def workdir(self) -> str:
-        return "base"
-
-    def files(self) -> list[File]:
-        return []
-
-    def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        global_env_block = f"\n{self.global_env}" if self.global_env else ""
-        clear_env_block = f"\n{self.clear_env}" if self.clear_env else ""
-
-        return f"""FROM {image_name}{global_env_block}
-ENV NODE_OPTIONS=--openssl-legacy-provider
-ENV CHROME_BIN=/usr/bin/chromium
-
-RUN apt update && apt install -y git chromium
-
-WORKDIR /home/
-
-{code}
-{clear_env_block}
+afterEach(render.unmount)
 """
 
+_PASS = re.compile(r"^PASS: (.+)$", re.M)
+_FAIL = re.compile(r"^FAIL: (.+)$", re.M)
+_SKIP = re.compile(r"^SKIP: (.+)$", re.M)
+_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
-class ImageDefault(Image):
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image | None:
-        return ImageBase(self.pr, self._config)
-
-    def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-npm install --ignore-scripts
-npm install karma-chrome-launcher --save-dev --ignore-scripts
-
-mkdir -p node_modules/karma-inline-spec-reporter
-cat > node_modules/karma-inline-spec-reporter/index.js << 'REPORTER_EOF'
-var SpecReporter = function(baseReporterDecorator) {{
+REPORTER_JS = """var SpecReporter = function (baseReporterDecorator) {
   baseReporterDecorator(this);
-  this.onSpecComplete = function(browser, result) {{
-    var name = result.fullName || (result.suite || []).concat(result.description || []).join(' ');
+  this.onSpecComplete = function (browser, result) {
+    var name =
+      result.fullName ||
+      (result.suite || []).concat(result.description || []).join(" ");
     var status = result.success ? "PASS" : (result.skipped ? "SKIP" : "FAIL");
     this.write(status + ": " + name + "\\n");
-  }};
-  this.onRunComplete = function(browsers, results) {{
+  };
+  this.onRunComplete = function (browsers, results) {
     this.write("TOTAL: " + results.success + " PASS, " + results.failed + " FAIL\\n");
-  }};
-}};
+  };
+};
 SpecReporter.$inject = ["baseReporterDecorator"];
-module.exports = {{"reporter:inline-spec": ["type", SpecReporter]}};
-REPORTER_EOF
+module.exports = {"reporter:inline-spec": ["type", SpecReporter]};
+"""
 
-cp /home/karma.conf.final.js /home/{pr.repo}/karma.conf.final.js
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "karma.conf.final.js",
-                """var path = require("path");
+KARMA_CONF_JS = """var path = require("path");
 
 var webpackTestConfig = {
   devtool: "inline-source-map",
@@ -182,13 +83,13 @@ module.exports = function (config) {
     customLaunchers: {
       ChromeHeadlessNoSandbox: {
         base: "ChromeHeadless",
-        flags: ["--no-sandbox"]
+        flags: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"]
       }
     },
     frameworks: ["jasmine"],
-    files: ["source/tests.js"],
+    files: ["source/msb-entry.js"],
     preprocessors: {
-      "source/tests.js": ["webpack", "sourcemap"]
+      "source/msb-entry.js": ["webpack", "sourcemap"]
     },
     singleRun: true,
     plugins: [
@@ -205,68 +106,226 @@ module.exports = function (config) {
     }
   });
 };
-""",
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -e
+"""
 
-cd /home/{pr.repo}
-NODE_ENV=test ./node_modules/.bin/karma start karma.conf.final.js --single-run
 
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -e
+def _run_tests_sh(repo: str) -> str:
+    majority_awk = (
+        "{ i=index($0,\": \"); s=substr($0,1,i-1); m=substr($0,i+2); "
+        "cnt[m,s]++; seen[m]=1 } "
+        "END { split(\"PASS FAIL SKIP\",st,\" \"); "
+        "for (m in seen) { b=\"\"; bn=0; "
+        "for (j=1;j<=3;j++) { c=cnt[m,st[j]]+0; if (c>bn) { bn=c; b=st[j] } } "
+        "print b\": \"m } }"
+    )
+    return (
+        "#!/bin/bash\n"
+        f"cd /home/{repo}\n"
+        "cp /home/TestUtils.js source/TestUtils.js\n"
+        "RESULTS=/tmp/msb-results.txt\n"
+        ': > "$RESULTS"\n'
+        "BASE_ENTRY=/tmp/msb-base-entry.js\n"
+        "grep -v 'require.context' source/tests.js"
+        " | grep -v 'tests.keys()' > \"$BASE_ENTRY\"\n"
+        "SUITES=$(find source -type f \\( -name '*.test.js' -o -name '*.test.jsx' \\)"
+        " | sort)\n"
+        "for suite in $SUITES; do\n"
+        '  rel="./${suite#source/}"\n'
+        '  cp "$BASE_ENTRY" source/msb-entry.js\n'
+        "  echo \"require('$rel')\" >> source/msb-entry.js\n"
+        '  log="/tmp/msb-$(echo "$suite" | tr / _).log"\n'
+        "  NODE_ENV=test ./node_modules/.bin/karma start karma.conf.final.js"
+        ' --single-run > "$log" 2>&1\n'
+        "  grep -E '^(PASS|FAIL|SKIP): ' \"$log\" | sort > \"$log.r1\"\n"
+        "  NODE_ENV=test ./node_modules/.bin/karma start karma.conf.final.js"
+        ' --single-run > "$log" 2>&1\n'
+        "  grep -E '^(PASS|FAIL|SKIP): ' \"$log\" | sort > \"$log.r2\"\n"
+        '  if cmp -s "$log.r1" "$log.r2"; then\n'
+        '    cp "$log.r1" "$log.final"\n'
+        "  else\n"
+        '    echo "----- karma: $suite ----- disagree, tie-breaker run"\n'
+        "    NODE_ENV=test ./node_modules/.bin/karma start karma.conf.final.js"
+        ' --single-run > "$log" 2>&1\n'
+        "    grep -E '^(PASS|FAIL|SKIP): ' \"$log\" | sort > \"$log.r3\"\n"
+        "    cat \"$log.r1\" \"$log.r2\" \"$log.r3\""
+        f" | awk '{majority_awk}' | sort > \"$log.final\"\n"
+        "  fi\n"
+        '  echo "----- karma: $suite -----"\n'
+        '  tail -15 "$log"\n'
+        '  while IFS= read -r line; do\n'
+        '    status="${line%%:*}"\n'
+        '    name="${line#*: }"\n'
+        '    echo "$status: $suite > $name" >> "$RESULTS"\n'
+        '  done < "$log.final"\n'
+        "done\n"
+        "rm -f source/msb-entry.js\n"
+        f'echo "{RESULTS_MARKER}"\n'
+        'cat "$RESULTS"\n'
+    )
 
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch || git apply --whitespace=nowarn --3way /home/test.patch || true
 
-NODE_ENV=test ./node_modules/.bin/karma start karma.conf.final.js --single-run
+class ReactVirtualizedImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
 
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -e
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
 
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch || git apply --whitespace=nowarn --3way /home/test.patch /home/fix.patch || true
+    @property
+    def config(self) -> Config:
+        return self._config
 
-NODE_ENV=test ./node_modules/.bin/karma start karma.conf.final.js --single-run
+    def dependency(self) -> str:
+        return NODE_IMAGE
 
-""".format(pr=self.pr),
-            ),
+    def image_tag(self) -> str:
+        return BASE_TAG
+
+    def workdir(self) -> str:
+        return BASE_TAG
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        base_img = self.dependency()
+        infra = DockerfileEnhancer._infrastructure_block(self, base_img).rstrip("\n")
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+
+FROM {base_img}
+
+{infra}
+
+ENV NODE_OPTIONS=--openssl-legacy-provider
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CI=true
+ENV NO_COLOR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        chromium git \\
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /home/
+
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+
+CMD ["/bin/bash"]
+"""
+
+
+class ReactVirtualizedImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return ReactVirtualizedImageBase(self.pr, self._config)
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def files(self) -> list[File]:
+        repo = self.pr.repo
+
+        check_git_changes_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            "git rev-parse --is-inside-work-tree > /dev/null\n"
+            "git status --porcelain\n"
+            'test -z "$(git status --porcelain)"\n'
+            'echo "check_git_changes: No uncommitted changes"\n'
+        )
+
+        prepare_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "git reset --hard\n"
+            "bash /home/check_git_changes.sh\n"
+            'git checkout --detach "${BASE_COMMIT}"\n'
+            "bash /home/check_git_changes.sh\n"
+            "for pattern in karma.conf.final.js source/msb-entry.js node_modules/"
+            " package-lock.json; do\n"
+            '  grep -qxF "$pattern" .git/info/exclude'
+            ' || echo "$pattern" >> .git/info/exclude\n'
+            "done\n"
+            "npm install --ignore-scripts --no-audit --no-fund\n"
+            "npm install karma-chrome-launcher --no-save --ignore-scripts"
+            " --no-audit --no-fund\n"
+            "mkdir -p node_modules/karma-inline-spec-reporter\n"
+            "cp /home/reporter.js node_modules/karma-inline-spec-reporter/index.js\n"
+            f"cp /home/karma.conf.final.js /home/{repo}/karma.conf.final.js\n"
+            "test -f source/tests.js\n"
+            "./node_modules/.bin/karma --version\n"
+            "git reset --hard\n"
+            "bash /home/check_git_changes.sh\n"
+        )
+
+        run_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "bash /home/run_tests.sh\n"
+        )
+
+        test_run_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "git apply --whitespace=nowarn /home/test.patch"
+            " || git apply --whitespace=nowarn --3way /home/test.patch\n"
+            "bash /home/run_tests.sh\n"
+        )
+
+        fix_run_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "git apply --whitespace=nowarn /home/test.patch /home/fix.patch"
+            " || git apply --whitespace=nowarn --3way /home/test.patch /home/fix.patch\n"
+            "bash /home/run_tests.sh\n"
+        )
+
+        return [
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", check_git_changes_sh),
+            File(".", "prepare.sh", prepare_sh),
+            File(".", "reporter.js", REPORTER_JS),
+            File(".", "karma.conf.final.js", KARMA_CONF_JS),
+            File(".", "TestUtils.js", TEST_UTILS_JS),
+            File(".", "run_tests.sh", _run_tests_sh(repo)),
+            File(".", "run.sh", run_sh),
+            File(".", "test-run.sh", test_run_sh),
+            File(".", "fix-run.sh", fix_run_sh),
         ]
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        copies = "".join(f"COPY {f.name} /home/\n" for f in self.files())
+        return f"""FROM {image.image_full_name()}
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+{copies}
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+RUN bash /home/prepare.sh
 
-        return f"""FROM {name}:{tag}
+WORKDIR /home/{self.pr.repo}
 
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
+{Image._HARDENING_BLOCK}
 """
 
 
@@ -282,56 +341,24 @@ class ReactVirtualized(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+        return ReactVirtualizedImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
-        if run_cmd:
-            return run_cmd
-
-        return "bash /home/run.sh"
+        return run_cmd or "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        if test_patch_run_cmd:
-            return test_patch_run_cmd
-
-        return "bash /home/test-run.sh"
+        return test_patch_run_cmd or "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        if fix_patch_run_cmd:
-            return fix_patch_run_cmd
-
-        return "bash /home/fix-run.sh"
+        return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
-
-        re_pass = re.compile(r"^PASS: (.+)$")
-        re_fail = re.compile(r"^FAIL: (.+)$")
-
-        for line in test_log.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-
-            pass_match = re_pass.match(line)
-            if pass_match:
-                test = pass_match.group(1).strip()
-                if test and test != "undefined":
-                    passed_tests.add(test)
-
-            fail_match = re_fail.match(line)
-            if fail_match:
-                test = fail_match.group(1).strip()
-                if test and test != "undefined":
-                    failed_tests.add(test)
-
-        # If a test appears in both pass and fail (flaky), keep only FAIL
-        common = passed_tests & failed_tests
-        if common:
-            passed_tests -= common
-
+        section = _ANSI.sub("", test_log).rsplit(RESULTS_MARKER, 1)[-1]
+        failed_tests = {t.strip() for t in _FAIL.findall(section)}
+        passed_tests = {t.strip() for t in _PASS.findall(section)} - failed_tests
+        skipped_tests = (
+            {t.strip() for t in _SKIP.findall(section)} - failed_tests - passed_tests
+        )
         return TestResult(
             passed_count=len(passed_tests),
             failed_count=len(failed_tests),

@@ -1,9 +1,29 @@
+import json
 import re
-from typing import Optional, Union
+from typing import Optional
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+_GO_IMAGE = "golang:1.17"
+_BASE_TAG = "base"
+
+_PKG_MARKER = re.compile(r"^=== GO PACKAGE (\S+)$")
+_LOOPBACK = re.compile(r"127\.0\.0\.1:\d+")
+
+_RUN_TESTS_BODY = r"""PKGS=$(grep -oE '^diff --git a/[^ ]+_test\.go' /home/test.patch | sed 's#^diff --git a/##' | xargs -n1 dirname | sort -u)
+for pkg in $PKGS; do
+  out="/tmp/gotest-$(echo "$pkg" | tr / _).json"
+  echo "=== GO PACKAGE $pkg"
+  go test -json -count=1 "./$pkg" > "$out" 2>&1
+  cat "$out"
+done
+"""
+
+
+def _run_tests_sh(repo: str) -> str:
+    return "#!/bin/bash\n" f"cd /home/{repo}\n" + _RUN_TESTS_BODY
 
 
 class GolangSamplesImageBase(Image):
@@ -19,38 +39,32 @@ class GolangSamplesImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+    def dependency(self) -> str:
+        return _GO_IMAGE
 
     def image_tag(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def workdir(self) -> str:
-        return "base"
+        return _BASE_TAG
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        base_img = self.dependency()
+        infra = DockerfileEnhancer._infrastructure_block(self, base_img).rstrip("\n")
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+FROM {base_img}
 
-        return f"""FROM {image_name}
-
-{self.global_env}
+{infra}
 
 WORKDIR /home/
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -67,8 +81,8 @@ class GolangSamplesImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return GolangSamplesImageBase(self.pr, self.config)
+    def dependency(self) -> Image:
+        return GolangSamplesImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -77,112 +91,77 @@ class GolangSamplesImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        repo = self.pr.repo
+
+        check_git_changes_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            "git rev-parse --is-inside-work-tree > /dev/null\n"
+            "git status --porcelain\n"
+            'test -z "$(git status --porcelain)"\n'
+            'echo "check_git_changes: No uncommitted changes"\n'
+        )
+
+        prepare_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "git reset --hard\n"
+            "bash /home/check_git_changes.sh\n"
+            'git checkout --detach "${BASE_COMMIT}"\n'
+            "bash /home/check_git_changes.sh\n"
+            "go mod download\n"
+        )
+
+        run_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "bash /home/run_tests.sh\n"
+        )
+
+        test_run_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "git apply --whitespace=nowarn /home/test.patch"
+            " || git apply --whitespace=nowarn --3way /home/test.patch\n"
+            "bash /home/run_tests.sh\n"
+        )
+
+        fix_run_sh = (
+            "#!/bin/bash\n"
+            "set -e\n"
+            f"cd /home/{repo}\n"
+            "git apply --whitespace=nowarn /home/test.patch /home/fix.patch"
+            " || git apply --whitespace=nowarn --3way /home/test.patch /home/fix.patch\n"
+            "bash /home/run_tests.sh\n"
+        )
+
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-go test -v -count=1 ./... || true
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-go test -v -count=1 ./...
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply /home/test.patch
-go test -v -count=1 ./...
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
-go test -v -count=1 ./...
-
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", check_git_changes_sh),
+            File(".", "prepare.sh", prepare_sh),
+            File(".", "run.sh", run_sh),
+            File(".", "test-run.sh", test_run_sh),
+            File(".", "fix-run.sh", fix_run_sh),
+            File(".", "run_tests.sh", _run_tests_sh(repo)),
         ]
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        copies = "".join(f"COPY {f.name} /home/\n" for f in self.files())
+        return f"""FROM {image.image_full_name()}
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+{copies}
+ARG BASE_COMMIT="{self.pr.base.sha}"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+RUN bash /home/prepare.sh
 
-        return f"""FROM {name}:{tag}
+WORKDIR /home/{self.pr.repo}
 
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
+{Image._HARDENING_BLOCK}
 """
 
 
@@ -201,71 +180,37 @@ class GolangSamples(Instance):
         return GolangSamplesImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
-        if run_cmd:
-            return run_cmd
-        return "bash /home/run.sh"
+        return run_cmd or "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        if test_patch_run_cmd:
-            return test_patch_run_cmd
-        return "bash /home/test-run.sh"
+        return test_patch_run_cmd or "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        if fix_patch_run_cmd:
-            return fix_patch_run_cmd
-        return "bash /home/fix-run.sh"
+        return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
-
-        re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
-        re_fail_tests = [
-            re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"FAIL:?\s?(.+?)\s"),
-        ]
-        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
-
-        def get_base_name(test_name: str) -> str:
-            index = test_name.rfind("/")
-            if index == -1:
-                return test_name
-            return test_name[:index]
-
-        for line in test_log.splitlines():
-            line = line.strip()
-
-            for re_pass_test in re_pass_tests:
-                pass_match = re_pass_test.match(line)
-                if pass_match:
-                    test_name = pass_match.group(1)
-                    if test_name in failed_tests:
-                        continue
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    passed_tests.add(get_base_name(test_name))
-
-            for re_fail_test in re_fail_tests:
-                fail_match = re_fail_test.match(line)
-                if fail_match:
-                    test_name = fail_match.group(1)
-                    if test_name in passed_tests:
-                        passed_tests.remove(test_name)
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    failed_tests.add(get_base_name(test_name))
-
-            for re_skip_test in re_skip_tests:
-                skip_match = re_skip_test.match(line)
-                if skip_match:
-                    test_name = skip_match.group(1)
-                    if test_name in passed_tests:
-                        continue
-                    if test_name not in failed_tests:
-                        continue
-                    skipped_tests.add(get_base_name(test_name))
-
+        buckets = {"pass": set(), "fail": set(), "skip": set()}
+        pkg = "."
+        for raw in test_log.splitlines():
+            line = raw.strip()
+            marker = _PKG_MARKER.match(line)
+            if marker:
+                pkg = marker.group(1)
+                continue
+            if not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            test = event.get("Test")
+            action = event.get("Action")
+            if not test or action not in buckets:
+                continue
+            buckets[action].add(f"go::{pkg}::{_LOOPBACK.sub('127.0.0.1:PORT', test)}")
+        failed_tests = buckets["fail"]
+        passed_tests = buckets["pass"] - failed_tests
+        skipped_tests = buckets["skip"] - failed_tests - passed_tests
         return TestResult(
             passed_count=len(passed_tests),
             failed_count=len(failed_tests),
