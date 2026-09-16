@@ -1,13 +1,229 @@
-import re
 import json
-from typing import Optional, Union
+import re
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_BASE_TAG = "base-3453_to_560"
 
-class ImageDefault(Image):
+
+_BASE_DOCKERFILE = r"""# syntax=docker/dockerfile:1.6
+
+FROM __BASE_IMAGE__
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/__ORG__/__REPO__.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC \
+    http_proxy=${http_proxy} \
+    https_proxy=${https_proxy} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    no_proxy=${no_proxy} \
+    NO_PROXY=${NO_PROXY} \
+    SSL_CERT_FILE=${CA_CERT_PATH} \
+    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \
+    CURL_CA_BUNDLE=${CA_CERT_PATH} \
+    NODE_EXTRA_CA_CERTS=${CA_CERT_PATH} \
+    HUSKY=0
+
+LABEL org.opencontainers.image.title="__ORG__/__REPO__" \
+      org.opencontainers.image.description="__ORG__/__REPO__ Docker image" \
+      org.opencontainers.image.source="https://github.com/__ORG__/__REPO__" \
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git config --global --add safe.directory '*'
+
+__GLOBAL_ENV__
+
+WORKDIR /home/
+
+__CODE__
+
+WORKDIR /home/__REPO__
+
+__CLEAR_ENV__
+
+CMD ["/bin/bash"]
+"""
+
+
+_CLONE_CODE = r"""RUN cloned=0 \
+    && for attempt in 1 2 3 4 5; do \
+        rm -rf /home/__REPO__; \
+        if git clone "${REPO_URL}" /home/__REPO__; then cloned=1; break; fi; \
+        echo "clone attempt ${attempt} failed; retrying in 15s" >&2; \
+        sleep 15; \
+    done \
+    && test "$cloned" -eq 1 \
+    && git -C /home/__REPO__ rev-parse HEAD >/dev/null"""
+
+
+_COPY_CODE = r"""COPY __REPO__ /home/__REPO__"""
+
+
+_PR_DOCKERFILE = r"""FROM __BASE_IMAGE__
+
+__GLOBAL_ENV__
+
+__COPY_COMMANDS__
+RUN bash /home/prepare.sh
+
+WORKDIR /home/__REPO__
+
+__HARDENING__
+__CLEAR_ENV__
+"""
+
+
+_CHECK_GIT_CHANGES_SH = r"""#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+"""
+
+
+_PREPARE_SH = r"""#!/bin/bash
+set -eo pipefail
+
+cd /home/__REPO__
+
+git config --local advice.detachedHead false
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+
+git checkout --detach __BASE_SHA__
+test "$(git rev-parse HEAD)" = "__BASE_SHA__"
+bash /home/check_git_changes.sh
+
+export CI=true
+
+node --version
+npm --version
+
+commit_date="$(git show -s --format=%cI HEAD)"
+
+installed=0
+for attempt in 1 2 3; do
+    if [ -f package-lock.json ]; then
+        if npm ci --no-audit --no-fund; then
+            installed=1
+            break
+        fi
+    else
+        if npm install --no-audit --no-fund --no-package-lock --before="${commit_date}"; then
+            installed=1
+            break
+        fi
+    fi
+    echo "prepare: npm install attempt ${attempt} failed; retrying in 15s" >&2
+    sleep 15
+done
+test "$installed" -eq 1
+
+test -x node_modules/.bin/jest
+node node_modules/jest/bin/jest.js --version
+node -e "require('./package.json'); require.resolve('jest'); console.log('DEPS_OK')"
+"""
+
+
+_TEST_BLOCK = r"""out=/tmp/jest-report.json
+rm -f "$out"
+
+print_report() {
+    echo "-----BEGIN_JEST_JSON-----"
+    if [ -f "$out" ]; then cat "$out"; fi
+    echo
+    echo "-----END_JEST_JSON-----"
+}
+trap print_report EXIT
+
+node_flags=""
+if node -e "process.exit(require('./package.json').type === 'module' ? 0 : 1)"; then
+    node_flags="--experimental-vm-modules"
+fi
+
+node ${node_flags} node_modules/jest/bin/jest.js \
+    --ci \
+    --verbose \
+    --json \
+    --outputFile="$out"
+"""
+
+
+_RUN_SH = r"""#!/bin/bash
+set -eo pipefail
+
+export CI=true
+
+cd /home/__REPO__
+
+__TEST_BLOCK__"""
+
+
+_TEST_RUN_SH = r"""#!/bin/bash
+set -eo pipefail
+
+export CI=true
+
+cd /home/__REPO__
+
+git apply --whitespace=nowarn /home/test.patch
+
+__TEST_BLOCK__"""
+
+
+_FIX_RUN_SH = r"""#!/bin/bash
+set -eo pipefail
+
+export CI=true
+
+cd /home/__REPO__
+
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+
+__TEST_BLOCK__"""
+
+
+class GithubReadmeStatsImageBase_3453_TO_560(Image):
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -21,10 +237,46 @@ class ImageDefault(Image):
         return self._config
 
     def dependency(self) -> str:
-        return "node:18-bullseye"
+        return "node:18-bookworm"
 
-    def image_prefix(self) -> str:
-        return "envagent"
+    def image_tag(self) -> str:
+        return _BASE_TAG
+
+    def workdir(self) -> str:
+        return _BASE_TAG
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        code = _CLONE_CODE if self.config.need_clone else _COPY_CODE
+
+        return (
+            _BASE_DOCKERFILE.replace("__BASE_IMAGE__", self.dependency())
+            .replace("__GLOBAL_ENV__", self.global_env)
+            .replace("__CLEAR_ENV__", self.clear_env)
+            .replace("__CODE__", code)
+            .replace("__ORG__", self.pr.org)
+            .replace("__REPO__", self.pr.repo)
+        )
+
+
+class GithubReadmeStatsImageDefault_3453_TO_560(Image):
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return GithubReadmeStatsImageBase_3453_TO_560(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -32,110 +284,106 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def _render(self, template: str) -> str:
+        return (
+            template.replace("__TEST_BLOCK__", _TEST_BLOCK)
+            .replace("__REPO__", self.pr.repo)
+            .replace("__BASE_SHA__", self.pr.base.sha)
+        )
+
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """ls -la
-###ACTION_DELIMITER###
-npm install
-###ACTION_DELIMITER###
-npm test -- --verbose
-###ACTION_DELIMITER###
-npm test -- -u
-###ACTION_DELIMITER###
-npm install prettier@2.8.8
-###ACTION_DELIMITER###
-npm test -- -u
-###ACTION_DELIMITER###
-echo "npm test -- --verbose" > test_commands.sh""",
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-npm test -- --verbose
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-npm test -- --verbose
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-npm test -- --verbose
-
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", self.pr.fix_patch),
+            File(".", "test.patch", self.pr.test_patch),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
+            File(".", "prepare.sh", self._render(_PREPARE_SH)),
+            File(".", "run.sh", self._render(_RUN_SH)),
+            File(".", "test-run.sh", self._render(_TEST_RUN_SH)),
+            File(".", "fix-run.sh", self._render(_FIX_RUN_SH)),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        hardening = (
+            Image._HARDENING_BLOCK
+            .replace(" --aggressive", "")
+            .replace('"${BASE_COMMIT}"', self.pr.base.sha)
+        )
 
-# Choose an appropriate base image based on the project's requirements - replace [base image] with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM node:18-bullseye
+        return (
+            _PR_DOCKERFILE.replace("__BASE_IMAGE__", image.image_full_name())
+            .replace("__GLOBAL_ENV__", self.global_env)
+            .replace("__CLEAR_ENV__", self.clear_env)
+            .replace("__COPY_COMMANDS__", copy_commands)
+            .replace("__REPO__", self.pr.repo)
+            .replace("__HARDENING__", hardening)
+        )
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_JSON_FENCE_RE = re.compile(
+    r"-----BEGIN_JEST_JSON-----\n(.*?)\n-----END_JEST_JSON-----",
+    re.DOTALL,
+)
 
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
 
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/anuraghazra/github-readme-stats.git /home/github-readme-stats
+def _parse_log(test_log: str, repo: str) -> TestResult:
+    passed_tests: set[str] = set()
+    failed_tests: set[str] = set()
+    skipped_tests: set[str] = set()
 
-WORKDIR /home/github-readme-stats
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
-{copy_commands}
-"""
-        return dockerfile_content.format(pr=self.pr)
+    clean_log = _ANSI_RE.sub("", test_log).replace("\r\n", "\n")
+    repo_prefix = f"/home/{repo}/"
+
+    for match in _JSON_FENCE_RE.finditer(clean_log):
+        try:
+            report = json.loads(match.group(1))
+        except ValueError:
+            continue
+
+        for suite in report.get("testResults") or []:
+            path = suite.get("name") or ""
+            if repo_prefix in path:
+                path = path.split(repo_prefix, 1)[1]
+
+            assertions = suite.get("assertionResults") or []
+            if not assertions and suite.get("status") == "failed":
+                failed_tests.add(f"{path}::<suite failed to run>")
+                continue
+
+            seen: dict[str, int] = {}
+            for assertion in assertions:
+                name = assertion.get("fullName") or assertion.get("title") or ""
+                name = " ".join(name.split())
+                seen[name] = seen.get(name, 0) + 1
+                suffix = "" if seen[name] == 1 else f"#{seen[name]}"
+                ident = f"{path}::{name}{suffix}"
+
+                status = assertion.get("status")
+                if status == "passed":
+                    passed_tests.add(ident)
+                elif status == "failed":
+                    failed_tests.add(ident)
+                else:
+                    skipped_tests.add(ident)
+
+    passed_tests -= failed_tests
+    passed_tests -= skipped_tests
+    skipped_tests -= failed_tests
+
+    return TestResult(
+        passed_count=len(passed_tests),
+        failed_count=len(failed_tests),
+        skipped_count=len(skipped_tests),
+        passed_tests=passed_tests,
+        failed_tests=failed_tests,
+        skipped_tests=skipped_tests,
+    )
 
 
 @Instance.register("anuraghazra", "github_readme_stats_3453_to_560")
@@ -149,70 +397,23 @@ class GITHUB_README_STATS_3453_TO_560(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+    def dependency(self) -> Image | None:
+        return GithubReadmeStatsImageDefault_3453_TO_560(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
-        import re
-
-        # Regex to capture passed and failed test suites
-        suite_regex = re.compile(r"^(PASS|FAIL)\s+(.*)")
-        # Regex to capture passed test cases
-        passed_regex = re.compile(r"^\s*✓\s+(.*)")
-        # Regex to capture failed test cases
-        failed_regex = re.compile(r"^\s*x\s+(.*)")
-        for line in log.splitlines():
-            # Check for test suites
-            suite_match = suite_regex.match(line)
-            if suite_match:
-                status, suite_name = suite_match.groups()
-                if status == "PASS":
-                    passed_tests.add(suite_name)
-                elif status == "FAIL":
-                    failed_tests.add(suite_name)
-            # Check for passed test cases
-            passed_match = passed_regex.match(line)
-            if passed_match:
-                test_name = passed_match.group(1).strip()
-                passed_tests.add(test_name)
-            # Check for failed test cases
-            failed_match = failed_regex.match(line)
-            if failed_match:
-                test_name = failed_match.group(1).strip()
-                failed_tests.add(test_name)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+    def parse_log(self, test_log: str) -> TestResult:
+        return _parse_log(test_log, self.pr.repo)

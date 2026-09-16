@@ -1,33 +1,234 @@
+import posixpath
 import re
-from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-
-ELAND_380_TO_284_PR_TESTS = {
-    284: [
-        "tests/series/test_arithmetics_pytest.py",
-    ],
-    322: [
-        "tests/dataframe/test_groupby_pytest.py",
-    ],
-    323: [
-        "tests/dataframe/test_groupby_pytest.py",
-        "tests/dataframe/test_metrics_pytest.py",
-        "tests/series/test_metrics_pytest.py",
-    ],
-    355: [
-        "tests/dataframe/test_describe_pytest.py",
-    ],
-    380: [
-        "tests/dataframe/test_iterrows_itertuples_pytest.py",
-    ],
-}
+_BASE_TAG = "base-380_to_284"
 
 
-class ImageDefault(Image):
+_BASE_DOCKERFILE = r"""# syntax=docker/dockerfile:1.6
+
+FROM __BASE_IMAGE__
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/__ORG__/__REPO__.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC \
+    http_proxy=${http_proxy} \
+    https_proxy=${https_proxy} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    no_proxy=${no_proxy} \
+    NO_PROXY=${NO_PROXY} \
+    SSL_CERT_FILE=${CA_CERT_PATH} \
+    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \
+    CURL_CA_BUNDLE=${CA_CERT_PATH} \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    ELASTICSEARCH_HOST=localhost \
+    TEST_SUITE=__TEST_SUITE__
+
+LABEL org.opencontainers.image.title="__ORG__/__REPO__" \
+      org.opencontainers.image.description="__ORG__/__REPO__ Docker image" \
+      org.opencontainers.image.source="https://github.com/__ORG__/__REPO__" \
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates curl gnupg \
+    && curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg] https://artifacts.elastic.co/packages/7.x/apt stable main" > /etc/apt/sources.list.d/elastic-7.x.list \
+    && apt-get update && apt-get install -y --no-install-recommends elasticsearch \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && case "${arch}" in amd64) ml_enabled=__ML_ON_AMD64__ ;; *) ml_enabled=false ;; esac \
+    && printf 'discovery.type: single-node\nxpack.security.enabled: false\nxpack.ml.enabled: %s\n' "${ml_enabled}" >> /etc/elasticsearch/elasticsearch.yml \
+    && printf '%s\n' -Xms1g -Xmx1g > /etc/elasticsearch/jvm.options.d/heap.options
+
+__GLOBAL_ENV__
+
+WORKDIR /home/
+
+__CODE__
+
+WORKDIR /home/__REPO__
+
+__CLEAR_ENV__
+
+CMD ["/bin/bash"]
+"""
+
+
+_CLONE_CODE = r"""RUN git clone "${REPO_URL}" /home/__REPO__"""
+
+
+_COPY_CODE = r"""COPY __REPO__ /home/__REPO__"""
+
+
+_PR_DOCKERFILE = r"""FROM __BASE_IMAGE__
+
+__GLOBAL_ENV__
+
+__COPY_COMMANDS__
+RUN bash /home/prepare.sh
+
+WORKDIR /home/__REPO__
+
+__HARDENING__
+__CLEAR_ENV__
+"""
+
+
+_CHECK_GIT_CHANGES_SH = r"""#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+"""
+
+
+_PREPARE_SH = r"""#!/bin/bash
+set -eo pipefail
+
+cd /home/__REPO__
+
+git config --local advice.detachedHead false
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+
+git checkout --detach __BASE_SHA__
+test "$(git rev-parse HEAD)" = "__BASE_SHA__"
+bash /home/check_git_changes.sh
+
+export CI=true
+
+python --version
+
+pip install --upgrade pip
+pip install "setuptools<70"
+pip install -e .
+pip install -r requirements-dev.txt
+pip install __PINS__
+
+python -c "import eland, pandas, elasticsearch, pytest; print('DEPS_OK')"
+"""
+
+
+_START_ES = r"""runuser -u elasticsearch -- env ES_PATH_CONF=/etc/elasticsearch /usr/share/elasticsearch/bin/elasticsearch -d -p /tmp/elasticsearch.pid
+
+es_ready=0
+for attempt in $(seq 1 120); do
+    if curl -fsS "http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s" > /dev/null 2>&1; then
+        es_ready=1
+        break
+    fi
+    sleep 2
+done
+test "${es_ready}" -eq 1
+__LICENSE__"""
+
+
+_TEST_BLOCK = r"""if [ -f tests/setup_tests.py ]; then
+    python -m tests.setup_tests
+else
+    python -m eland.tests.setup_tests
+fi
+
+python -m pytest -v -rA --tb=no --color=no -p no:cacheprovider __TEST_DIRS__
+"""
+
+
+_RUN_SH = r"""#!/bin/bash
+set -eo pipefail
+
+export CI=true
+
+cd /home/__REPO__
+
+__START_ES__
+
+__TEST_BLOCK__"""
+
+
+_TEST_RUN_SH = r"""#!/bin/bash
+set -eo pipefail
+
+export CI=true
+
+cd /home/__REPO__
+
+__START_ES__
+
+git apply --whitespace=nowarn /home/test.patch
+
+__TEST_BLOCK__"""
+
+
+_FIX_RUN_SH = r"""#!/bin/bash
+set -eo pipefail
+
+export CI=true
+
+cd /home/__REPO__
+
+__START_ES__
+
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+
+__TEST_BLOCK__"""
+
+
+_TEST_SUITE = "free"
+_ML_ON_AMD64 = "false"
+_LICENSE = ""
+_PINS = '"pandas>=1.2,<1.3" "numpy<1.24" "elasticsearch>=7.7,<8"'
+
+
+def _test_dirs(pr: PullRequest) -> str:
+    dirs = []
+    for match in re.finditer(r"^diff --git a/\S+ b/(\S+)$", pr.test_patch or "", re.M):
+        path = match.group(1)
+        if re.search(r"(^|/)test_[^/]*\.py$", path):
+            directory = posixpath.dirname(path)
+            if directory and directory not in dirs:
+                dirs.append(directory)
+    return " ".join(sorted(dirs))
+
+
+class ElandImageBase_380_TO_284(Image):
+
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -43,8 +244,46 @@ class ImageDefault(Image):
     def dependency(self) -> str:
         return "python:3.9-bookworm"
 
-    def image_prefix(self) -> str:
-        return "mswebench"
+    def image_tag(self) -> str:
+        return _BASE_TAG
+
+    def workdir(self) -> str:
+        return _BASE_TAG
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        code = _CLONE_CODE if self.config.need_clone else _COPY_CODE
+
+        return (
+            _BASE_DOCKERFILE.replace("__BASE_IMAGE__", self.dependency())
+            .replace("__TEST_SUITE__", _TEST_SUITE)
+            .replace("__ML_ON_AMD64__", _ML_ON_AMD64)
+            .replace("__GLOBAL_ENV__", self.global_env)
+            .replace("__CLEAR_ENV__", self.clear_env)
+            .replace("__CODE__", code)
+            .replace("__ORG__", self.pr.org)
+            .replace("__REPO__", self.pr.repo)
+        )
+
+
+class ElandImageDefault_380_TO_284(Image):
+
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return ElandImageBase_380_TO_284(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -52,158 +291,97 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def _render(self, template: str) -> str:
+        return (
+            template.replace("__START_ES__", _START_ES)
+            .replace("__LICENSE__", _LICENSE)
+            .replace("__TEST_BLOCK__", _TEST_BLOCK)
+            .replace("__PINS__", _PINS)
+            .replace("__REPO__", self.pr.repo)
+            .replace("__BASE_SHA__", self.pr.base.sha)
+            .replace("__TEST_DIRS__", _test_dirs(self.pr))
+        )
+
     def files(self) -> list[File]:
-        repo_name = self.pr.repo
-        base_sha = self.pr.base.sha
-        test_files = ELAND_380_TO_284_PR_TESTS.get(self.pr.number, [])
-        test_files_str = " ".join(test_files)
-
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                f"""#!/bin/bash
-set -e
-cd /home/{repo_name}
-
-# 1. Checkout base commit
-git checkout {base_sha}
-
-# 2. Install from package files (setup.py + requirements-dev.txt)
-pip install --upgrade pip
-pip install "setuptools<70"
-pip install -e .
-pip install -r requirements-dev.txt
-
-# 3. Pin overrides for known compat issues (Docker-verified)
-# pandas>=1.3 removes ABCIndexClass used by PRs 322/323/355
-pip install "pandas>=1.2,<1.3" "numpy<1.24" "elasticsearch>=7.7,<8"
-""",
-            ),
-            File(
-                ".",
-                "run.sh",
-                f"""#!/bin/bash
-cd /home/{repo_name}
-
-sudo -u elasticsearch /usr/share/elasticsearch/bin/elasticsearch -d
-until curl -s "localhost:9200/_cluster/health?wait_for_status=yellow&timeout=60s" > /dev/null 2>&1; do sleep 2; done
-python -m tests.setup_tests
-
-EXISTING_TESTS=""
-for f in {test_files_str}; do
-    if [ -f "$f" ]; then
-        EXISTING_TESTS="$EXISTING_TESTS $f"
-    fi
-done
-if [ -z "$EXISTING_TESTS" ]; then
-    echo "No test files found"
-    exit 1
-fi
-python -m pytest $EXISTING_TESTS --no-header -rA --tb=no -p no:cacheprovider -v 2>&1
-""",
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                f"""#!/bin/bash
-cd /home/{repo_name}
-
-sudo -u elasticsearch /usr/share/elasticsearch/bin/elasticsearch -d
-until curl -s "localhost:9200/_cluster/health?wait_for_status=yellow&timeout=60s" > /dev/null 2>&1; do sleep 2; done
-python -m tests.setup_tests
-
-if ! git -C /home/{repo_name} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
-
-EXISTING_TESTS=""
-for f in {test_files_str}; do
-    if [ -f "$f" ]; then
-        EXISTING_TESTS="$EXISTING_TESTS $f"
-    fi
-done
-if [ -z "$EXISTING_TESTS" ]; then
-    echo "No test files found"
-    exit 1
-fi
-python -m pytest $EXISTING_TESTS --no-header -rA --tb=no -p no:cacheprovider -v 2>&1
-""",
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                f"""#!/bin/bash
-cd /home/{repo_name}
-
-sudo -u elasticsearch /usr/share/elasticsearch/bin/elasticsearch -d
-until curl -s "localhost:9200/_cluster/health?wait_for_status=yellow&timeout=60s" > /dev/null 2>&1; do sleep 2; done
-python -m tests.setup_tests
-
-if ! git -C /home/{repo_name} apply --whitespace=nowarn /home/fix.patch; then
-    echo "Error: git apply fix.patch failed" >&2
-    exit 1
-fi
-if ! git -C /home/{repo_name} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply test.patch failed" >&2
-    exit 1
-fi
-
-EXISTING_TESTS=""
-for f in {test_files_str}; do
-    if [ -f "$f" ]; then
-        EXISTING_TESTS="$EXISTING_TESTS $f"
-    fi
-done
-if [ -z "$EXISTING_TESTS" ]; then
-    echo "No test files found"
-    exit 1
-fi
-python -m pytest $EXISTING_TESTS --no-header -rA --tb=no -p no:cacheprovider -v 2>&1
-""",
-            ),
+            File(".", "fix.patch", self.pr.fix_patch),
+            File(".", "test.patch", self.pr.test_patch),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
+            File(".", "prepare.sh", self._render(_PREPARE_SH)),
+            File(".", "run.sh", self._render(_RUN_SH)),
+            File(".", "test-run.sh", self._render(_TEST_RUN_SH)),
+            File(".", "fix-run.sh", self._render(_FIX_RUN_SH)),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        dockerfile_content = f"""
-FROM python:3.9-bookworm
+        hardening = (
+            Image._HARDENING_BLOCK
+            .replace(" --aggressive", "")
+            .replace('"${BASE_COMMIT}"', self.pr.base.sha)
+        )
 
-WORKDIR /home/
+        return (
+            _PR_DOCKERFILE.replace("__BASE_IMAGE__", image.image_full_name())
+            .replace("__GLOBAL_ENV__", self.global_env)
+            .replace("__CLEAR_ENV__", self.clear_env)
+            .replace("__COPY_COMMANDS__", copy_commands)
+            .replace("__REPO__", self.pr.repo)
+            .replace("__HARDENING__", hardening)
+        )
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git sudo curl gnupg2 openjdk-17-jre-headless && \\
-    curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add - && \\
-    echo "deb https://artifacts.elastic.co/packages/7.x/apt stable main" > /etc/apt/sources.list.d/elastic-7.x.list && \\
-    apt-get update && apt-get install -y elasticsearch && \\
-    echo "discovery.type: single-node" >> /etc/elasticsearch/elasticsearch.yml && \\
-    echo "xpack.security.enabled: false" >> /etc/elasticsearch/elasticsearch.yml && \\
-    mkdir -p /var/run/elasticsearch && chown elasticsearch:elasticsearch /var/run/elasticsearch && \\
-    rm -rf /var/lib/apt/lists/*
 
-ENV ELASTICSEARCH_HOST=localhost
-ENV TEST_SUITE=free
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_VERBOSE_RE = re.compile(
+    r"^(\S+\.py::\S.*?) (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?: +\[\s*\d+%\])?$"
+)
+_SUMMARY_RE = re.compile(r"^(PASSED|FAILED|ERROR|XFAIL|XPASS) (\S+\.py(?:::\S.*?)?)(?: - .*)?$")
 
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
 
-{copy_commands}
-RUN bash /home/prepare.sh
-"""
-        return dockerfile_content
+def _parse_log(test_log: str) -> TestResult:
+    passed_tests: set[str] = set()
+    failed_tests: set[str] = set()
+    skipped_tests: set[str] = set()
+
+    def record(name: str, status: str) -> None:
+        if "::" not in name:
+            name = f"{name}::<collection error>"
+        if status in ("PASSED", "XFAIL", "XPASS"):
+            passed_tests.add(name)
+        elif status in ("FAILED", "ERROR"):
+            failed_tests.add(name)
+        elif status == "SKIPPED":
+            skipped_tests.add(name)
+
+    for raw_line in _ANSI_RE.sub("", test_log).replace("\r\n", "\n").splitlines():
+        line = raw_line.strip()
+
+        match = _VERBOSE_RE.match(line)
+        if match:
+            record(match.group(1), match.group(2))
+            continue
+
+        match = _SUMMARY_RE.match(line)
+        if match:
+            record(match.group(2), match.group(1))
+
+    passed_tests -= failed_tests
+    passed_tests -= skipped_tests
+    skipped_tests -= failed_tests
+
+    return TestResult(
+        passed_count=len(passed_tests),
+        failed_count=len(failed_tests),
+        skipped_count=len(skipped_tests),
+        passed_tests=passed_tests,
+        failed_tests=failed_tests,
+        skipped_tests=skipped_tests,
+    )
 
 
 @Instance.register("elastic", "eland_380_to_284")
@@ -217,8 +395,8 @@ class ELAND_380_TO_284(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+    def dependency(self) -> Image | None:
+        return ElandImageDefault_380_TO_284(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -235,50 +413,5 @@ class ELAND_380_TO_284(Instance):
             return fix_patch_run_cmd
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, log: str) -> TestResult:
-        passed_tests: set[str] = set()
-        failed_tests: set[str] = set()
-        skipped_tests: set[str] = set()
-
-        for line in log.split("\n"):
-            line = line.strip()
-            if line.startswith("PASSED "):
-                test_name = line[len("PASSED "):].strip()
-                passed_tests.add(test_name)
-            elif line.startswith("FAILED "):
-                test_name = line[len("FAILED "):].strip()
-                if " - " in test_name:
-                    test_name = test_name.split(" - ")[0]
-                failed_tests.add(test_name)
-            elif line.startswith("SKIPPED "):
-                test_name = line[len("SKIPPED "):].strip()
-                if " - " in test_name:
-                    test_name = test_name.split(" - ")[0]
-                skipped_tests.add(test_name)
-            else:
-                match = re.match(
-                    r"^(.+?)\s+(PASSED|FAILED|SKIPPED|ERROR|XFAIL)\s*(\[.*\])?$", line
-                )
-                if match:
-                    test_name = match.group(1)
-                    status = match.group(2)
-                    if status == "PASSED":
-                        passed_tests.add(test_name)
-                    elif status in ("FAILED", "ERROR"):
-                        failed_tests.add(test_name)
-                    elif status == "SKIPPED":
-                        skipped_tests.add(test_name)
-                    elif status == "XFAIL":
-                        passed_tests.add(test_name)
-
-        # Conflict resolution: if test in both passed and failed, keep failed
-        passed_tests -= failed_tests
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+    def parse_log(self, test_log: str) -> TestResult:
+        return _parse_log(test_log)
