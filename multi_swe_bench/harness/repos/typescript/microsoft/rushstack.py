@@ -7,7 +7,7 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_NODE_IMAGE = "node:16"
+_NODE_IMAGE = "node:12"
 
 _CA_SYMLINKS = """RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
     ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
@@ -35,6 +35,7 @@ exit 0
 
 _DETECT_PROJECTS = """set -u
 PATCH_FILE="$1"
+MODE="$2"
 if [ ! -f "$PATCH_FILE" ]; then
     exit 0
 fi
@@ -42,81 +43,16 @@ grep '^diff --git' "$PATCH_FILE" | sed 's|diff --git a/||;s| b/.*||' | while rea
     dir="$fpath"
     while [ "$dir" != "." ] && [ "$dir" != "/" ] && [ -n "$dir" ]; do
         if [ -f "/home/__REPO__/$dir/package.json" ]; then
-            echo "$dir"
+            if [ "$MODE" = "dir" ]; then
+                echo "$dir"
+            else
+                node -e "try{console.log(require('/home/__REPO__/'+process.argv[1]+'/package.json').name||'')}catch(e){}" "$dir"
+            fi
             break
         fi
         dir=$(dirname "$dir")
     done
 done | grep -v '^$' | sort -u
-"""
-
-_RESOLVE_INSTALL_DIRS = r"""set -u
-REPO="/home/__REPO__"
-
-node -e '
-const fs = require("fs");
-const path = require("path");
-const repo = process.argv[1];
-const seeds = process.argv.slice(2).filter(Boolean);
-const out = [];
-const seen = new Set();
-
-function nearestPkg(rel) {
-    let d = rel;
-    while (d && d !== "." && d !== "/" && !d.startsWith("..")) {
-        if (fs.existsSync(path.join(repo, d, "package.json"))) {
-            return d;
-        }
-        d = path.dirname(d);
-    }
-    return null;
-}
-
-function jestConfig(dir) {
-    try {
-        const p = JSON.parse(fs.readFileSync(path.join(repo, dir, "package.json"), "utf8"));
-        if (p.jest) {
-            return JSON.stringify(p.jest);
-        }
-    } catch (e) {}
-    for (const f of ["jest.config.js", "jest.config.json", "jest.config.cjs", "jest.config.ts"]) {
-        try {
-            return fs.readFileSync(path.join(repo, dir, f), "utf8");
-        } catch (e) {}
-    }
-    return "";
-}
-
-const queue = seeds.slice();
-while (queue.length) {
-    const dir = queue.shift();
-    if (!dir || seen.has(dir)) {
-        continue;
-    }
-    seen.add(dir);
-    out.push(dir);
-    const cfg = jestConfig(dir);
-    const re = /<rootDir>\/([^"\x27\\]+)/g;
-    let m;
-    while ((m = re.exec(cfg)) !== null) {
-        let rel = path.normalize(path.join(dir, m[1]));
-        const parts = rel.split("/");
-        const i = parts.indexOf("node_modules");
-        if (i >= 0) {
-            rel = parts.slice(0, i).join("/");
-        }
-        if (!rel || rel === "." || rel.startsWith("..")) {
-            continue;
-        }
-        const owner = nearestPkg(rel);
-        if (owner && !seen.has(owner)) {
-            queue.push(owner);
-        }
-    }
-}
-
-console.log(out.join("\n"));
-' "$REPO" "$@" | grep -v '^$' | sort -u
 """
 
 _RUN_JEST = """set -u
@@ -127,15 +63,33 @@ if [ ! -d "$REPO/$PDIR" ]; then
     exit 0
 fi
 
+if [ ! -f "$REPO/$PDIR/config/jest.json" ] && [ ! -f "$REPO/$PDIR/config/jest.config.json" ]; then
+    exit 0
+fi
+
 cd "$REPO/$PDIR"
 
-if [ ! -x "./node_modules/.bin/jest" ]; then
+if [ ! -d "lib" ]; then
+    echo "=== No lib/ directory in $PDIR, skipping jest ==="
+    exit 0
+fi
+
+JEST_BIN=""
+if [ -x "./node_modules/.bin/jest" ]; then
+    JEST_BIN="./node_modules/.bin/jest"
+elif [ -x "$REPO/common/temp/node_modules/.bin/jest" ]; then
+    JEST_BIN="$REPO/common/temp/node_modules/.bin/jest"
+else
+    JEST_BIN=$(find "$REPO/common/temp" -not -path '*/rush-recycler/*' -path '*/jest-cli/bin/jest.js' -print -quit 2>/dev/null || true)
+fi
+
+if [ -z "$JEST_BIN" ]; then
     echo "=== No jest binary found for $PDIR ==="
     exit 0
 fi
 
 echo "=== Running jest in $PDIR ==="
-./node_modules/.bin/jest --ci --verbose --forceExit --no-coverage 2>&1 || true
+"$JEST_BIN" --rootDir . --roots lib --testRegex '.*\\.test\\.js$' --no-coverage --no-cache --no-watchman --verbose 2>&1 || true
 echo "=== Finished jest in $PDIR ==="
 """
 
@@ -150,31 +104,21 @@ bash /home/check_git_changes.sh
 
 export CI=1
 export npm_config_yes=true
+export SKIP_PREFLIGHT_CHECK=true
 export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
 
-SEED_DIRS=$(
-    { bash /home/detect_project_dirs.sh /home/test.patch; \\
-      bash /home/detect_project_dirs.sh /home/fix.patch; } | sort -u
+node common/scripts/install-run-rush.js install --bypass-policy
+
+PROJECT_DIRS=$(
+    { bash /home/detect_project_dirs.sh /home/test.patch dir; \\
+      bash /home/detect_project_dirs.sh /home/fix.patch dir; } | sort -u
 )
-test -n "$SEED_DIRS"
 
-INSTALL_DIRS=$(bash /home/resolve_install_dirs.sh $SEED_DIRS)
-test -n "$INSTALL_DIRS"
+test -n "$PROJECT_DIRS"
 
-for pdir in $INSTALL_DIRS; do
-    cd "/home/__REPO__/$pdir"
-    if [ -f package-lock.json ]; then
-        npm ci --no-audit --no-fund --ignore-scripts
-    else
-        npm install --no-audit --no-fund --ignore-scripts
-    fi
-done
+test -d /home/__REPO__/common/temp/node_modules
 
-TEST_DIRS=$(bash /home/detect_project_dirs.sh /home/test.patch)
-
-test -n "$TEST_DIRS"
-
-for pdir in $TEST_DIRS; do
+for pdir in $PROJECT_DIRS; do
     test -d "/home/__REPO__/$pdir/node_modules"
     test -x "/home/__REPO__/$pdir/node_modules/.bin/jest"
 done
@@ -188,9 +132,22 @@ export CI=1
 export npm_config_yes=true
 export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
 
-TEST_DIRS=$(bash /home/detect_project_dirs.sh /home/test.patch)
+node common/scripts/install-run-rush.js install --bypass-policy || true
 
-for pdir in $TEST_DIRS; do
+PROJECTS=$(
+    { bash /home/detect_project_dirs.sh /home/test.patch name; \\
+      bash /home/detect_project_dirs.sh /home/fix.patch name; } | sort -u
+)
+PROJECT_DIRS=$(
+    { bash /home/detect_project_dirs.sh /home/test.patch dir; \\
+      bash /home/detect_project_dirs.sh /home/fix.patch dir; } | sort -u
+)
+
+for proj in $PROJECTS; do
+    node common/scripts/install-run-rush.js build --to "$proj" || true
+done
+
+for pdir in $PROJECT_DIRS; do
     bash /home/run_jest.sh "$pdir"
 done
 """
@@ -204,7 +161,7 @@ def _run_script(repo: str, apply_cmd: str) -> str:
     return _render(_RUN_TEMPLATE, repo).replace("__APPLY__", apply_cmd)
 
 
-class FocalboardImageBase(Image):
+class RushstackImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -289,7 +246,7 @@ CMD ["/bin/bash"]
 """
 
 
-class FocalboardImageDefault(Image):
+class RushstackImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -303,7 +260,7 @@ class FocalboardImageDefault(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return FocalboardImageBase(self.pr, self._config)
+        return RushstackImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -320,11 +277,6 @@ class FocalboardImageDefault(Image):
                 ".",
                 "detect_project_dirs.sh",
                 _render(_DETECT_PROJECTS, self.pr.repo),
-            ),
-            File(
-                ".",
-                "resolve_install_dirs.sh",
-                _render(_RESOLVE_INSTALL_DIRS, self.pr.repo),
             ),
             File(".", "run_jest.sh", _render(_RUN_JEST, self.pr.repo)),
             File(
@@ -402,8 +354,8 @@ RUN if [ -f /home/{self.pr.repo}/.gitmodules ]; then \\
 """
 
 
-@Instance.register("mattermost-community", "focalboard")
-class Focalboard(Instance):
+@Instance.register("microsoft", "rushstack")
+class Rushstack(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -414,7 +366,7 @@ class Focalboard(Instance):
         return self._pr
 
     def dependency(self) -> Optional[Image]:
-        return FocalboardImageDefault(self.pr, self._config)
+        return RushstackImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -441,17 +393,11 @@ class Focalboard(Instance):
 
         ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-        re_duration = re.compile(r"\s*\(\s*\d+(?:[.,]\d+)?\s*(?:ms|s)\s*\)\s*$")
-
         re_suite_pass = re.compile(r"^\s*PASS\s+(.+?)\s*$")
         re_suite_fail = re.compile(r"^\s*FAIL\s+(.+?)\s*$")
-        re_case_pass = re.compile(r"^\s*[\u2713\u2714\u221a]\s+(.+?)\s*$")
-        re_case_fail = re.compile(r"^\s*[\u2715\u2718\u00d7]\s+(.+?)\s*$")
-        re_case_skip = re.compile(r"^\s*[\u25cb\u26a0]\s+skipped\s+(.+?)\s*$")
-        re_case_todo = re.compile(r"^\s*[\u270e\u2712]\s+todo\s+(.+?)\s*$")
-
-        def name_of(matched: re.Match) -> str:
-            return re_duration.sub("", matched.group(1)).strip()
+        re_case_pass = re.compile(r"^\s*[\u2713\u2714\u221a]\s+(.*?)(?:\s+\(\d+\s*m?s\))?\s*$")
+        re_case_fail = re.compile(r"^\s*[\u2715\u2718\u00d7]\s+(.*?)(?:\s+\(\d+\s*m?s\))?\s*$")
+        re_case_skip = re.compile(r"^\s*\u25cb\s+skipped\s+(.*?)\s*$")
 
         for line in test_log.splitlines():
             line = ansi_escape.sub("", line).rstrip()
@@ -460,37 +406,36 @@ class Focalboard(Instance):
 
             match = re_suite_fail.match(line)
             if match:
-                failed_tests.add(name_of(match))
+                failed_tests.add(match.group(1).strip())
                 continue
 
             match = re_case_fail.match(line)
             if match:
-                failed_tests.add(name_of(match))
+                failed_tests.add(match.group(1).strip())
                 continue
 
             match = re_case_skip.match(line)
             if match:
-                skipped_tests.add(name_of(match))
-                continue
-
-            match = re_case_todo.match(line)
-            if match:
-                skipped_tests.add(name_of(match))
+                skipped_tests.add(match.group(1).strip())
                 continue
 
             match = re_suite_pass.match(line)
             if match:
-                passed_tests.add(name_of(match))
+                name = match.group(1).strip()
+                if name not in failed_tests:
+                    passed_tests.add(name)
                 continue
 
             match = re_case_pass.match(line)
             if match:
-                passed_tests.add(name_of(match))
+                name = match.group(1).strip()
+                if name not in failed_tests:
+                    passed_tests.add(name)
                 continue
 
         passed_tests -= failed_tests
-        passed_tests -= skipped_tests
         skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
