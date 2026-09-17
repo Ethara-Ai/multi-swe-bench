@@ -21,3 +21,4 @@ from multi_swe_bench.harness.repos.java.apache.rocketmq_8663_to_6798 import *
 from multi_swe_bench.harness.repos.java.apache.druid_8744_to_10213 import *  
 from multi_swe_bench.harness.repos.java.apache.rocketmq_9153_to_9694 import *
 from multi_swe_bench.harness.repos.java.apache.druid_10232_to_11185 import *
+from multi_swe_bench.harness.repos.java.apache.druid_11257_to_14136 import *
