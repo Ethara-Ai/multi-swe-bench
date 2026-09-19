@@ -30,3 +30,5 @@ from multi_swe_bench.harness.repos.python.pytorch.vision_6830_to_6521 import *
 from multi_swe_bench.harness.repos.python.pytorch.vision import *
 from multi_swe_bench.harness.repos.python.pytorch.rl_443_to_295 import *
 from multi_swe_bench.harness.repos.python.pytorch.rl_295_to_148 import *
+
+from multi_swe_bench.harness.repos.python.pytorch.audio import *
