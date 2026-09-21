@@ -63,62 +63,25 @@ export CI=true
 export PYTHONDONTWRITEBYTECODE=1
 
 cat > /tmp/era-constraints.txt <<'EOF'
-torch<=2.7.1
-torchvision<=0.22.1
-tensorflow<=2.19.0
-tensorflow-cpu<=2.19.0
-tf-keras<=2.20.0
-keras<=3.10.0
-jax<=0.7.0
-jaxlib<=0.7.0
-timm<=1.0.19
-pytorch-lightning<=2.5.2
-onnxruntime<=1.22.1
-safetensors<=0.5.3
-tokenizers<=0.21.4
-numpy<=2.3.2
-scipy<=1.16.1
-pandas<=2.3.1
-pyarrow<=21.0.0
-pillow<=11.3.0
-protobuf<=6.31.1
-ml-dtypes<=0.5.1
-tensorboard<=2.20.0
-scikit-learn<=1.7.1
-librosa<=0.11.0
-openai<=1.97.1
-pydantic<=2.11.7
-nltk<=3.9.1
-fire<=0.7.0
-sentencepiece<=0.2.0
-sacremoses<=0.1.1
-boto3<=1.39.15
-importlib-metadata<=8.7.0
-phonemizer<=3.3.0
-pytest-xdist<=3.8.0
-psutil<=7.0.0
+torch<2.12
+torchvision<0.27
+torchaudio<2.12
+accelerate<1.14
+huggingface-hub<1.8
+safetensors<0.8
+tokenizers<0.23
+datasets<4.8.5
+numpy<2.4.4
+ipython<9.12
 EOF
 export PIP_CONSTRAINT=/tmp/era-constraints.txt
 
-pip install --no-cache-dir -e . || true
-pip install --no-cache-dir [[TORCH_PIN]] torchvision --index-url https://download.pytorch.org/whl/cpu \\
-    || pip install --no-cache-dir [[TORCH_PIN]] torchvision \\
+pip install --no-cache-dir 'torch>=2.4' torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu \\
+    || pip install --no-cache-dir 'torch>=2.4' torchvision torchaudio \\
     || true
-pip install --no-cache-dir [[PYTEST_PIN]] pytest-xdist timeout-decorator psutil parameterized || true
-pip install --no-cache-dir 'huggingface-hub<1.0' || true
-pip install --no-cache-dir boto3 sentencepiece importlib_metadata sacremoses tokenizers 'accelerate<1.0' torchvision || true
-pip install --no-cache-dir jax jaxlib fire pydantic nltk timm pytorch_lightning onnxruntime 'pytest-asyncio<0.22' openai || true
-pip install --no-cache-dir 'datasets<3.5.1' 'evaluate<0.4.4' 'huggingface-hub<1.0' || true
-pip install --no-cache-dir scikit-learn librosa phonemizer || true
-# QC S7: Python 3.10 removed the collections ABC aliases these era files import, and the mixed-era dependency set can trip transformers' import-time version check, so both are patched in the working tree.
-find src/ tests/ -name '*.py' -exec sed -i 's/from collections import Sequence/from collections.abc import Sequence/g; s/from collections import Mapping/from collections.abc import Mapping/g; s/from collections import MutableMapping/from collections.abc import MutableMapping/g' {} + || true
-if [ -f src/transformers/dependency_versions_check.py ]; then
-    python -c "import pathlib; p=pathlib.Path('src/transformers/dependency_versions_check.py'); t=p.read_text(); p.write_text(t.replace('require_version_core(deps[pkg])', 'pass  # require_version_core(deps[pkg])'))" || true
-fi
-pip install --no-cache-dir 'safetensors' || true
-pip install --no-cache-dir 'tensorflow-cpu' || pip install --no-cache-dir 'tensorflow' || true
-pip install --no-cache-dir 'tf-keras' || true
-pip install --no-cache-dir [[PYTEST_PIN]] || true
+pip install --no-cache-dir -e '.[testing,torch]' || pip install --no-cache-dir -e '.[torch]' || true
+pip install --no-cache-dir 'pytest>=7.2.0,<9.0.0' 'pytest-asyncio>=1.2.0' pytest-xdist pytest-timeout pytest-order pytest-env pytest-random-order 'pytest-rerunfailures<16.0' timeout-decorator parameterized psutil || true
+pip install --no-cache-dir ipython || true
 export HF_HOME=/home/hf_cache
 (
 [[TEST_BODY]]
@@ -154,9 +117,10 @@ export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
 python -c "import torch; print('torch', torch.__version__)"
-python -c "import datasets; print('datasets', datasets.__version__)"
 python -c "import pytest; print('pytest', pytest.__version__)"
 python -c "import transformers; print('transformers', transformers.__version__)"
+python -c "import accelerate; print('accelerate', accelerate.__version__)"
+python -c "import IPython; print('IPython', IPython.__version__)"
 echo "DEPS_OK"
 """
 
@@ -178,10 +142,10 @@ class HuggingFaceTransformersImageBase(Image):
         return "python:3.10-slim"
 
     def image_tag(self) -> str:
-        return "base-44040_to_3323"
+        return "base-44949_to_44487"
 
     def workdir(self) -> str:
-        return "base-44040_to_3323"
+        return "base-44949_to_44487"
 
     def files(self) -> list[File]:
         return []
@@ -287,8 +251,6 @@ class ImageDefault(Image):
             _PREPARE.replace("[[REPO]]", self.pr.repo)
             .replace("[[SHA]]", self.pr.base.sha)
             .replace("[[TEST_BODY]]", _TEST_BODY)
-            .replace("[[PYTEST_PIN]]", "'pytest<8.0'")
-            .replace("[[TORCH_PIN]]", "'torch'")
         )
 
     def files(self) -> list[File]:
@@ -461,8 +423,8 @@ def parse_pytest_verbose_log(log: str) -> TestResult:
     )
 
 
-@Instance.register("huggingface", "transformers_44040_to_3323")
-class TRANSFORMERS_44040_TO_3323(Instance):
+@Instance.register("huggingface", "transformers_44949_to_44487")
+class TRANSFORMERS_44949_TO_44487(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
