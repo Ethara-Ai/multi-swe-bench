@@ -1,228 +1,293 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# --------------------------------------------------------------------------- #
-#  Shared shell scripts and Go stubs used by both ImageEarlyPRs / ImageLatePRs
-# --------------------------------------------------------------------------- #
+GO_IMAGE = "golang:1.23-bookworm"
+NODE_VERSION = "18.20.4"
+YARN_VERSION = "1.22.22"
+BASE_TAG = "base-sphinx-tribes_1992_to_962"
+FRONTEND_DIR = "frontend/app"
 
-# Started by all three graded scripts, identically. The base image seeds the cluster
-# but leaves it STOPPED, because a server started in one Dockerfile RUN layer does not
-# survive into the next.
-#
-# Tolerant throughout: if Postgres is somehow missing the stage still runs the other
-# packages rather than dying, and the absent db results show up plainly in the report.
-_PG_START = """
-# ---------- start PostgreSQL (db package tests) ----------
-PGBIN=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -1)
-if [ -n "$PGBIN" ] && [ -d /var/lib/postgresql/testdb ]; then
-    su postgres -c "$PGBIN/pg_ctl -D /var/lib/postgresql/testdb -o '-p 5532' -w -t 60 start" >/dev/null 2>&1 || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        su postgres -c "$PGBIN/pg_isready -p 5532" >/dev/null 2>&1 && break
-        sleep 2
-    done
+BASE_DOCKERFILE = """# syntax=docker/dockerfile:1.6
+
+FROM {base_image}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    NODE_EXTRA_CA_CERTS=${{CA_CERT_PATH}}
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+ENV GOTOOLCHAIN=local \\
+    GOFLAGS=-buildvcs=false \\
+    CGO_ENABLED=1 \\
+    HUSKY=0 \\
+    CI=true
+
+WORKDIR /home/
+
+RUN set -eux; \\
+    for i in 1 2 3; do \\
+        apt-get update && \\
+        apt-get install -y --no-install-recommends --fix-missing \\
+            ca-certificates curl build-essential git gnupg make python3 sudo wget xz-utils \\
+            postgresql postgresql-contrib \\
+        && break || {{ echo "apt attempt $i failed, retrying"; sleep 10; }}; \\
+    done; \\
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \\
+    case "$(dpkg --print-architecture)" in \\
+        amd64) NODE_ARCH=x64 ;; \\
+        arm64) NODE_ARCH=arm64 ;; \\
+        *) echo "unsupported arch: $(dpkg --print-architecture)" >&2; exit 1 ;; \\
+    esac; \\
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \\
+        -o /tmp/node.tar.xz "https://nodejs.org/dist/v{node_version}/node-v{node_version}-linux-${{NODE_ARCH}}.tar.xz"; \\
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner; \\
+    rm -f /tmp/node.tar.xz; \\
+    npm install -g yarn@{yarn_version}; \\
+    node --version; \\
+    yarn --version
+
+RUN set -eux; \\
+    PGBIN=$(ls -d /usr/lib/postgresql/*/bin | head -1); \\
+    mkdir -p /var/lib/postgresql/testdb /var/run/postgresql; \\
+    chown -R postgres:postgres /var/lib/postgresql/testdb /var/run/postgresql; \\
+    su postgres -c "$PGBIN/initdb -A trust -D /var/lib/postgresql/testdb"; \\
+    su postgres -c "$PGBIN/pg_ctl -D /var/lib/postgresql/testdb -o '-p 5532' -w start"; \\
+    su postgres -c "$PGBIN/createuser -p 5532 -s test_user"; \\
+    su postgres -c "$PGBIN/createdb -p 5532 -O test_user test_db"; \\
+    su postgres -c "$PGBIN/pg_ctl -D /var/lib/postgresql/testdb -w stop"
+
+RUN git config --global --add safe.directory '*'
+
+RUN set -eux; \\
+    for i in 1 2 3 4 5; do \\
+        rm -rf /home/{repo}; \\
+        git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=120 \\
+            clone "${{REPO_URL}}" /home/{repo} && break; \\
+        echo "clone attempt $i failed, retrying"; sleep 15; \\
+    done; \\
+    git -C /home/{repo} rev-parse HEAD
+
+WORKDIR /home/{repo}
+
+CMD ["/bin/bash"]
+"""
+
+GIT_HARDENING = """RUN set -eux; \\
+    git checkout --detach "${BASE_COMMIT}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git config --local pack.threads 1; \\
+    git config --local pack.windowMemory 32m; \\
+    git config --local pack.packSizeLimit 128m; \\
+    git config --local pack.deltaCacheSize 32m; \\
+    git gc --prune=now; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${BASE_COMMIT}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git config --local pack.threads 1; \\
+            git config --local pack.windowMemory 32m; \\
+            git config --local pack.packSizeLimit 128m; \\
+            git config --local pack.deltaCacheSize 32m; \\
+            git gc --prune=now; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+"""
+
+CHECK_GIT_CHANGES_SH = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
 fi
-# ---------- end PostgreSQL ----------
-"""
 
-
-_RUN_SH = """#!/bin/bash
-
-cd /home/{pr.repo}
-
-# Restore db mock stubs if they were generated during prepare.
-# The db_mock_gen.go is a copy of db.go with its build tag flipped from !mock to mock.
-# The db_stubs_mock.go is a static fallback with minimal type/method stubs.
-if [ -f db/db_mock_gen.go.bak ]; then
-  cp db/db_mock_gen.go.bak db/db_mock_gen.go 2>/dev/null || true
-elif [ -f /home/db_stubs_mock.go ] && [ -f db/db_stubs_mock.go.bak ]; then
-  cp db/db_stubs_mock.go.bak db/db_stubs_mock.go 2>/dev/null || true
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
 fi
 
-""" + _PG_START + """
-exit_code=0
-# Use find to enumerate packages robustly (go list may fail if any package has errors)
-for pkg_dir in $(find . -name '*_test.go' -exec dirname {{}} \\; | sort -u); do
-    pkg=$(cd "$pkg_dir" && go list -tags mock . 2>/dev/null)
-    if [ -z "$pkg" ]; then
-        continue
-    fi
-    if go build -tags mock "$pkg" 2>/dev/null; then
-        go test -v -count=1 -tags mock "$pkg" 2>&1 || exit_code=$?
-    else
-        echo "FAIL\\t$pkg [build failed]"
-    fi
-done
-exit $exit_code
+echo "check_git_changes: No uncommitted changes"
+exit 0
 """
 
-_TEST_RUN_SH = """#!/bin/bash
+PREPARE_SH = """#!/bin/bash
+set -e
+export CI=true
+export HUSKY=0
 
-cd /home/{pr.repo}
-git apply /home/test.patch
+cd /home/[[REPO]]
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+if ! git cat-file -e "[[SHA]]^{commit}" 2>/dev/null; then
+  git fetch --no-tags origin [[SHA]]
+fi
+git checkout --detach [[SHA]]
+bash /home/check_git_changes.sh
 
-# Restore db mock stubs if patch removed them
-if [ -f db/db_mock_gen.go.bak ] && [ ! -f db/db_mock_gen.go ]; then
-  cp db/db_mock_gen.go.bak db/db_mock_gen.go 2>/dev/null || true
-elif [ -f db/db_stubs_mock.go.bak ] && [ ! -f db/db_stubs_mock.go ]; then
-  cp db/db_stubs_mock.go.bak db/db_stubs_mock.go 2>/dev/null || true
+go version
+node --version
+yarn --version
+
+go mod download
+go test -count=1 -run '^$' ./... > /dev/null 2>&1 || true
+
+if [ -f [[FRONTEND]]/package.json ]; then
+  yarn --cwd [[FRONTEND]] install --frozen-lockfile --network-timeout 600000
 fi
 
-""" + _PG_START + """
-exit_code=0
-for pkg_dir in $(find . -name '*_test.go' -exec dirname {{}} \\; | sort -u); do
-    pkg=$(cd "$pkg_dir" && go list -tags mock . 2>/dev/null)
-    if [ -z "$pkg" ]; then
-        continue
-    fi
-    if go build -tags mock "$pkg" 2>/dev/null; then
-        go test -v -count=1 -tags mock "$pkg" 2>&1 || exit_code=$?
-    else
-        echo "FAIL\\t$pkg [build failed]"
-    fi
-done
-exit $exit_code
+git reset --hard
+
+go build ./...
+if [ -f [[FRONTEND]]/package.json ]; then
+  (cd [[FRONTEND]] && node -e "require.resolve('jest'); require.resolve('ts-jest')" && yarn --silent jest --version)
+fi
+echo DEPS_OK
 """
 
-_FIX_RUN_SH = """#!/bin/bash
+TEST_CMD = """PGBIN="$(ls -d /usr/lib/postgresql/*/bin | head -1)"
+PGDATA_DIR=/var/lib/postgresql/testdb
+if ! su postgres -c "$PGBIN/pg_ctl -D $PGDATA_DIR status" > /dev/null 2>&1; then
+  su postgres -c "$PGBIN/pg_ctl -D $PGDATA_DIR -o '-p 5532' -w -t 60 start" > /dev/null
+fi
+su postgres -c "$PGBIN/pg_isready -p 5532"
 
-cd /home/{pr.repo}
-git apply /home/test.patch /home/fix.patch
+go_rc=0
+RELAY_AUTH_KEY=TEST V2_BOT_URL=http://localhost:3005 V2_BOT_TOKEN=xyzxyzxyz \\
+  go test -v -count=1 ./... 2>&1 || go_rc=$?
 
-# Restore db mock stubs if patch removed them
-if [ -f db/db_mock_gen.go.bak ] && [ ! -f db/db_mock_gen.go ]; then
-  cp db/db_mock_gen.go.bak db/db_mock_gen.go 2>/dev/null || true
-elif [ -f db/db_stubs_mock.go.bak ] && [ ! -f db/db_stubs_mock.go ]; then
-  cp db/db_stubs_mock.go.bak db/db_stubs_mock.go 2>/dev/null || true
+jest_rc=0
+if [ -f [[FRONTEND]]/package.json ]; then
+  cd /home/[[REPO]]/[[FRONTEND]]
+  REACT_APP_IS_TEST=true NODE_ENV=test NODE_OPTIONS="--max_old_space_size=8192" \\
+    yarn jest --ci --verbose --silent --no-cache --coverage=false --maxWorkers=2 \\
+    --transformIgnorePatterns "./frontend/app/svg/" 2>&1 || jest_rc=$?
 fi
 
-""" + _PG_START + """
-exit_code=0
-for pkg_dir in $(find . -name '*_test.go' -exec dirname {{}} \\; | sort -u); do
-    pkg=$(cd "$pkg_dir" && go list -tags mock . 2>/dev/null)
-    if [ -z "$pkg" ]; then
-        continue
-    fi
-    if go build -tags mock "$pkg" 2>/dev/null; then
-        go test -v -count=1 -tags mock "$pkg" 2>&1 || exit_code=$?
-    else
-        echo "FAIL\\t$pkg [build failed]"
-    fi
-done
-exit $exit_code
-"""
-
-# Go stub file for the db package.  Only compiled when -tags mock is set.
-# At many base commits, db/db.go (tagged //go:build !mock) defines types and
-# methods that other db/*.go files reference.  When building with -tags mock,
-# db.go is excluded and those symbols are missing.  This stub supplies them.
-_DB_STUBS_MOCK = """\
-//go:build mock
-// +build mock
-
-package db
-
-import (
-\t"errors"
-\t"net/http"
-)
-
-// --- Types normally defined in db.go ---
-
-type PeopleExtra struct {
-\tBody   string `json:"body"`
-\tPerson string `json:"person"`
-}
-
-type LeaderData map[string]interface{}
-
-// --- Method stubs on the database struct ---
-// These are no-op / zero-value implementations, sufficient for compilation.
-// The handler tests mock the Database interface, so these are never actually
-// called during test execution.
-
-func (db database) GetAllPeople() []Person {
-\treturn nil
-}
-
-func (db database) AddUuidToPerson(id uint, uuid string) {
-}
-
-func (db database) GetPersonByPubkey(pubkey string) Person {
-\treturn Person{}
-}
-
-func (db database) UpdatePerson(id uint, u map[string]interface{}) bool {
-\treturn false
-}
-
-func (db database) GetPeopleForNewTicket(languages []interface{}) ([]Person, error) {
-\treturn nil, errors.New("stub")
-}
-
-func (db database) GetListedPosts(r *http.Request) ([]PeopleExtra, error) {
-\treturn nil, nil
-}
-
-func (db database) GetListedOffers(r *http.Request) ([]PeopleExtra, error) {
-\treturn nil, nil
-}
-
-func (db database) GetBountiesLeaderboard() []LeaderData {
-\treturn nil
-}
-"""
-
-
-# Shell snippet used in prepare.sh to generate comprehensive db mock stubs.
-# Instead of maintaining a static stub, we copy db.go and flip its build tag
-# from !mock to mock.  This makes ALL types + methods available.
-_PREPARE_DB_STUBS = r"""
-# ---------- db stub generation for mock builds ----------
-# db/db.go is tagged //go:build !mock, so it is excluded when building with
-# -tags mock.  Many other db/*.go files (and handlers/) reference symbols
-# defined only in db.go.  We create a mock-tagged copy so everything compiles.
-if ! go build -tags mock ./db/ 2>/dev/null; then
-  echo "db package does not compile with -tags mock, creating mock copy of db.go..."
-  if [ -f db/db.go ]; then
-    sed \
-      -e 's|^//go:build !mock|//go:build mock|' \
-      -e 's|^// +build !mock|// +build mock|' \
-      db/db.go > db/db_mock_gen.go
-    # Verify it compiles now
-    if ! go build -tags mock ./db/ 2>/dev/null; then
-      echo "WARNING: db still does not compile after mock copy, trying static stubs..."
-      rm -f db/db_mock_gen.go
-      cp /home/db_stubs_mock.go db/db_stubs_mock.go
-      if ! go build -tags mock ./db/ 2>/dev/null; then
-        echo "WARNING: db still does not compile after static stubs"
-      else
-        echo "db package compiles with static stubs"
-        # Save backup for run scripts to restore after git apply
-        cp db/db_stubs_mock.go db/db_stubs_mock.go.bak
-      fi
-    else
-      echo "db package compiles with mock copy of db.go"
-      # Save backup for run scripts to restore after git apply
-      cp db/db_mock_gen.go db/db_mock_gen.go.bak
-    fi
-  fi
-else
-  echo "db package already compiles with -tags mock"
+echo "go exit code: $go_rc, jest exit code: $jest_rc"
+if [ "$go_rc" -ne 0 ] || [ "$jest_rc" -ne 0 ]; then
+  exit 1
 fi
 """
+
+RUN_SH = """#!/bin/bash
+set -eo pipefail
+export CI=true
+export HUSKY=0
+
+cd /home/[[REPO]]
+git reset --hard
+git clean -fd
+
+[[TEST_CMD]]
+"""
+
+TEST_RUN_SH = """#!/bin/bash
+set -eo pipefail
+export CI=true
+export HUSKY=0
+
+cd /home/[[REPO]]
+git reset --hard
+git clean -fd
+if ! git apply --whitespace=nowarn /home/test.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1
+fi
+
+[[TEST_CMD]]
+"""
+
+FIX_RUN_SH = """#!/bin/bash
+set -eo pipefail
+export CI=true
+export HUSKY=0
+
+cd /home/[[REPO]]
+git reset --hard
+git clean -fd
+if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
+    echo "Error: git apply failed" >&2
+    exit 1
+fi
+
+[[TEST_CMD]]
+"""
+
+
+def render_script(template: str, repo: str, sha: str = "") -> str:
+    return (
+        template.replace("[[TEST_CMD]]", TEST_CMD)
+        .replace("[[FRONTEND]]", FRONTEND_DIR)
+        .replace("[[REPO]]", repo)
+        .replace("[[SHA]]", sha)
+    )
 
 
 class SphinxTribesImageBase(Image):
-    """Base image that handles repo cloning/copying."""
-
-    def __init__(self, pr: PullRequest, config: Config, go_version: str):
+    def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
-        self._go_version = go_version
 
     @property
     def pr(self) -> PullRequest:
@@ -232,11 +297,11 @@ class SphinxTribesImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return f"golang:{self._go_version}"
+    def dependency(self) -> str:
+        return GO_IMAGE
 
     def image_tag(self) -> str:
-        return "base"
+        return BASE_TAG
 
     def workdir(self) -> str:
         return "base"
@@ -245,64 +310,16 @@ class SphinxTribesImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""FROM {image_name}
-
-{self.global_env}
-
-WORKDIR /home/
-
-{code}
-
-# Warm the Go module cache in the BASE layer, and provide the PostgreSQL server the
-# db package's tests need.
-#
-# PLACEMENT: DockerfileEnhancer injects its own WORKDIR + `git reset --hard` +
-# `git checkout ${{BASE_COMMIT}}` + history scrub + CMD immediately AFTER the clone
-# line above, so everything below lands after all of that. The tree is therefore
-# already at BASE_COMMIT here and no explicit checkout is needed - but it does mean
-# these steps run post-scrub, so they must leave the work tree pristine.
-RUN cd /home/{self.pr.repo}     && (go mod download || true)     && (git checkout -- . 2>/dev/null || true)     || true
-
-# db/test_config.go hardcodes postgres://test_user:test_password@localhost:5532/test_db
-# and db/tickets_test.go - the file this PR adds - calls InitTestDB() then
-# TestDB.CreateOrEditPerson/Workspace/Feature/Ticket. Those are real inserts with no
-# mock path. Without a server the package panics in InitTestDB with
-# "dial tcp [::1]:5532: connect: connection refused", the whole db package is lost,
-# and TestGetTicketsByPhase - the test this PR exists to add - never runs.
-#
-# The project provisions this with docker/testdb-docker-compose.yml (postgres:14-alpine
-# published on host port 5532) and its CI runs `docker compose ... up -d` before
-# `go test ./...`. Docker-in-docker is unavailable inside a build image, so an
-# equivalent server is installed here and started by the graded scripts.
-#
-# -A trust so no password handshake is needed; the DSN still sends one and Postgres
-# accepts it. The cluster is seeded at build time and left STOPPED - a server started
-# in one RUN layer does not survive into the next.
-RUN apt-get update     && apt-get install -y --no-install-recommends postgresql postgresql-contrib     && rm -rf /var/lib/apt/lists/*
-
-RUN set -eux;     PGBIN=$(ls -d /usr/lib/postgresql/*/bin | head -1);     mkdir -p /var/lib/postgresql/testdb /var/run/postgresql;     chown -R postgres:postgres /var/lib/postgresql/testdb /var/run/postgresql;     su postgres -c "$PGBIN/initdb -A trust -D /var/lib/postgresql/testdb";     su postgres -c "$PGBIN/pg_ctl -D /var/lib/postgresql/testdb -o '-p 5532' -w start";     su postgres -c "$PGBIN/createuser -p 5532 -s test_user";     su postgres -c "$PGBIN/createdb -p 5532 -O test_user test_db";     su postgres -c "$PGBIN/pg_ctl -D /var/lib/postgresql/testdb -w stop"
-
-{self.clear_env}
-
-"""
+        return BASE_DOCKERFILE.format(
+            base_image=GO_IMAGE,
+            org=self.pr.org,
+            repo=self.pr.repo,
+            node_version=NODE_VERSION,
+            yarn_version=YARN_VERSION,
+        )
 
 
-class ImageEarlyPRs(Image):
-    """Image for sphinx-tribes early PRs (504-1070).
-
-    PRs covered: 504, 646, 782, 874, 894, 950, 962, 981, 995, 1019, 1045, 1048, 1066, 1070 (14 PRs)
-    Date range: 2023-03-30 to 2023-12-09
-    """
-
+class SphinxTribesImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -315,85 +332,27 @@ class ImageEarlyPRs(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return SphinxTribesImageBase(self.pr, self.config, "1.21")
-
-    def image_prefix(self) -> str:
-        return "envagent"
+    def dependency(self) -> Image:
+        return SphinxTribesImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
+        return "pr-{number}".format(number=self.pr.number)
 
     def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
+        return "pr-{number}".format(number=self.pr.number)
 
     def files(self) -> list[File]:
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                ("""#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-""" + _PREPARE_DB_STUBS + "\n").format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                _RUN_SH.format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                _TEST_RUN_SH.format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                _FIX_RUN_SH.format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "db_stubs_mock.go",
-                _DB_STUBS_MOCK,
-            ),
+            File(".", "fix.patch", self.pr.fix_patch),
+            File(".", "test.patch", self.pr.test_patch),
+            File(".", "check_git_changes.sh", CHECK_GIT_CHANGES_SH),
+            File(".", "prepare.sh", render_script(PREPARE_SH, repo, sha)),
+            File(".", "run.sh", render_script(RUN_SH, repo)),
+            File(".", "test-run.sh", render_script(TEST_RUN_SH, repo)),
+            File(".", "fix-run.sh", render_script(FIX_RUN_SH, repo)),
         ]
 
     def dockerfile(self) -> str:
@@ -403,161 +362,27 @@ bash /home/check_git_changes.sh
 
         copy_commands = ""
         for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+            copy_commands += "COPY {name} /home/\n".format(name=file.name)
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        sections = ["FROM {name}:{tag}".format(name=name, tag=tag)]
 
-        return f"""FROM {name}:{tag}
+        if self.global_env:
+            sections.append(self.global_env)
 
-{self.global_env}
+        sections.append('ARG BASE_COMMIT="{sha}"'.format(sha=self.pr.base.sha))
+        sections.append(copy_commands.strip())
+        sections.append("RUN bash /home/prepare.sh")
+        sections.append("RUN git reset --hard\nRUN git checkout ${BASE_COMMIT}")
+        sections.append(GIT_HARDENING.strip())
 
-{copy_commands}
+        if self.clear_env:
+            sections.append(self.clear_env)
 
-{prepare_commands}
-
-{self.clear_env}
-
-"""
-
-
-class ImageLatePRs(Image):
-    """Image for sphinx-tribes late PRs (1184-2603).
-
-    PRs covered: 1184, 1192, 1216, ... 2603 (106 PRs)
-    Date range: 2023-12-24 to 2025-03-02
-    """
-
-    def __init__(self, pr: PullRequest, config: Config):
-        self._pr = pr
-        self._config = config
-
-    @property
-    def pr(self) -> PullRequest:
-        return self._pr
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def dependency(self) -> Image | None:
-        return SphinxTribesImageBase(self.pr, self.config, "1.21")
-
-    def image_prefix(self) -> str:
-        return "envagent"
-
-    def image_tag(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def workdir(self) -> str:
-        return f"pr-{self.pr.number}"
-
-    def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                ("""#!/bin/bash
-set -e
-
-cd /home/{pr.repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
-bash /home/check_git_changes.sh
-
-""" + _PREPARE_DB_STUBS + "\n").format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                _RUN_SH.format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                _TEST_RUN_SH.format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                _FIX_RUN_SH.format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "db_stubs_mock.go",
-                _DB_STUBS_MOCK,
-            ),
-        ]
-
-    def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{copy_commands}
-
-{prepare_commands}
-
-{self.clear_env}
-
-"""
+        return "\n\n".join(sections) + "\n"
 
 
 @Instance.register("stakwork", "sphinx-tribes")
 class SphinxTribes(Instance):
-    """Instance for stakwork/sphinx-tribes.
-
-    Handles two PR ranges with different configurations:
-    - Early PRs (504-1070): golang:1.19, go test -v ./...
-    - Late PRs (1184-2603): golang:1.20, go test ./... -tags mock -race -v
-
-    Total: 120 PRs
-    Date range: 2023-03-30 to 2025-03-02
-    """
-
-    LATE_PR_START = 1184
-
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
         self._pr = pr
@@ -567,61 +392,102 @@ class SphinxTribes(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def _is_late_pr(self) -> bool:
-        return self.pr.number >= self.LATE_PR_START
-
     def dependency(self) -> Optional[Image]:
-        if self._is_late_pr():
-            return ImageLatePRs(self.pr, self._config)
-        return ImageEarlyPRs(self.pr, self._config)
+        return SphinxTribesImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
+
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
+
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
+
         return "bash /home/fix-run.sh"
 
     def parse_log(self, log: str) -> TestResult:
-        """Parse Go test output."""
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+        clean_log = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", log).replace("\r", "")
 
-        passed_pattern = re.compile(r"--- PASS: (\S+)")
-        failed_pattern = re.compile(r"--- FAIL: (\S+)")
-        skipped_pattern = re.compile(r"--- SKIP: (\S+)")
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        for line in log.splitlines():
-            line = line.strip()
+        go_re = re.compile(r"^\s*--- (PASS|FAIL|SKIP): (\S+)")
+        suite_re = re.compile(r"^(PASS|FAIL)\s+(src/\S+\.(?:js|jsx|ts|tsx))(?:\s|$)")
+        jest_re = re.compile(
+            r"^(\s*)([✓✔√✕✗×○])\s+(?:(?:skipped|todo)\s+)?(.+?)(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?$"
+        )
+        describe_re = re.compile(r"^(\s+)(\S.*)$")
 
-            pass_match = passed_pattern.search(line)
-            if pass_match:
-                test_name = pass_match.group(1)
-                if test_name not in failed_tests:
-                    passed_tests.add(test_name)
+        suite = ""
+        describes: list[tuple[int, str]] = []
+
+        for line in clean_log.splitlines():
+            go_match = go_re.match(line)
+            if go_match:
+                status, name = go_match.groups()
+                if status == "PASS":
+                    passed_tests.add(name)
+                elif status == "FAIL":
+                    failed_tests.add(name)
+                else:
+                    skipped_tests.add(name)
                 continue
 
-            fail_match = failed_pattern.search(line)
-            if fail_match:
-                test_name = fail_match.group(1)
-                passed_tests.discard(test_name)
-                failed_tests.add(test_name)
+            suite_match = suite_re.match(line)
+            if suite_match:
+                suite = FRONTEND_DIR + "/" + suite_match.group(2)
+                describes = []
                 continue
 
-            skip_match = skipped_pattern.search(line)
-            if skip_match:
-                test_name = skip_match.group(1)
-                if test_name not in passed_tests and test_name not in failed_tests:
-                    skipped_tests.add(test_name)
+            if not suite:
+                continue
+
+            if not line.strip():
+                continue
+
+            if not line.startswith(" "):
+                suite = ""
+                describes = []
+                continue
+
+            jest_match = jest_re.match(line)
+            if jest_match:
+                indent = len(jest_match.group(1))
+                marker = jest_match.group(2)
+                title = jest_match.group(3).strip()
+                parents = [text for level, text in describes if level < indent]
+                name = " > ".join([suite] + parents + [title])
+                if marker in "✓✔√":
+                    passed_tests.add(name)
+                elif marker in "✕✗×":
+                    failed_tests.add(name)
+                else:
+                    skipped_tests.add(name)
+                continue
+
+            describe_match = describe_re.match(line)
+            if describe_match:
+                indent = len(describe_match.group(1))
+                text = describe_match.group(2).strip()
+                if text.startswith("●"):
+                    suite = ""
+                    describes = []
+                    continue
+                describes = [(level, t) for level, t in describes if level < indent]
+                describes.append((indent, text))
+
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
