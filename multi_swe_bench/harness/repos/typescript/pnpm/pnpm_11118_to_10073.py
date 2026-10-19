@@ -2,49 +2,32 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Optional, Union
+from pathlib import Path
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-ALIAS_KEY = "pnpm_11118_to_10073"
+_ORG = "pnpm"
+_REPO = "pnpm"
 
-_PR_NUMBERS = (
-    "10073",
-    "10103",
-    "10168",
-    "10303",
-    "10359",
-    "10375",
-    "10478",
-    "10652",
-    "10708",
-    "10846",
-    "10879",
-    "10965",
-    "10975",
-    "11003",
-    "11038",
-    "11061",
-    "11067",
-    "11071",
-    "11079",
-    "11118",
-)
+_ERA_KEY = Path(__file__).stem
+_ERA_MATCH = re.fullmatch(r"pnpm_(\d+)_to_(\d+)", _ERA_KEY)
+if _ERA_MATCH is None:
+    raise ImportError(f"{__file__}: file name must look like pnpm_<hi>_to_<lo>.py")
+_ERA_HI = int(_ERA_MATCH.group(1))
+_ERA_LO = int(_ERA_MATCH.group(2))
 
 
-_NODE_IMAGE = "node:22-bullseye"
+_NODE_IMAGE = "node:22.13.0-bullseye"
 
 _BOOTSTRAP_PNPM = "10.19.0"
-
-_RUNTIME_NODE_VERSIONS = ("20.16.0", "24.6.0")
 
 _JSON_BEGIN = "===== MSB-JEST-BEGIN"
 _JSON_END = "===== MSB-JEST-END"
 
-_REPO_ROOT = "/home/pnpm"
+_REPO_ROOT = f"/home/{_REPO}"
 
 _EXTRA_SETUP: dict[int, str] = {}
 
@@ -53,7 +36,7 @@ _TARGET_RE = re.compile(r"^\+\+\+ b/(.+)$", re.M)
 _TEST_EXT = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 
 
-def _patch_paths(patch: Optional[str]) -> list[str]:
+def _patch_paths(patch: str | None) -> list[str]:
     out = []
     for raw in _TARGET_RE.findall(patch or ""):
         path = raw.strip()
@@ -102,6 +85,16 @@ def _sh_list(names: list[str]) -> str:
     return " ".join(f'"{n}"' for n in names)
 
 
+def _strip_sh_comments(text: str) -> str:
+    out = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("#") and not stripped.startswith("#!"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 _CHECK_GIT_CHANGES_SH = r"""#!/bin/bash
 set -euo pipefail
 
@@ -124,231 +117,249 @@ echo "check_git_changes: no uncommitted changes"
 """
 
 
-_COMPILE_SH = r"""#!/bin/bash
-set +e
+_COMPILE_FN = r"""msb_compile() {
+    local root=[[ROOT]]
+    local -a dirs=("pnpm")
+    local -a touched=( [[TOUCHED]] )
+    local p d found
 
-ROOT=[[ROOT]]
-cd "$ROOT" || exit 0
-
-DIRS=("pnpm")
-
-TOUCHED=( [[TOUCHED]] )
-
-for p in "${TOUCHED[@]}"; do
-    d=$(dirname "$p")
-    found=""
-    while [ "$d" != "." ] && [ "$d" != "/" ]; do
-        if [ -f "$ROOT/$d/package.json" ]; then
-            found="$d"
-            break
-        fi
-        d=$(dirname "$d")
+    for p in "${touched[@]}"; do
+        d=$(dirname "$p")
+        found=""
+        while [ "$d" != "." ] && [ "$d" != "/" ]; do
+            if [ -f "$root/$d/package.json" ]; then
+                found="$d"
+                break
+            fi
+            d=$(dirname "$d")
+        done
+        [ -n "$found" ] || continue
+        case " ${dirs[*]} " in
+            *" $found "*) continue ;;
+        esac
+        dirs+=("$found")
     done
-    [ -n "$found" ] || continue
-    case " ${DIRS[*]} " in
-        *" $found "*) continue ;;
-    esac
-    DIRS+=("$found")
-done
 
-for d in "${DIRS[@]}"; do
-    [ -f "$ROOT/$d/tsconfig.json" ] || continue
-    (
-        cd "$ROOT/$d" || exit 0
-        echo "compile: $d"
-        pnpm exec tsc --build 2>&1 | tail -n 40
+    for d in "${dirs[@]}"; do
+        [ -f "$root/$d/tsconfig.json" ] || continue
+        (
+            cd "$root/$d"
+            echo "compile: $d"
+            pnpm exec tsc --build 2>&1 | tail -n 40 \
+                || echo "compile: tsc --build reported errors in $d" >&2
 
-        if node -e "process.exit(((require('./package.json').scripts)||{}).bundle?0:1)" 2>/dev/null; then
-            rm -rf dist
-            pnpm run bundle 2>&1 | tail -n 20
-            pnpm exec shx cp -r node-gyp-bin dist/node-gyp-bin > /dev/null 2>&1
-            pnpm exec shx cp -r node_modules/@pnpm/tabtab/lib/templates dist/templates > /dev/null 2>&1
-            pnpm exec shx cp -r node_modules/@pnpm/tabtab/lib/scripts dist/scripts > /dev/null 2>&1
-            pnpm exec shx cp -r node_modules/ps-list/vendor dist/vendor > /dev/null 2>&1
-            pnpm exec shx cp pnpmrc dist/pnpmrc > /dev/null 2>&1
-        fi
-    )
-done
+            if node -e "process.exit(((require('./package.json').scripts)||{}).bundle?0:1)" 2>/dev/null; then
+                rm -rf dist
+                pnpm run bundle 2>&1 | tail -n 20 \
+                    || echo "compile: bundle failed in $d" >&2
+                pnpm exec shx cp -r node-gyp-bin dist/node-gyp-bin > /dev/null 2>&1 || true
+                pnpm exec shx cp -r node_modules/@pnpm/tabtab/lib/templates dist/templates > /dev/null 2>&1 || true
+                pnpm exec shx cp -r node_modules/@pnpm/tabtab/lib/scripts dist/scripts > /dev/null 2>&1 || true
+                pnpm exec shx cp -r node_modules/ps-list/vendor dist/vendor > /dev/null 2>&1 || true
+                pnpm exec shx cp pnpmrc dist/pnpmrc > /dev/null 2>&1 || true
+            fi
+        )
+    done
 
-exit 0
+    cd "$root"
+}
 """
 
 
-_RUN_TESTS_SH = r"""#!/bin/bash
-set +e
+_RUN_TESTS_FN = r"""msb_run_tests() {
+    local root=[[ROOT]]
+    local -a test_paths=( [[TEST_PATHS]] )
+    local -A groups=()
+    local -a order=()
+    local p d pkg slug out log rc missing=0
 
-ROOT=[[ROOT]]
-cd "$ROOT" || exit 0
+    cd "$root"
+
+    export CI=true
+    export NO_COLOR=1
+    export FORCE_COLOR=0
+    export npm_config_color=false
+    export npm_config_progress=false
+    export NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=4096 --experimental-vm-modules --disable-warning=ExperimentalWarning --disable-warning=DEP0169"
+
+    if ! pnpm install --frozen-lockfile --offline --config.engine-strict=false > /tmp/msb_install.log 2>&1; then
+        if ! pnpm install --frozen-lockfile --config.engine-strict=false > /tmp/msb_install.log 2>&1; then
+            tail -n 40 /tmp/msb_install.log
+            echo "run_tests: pnpm install failed" >&2
+            return 1
+        fi
+    fi
+    tail -n 5 /tmp/msb_install.log
+
+    [[EXTRA]]
+
+    msb_compile
+
+    for p in "${test_paths[@]}"; do
+        [ -f "$root/$p" ] || continue
+
+        d=$(dirname "$p")
+        pkg=""
+        while [ "$d" != "." ] && [ "$d" != "/" ]; do
+            if [ -f "$root/$d/package.json" ]; then
+                pkg="$d"
+                break
+            fi
+            d=$(dirname "$d")
+        done
+        if [ -z "$pkg" ]; then
+            echo "run_tests: no workspace package owns $p" >&2
+            continue
+        fi
+
+        if [ -z "${groups[$pkg]+set}" ]; then
+            order+=("$pkg")
+            groups[$pkg]=""
+        fi
+        groups[$pkg]="${groups[$pkg]} ${p#$pkg/}"
+    done
+
+    if [ ${#order[@]} -eq 0 ]; then
+        echo "run_tests: none of this PR's test files exist at this commit" >&2
+        return 0
+    fi
+
+    for pkg in "${order[@]}"; do
+        cd "$root/$pkg"
+
+        export PNPM_SCRIPT_SRC_DIR="$root/$pkg"
+
+        slug=$(printf '%s' "$pkg" | tr '/' '_')
+        out="/tmp/msb_jest_${slug}.json"
+        log="/tmp/msb_jest_${slug}.log"
+        rm -f "$out" "$log"
+
+        rc=0
+        pnpm exec jest --ci --coverage=false \
+            --globals '{"ts-jest":{"diagnostics":false}}' \
+            --json --outputFile="$out" \
+            --runTestsByPath ${groups[$pkg]} > "$log" 2>&1 || rc=$?
+
+        tail -n 200 "$log"
+
+        echo "[[BEGIN]] $pkg ====="
+        if [ -s "$out" ]; then
+            cat "$out"
+        else
+            echo '{}'
+            echo "run_tests: jest wrote no results for $pkg (exit $rc)" >&2
+            missing=1
+        fi
+        echo ""
+        echo "[[END]] $pkg ====="
+
+        cd "$root"
+    done
+
+    return "$missing"
+}
+"""
+
+
+_PREPARE_SH = r"""#!/bin/bash
+set -euo pipefail
 
 export CI=true
 export NO_COLOR=1
 export FORCE_COLOR=0
 export npm_config_color=false
 export npm_config_progress=false
-export NODE_OPTIONS="--dns-result-order=ipv4first --experimental-vm-modules --disable-warning=ExperimentalWarning --disable-warning=DEP0169"
+export NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=4096"
 
-pnpm install --frozen-lockfile --offline > /tmp/msb_install.log 2>&1 \
-    || pnpm install --frozen-lockfile > /tmp/msb_install.log 2>&1 \
-    || pnpm install --no-frozen-lockfile > /tmp/msb_install.log 2>&1
-tail -n 5 /tmp/msb_install.log
+[[COMPILE_FN]]
 
-[[EXTRA]]
-
-bash /home/compile.sh
-
-TEST_PATHS=( [[TEST_PATHS]] )
-
-declare -A MSB_GROUPS
-ORDER=()
-
-for p in "${TEST_PATHS[@]}"; do
-    [ -f "$ROOT/$p" ] || continue
-
-    d=$(dirname "$p")
-    pkg=""
-    while [ "$d" != "." ] && [ "$d" != "/" ]; do
-        if [ -f "$ROOT/$d/package.json" ]; then
-            pkg="$d"
-            break
-        fi
-        d=$(dirname "$d")
-    done
-    if [ -z "$pkg" ]; then
-        echo "run_tests: no workspace package owns $p" >&2
-        continue
-    fi
-
-    if [ -z "${MSB_GROUPS[$pkg]+set}" ]; then
-        ORDER+=("$pkg")
-        MSB_GROUPS[$pkg]=""
-    fi
-    MSB_GROUPS[$pkg]="${MSB_GROUPS[$pkg]} ${p#$pkg/}"
-done
-
-if [ ${#ORDER[@]} -eq 0 ]; then
-    echo "run_tests: none of this PR's test files exist at this commit" >&2
-    exit 0
-fi
-
-for pkg in "${ORDER[@]}"; do
-    cd "$ROOT/$pkg" || continue
-
-    export PNPM_SCRIPT_SRC_DIR="$ROOT/$pkg"
-
-    slug=$(printf '%s' "$pkg" | tr '/' '_')
-    out="/tmp/msb_jest_${slug}.json"
-    log="/tmp/msb_jest_${slug}.log"
-    rm -f "$out" "$log"
-
-    pnpm exec jest --ci --coverage=false \
-        --globals '{"ts-jest":{"diagnostics":false}}' \
-        --json --outputFile="$out" \
-        --runTestsByPath ${MSB_GROUPS[$pkg]} > "$log" 2>&1
-
-    tail -n 200 "$log"
-
-    echo "[[BEGIN]] $pkg ====="
-    if [ -s "$out" ]; then
-        cat "$out"
-    else
-        echo '{}'
-    fi
-    echo ""
-    echo "[[END]] $pkg ====="
-
-    cd "$ROOT"
-done
-
-exit 0
-"""
-
-
-_PREPARE_SH = r"""#!/bin/bash
-set -e
-
-npm install -g pnpm@[[BOOTSTRAP]] --no-audit --no-fund
+cd [[ROOT]]
 
 git config --global user.name "msb"
 git config --global user.email "msb@example.com"
 git config --global init.defaultBranch main
 
-cd [[ROOT]]
 git reset --hard
+git clean -fdx
 bash /home/check_git_changes.sh
 
-git remote add origin https://github.com/[[ORG]]/[[REPO]].git 2>/dev/null || true
-git rev-parse --verify --quiet "[[SHA]]^{commit}" > /dev/null 2>&1 \
-    || git fetch --depth=1 origin [[SHA]] 2>/dev/null \
-    || git fetch origin 2>/dev/null || true
-git checkout -f [[SHA]]
+if ! git cat-file -e "[[SHA]]^{commit}" 2>/dev/null; then
+    git remote get-url origin > /dev/null 2>&1 \
+        || git remote add origin https://github.com/[[ORG]]/[[REPO]].git
+    git fetch --no-tags origin [[SHA]]
+fi
+git checkout --detach [[SHA]]
+test "$(git rev-parse HEAD)" = "[[SHA]]"
 bash /home/check_git_changes.sh
 
-export CI=true
-export NO_COLOR=1
-export FORCE_COLOR=0
-export npm_config_color=false
-export npm_config_progress=false
-export NODE_OPTIONS=--dns-result-order=ipv4first
-
-PM=$(node -e "process.stdout.write((require('./package.json').packageManager)||'')")
-PM_VER=${PM#pnpm@}
-if [ -z "$PM_VER" ] || [ "$PM_VER" = "$PM" ]; then
-    # Some repos (e.g. pnpm's own monorepo) pin their dev pnpm via the newer
-    # devEngines.packageManager field instead of the legacy packageManager
-    # field, which the block above does not read.
-    PM_VER=$(node -e "var d=((require('./package.json').devEngines)||{}).packageManager||{};process.stdout.write(d.name==='pnpm'?(d.version||''):'')")
+PM_VER=$(node -e "
+var p = require('./package.json');
+var v = '';
+if (typeof p.packageManager === 'string' && p.packageManager.indexOf('pnpm@') === 0) {
+  v = p.packageManager.slice(5).split('+')[0];
+} else {
+  var d = (p.devEngines || {}).packageManager || {};
+  if (d.name === 'pnpm') v = d.version || '';
+}
+process.stdout.write(v);
+")
+if [ -z "$PM_VER" ]; then
+    echo "prepare: package.json pins no pnpm version; using pnpm@[[BOOTSTRAP]]"
+    PM_VER=[[BOOTSTRAP]]
 fi
-if [ -n "$PM_VER" ]; then
-    echo "prepare: package.json pins pnpm@$PM_VER"
-    npm install -g "pnpm@$PM_VER" --no-audit --no-fund || true
+echo "prepare: installing pnpm@$PM_VER"
+npm install -g "pnpm@$PM_VER" --no-audit --no-fund
+if printf '%s' "$PM_VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+    test "$(pnpm --version)" = "$PM_VER"
 fi
-pnpm --version > /dev/null 2>&1 || npm install -g "pnpm@[[BOOTSTRAP]]" --no-audit --no-fund
 echo "prepare: pnpm $(pnpm --version), node $(node --version)"
 
-pnpm install --frozen-lockfile --config.engine-strict=false || pnpm install --no-frozen-lockfile --config.engine-strict=false
-
-for v in [[RUNTIME_VERSIONS]]; do
-    pnpm env use --global "$v" > /tmp/msb_runtime_warm.log 2>&1 || true
+INSTALLED=0
+for i in 1 2 3; do
+    if pnpm install --frozen-lockfile --config.engine-strict=false; then
+        INSTALLED=1
+        break
+    fi
+    echo "prepare: pnpm install attempt $i failed" >&2
+    sleep 15
 done
-pnpm env use --global "$PM_VER" > /dev/null 2>&1 || true
-
-git checkout -- .
-bash /home/check_git_changes.sh
-
-if git apply --check --whitespace=nowarn /home/fix.patch > /dev/null 2>&1; then
-    git apply --whitespace=nowarn /home/fix.patch
-    pnpm install --frozen-lockfile --config.engine-strict=false > /tmp/msb_warm.log 2>&1 \
-        || pnpm install --no-frozen-lockfile --config.engine-strict=false > /tmp/msb_warm.log 2>&1 \
-        || tail -n 5 /tmp/msb_warm.log
-
-    git checkout -- .
-    node -e "var fs=require('fs');var out=[];fs.readFileSync('/home/fix.patch','utf8').split('diff --git ').slice(1).forEach(function(b){if(b.indexOf('new file mode')===-1)return;var m=b.match(/^\+\+\+ b\/(.+)$/m);if(m)out.push(m[1].trim())});out.forEach(function(x){process.stdout.write(x+String.fromCharCode(10))})" > /tmp/msb_fix_new.txt
-    echo "prepare: fix patch creates $(grep -c . /tmp/msb_fix_new.txt) file(s); removing them"
-    while IFS= read -r f || [ -n "$f" ]; do
-        if [ -n "$f" ]; then
-            rm -f "[[ROOT]]/$f"
-        fi
-    done < /tmp/msb_fix_new.txt
-
-    while IFS= read -r f || [ -n "$f" ]; do
-        if [ -n "$f" ] && [ -e "[[ROOT]]/$f" ]; then
-            echo "prepare: fix-patch file survived the revert: $f" >&2
-            exit 1
-        fi
-    done < /tmp/msb_fix_new.txt
-
-    pnpm install --frozen-lockfile --offline --config.engine-strict=false > /tmp/msb_rebase.log 2>&1 \
-        || pnpm install --frozen-lockfile --config.engine-strict=false > /tmp/msb_rebase.log 2>&1
-    git checkout -- .
-    bash /home/check_git_changes.sh
-    echo "prepare: fix-patch dependencies pre-resolved into the store"
-else
-    echo "prepare: fix patch does not apply at build time; store not pre-warmed" >&2
+if [ "$INSTALLED" -ne 1 ]; then
+    echo "prepare: pnpm install failed after 3 attempts" >&2
+    exit 1
 fi
 
-bash /home/compile.sh
+node -e "
+var fs = require('fs');
+var seen = {};
+var inLock = false;
+fs.readFileSync('/home/fix.patch', 'utf8').split('\n').forEach(function (line) {
+  if (line.indexOf('diff --git ') === 0) {
+    inLock = line === 'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml';
+    return;
+  }
+  if (!inLock) return;
+  var m = line.match(/^\+  '?((?:@[^@\/\s']+\/)?[^@\s'(]+)@(\d[^\s'():]*)(?:\([^\n]*\))?'?:\s*$/);
+  if (m) seen[m[1] + '@' + m[2]] = true;
+});
+process.stdout.write(Object.keys(seen).join('\n'));
+" > /tmp/msb_fix_pkgs.txt
+if [ -s /tmp/msb_fix_pkgs.txt ]; then
+    echo "prepare: fix patch adds $(grep -c . /tmp/msb_fix_pkgs.txt) lockfile package(s); adding them to the store"
+    if xargs pnpm store add < /tmp/msb_fix_pkgs.txt > /tmp/msb_store_add.log 2>&1; then
+        echo "prepare: fix-patch packages added to the store"
+    else
+        tail -n 20 /tmp/msb_store_add.log
+        echo "prepare: pnpm store add failed; graded stages will install online" >&2
+    fi
+else
+    echo "prepare: fix patch adds no lockfile packages"
+fi
 
-pnpm --dir=__fixtures__ run prepareFixtures 2>/dev/null || true
+msb_compile
+
+pnpm --dir=__fixtures__ run prepareFixtures || echo "prepare: no prepareFixtures step here"
+
+git checkout -- .
 
 NEW_PKG_DIRS=( [[NEW_PKG_DIRS]] )
 CHECKED=0
@@ -369,7 +380,6 @@ for p in [[TEST_PATHS]]; do
                 "/$newdir/"*)
                     echo "prepare: $p belongs to $newdir, created by the fix patch; deferring its check"
                     DEFERRED=$((DEFERRED + 1))
-                    pkg=""
                     ;;
             esac
         done
@@ -379,7 +389,21 @@ for p in [[TEST_PATHS]]; do
         cd "[[ROOT]]/$pkg"
         export PNPM_SCRIPT_SRC_DIR="[[ROOT]]/$pkg"
         pnpm exec jest --version > /dev/null
-        node -e "var p=require('./package.json');var d=Object.assign({},p.dependencies,p.devDependencies);if(d[p.name])require.resolve(p.name)"
+        LISTED=$(pnpm exec jest --listTests | wc -l)
+        if [ "$LISTED" -eq 0 ]; then
+            echo "prepare: jest lists no tests in $pkg" >&2
+            exit 1
+        fi
+        node -e "
+var fs = require('fs');
+var p = require('./package.json');
+if (p.main && !fs.existsSync(p.main)) {
+  console.error('prepare: ' + p.name + ' entry ' + p.main + ' was not built');
+  process.exit(1);
+}
+var d = Object.assign({}, p.dependencies, p.devDependencies);
+if (d[p.name]) require.resolve(p.name);
+"
     )
     CHECKED=$((CHECKED + 1))
 done
@@ -387,39 +411,51 @@ if [ "$CHECKED" -eq 0 ] && [ "$DEFERRED" -eq 0 ]; then
     echo "prepare: no workspace package owns any graded test path" >&2
     exit 1
 fi
-echo "prepare: $CHECKED graded package path(s) checked, $DEFERRED deferred to the graded stages"
-
-cd [[ROOT]]
-git checkout -- .
-bash /home/check_git_changes.sh
+echo "prepare: DEPS_OK ($CHECKED graded package path(s) checked, $DEFERRED deferred to the graded stages)"
 """
 
 _RUN_SH = """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
-bash /home/run_tests.sh
+[[COMPILE_FN]]
+
+[[RUN_TESTS_FN]]
+
+cd [[ROOT]]
+msb_run_tests
 """
 
 _TEST_RUN_SH = """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
+
+[[COMPILE_FN]]
+
+[[RUN_TESTS_FN]]
 
 cd [[ROOT]]
 if ! git apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-bash /home/run_tests.sh
+msb_run_tests
 """
 
 _FIX_RUN_SH = """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
+
+[[COMPILE_FN]]
+
+[[RUN_TESTS_FN]]
 
 cd [[ROOT]]
 if ! git apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-bash /home/run_tests.sh
+msb_run_tests
 """
 
 
@@ -436,7 +472,7 @@ class Pnpm11118To10073ImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
+    def dependency(self) -> str | Image:
         return _NODE_IMAGE
 
     def image_tag(self) -> str:
@@ -509,9 +545,15 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
     ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
     ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
+
+
+RUN git config --global --add safe.directory '*'
+
 WORKDIR /home/
 
 {code}
+
+WORKDIR /home/{self.pr.repo}
 
 CMD ["/bin/bash"]
 """
@@ -530,7 +572,7 @@ class Pnpm11118To10073ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Optional[Image]: # type: ignore
+    def dependency(self) -> Image:
         return Pnpm11118To10073ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
@@ -551,12 +593,13 @@ class Pnpm11118To10073ImageDefault(Image):
         extra = _EXTRA_SETUP.get(int(self.pr.number), "true")
 
         def _fill(text: str) -> str:
-            return (
-                text.replace("[[EXTRA]]", extra)
+            return _strip_sh_comments(
+                text.replace("[[RUN_TESTS_FN]]", _RUN_TESTS_FN.rstrip("\n"))
+                .replace("[[COMPILE_FN]]", _COMPILE_FN.rstrip("\n"))
+                .replace("[[EXTRA]]", extra)
                 .replace("[[TEST_PATHS]]", test_paths)
                 .replace("[[TOUCHED]]", touched)
                 .replace("[[NEW_PKG_DIRS]]", new_pkg_dirs)
-                .replace("[[RUNTIME_VERSIONS]]", " ".join(_RUNTIME_NODE_VERSIONS))
                 .replace("[[BOOTSTRAP]]", _BOOTSTRAP_PNPM)
                 .replace("[[BEGIN]]", _JSON_BEGIN)
                 .replace("[[END]]", _JSON_END)
@@ -570,8 +613,6 @@ class Pnpm11118To10073ImageDefault(Image):
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
             File(".", "check_git_changes.sh", _fill(_CHECK_GIT_CHANGES_SH)),
-            File(".", "compile.sh", _fill(_COMPILE_SH)),
-            File(".", "run_tests.sh", _fill(_RUN_TESTS_SH)),
             File(".", "prepare.sh", _fill(_PREPARE_SH)),
             File(".", "run.sh", _fill(_RUN_SH)),
             File(".", "test-run.sh", _fill(_TEST_RUN_SH)),
@@ -580,8 +621,8 @@ class Pnpm11118To10073ImageDefault(Image):
 
     def dockerfile(self) -> str:
         image = self.dependency()
-        name = image.image_name() # type: ignore
-        tag = image.image_tag() # type: ignore
+        name = image.image_name()
+        tag = image.image_tag()
         repo = self.pr.repo
         sha = self.pr.base.sha
 
@@ -593,11 +634,15 @@ class Pnpm11118To10073ImageDefault(Image):
 
 ARG BASE_COMMIT="{sha}"
 
+
+
 {copy_commands}
+
 RUN bash /home/prepare.sh
 
+WORKDIR /home/{repo}
+
 RUN set -eux; \\
-    cd /home/{repo}; \\
     git checkout --detach "${{BASE_COMMIT}}"; \\
     git remote remove origin 2>/dev/null || true; \\
     git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
@@ -615,8 +660,8 @@ RUN set -eux; \\
     test -z "$(git remote)"; \\
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
-RUN if [ -f /home/{repo}/.gitmodules ]; then \\
-        cd /home/{repo} && git submodule foreach --recursive ' \\
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
             git checkout --detach HEAD; \\
             git remote remove origin 2>/dev/null || true; \\
             git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
@@ -630,7 +675,7 @@ RUN if [ -f /home/{repo}/.gitmodules ]; then \\
 """
 
 
-@Instance.register("pnpm", ALIAS_KEY)
+@Instance.register(_ORG, _ERA_KEY)
 class Pnpm11118To10073(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -641,7 +686,7 @@ class Pnpm11118To10073(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]: # type: ignore
+    def dependency(self) -> Image:
         return Pnpm11118To10073ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -704,11 +749,15 @@ class Pnpm11118To10073(Instance):
                         failed_tests.add(f"jest::{path}::<suite failed to load>")
                     continue
 
+                seen: dict[str, int] = {}
                 for a in assertions:
                     name = a.get("fullName") or a.get("title") or ""
                     if not name:
                         continue
                     test_id = f"jest::{path}::{name}" if path else f"jest::{name}"
+                    seen[test_id] = seen.get(test_id, 0) + 1
+                    if seen[test_id] > 1:
+                        test_id = f"{test_id} #{seen[test_id]}"
                     status = (a.get("status") or "").lower()
 
                     if status == "passed":
@@ -718,8 +767,8 @@ class Pnpm11118To10073(Instance):
                     else:
                         skipped_tests.add(test_id)
 
-        failed_tests -= passed_tests
-        skipped_tests -= passed_tests
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
         skipped_tests -= failed_tests
 
         return TestResult(
@@ -732,5 +781,28 @@ class Pnpm11118To10073(Instance):
         )
 
 
-for _pr_number in _PR_NUMBERS:
-    Instance.register("pnpm", _pr_number)(Pnpm11118To10073)
+def _owns(pr: PullRequest) -> bool:
+    if getattr(pr, "org", "") != _ORG or getattr(pr, "repo", "") != _REPO:
+        return False
+    try:
+        number = int(getattr(pr, "number", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if not _ERA_LO <= number <= _ERA_HI:
+        return False
+    interval = str(getattr(pr, "number_interval", "") or "")
+    return interval in ("", str(number))
+
+
+_HOOK_FLAG = f"_{_ERA_KEY}_route_hook"
+
+if not getattr(Instance, _HOOK_FLAG, False):
+    _previous_create = Instance.create.__func__
+
+    def _era_create(cls, pr, config, *args, **kwargs):
+        if _owns(pr):
+            return Pnpm11118To10073(pr, config, *args, **kwargs)
+        return _previous_create(cls, pr, config, *args, **kwargs)
+
+    Instance.create = classmethod(_era_create)
+    setattr(Instance, _HOOK_FLAG, True)
