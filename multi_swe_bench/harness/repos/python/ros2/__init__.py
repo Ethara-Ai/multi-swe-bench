@@ -4,3 +4,4 @@ from multi_swe_bench.harness.repos.python.ros2.ros2cli_590_to_590 import *
 from multi_swe_bench.harness.repos.python.ros2.ros2cli_749_to_749 import *
 from multi_swe_bench.harness.repos.python.ros2.ros2cli_935_to_925 import *
 from multi_swe_bench.harness.repos.python.ros2.ros2cli import *
+from multi_swe_bench.harness.repos.python.ros2.launch_870_to_426 import *

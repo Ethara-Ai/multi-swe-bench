@@ -457,3 +457,4 @@ from multi_swe_bench.harness.repos.python.kr8s_org import *
 
 from multi_swe_bench.harness.repos.python.lemon24 import *
 from multi_swe_bench.harness.repos.python.kornia_rs import *
+from multi_swe_bench.harness.repos.python.onyx_dot_app import *
