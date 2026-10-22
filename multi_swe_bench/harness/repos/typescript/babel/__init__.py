@@ -12,3 +12,4 @@ from multi_swe_bench.harness.repos.typescript.babel.babel_15027_to_14240 import 
 from multi_swe_bench.harness.repos.typescript.babel.babel_dispatcher import *
 from multi_swe_bench.harness.repos.typescript.babel.babel_12707_to_9498 import *
 from multi_swe_bench.harness.repos.typescript.babel.babel_17576_to_16820 import *
+from multi_swe_bench.harness.repos.typescript.babel.babel_17899_to_17662 import *
