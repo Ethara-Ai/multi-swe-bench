@@ -17,3 +17,4 @@ from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_39681_to_336
 from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_26389_to_19357 import *
 from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_29059_to_26481 import *
 from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_51297_to_46035 import *
+from multi_swe_bench.harness.repos.typescript.ant_design.ant_design_41482_to_28924 import *
