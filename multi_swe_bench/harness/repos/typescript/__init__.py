@@ -270,3 +270,4 @@ from multi_swe_bench.harness.repos.typescript.BuilderIO import *
 from multi_swe_bench.harness.repos.typescript.ocean_ds import *
 # 
 from multi_swe_bench.harness.repos.typescript.Sofie_Automation import *
+from multi_swe_bench.harness.repos.typescript.tsparticles import *
