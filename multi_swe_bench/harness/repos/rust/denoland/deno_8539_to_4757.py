@@ -7,6 +7,226 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+_CLI_TESTS = "cli/tests/"
+_INTEGRATION_RS = "cli/tests/integration_tests.rs"
+_ADDED_TEST_RE = re.compile(
+    r"^\+\s*#\[(?:tokio::)?test\]\s*\n(?:\+\s*#\[[^\]]*\]\s*\n)*"
+    r"\+\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)",
+    re.M,
+)
+_ADDED_ITEST_RE = re.compile(r"^\+\s*itest(?:_flaky)?!\((\w+)", re.M)
+_UNIT_TEST_FN_RE = re.compile(r"^\+.*?\bfunction\s+(\w+)\s*\(", re.M)
+
+# Per-PR p2p additions: existing integration tests that exercise the code the
+# fix changes, chosen by hand when the test patch alone yields no p2p.
+_P2P_TESTS: dict[int, list[str]] = {}
+
+# Exact JS unit tests that replace the path-based plan when the test patch is
+# mostly a formatter rewrite (every hunk would otherwise select its test).
+_PINNED_UNIT: dict[int, list[str]] = {
+    4498: ["urlNormalize"],
+}
+
+
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
+
+
+def _edited_unit_ranges(block: str) -> list[str]:
+    # Post-image line ranges ("start:end") of every hunk; resolved to the
+    # enclosing unitTest at run time, against the actually patched file.
+    ranges: list[str] = []
+    for match in _HUNK_RE.finditer(block):
+        start = int(match.group(1))
+        count = int(match.group(2)) if match.group(2) is not None else 1
+        ranges.append(f"{start}:{start + max(count, 1) - 1}")
+    return ranges
+
+
+def _patch_files(patch: str) -> list[tuple[str, bool, str]]:
+    files: list[tuple[str, bool, str]] = []
+    for block in re.split(r"(?=^diff --git )", patch or "", flags=re.M):
+        match = re.match(r"diff --git a/(\S+) b/(\S+)", block)
+        if match:
+            files.append((match.group(2), "new file mode" in block[:400], block))
+    return files
+
+
+def _test_plan(pr: PullRequest) -> dict[str, list[str]]:
+    patch = pr.test_patch or ""
+    plan: dict[str, list[str]] = {
+        "names": [],
+        "fixtures": [],
+        "modules": [],
+        "targets": [],
+        "unit": [],
+        "unit_edits": [],
+    }
+    if pr.number in _PINNED_UNIT:
+        plan["unit"] = list(_PINNED_UNIT[pr.number])
+        return plan
+
+    def add(key: str, item: str) -> None:
+        if item and item not in plan[key]:
+            plan[key].append(item)
+
+    for name in _P2P_TESTS.get(pr.number, []):
+        add("names", name)
+
+    for path, is_new, block in _patch_files(patch):
+        if path == _INTEGRATION_RS:
+            for name in _ADDED_ITEST_RE.findall(block) + _ADDED_TEST_RE.findall(block):
+                add("names", name)
+            continue
+        if path.startswith((_CLI_TESTS + "unit/", "cli/js/tests/")):
+            if path.endswith("_test.ts"):
+                for name in _UNIT_TEST_FN_RE.findall(block):
+                    add("unit", name)
+                ranges = ",".join(_edited_unit_ranges(block))
+                if ranges:
+                    add("unit_edits", f"{path}@{ranges}")
+        elif path.startswith(_CLI_TESTS) and path.endswith(".rs") and path.count("/") == 2:
+            add("targets", path[len(_CLI_TESTS) : -len(".rs")])
+        elif path.startswith(_CLI_TESTS) and not path.endswith(".rs"):
+            if not is_new:
+                add("fixtures", path[len(_CLI_TESTS) :])
+        elif path.startswith("cli/") and path.endswith(".rs"):
+            module = path[len("cli/") : -len(".rs")].replace("/", "::")
+            if module.endswith("::mod"):
+                module = module[: -len("::mod")]
+            add("modules", module)
+    return plan
+
+
+# Resolves plan names/fixtures to fully qualified integration test paths at
+# run time (the test-patched integration_tests.rs is only on disk then).
+# python2-compatible: ubuntu:18.04's `python` is 2.7.
+_RESOLVE_SCRIPT = r"""python - "$@" <<'MSWBPLAN' > /tmp/mswb_sel.txt
+import re, sys
+src = open("cli/tests/integration_tests.rs").read()
+mods = []
+for m in re.finditer(r"^mod (\w+) \{", src, re.M):
+    mods.append((m.start(), m.group(1)))
+def qualify(pos, name):
+    prefix = ""
+    for start, mod in mods:
+        if start < pos and mod != "util":
+            prefix = mod + "::"
+    return prefix + name
+bodies = {}
+for m in re.finditer(r"^\s*itest(?:_flaky)?!\((\w+)\s*\{(.*?)^\s*\}\);", src, re.M | re.S):
+    bodies[m.group(1)] = (m.start(), m.group(2))
+for m in re.finditer(
+        r"#\[(?:tokio::)?test\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)"
+        r"\s*\([^)]*\)[^{]*\{(.*?)^\s{0,2}\}", src, re.M | re.S):
+    bodies.setdefault(m.group(1), (m.start(), m.group(2)))
+mode = sys.argv[1]
+items = sys.argv[2:]
+out = set()
+for item in items:
+    if mode == "names" and item in bodies:
+        out.add(qualify(bodies[item][0], item))
+    elif mode == "fixtures":
+        needle = re.compile(r"[\"/ ]" + re.escape(item) + r"[\"\s,]")
+        for name, (pos, body) in bodies.items():
+            if needle.search(body):
+                out.add(qualify(pos, name))
+print("\n".join(sorted(out)))
+MSWBPLAN"""
+
+
+_UNIT_RESOLVE_SCRIPT = r"""python - "$@" <<'MSWBUNIT' >> /tmp/mswb_unit.txt
+import re, sys
+decl = re.compile(r"\bfunction\s+(\w+)\s*\(")
+start_re = re.compile(r"^unitTest\(")
+for arg in sys.argv[1:]:
+    path, spans = arg.split("@", 1)
+    try:
+        lines = open(path).read().splitlines()
+    except IOError:
+        continue
+    blocks = []
+    current = None
+    for i, line in enumerate(lines, 1):
+        if start_re.match(line):
+            if current:
+                blocks.append(current)
+            current = [i, i, None]
+        if current is not None:
+            current[1] = i
+            if current[2] is None:
+                m = decl.search(line)
+                if m:
+                    current[2] = m.group(1)
+    if current:
+        blocks.append(current)
+    for span in spans.split(","):
+        lo, hi = [int(x) for x in span.split(":")]
+        for start, end, name in blocks:
+            if name and start <= hi and lo <= end:
+                print(name)
+MSWBUNIT"""
+
+
+def _test_command(pr: PullRequest) -> str:
+    plan = _test_plan(pr)
+    # A test patch that edits a Cargo.toml without the matching Cargo.lock
+    # change cannot build under --locked; --offline still forbids new crates.
+    edits_manifest = any(
+        path.endswith("Cargo.toml") for path, _, _ in _patch_files(pr.test_patch or "")
+    )
+    lock_flag = "--offline" if edits_manifest else "--locked"
+    cargo = f"cargo test {lock_flag} --no-fail-fast -p deno"
+    lines = ["MSWB_RC=0", ": > /tmp/mswb_all.txt"]
+
+    for mode in ("names", "fixtures"):
+        if plan[mode]:
+            args = " ".join(plan[mode])
+            lines.append(f"set -- {mode} {args}\n{_RESOLVE_SCRIPT}")
+            lines.append("cat /tmp/mswb_sel.txt >> /tmp/mswb_all.txt")
+
+    if plan["names"] or plan["fixtures"]:
+        lines.append(
+            "sort -u /tmp/mswb_all.txt | sed '/^$/d' > /tmp/mswb_run.txt\n"
+            'echo "MSWB_SELECTED $(wc -l < /tmp/mswb_run.txt) integration tests"\n'
+            "while read -r t; do\n"
+            f"    {cargo} --test integration_tests -- --exact --test-threads=1 \"$t\" 2>&1 || MSWB_RC=$?\n"
+            "done < /tmp/mswb_run.txt"
+        )
+
+    for target in plan["targets"]:
+        lines.append(f"{cargo} --test {target} -- --test-threads=1 2>&1 || MSWB_RC=$?")
+
+    for module in plan["modules"]:
+        lines.append(f"{cargo} --bin deno -- --test-threads=1 '{module}::' 2>&1 || MSWB_RC=$?")
+
+    if plan["unit"] or plan["unit_edits"]:
+        lines.append(f"cargo build {lock_flag} --bins 2>&1 || true")
+        lines.append("printf '%s\\n' " + " ".join(plan["unit"] or ["''"]) + " > /tmp/mswb_unit.txt")
+        if plan["unit_edits"]:
+            edits = " ".join(plan["unit_edits"])
+            lines.append(f"set -- {edits}\n{_UNIT_RESOLVE_SCRIPT}")
+        lines.append(
+            "sort -u /tmp/mswb_unit.txt | sed '/^$/d' > /tmp/mswb_unit_run.txt\n"
+            'echo "MSWB_SELECTED $(wc -l < /tmp/mswb_unit_run.txt) js unit tests"\n'
+            "MSWB_UNIT_RUNNER=cli/tests/unit/unit_test_runner.ts\n"
+            "MSWB_UNSTABLE=--unstable\n"
+            "if [ ! -f \"$MSWB_UNIT_RUNNER\" ]; then\n"
+            "    MSWB_UNIT_RUNNER=cli/js/tests/unit_test_runner.ts\n"
+            "    ./target/debug/deno run --help 2>&1 | grep -q -- '--unstable' || MSWB_UNSTABLE=\n"
+            "fi\n"
+            "while read -r name; do\n"
+            "    ./target/debug/deno run $MSWB_UNSTABLE --reload -A "
+            "\"$MSWB_UNIT_RUNNER\" --master --verbose -- \"$name\" 2>&1 || MSWB_RC=$?\n"
+            "done < /tmp/mswb_unit_run.txt"
+        )
+
+    if len(lines) == 2:
+        lines.append('echo "MSWB_NO_TESTS_SELECTED from test.patch" >&2\nexit 1')
+
+    lines.append('exit "$MSWB_RC"')
+    return "\n".join(lines)
+
+
 class DenoImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -24,10 +244,10 @@ class DenoImageBase(Image):
         return "ubuntu:18.04"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-ubuntu1804"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-ubuntu1804"
 
     def files(self) -> list[File]:
         return []
@@ -52,7 +272,7 @@ class DenoImageBase(Image):
 
         sections = [
             DockerfileEnhancer.SYNTAX_DIRECTIVE,
-            f"FROM --platform=linux/amd64 {image_name}",
+            f"FROM {image_name}",
             infra,
         ]
 
@@ -79,7 +299,7 @@ class DenoImageBase(Image):
 
         sections.append(
             "RUN curl -fsSL -o /tmp/gn.zip \\\n"
-            '      "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest" \\\n'
+            '      "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-$(dpkg --print-architecture)/+/latest" \\\n'
             "    && unzip -o -d /usr/local/bin /tmp/gn.zip gn \\\n"
             "    && chmod +x /usr/local/bin/gn \\\n"
             "    && rm -f /tmp/gn.zip \\\n"
@@ -150,12 +370,7 @@ class DenoImageDefault(Image):
             "|| git submodule update --init --recursive || true"
         )
 
-        test_command = (
-            "cargo test --locked --no-fail-fast --all-targets -- --test-threads=1"
-            " --skip _061_permissions_request"
-            " --skip _062_permissions_request_global"
-            " --skip _066_prompt"
-        )
+        test_command = _test_command(self.pr)
 
         env_preamble = """export CI=true
 export RUST_BACKTRACE=full
@@ -253,6 +468,8 @@ esac
 echo "$mswb_rust_version" > /home/.mswb_rust_toolchain
 export RUSTUP_TOOLCHAIN="$mswb_rust_version"
 
+rustup toolchain list | grep -q "^$mswb_rust_version-" \\
+    || rustup toolchain install "$mswb_rust_version" --profile minimal
 rustup default "$mswb_rust_version"
 
 {extra_setup}

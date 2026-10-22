@@ -162,12 +162,13 @@ import re
 import sys
 
 PATTERN = re.compile(
-    r'(#\[cfg\(target_arch = "x86_64"\)\]\s*\nstatic BUILD_ARCH: &str = "x64";)'
+    r'^([ \t]*)(#\[cfg\(target_arch = "x86_64"\)\]\s*\n[ \t]*static BUILD_ARCH: &str = "x64";)',
+    re.M,
 )
 REPLACEMENT = (
-    '#[cfg(target_arch = "aarch64")]\n'
-    'static BUILD_ARCH: &str = "aarch64";\n'
-    r'\1'
+    r'\1#[cfg(target_arch = "aarch64")]' '\n'
+    r'\1static BUILD_ARCH: &str = "aarch64";' '\n'
+    r'\1\2'
 )
 
 changed = []
@@ -353,7 +354,39 @@ CMD ["/bin/bash"]
 """
 
 
+def _scoped_python_tests(pr: PullRequest) -> list[tuple[str, str]]:
+    paths = re.findall(r"^diff --git a/\S+ b/(\S+)$", pr.test_patch or "", re.M)
+    cases: list[tuple[str, str]] = []
+    for path in paths:
+        if path.startswith("tests/") and path.endswith(".test"):
+            cases.append(("integration_tests", "test_" + path[len("tests/") :].split(".")[0]))
+        elif path.startswith("tools/") and path.endswith("_test.py"):
+            cases.append((path[len("tools/") : -len(".py")], ""))
+    return cases
+
+
 def _test_commands(pr: PullRequest) -> str:
+    scoped = _scoped_python_tests(pr)
+    if scoped:
+        lines = [
+            "MSWB_RC=0",
+            "export DENO_BUILD_MODE=release",
+            'echo "MSB_RUNNER scoped_python"',
+        ]
+        for module, pattern in scoped:
+            pattern_arg = f" --pattern {pattern}" if pattern else ""
+            lines.append(
+                f"env -u NO_COLOR python2 tools/{module}.py --release --verbose{pattern_arg} 2>&1 | "
+                "python2 -c \"import sys,re\n"
+                "for l in sys.stdin:\n"
+                "    sys.stdout.write(l)\n"
+                "    m=re.match(r'^(?:\\x1b\\[[0-9;]*m)*(\\S+) \\(([\\w.]+)\\) \\.\\.\\. (?:\\x1b\\[[0-9;]*m)*(ok|FAIL|ERROR|skipped)', l)\n"
+                "    if m: print('MSB_PYTEST %s.%s %s' % (m.group(2), m.group(1), m.group(3)))\" "
+                "|| MSWB_RC=1"
+            )
+        lines.append('exit "$MSWB_RC"')
+        return "\n".join(lines)
+
     return f"""if ./target/release/deno --help 2>&1 | grep -qE "^[[:space:]]+run[[:space:]]"; then
     RUN_SUBCOMMAND="run"
 else
@@ -390,9 +423,32 @@ def _touches_submodule(pr: PullRequest) -> bool:
     )
 
 
+# The scoped python runners (tools/*_test.py) spawn this same server on 4545
+# themselves, so it is only pre-started for the deno-native unit test runner.
+_HTTP_SERVER_BLOCK = """python2 ./tools/http_server.py > /tmp/http_server.log 2>&1 &
+HTTP_SERVER_PID=$!
+trap 'kill $HTTP_SERVER_PID 2>/dev/null || true' EXIT
+
+for _ in $(seq 1 30); do
+    if curl -s -o /dev/null http://localhost:4545/ ; then
+        break
+    fi
+    sleep 1
+done"""
+
+
 def _stage_script(pr: PullRequest, patches: str) -> str:
+    # prepare.sh leaves the arm64 build shims (ring BUILD.gn, BUILD_ARCH) in the
+    # tracked tree; a fix patch that edits those files only applies to the
+    # pristine base, so stash the shims, apply, and let @@ARCH_SHIM@@ redo them.
     apply_line = (
-        f"git apply --whitespace=nowarn {patches}\n" if patches else ""
+        "git stash push --quiet -- $(git diff --name-only) 2>/dev/null || true\n"
+        f"git apply --whitespace=nowarn {patches}\n"
+        "if [ \"$(dpkg --print-architecture)\" != \"amd64\" ]; then\n"
+        "@@RING_PATCH@@\n@@ARCH_SHIM@@\n"
+        "fi\n"
+        if patches
+        else ""
     )
     if patches and _touches_submodule(pr):
         apply_line += (
@@ -437,16 +493,7 @@ fi
 
 {_TEST_NAME_SCAN}
 
-python2 ./tools/http_server.py > /tmp/http_server.log 2>&1 &
-HTTP_SERVER_PID=$!
-trap 'kill $HTTP_SERVER_PID 2>/dev/null || true' EXIT
-
-for _ in $(seq 1 30); do
-    if curl -s -o /dev/null http://localhost:4545/ ; then
-        break
-    fi
-    sleep 1
-done
+{"" if _scoped_python_tests(pr) else _HTTP_SERVER_BLOCK}
 
 {_test_commands(pr)}
 """.replace("@@SUBMODULE_SYNC@@", _heredoc("MSBSUB", _SUBMODULE_SYNC, patches)).replace("@@DEPOT_SHIMS@@", _DEPOT_SHIMS).replace("@@RING_PATCH@@", _heredoc("MSBRING", _RING_ARM64_PATCH)).replace("@@ARCH_SHIM@@", _heredoc("MSBARCH", _ARCH_SHIM))
@@ -667,6 +714,7 @@ _INLINE_RE = re.compile(r"^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED|unresolved)\b")
 _PENDING_NAME_RE = re.compile(r"^test\s+(\S+)$")
 _PENDING_RESULT_RE = re.compile(r"^\.\.\.\s+(ok|FAILED)\b")
 _RUNNING_RE = re.compile(r"^RUNNING\s+\S+")
+_PYTEST_RE = re.compile(r"^MSB_PYTEST (\S+) (ok|FAIL|ERROR|skipped)$")
 
 
 def _parse_deno_unit_test_log(test_log: str) -> TestResult:
@@ -696,8 +744,22 @@ def _parse_deno_unit_test_log(test_log: str) -> TestResult:
         else:
             failed_tests.add(test_id(raw_name))
 
+    if any(clean == "MSB_RUNNER scoped_python" for clean in lines):
+        lines = [clean for clean in lines if clean.startswith("MSB_PYTEST ")]
+
     pending: Optional[str] = None
     for clean in lines:
+        match = _PYTEST_RE.match(clean)
+        if match:
+            name, outcome = match.group(1), match.group(2)
+            if outcome == "ok":
+                passed_tests.add(name)
+            elif outcome == "skipped":
+                skipped_tests.add(name)
+            else:
+                failed_tests.add(name)
+            continue
+
         if _RUNNING_RE.match(clean) or clean.startswith("test result:"):
             pending = None
             continue

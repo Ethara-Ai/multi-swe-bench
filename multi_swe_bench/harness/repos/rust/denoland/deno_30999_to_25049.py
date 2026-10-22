@@ -113,8 +113,11 @@ _HARDENING_BLOCK = """RUN set -eux; \\
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)\""""
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+# libtest prints `ok|FAILED|ignored`; the specs harness (file_test_runner)
+# prints `ok|fail|ignored` followed by an optional `(123ms)` timing suffix.
 _TEST_RE = re.compile(
-    r"^test\s+(?P<id>\S.*?)\s+\.\.\.\s+(?P<status>ok|FAILED|ignored)$"
+    r"^test\s+(?P<id>\S.*?)\s+\.\.\.\s+(?P<status>ok|FAILED|fail|ignored)"
+    r"(?:\s+\(\d+(?:\.\d+)?m?s\))?$"
 )
 
 
@@ -162,10 +165,52 @@ def _classify(path: str) -> str | None:
     return None
 
 
+_SPEC_ROOT = "tests/specs/"
+_SPEC_MANIFEST = "__test__.jsonc"
+
+_P2P_SPECS: dict[int, list[str]] = {
+    27973: [
+        "spec:specs::check::workspace_compiler_options_root_dirs",
+        "spec:specs::run::sloppy_imports",
+        "spec:specs::lint::sloppy_imports_dts",
+        "spec:specs::lint::sloppy_imports_no_incremental_cache",
+    ],
+}
+
+# Exact test filters that replace the path-based plan when the test patch also
+# touches unrelated crate sources (which would otherwise run a whole crate).
+_PINNED_SPECS: dict[int, list[str]] = {
+    26867: ["spec:specs::npm::npmrc_tarball_other_server"],
+    # 2026 layout: node unit tests live in their own `unit_node_tests` crate.
+    33039: [
+        "unitnode:_fs::_fs_handle_test",
+        "unitnode:_fs::_fs_raw_fd_test",
+    ],
+}
+
+
+def _spec_filter(path: str, manifest_dirs: list[str]) -> str:
+    file_dir = path.rsplit("/", 1)[0]
+    owners = [d for d in manifest_dirs if f"{file_dir}/".startswith(f"{d}/")]
+    if owners:
+        test_dir = max(owners, key=len)
+        return "spec:specs::" + test_dir[len(_SPEC_ROOT) :].replace("/", "::")
+    return f"specfile:{path}"
+
+
 def _test_specs(test_patch: str) -> str:
+    paths = re.findall(r"^\+\+\+ b/(\S+)", test_patch or "", re.MULTILINE)
+    manifest_dirs = [
+        p.rsplit("/", 1)[0]
+        for p in paths
+        if p.startswith(_SPEC_ROOT) and p.endswith(f"/{_SPEC_MANIFEST}")
+    ]
     specs: list[str] = []
-    for path in re.findall(r"^\+\+\+ b/(\S+)", test_patch or "", re.MULTILINE):
-        spec = _classify(path)
+    for path in paths:
+        if path.startswith(_SPEC_ROOT):
+            spec = _spec_filter(path, manifest_dirs) if path.count("/") > 2 else None
+        else:
+            spec = _classify(path)
         if spec and spec not in specs:
             specs.append(spec)
     if not specs:
@@ -176,7 +221,7 @@ def _test_specs(test_patch: str) -> str:
 def _feature_detect() -> str:
     return (
         'CLI_TESTS_FEATURES=""\n'
-        f"if {_AWK_FEATURE}; then\n"
+        f"if [ -f tests/Cargo.toml ] && {_AWK_FEATURE}; then\n"
         '    CLI_TESTS_FEATURES="--features run"\n'
         "fi"
     )
@@ -188,6 +233,10 @@ def _test_command(specs: str) -> str:
         f"--test {_INTEGRATION_TARGET} --"
     )
     return f"""{_feature_detect()}
+
+# deno appends an anyhow stack trace to CLI errors when RUST_BACKTRACE=1 (set in
+# the base image), which breaks every spec that diffs stderr against .out files.
+export RUST_BACKTRACE=0
 
 cargo build -p {_BIN_PACKAGE} --bin {_BIN_PACKAGE}
 cargo build -p {_SERVER_PACKAGE} --bin {_SERVER_PACKAGE}
@@ -213,6 +262,22 @@ for spec in $TEST_SPECS; do
             ;;
         spec)
             cargo test -p {_TEST_PACKAGE} $CLI_TESTS_FEATURES --test {_SPECS_TARGET} -- "$value" 2>&1 || RC=$?
+            ;;
+        specfile)
+            dir="$(dirname "$value")"
+            while [ "$dir" != "{_SPEC_ROOT.rstrip('/')}" ] && [ ! -f "$dir/{_SPEC_MANIFEST}" ]; do
+                dir="$(dirname "$dir")"
+            done
+            if [ "$dir" = "{_SPEC_ROOT.rstrip('/')}" ]; then
+                echo "no {_SPEC_MANIFEST} owns $value" >&2
+                continue
+            fi
+            filter="specs::$(echo "${{dir#{_SPEC_ROOT}}}" | sed 's|/|::|g')"
+            cargo test -p {_TEST_PACKAGE} $CLI_TESTS_FEATURES --test {_SPECS_TARGET} -- "$filter" 2>&1 || RC=$?
+            ;;
+        unitnode)
+            cargo build -p unit_node_tests --test unit_node 2>&1 || true
+            cargo test -p unit_node_tests --test unit_node -- "$value" 2>&1 || RC=$?
             ;;
         crate)
             pkg="$({_AWK_PACKAGE})"
@@ -316,7 +381,9 @@ class Deno30999To25049ImageDefault(Image):
     def files(self) -> list[File]:
         repo = self.pr.repo
         sha = self.pr.base.sha
-        test_cmd = _test_command(_test_specs(self.pr.test_patch))
+        specs = _PINNED_SPECS.get(self.pr.number) or _test_specs(self.pr.test_patch).split()
+        specs += [s for s in _P2P_SPECS.get(self.pr.number, []) if s not in specs]
+        test_cmd = _test_command(" ".join(specs))
 
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
@@ -369,7 +436,11 @@ git submodule update --init --recursive -- {_SUBMODULE}
 cargo fetch --locked
 cargo build --locked -p {_BIN_PACKAGE} --bin {_BIN_PACKAGE}
 cargo build --locked -p {_SERVER_PACKAGE} --bin {_SERVER_PACKAGE}
-cargo build --locked -p {_TEST_PACKAGE} $CLI_TESTS_FEATURES --test {_INTEGRATION_TARGET}
+if grep -q '^name = "{_TEST_PACKAGE}"' tests/Cargo.toml 2>/dev/null; then
+    cargo build --locked -p {_TEST_PACKAGE} $CLI_TESTS_FEATURES --test {_INTEGRATION_TARGET}
+else
+    cargo build --locked -p unit_node_tests --test unit_node
+fi
 
 rustc --version > /dev/null
 cargo --version > /dev/null
@@ -497,7 +568,7 @@ class DENO_30999_TO_25049(Instance):
             final_status[match.group("id").strip()] = match.group("status")
 
         passed_tests: set[str] = {n for n, s in final_status.items() if s == "ok"}
-        failed_tests: set[str] = {n for n, s in final_status.items() if s == "FAILED"}
+        failed_tests: set[str] = {n for n, s in final_status.items() if s in ("FAILED", "fail")}
         skipped_tests: set[str] = {n for n, s in final_status.items() if s == "ignored"}
 
         passed_tests -= failed_tests

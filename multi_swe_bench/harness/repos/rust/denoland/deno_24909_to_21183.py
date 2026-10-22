@@ -6,6 +6,31 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
+# Integration tests whose .out fixtures the test patch rewrites; the path-based
+# planner only sees `cli/tests/testdata/...` and cannot map it to a test name.
+_EXTRA_INTEGRATION: dict[int, list[str]] = {
+    22341: [
+        "lint::stdin_json",
+        "lint::json",
+        "lint::lint_with_report_config_override",
+    ],
+}
+
+# Exact integration filters that replace the path-based plan, for PRs whose
+# touched test modules are mostly unrelated or need hardware (e.g. a GPU).
+_PINNED_INTEGRATION: dict[int, list[str]] = {
+    20812: [
+        "run::unstable_webgpu_disabled",
+        "run::unstable_webgpu_enabled",
+    ],
+    12535: [
+        "lsp::lsp_hover_asset",
+        "lsp::lsp_hover_dependency",
+        "lsp::lsp_code_lens_non_doc_nav_tree",
+        "lsp::lsp_cache_location",
+    ],
+}
+
 
 def _patch_paths(patch: str) -> list[str]:
     paths: list[str] = []
@@ -30,6 +55,13 @@ def _apply_excludes(*patches: str) -> str:
 
 
 def _test_plan(pr: PullRequest) -> dict:
+    if pr.number in _PINNED_INTEGRATION:
+        return {
+            "integration": list(_PINNED_INTEGRATION[pr.number]),
+            "specs": [],
+            "cli_unit": [],
+            "node_compat": False,
+        }
     integration: list[str] = []
     js_unit: list[str] = []
     node_unit: list[str] = []
@@ -93,6 +125,9 @@ def _test_plan(pr: PullRequest) -> dict:
     if "node_compat_tests" in runner_modules:
         node_compat = True
 
+    for name in _EXTRA_INTEGRATION.get(pr.number, []):
+        add(integration, name)
+
     integration = integration + js_unit + node_unit
     if not (integration or specs or cli_unit or node_compat):
         integration = [""]
@@ -133,7 +168,9 @@ export CARGO_HOME=/usr/local/cargo
 export PATH=/usr/local/cargo/bin:$PATH
 export CI=true
 export NO_COLOR=1
-export RUST_BACKTRACE=1
+# deno appends a stack trace to CLI errors when RUST_BACKTRACE=1, which breaks
+# every integration test that diffs stderr against an .out fixture.
+export RUST_BACKTRACE=0
 export CARGO_INCREMENTAL=0
 export CARGO_TERM_COLOR=never
 export CARGO_PROFILE_DEV_DEBUG=0
@@ -187,10 +224,10 @@ class Deno24909To21183ImageBase(Image):
         return "debian:bullseye-slim"
 
     def image_tag(self) -> str:
-        return "base"
+        return "base-24909_to_21183"
 
     def workdir(self) -> str:
-        return "base"
+        return "base-24909_to_21183"
 
     def files(self) -> list[File]:
         return []
@@ -303,12 +340,16 @@ if ! command -v rustup >/dev/null 2>&1; then
 fi
 rustup --version && python --version
 
-mswb_toolchain="$(sed -n 's/^channel *= *"\\(.*\\)"/\\1/p' rust-toolchain.toml | head -n1)"
+mswb_toolchain="$(sed -n 's/^channel *= *"\\(.*\\)"/\\1/p' rust-toolchain.toml 2>/dev/null | head -n1)"
 if [ -z "$mswb_toolchain" ]; then
-  echo "ERROR: could not resolve channel from rust-toolchain.toml" >&2
+  mswb_toolchain="$(grep -rhoE 'rust-version:[[:space:]]*"?[0-9]+[.][0-9]+[.][0-9]+' .github/workflows 2>/dev/null | grep -oE '[0-9]+[.][0-9]+[.][0-9]+' | head -n1)"
+fi
+if [ -z "$mswb_toolchain" ]; then
+  echo "ERROR: could not resolve rust toolchain from rust-toolchain.toml or .github/workflows" >&2
   exit 1
 fi
 rustup toolchain install "$mswb_toolchain" --profile minimal -c rustfmt -c clippy
+rustup default "$mswb_toolchain"
 cargo --version
 
 for sm in {std_submodules}; do
