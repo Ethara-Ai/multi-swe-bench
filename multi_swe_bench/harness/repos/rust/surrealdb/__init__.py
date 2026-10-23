@@ -4,3 +4,5 @@ from multi_swe_bench.harness.repos.rust.surrealdb.surrealdb_2559_to_1957 import 
 from multi_swe_bench.harness.repos.rust.surrealdb.surrealdb_5831_to_241 import *
 from multi_swe_bench.harness.repos.rust.surrealdb.surrealdb_5494_to_4155 import *
 from multi_swe_bench.harness.repos.rust.surrealdb.surrealdb_7027_to_6551 import *
+from multi_swe_bench.harness.repos.rust.surrealdb.surrealdb_5300_to_4163 import *
+from multi_swe_bench.harness.repos.rust.surrealdb.surrealdb_6347_to_5701 import *
