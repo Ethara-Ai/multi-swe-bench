@@ -1,4 +1,3 @@
-
 import re
 from typing import Optional, Union
 
@@ -17,12 +16,8 @@ _ADDED_TEST_RE = re.compile(
 _ADDED_ITEST_RE = re.compile(r"^\+\s*itest(?:_flaky)?!\((\w+)", re.M)
 _UNIT_TEST_FN_RE = re.compile(r"^\+.*?\bfunction\s+(\w+)\s*\(", re.M)
 
-# Per-PR p2p additions: existing integration tests that exercise the code the
-# fix changes, chosen by hand when the test patch alone yields no p2p.
 _P2P_TESTS: dict[int, list[str]] = {}
 
-# Exact JS unit tests that replace the path-based plan when the test patch is
-# mostly a formatter rewrite (every hunk would otherwise select its test).
 _PINNED_UNIT: dict[int, list[str]] = {
     4498: ["urlNormalize"],
 }
@@ -32,8 +27,6 @@ _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
 
 
 def _edited_unit_ranges(block: str) -> list[str]:
-    # Post-image line ranges ("start:end") of every hunk; resolved to the
-    # enclosing unitTest at run time, against the actually patched file.
     ranges: list[str] = []
     for match in _HUNK_RE.finditer(block):
         start = int(match.group(1))
@@ -97,9 +90,6 @@ def _test_plan(pr: PullRequest) -> dict[str, list[str]]:
     return plan
 
 
-# Resolves plan names/fixtures to fully qualified integration test paths at
-# run time (the test-patched integration_tests.rs is only on disk then).
-# python2-compatible: ubuntu:18.04's `python` is 2.7.
 _RESOLVE_SCRIPT = r"""python - "$@" <<'MSWBPLAN' > /tmp/mswb_sel.txt
 import re, sys
 src = open("cli/tests/integration_tests.rs").read()
@@ -169,8 +159,6 @@ MSWBUNIT"""
 
 def _test_command(pr: PullRequest) -> str:
     plan = _test_plan(pr)
-    # A test patch that edits a Cargo.toml without the matching Cargo.lock
-    # change cannot build under --locked; --offline still forbids new crates.
     edits_manifest = any(
         path.endswith("Cargo.toml") for path, _, _ in _patch_files(pr.test_patch or "")
     )
@@ -424,9 +412,6 @@ git config --global --add safe.directory /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
 
-# The base image clones the default branch only, so a base commit that lives
-# on refs/pull/* is not present yet.  Fetch it by sha, then fall back to the
-# pull refs, then drop the temporary refs again so hardening still holds.
 if ! git cat-file -e {pr.base.sha} 2>/dev/null; then
     git fetch --quiet https://github.com/{pr.org}/{pr.repo}.git {pr.base.sha} \\
         || git fetch --quiet origin "+refs/pull/*/head:refs/mswb/pull/*" \\
@@ -435,9 +420,6 @@ fi
 git checkout --detach {pr.base.sha}
 git for-each-ref --format='%(refname)' refs/mswb | xargs -r -n1 git update-ref -d
 
-# Submodule working trees pick up build artefacts (tools/setup.py writes into
-# third_party).  Those are not repository changes, so keep them out of
-# `git status --porcelain` for every later stage.
 git config --local diff.ignoreSubmodules all
 git config --local status.showUntrackedFiles normal
 bash /home/check_git_changes.sh
@@ -455,11 +437,6 @@ test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"
 test -z "$(git remote)"
 test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
-# Resolve the pinned Rust toolchain dynamically from the checked-out base
-# commit's CI config (.github/workflows -> rust-version:).  Fail loudly if it
-# cannot be resolved so the build never silently uses the wrong toolchain.
-# Persist it outside the work tree so run/test/fix stages (and
-# check_git_changes.sh) see it without touching the repo.
 mswb_rust_version="$(grep -rhoE 'rust-version:[[:space:]]*"?[0-9]+[.][0-9]+[.][0-9]+"?' .github/workflows 2>/dev/null | grep -oE '[0-9]+[.][0-9]+[.][0-9]+' | head -n1)"
 case "$mswb_rust_version" in
     [0-9]*[.][0-9]*[.][0-9]*) : ;;
@@ -474,8 +451,6 @@ rustup default "$mswb_rust_version"
 
 {extra_setup}
 
-# Warm the dependency and V8 caches at build time, where the network is
-# available and the output is never parsed.
 cargo fetch --locked || true
 cargo build --locked --all-targets || true
 

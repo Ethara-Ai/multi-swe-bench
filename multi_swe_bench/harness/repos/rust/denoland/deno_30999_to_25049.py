@@ -113,8 +113,6 @@ _HARDENING_BLOCK = """RUN set -eux; \\
     test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)\""""
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-# libtest prints `ok|FAILED|ignored`; the specs harness (file_test_runner)
-# prints `ok|fail|ignored` followed by an optional `(123ms)` timing suffix.
 _TEST_RE = re.compile(
     r"^test\s+(?P<id>\S.*?)\s+\.\.\.\s+(?P<status>ok|FAILED|fail|ignored)"
     r"(?:\s+\(\d+(?:\.\d+)?m?s\))?$"
@@ -177,11 +175,8 @@ _P2P_SPECS: dict[int, list[str]] = {
     ],
 }
 
-# Exact test filters that replace the path-based plan when the test patch also
-# touches unrelated crate sources (which would otherwise run a whole crate).
 _PINNED_SPECS: dict[int, list[str]] = {
     26867: ["spec:specs::npm::npmrc_tarball_other_server"],
-    # 2026 layout: node unit tests live in their own `unit_node_tests` crate.
     33039: [
         "unitnode:_fs::_fs_handle_test",
         "unitnode:_fs::_fs_raw_fd_test",
@@ -234,8 +229,6 @@ def _test_command(specs: str) -> str:
     )
     return f"""{_feature_detect()}
 
-# deno appends an anyhow stack trace to CLI errors when RUST_BACKTRACE=1 (set in
-# the base image), which breaks every spec that diffs stderr against .out files.
 export RUST_BACKTRACE=0
 
 cargo build -p {_BIN_PACKAGE} --bin {_BIN_PACKAGE}

@@ -6,8 +6,6 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-# Integration tests whose .out fixtures the test patch rewrites; the path-based
-# planner only sees `cli/tests/testdata/...` and cannot map it to a test name.
 _EXTRA_INTEGRATION: dict[int, list[str]] = {
     22341: [
         "lint::stdin_json",
@@ -16,8 +14,6 @@ _EXTRA_INTEGRATION: dict[int, list[str]] = {
     ],
 }
 
-# Exact integration filters that replace the path-based plan, for PRs whose
-# touched test modules are mostly unrelated or need hardware (e.g. a GPU).
 _PINNED_INTEGRATION: dict[int, list[str]] = {
     20812: [
         "run::unstable_webgpu_disabled",
@@ -168,8 +164,6 @@ export CARGO_HOME=/usr/local/cargo
 export PATH=/usr/local/cargo/bin:$PATH
 export CI=true
 export NO_COLOR=1
-# deno appends a stack trace to CLI errors when RUST_BACKTRACE=1, which breaks
-# every integration test that diffs stderr against an .out fixture.
 export RUST_BACKTRACE=0
 export CARGO_INCREMENTAL=0
 export CARGO_TERM_COLOR=never
@@ -575,7 +569,7 @@ class DENO_24909_TO_21183(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]: # type: ignore
+    def dependency(self) -> Optional[Image]:
         return Deno24909To21183ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -587,5 +581,5 @@ class DENO_24909_TO_21183(Instance):
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
-    def parse_log(self, log: str) -> TestResult: # type: ignore
+    def parse_log(self, log: str) -> TestResult:
         return parse_deno_cargo_log(log)

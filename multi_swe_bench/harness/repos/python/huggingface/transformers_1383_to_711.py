@@ -1,30 +1,3 @@
-"""huggingface/transformers, PRs #711-#1383 (June - October 2019).
-
-Registered under the number_interval key `transformers_1383_to_711`; route rows
-here by setting `number_interval` on each dataset row. No existing config fits
-this era:
-
-  * The package is not yet `transformers`. Bases ship `pytorch_pretrained_bert`
-    (#711, #757, #776) or `pytorch_transformers` (#1139, #1203, #1374); several
-    fix patches perform the rename, so the test-stage import fails and the
-    fix-stage import succeeds. `_parse_with_collection` turns that into a
-    `<path>::<collection>` fail-to-pass entry.
-  * There is no `tokenizers` dependency yet, so no Rust toolchain is needed.
-  * Tests are `*_test.py` modules and slow tests use `@pytest.mark.slow`, which
-    is left disabled (no `--runslow`), so network-heavy checkpoints are skipped
-    identically in every stage.
-
-Environment: python 3.8 + torch 1.10.2. 1.10.2 is the newest torch that still
-runs this era's uint8 attention masks (deprecated, not removed) and it ships
-cp38 wheels for BOTH linux/amd64 (CPU index) and linux/arm64 (PyPI). numpy is
-held below 1.24, which removed the `np.float` / `np.int` aliases this code uses.
-TensorFlow is intentionally absent; TF test modules skip themselves via
-`is_tf_available()`.
-
-Team Dockerfile rules: the base stops at `git clone` + CMD; all git stripping
-lives in the PR Dockerfile as its own RUN layers; prepare.sh is dependencies only.
-"""
-
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance
 from multi_swe_bench.harness.pull_request import PullRequest
@@ -69,13 +42,9 @@ set -e
 
 cd /home/[[REPO]]
 
-# One Dockerfile RUN step per phase, so a failed build resumes from the last
-# completed phase's cached layer. No argument runs every phase.
 PHASE="${1:-all}"
 run_phase() { [ "$PHASE" = all ] || [ "$PHASE" = "$1" ]; }
 
-# pip's own PIP_RETRIES does not cover a read that times out mid-download
-# (ReadTimeoutError from files.pythonhosted.org), so every pip call is retried here.
 pip() {
     local n
     for n in 1 2 3 4 5; do
@@ -92,8 +61,6 @@ echo "target arch: $ARCH"
 if run_phase torch; then
 bash /home/check_git_changes.sh
 
-# CPU-only torch. On amd64 the default PyPI wheel is the CUDA build, so it comes
-# from the CPU index; on arm64 the PyPI wheel is already CPU-only.
 if [ "$ARCH" = "amd64" ]; then
     pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==1.10.2'
 else
@@ -103,18 +70,13 @@ python -c "import torch; print('torch', torch.__version__)"
 fi
 
 if run_phase repo; then
-# The union of install_requires across every base in this interval, held to
-# versions that still support these 2019 sources.
 pip install --no-cache-dir 'numpy<1.24' boto3 requests tqdm regex \\
     'sentencepiece<0.2' sacremoses
 
-# torch and every runtime dependency are already satisfied, so this only
-# registers the repo; it must not fail silently.
 pip install --no-cache-dir -e .
 fi
 
 if run_phase extras; then
-# examples/test_examples.py imports run_glue / run_squad, which pull these in.
 pip install --no-cache-dir 'scipy<1.8' 'scikit-learn<1.1' tensorboardX 'protobuf<4' || true
 
 pip install --no-cache-dir 'pytest<8.0' 'pytest-timeout<2.3'
@@ -124,11 +86,6 @@ fi
 
 
 class TransformersLegacyImageBase(Image):
-    """Shared base: everything up to the git clone, then CMD.
-
-    The `# syntax=` directive stops DockerfileEnhancer from appending its own
-    checkout + hardening block to this shared base (see transformers_13720_to_5252).
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -218,9 +175,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Retried as a whole: a slow GitHub link dropped a full-history clone after 20 min
-# (curl 56 GnuTLS recv error / early EOF) and failed the base. lowSpeed aborts a
-# stalled transfer so the next attempt can start instead of hanging.
 RUN for i in 1 2 3 4 5; do \\
         git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=300 \\
             clone "${{REPO_URL}}" /home/{self.pr.repo} && break; \\

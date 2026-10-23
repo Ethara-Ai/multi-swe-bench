@@ -423,8 +423,6 @@ def _touches_submodule(pr: PullRequest) -> bool:
     )
 
 
-# The scoped python runners (tools/*_test.py) spawn this same server on 4545
-# themselves, so it is only pre-started for the deno-native unit test runner.
 _HTTP_SERVER_BLOCK = """python2 ./tools/http_server.py > /tmp/http_server.log 2>&1 &
 HTTP_SERVER_PID=$!
 trap 'kill $HTTP_SERVER_PID 2>/dev/null || true' EXIT
@@ -438,9 +436,6 @@ done"""
 
 
 def _stage_script(pr: PullRequest, patches: str) -> str:
-    # prepare.sh leaves the arm64 build shims (ring BUILD.gn, BUILD_ARCH) in the
-    # tracked tree; a fix patch that edits those files only applies to the
-    # pristine base, so stash the shims, apply, and let @@ARCH_SHIM@@ redo them.
     apply_line = (
         "git stash push --quiet -- $(git diff --name-only) 2>/dev/null || true\n"
         f"git apply --whitespace=nowarn {patches}\n"
