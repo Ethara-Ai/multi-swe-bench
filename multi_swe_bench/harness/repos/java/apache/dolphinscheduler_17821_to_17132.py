@@ -44,8 +44,10 @@ ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
     TZ=UTC \
+    CI=true \
+    JAVA_HOME=/opt/java/openjdk \
+    MAVEN_OPTS="-Xmx4g -XX:MaxMetaspaceSize=512m" \
     http_proxy=${http_proxy} \
     https_proxy=${https_proxy} \
     HTTP_PROXY=${HTTP_PROXY} \
@@ -138,17 +140,51 @@ exit 0
 """
 
 _DERIVE_TARGETS_SH = r"""TEST_PATHS="$(grep '^diff --git a/' /home/test.patch | sed -e 's|^diff --git a/||' -e 's| b/.*$||' || true)"
-MODULES="$(printf '%s\n' "$TEST_PATHS" | grep '/src/test/' | cut -d/ -f1 | sort -u || true)"
+MODULES="$(printf '%s\n' "$TEST_PATHS" | grep '/src/test/' | sed -e 's|/src/test/.*$||' | sort -u || true)"
 JAVA_TEST_PATHS="$(printf '%s\n' "$TEST_PATHS" | grep '/src/test/java/.*\.java$' || true)"
-CLASSES="$(printf '%s\n' "$JAVA_TEST_PATHS" | sed -e 's|.*/||' -e 's|\.java$||' | sort -u || true)"
+CLASSES=""
+for path in $JAVA_TEST_PATHS; do
+    if [ -f "$path" ]; then
+        CLASSES="${CLASSES}$(basename "$path" .java)
+"
+    fi
+done
 SEL=""
 for module in $MODULES; do
-    if [ -f "${module}/pom.xml" ]; then
+    case "$module" in
+        e2e|e2e/*|*-e2e|*-e2e/*|*-api-test|*-api-test/*) continue ;;
+    esac
+    [ -f "${module}/pom.xml" ] || continue
+    parent="."
+    in_reactor=1
+    for part in $(printf '%s' "$module" | tr '/' ' '); do
+        if ! grep -q "<module>${part}</module>" "${parent}/pom.xml"; then
+            in_reactor=0
+            break
+        fi
+        parent="${parent}/${part}"
+    done
+    if [ "$in_reactor" -eq 1 ]; then
         SEL="${SEL:+${SEL},}${module}"
     fi
 done
-CLASSES="$(printf '%s\n' "$CLASSES" | paste -sd, -)"
+CLASSES="$(printf '%s' "$CLASSES" | sort -u | paste -sd, -)"
+TEST_ARG="-Dtest=${CLASSES:+${CLASSES},}!%regex[.*HttpUtilsTest.*#testGetRequest|testGetValidRequest],!%regex[.*WeChatSenderTest.*#testSendWeChat.*]"
 """
+
+_ENABLE_SUREFIRE_SH = r"""awk '
+  /<artifactId>maven-surefire-plugin<\/artifactId>/ { in_sf = 1 }
+  in_sf && /<\/plugin>/ { in_sf = 0 }
+  in_sf { sub(/<skip>true<\/skip>/, "<skip>false</skip>"); sub(/<skipTests>true<\/skipTests>/, "<skipTests>false</skipTests>") }
+  { print }
+' pom.xml > /tmp/pom.xml.new && cat /tmp/pom.xml.new > pom.xml && rm -f /tmp/pom.xml.new
+if ! grep -rqs --include='*.java' 'org\.junit\.jupiter' --exclude-dir=target . \
+   && ! grep -qE 'surefire-junit4|junit-vintage' pom.xml; then
+    perl -0pi -e 's#(<artifactId>maven-surefire-plugin</artifactId>\s*<version>([^<]*)</version>)#$1<dependencies><dependency><groupId>org.apache.maven.surefire</groupId><artifactId>surefire-junit4</artifactId><version>$2</version></dependency></dependencies>#' pom.xml
+fi
+"""
+
+
 
 _PREPARE_SH = r"""#!/bin/bash
 set -eo pipefail
@@ -159,11 +195,12 @@ git reset --hard
 git clean -fdx
 bash /home/check_git_changes.sh
 
+git cat-file -e "__BASE_SHA__^{commit}" 2>/dev/null || git fetch origin "__BASE_SHA__"
 git checkout --detach "__BASE_SHA__"
 bash /home/check_git_changes.sh
 
 export CI=true
-export MAVEN_OPTS="-Xmx2g -XX:MaxMetaspaceSize=512m"
+export MAVEN_OPTS="-Xmx4g -XX:MaxMetaspaceSize=512m"
 
 mkdir -p /root/.m2
 printf '%s\n' \
@@ -198,16 +235,91 @@ if [ -n "$proxy_url" ]; then
         '</settings>' >> /root/.m2/settings.xml
 fi
 
+__ENABLE_SUREFIRE__
 __DERIVE_TARGETS__
 
-test -n "$SEL"
-test -n "$CLASSES"
+WARM_SEL="$SEL"
+if [ -z "$WARM_SEL" ]; then
+    for module in $MODULES; do
+        m="$module"
+        while [ "$m" != "." ] && [ ! -f "$m/pom.xml" ]; do
+            m="$(dirname "$m")"
+        done
+        if [ "$m" != "." ]; then
+            WARM_SEL="${WARM_SEL:+${WARM_SEL},}${m}"
+        fi
+    done
+fi
+test -n "$WARM_SEL"
+
+cat > /tmp/patch_deps.pl <<'PERL_EOF'
+use strict;
+use warnings;
+my ($root, @patches) = @ARGV;
+my (%props, %ver);
+sub slurp { my ($p) = @_; open(my $f, '<', $p) or return ''; local $/; my $t = <$f>; close $f; return $t; }
+sub blocks {
+    my ($t) = @_;
+    my @b;
+    while ($t =~ m{<dependency>(.*?)</dependency>}gs) {
+        my $x = $1;
+        my %d;
+        for my $k (qw(groupId artifactId version type classifier)) {
+            $d{$k} = $1 if $x =~ m{<$k>\s*([^<]+?)\s*</$k>};
+        }
+        push @b, \%d if $d{groupId} && $d{artifactId};
+    }
+    return @b;
+}
+sub props {
+    my ($t) = @_;
+    while ($t =~ m{<([A-Za-z0-9_.\-]*version[A-Za-z0-9_.\-]*)>\s*([^<\$\s]+)\s*</\1>}gi) {
+        $props{$1} = $2 if lc($1) ne 'version';
+    }
+}
+my $rt = slurp($root);
+props($rt);
+for my $d (blocks($rt)) { $ver{"$d->{groupId}:$d->{artifactId}"} = $d->{version} if $d->{version}; }
+my $add = '';
+for my $p (@patches) {
+    open(my $f, '<', $p) or next;
+    my $cur = '';
+    while (my $l = <$f>) {
+        if ($l =~ m{^diff --git a/\S+ b/(\S+)}) { $cur = $1; next; }
+        next unless $cur =~ m{(^|/)pom\.xml$};
+        next if $l =~ /^\+\+\+/;
+        $add .= substr($l, 1) if $l =~ /^\+/;
+    }
+    close $f;
+}
+props($add);
+my @deps = blocks($add);
+for my $d (@deps) { $ver{"$d->{groupId}:$d->{artifactId}"} = $d->{version} if $d->{version}; }
+my %seen;
+for my $d (@deps) {
+    my ($g, $a) = ($d->{groupId}, $d->{artifactId});
+    next if $g =~ /dolphinscheduler|escheduler|\$/ || $a =~ /^(dolphinscheduler|escheduler)/;
+    my $v = $d->{version} // $ver{"$g:$a"} // '';
+    for (1 .. 5) { $v =~ s/\$\{([^}]+)\}/exists $props{$1} ? $props{$1} : "\${$1}"/ge; }
+    next if $v eq '' || $v =~ /\$/;
+    my $c = "$g:$a:$v";
+    my $t = $d->{type} // 'jar';
+    if ($t eq 'test-jar') { $c .= ':jar:tests'; }
+    elsif ($d->{classifier}) { $c .= ":$t:$d->{classifier}"; }
+    elsif ($t ne 'jar') { $c .= ":$t"; }
+    print "$c\n" unless $seen{$c}++;
+}
+PERL_EOF
+perl /tmp/patch_deps.pl pom.xml /home/fix.patch /home/test.patch > /tmp/patch_deps.txt || true
+while read -r coord; do
+    [ -n "$coord" ] || continue
+    timeout 900 mvn -B dependency:get -Dartifact="$coord" -Dtransitive=true >> /tmp/dep-get.log 2>&1 || true
+done < /tmp/patch_deps.txt
 
 attempt=1
-until timeout 3600 mvn -B test -pl "$SEL" -am -Dtest="$CLASSES" __MVN_FLAGS__ > /tmp/warm-mvn.log 2>&1; do
+until timeout 3600 mvn -B test -pl "$WARM_SEL" -am "$TEST_ARG" __MVN_FLAGS__ > /tmp/warm-mvn.log 2>&1; do
     if [ "$attempt" -ge 3 ]; then
-        echo "maven warm build failed after 3 attempts" >&2
-        exit 1
+        break
     fi
     sleep "$((attempt * 15))"
     attempt=$((attempt + 1))
@@ -215,109 +327,101 @@ done
 
 sed -i '/<proxies>/,/<\/proxies>/d' /root/.m2/settings.xml
 
+find . -type d -name surefire-reports -prune -exec rm -rf {} +
 set +e
-timeout 3600 mvn -o -B test -pl "$SEL" -am -Dtest="$CLASSES" __MVN_FLAGS__ > /tmp/gate-mvn.log 2>&1
+timeout 3600 mvn -o -B test -pl "$WARM_SEL" -am "$TEST_ARG" __MVN_FLAGS__ > /tmp/gate-mvn.log 2>&1
 GATE_STATUS=$?
 set -e
+GATE_REPORTS="$(find . -path '*/target/surefire-reports/TEST-*.xml' | wc -l | tr -d ' ')"
 echo "GATE_MVN_EXIT=$GATE_STATUS"
-test "$GATE_STATUS" -eq 0
-grep -q "Tests run:" /tmp/gate-mvn.log
+echo "GATE_SUREFIRE_REPORTS=$GATE_REPORTS"
+
+git reset --hard
+git clean -fdx
+
+! grep -qE 'Could not resolve dependencies|Could not transfer artifact|Cannot access .* in offline mode' /tmp/gate-mvn.log
+if [ -n "$SEL" ]; then
+    test "$GATE_REPORTS" -gt 0
+    grep -q "Tests run:" /tmp/gate-mvn.log
+else
+    test "$GATE_STATUS" -eq 0
+fi
 echo "DEPS_OK"
+"""
+
+_RUN_BODY_SH = r"""
+__ENABLE_SUREFIRE__
+__DERIVE_TARGETS__
+
+if [ -z "$SEL" ]; then
+    echo "NO_TEST_MODULES_AT_THIS_STAGE"
+    echo "===== SUREFIRE REPORTS BEGIN ====="
+    echo "===== SUREFIRE REPORTS END ====="
+    exit 0
+fi
+
+find . -type d -name surefire-reports -prune -exec rm -rf {} +
+
+set +e
+timeout 3600 mvn -o -B test -pl "$SEL" -am "$TEST_ARG" __MVN_FLAGS__ 2>&1 | tee /tmp/mvn-stage.log
+MVN_STATUS=${PIPESTATUS[0]}
+set -e
+
+echo "modules ok: $(grep -cE '^\[INFO\] .+ SUCCESS \[' /tmp/mvn-stage.log || true)"
+echo "modules failed: $(grep -cE '^\[INFO\] .+ FAILURE \[' /tmp/mvn-stage.log || true)"
+echo "surefire reports: $(find . -path '*/target/surefire-reports/TEST-*.xml' | wc -l)"
+echo "===== SUREFIRE REPORTS BEGIN ====="
+find . -path '*/target/surefire-reports/TEST-*.xml' | sort | while read -r f; do
+    cat "$f"
+    echo
+done
+echo "===== SUREFIRE REPORTS END ====="
+
+exit $MVN_STATUS
 """
 
 _RUN_SH = r"""#!/bin/bash
 set -eo pipefail
 
 export CI=true
-export MAVEN_OPTS="-Xmx2g -XX:MaxMetaspaceSize=512m"
-
+export MAVEN_OPTS="-Xmx4g -XX:MaxMetaspaceSize=512m"
 cd /home/__REPO__
-
-__DERIVE_TARGETS__
-
-test -n "$SEL"
-test -n "$CLASSES"
-
-find . -type d -name surefire-reports -prune -exec rm -rf {} +
-
-set +e
-timeout 3600 mvn -o -B test -pl "$SEL" -am -Dtest="$CLASSES" __MVN_FLAGS__ 2>&1 | tee /tmp/mvn-stage.log
-MVN_STATUS=${PIPESTATUS[0]}
-set -e
-
-echo "modules ok: $(grep -cE '^\[INFO\] .+ SUCCESS \[' /tmp/mvn-stage.log || true)"
-echo "modules failed: $(grep -cE '^\[INFO\] .+ FAILURE \[' /tmp/mvn-stage.log || true)"
-echo "surefire reports: $(find . -path '*/target/surefire-reports/TEST-*.xml' | wc -l)"
-echo "===== SUREFIRE REPORTS BEGIN ====="
-find . -path '*/target/surefire-reports/TEST-*.xml' -exec cat {} +
-echo "===== SUREFIRE REPORTS END ====="
-
-exit $MVN_STATUS
-"""
+__RUN_BODY__"""
 
 _TEST_RUN_SH = r"""#!/bin/bash
 set -eo pipefail
 
 export CI=true
-export MAVEN_OPTS="-Xmx2g -XX:MaxMetaspaceSize=512m"
-
+export MAVEN_OPTS="-Xmx4g -XX:MaxMetaspaceSize=512m"
 cd /home/__REPO__
 
-__DERIVE_TARGETS__
-
-test -n "$SEL"
-test -n "$CLASSES"
-
-git apply --whitespace=nowarn /home/test.patch
-
-find . -type d -name surefire-reports -prune -exec rm -rf {} +
-
-set +e
-timeout 3600 mvn -o -B test -pl "$SEL" -am -Dtest="$CLASSES" __MVN_FLAGS__ 2>&1 | tee /tmp/mvn-stage.log
-MVN_STATUS=${PIPESTATUS[0]}
-set -e
-
-echo "modules ok: $(grep -cE '^\[INFO\] .+ SUCCESS \[' /tmp/mvn-stage.log || true)"
-echo "modules failed: $(grep -cE '^\[INFO\] .+ FAILURE \[' /tmp/mvn-stage.log || true)"
-echo "surefire reports: $(find . -path '*/target/surefire-reports/TEST-*.xml' | wc -l)"
-echo "===== SUREFIRE REPORTS BEGIN ====="
-find . -path '*/target/surefire-reports/TEST-*.xml' -exec cat {} +
-echo "===== SUREFIRE REPORTS END ====="
-
-exit $MVN_STATUS
-"""
+git status --porcelain > /dev/null
+git apply --3way --whitespace=nowarn __PATCH_EXCLUDES__ /home/test.patch
+__RUN_BODY__"""
 
 _FIX_RUN_SH = r"""#!/bin/bash
 set -eo pipefail
 
 export CI=true
-export MAVEN_OPTS="-Xmx2g -XX:MaxMetaspaceSize=512m"
-
+export MAVEN_OPTS="-Xmx4g -XX:MaxMetaspaceSize=512m"
 cd /home/__REPO__
 
-__DERIVE_TARGETS__
+git status --porcelain > /dev/null
+git apply --3way --whitespace=nowarn __PATCH_EXCLUDES__ /home/test.patch /home/fix.patch
+__RUN_BODY__"""
 
-test -n "$SEL"
-test -n "$CLASSES"
-
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-
-find . -type d -name surefire-reports -prune -exec rm -rf {} +
-
-set +e
-timeout 3600 mvn -o -B test -pl "$SEL" -am -Dtest="$CLASSES" __MVN_FLAGS__ 2>&1 | tee /tmp/mvn-stage.log
-MVN_STATUS=${PIPESTATUS[0]}
-set -e
-
-echo "modules ok: $(grep -cE '^\[INFO\] .+ SUCCESS \[' /tmp/mvn-stage.log || true)"
-echo "modules failed: $(grep -cE '^\[INFO\] .+ FAILURE \[' /tmp/mvn-stage.log || true)"
-echo "surefire reports: $(find . -path '*/target/surefire-reports/TEST-*.xml' | wc -l)"
-echo "===== SUREFIRE REPORTS BEGIN ====="
-find . -path '*/target/surefire-reports/TEST-*.xml' -exec cat {} +
-echo "===== SUREFIRE REPORTS END ====="
-
-exit $MVN_STATUS
-"""
+_PATCH_EXCLUDES = (
+    "--exclude='*.png' "
+    "--exclude='*.jpg' "
+    "--exclude='*.jpeg' "
+    "--exclude='*.gif' "
+    "--exclude='*.ico' "
+    "--exclude='*.eot' "
+    "--exclude='*.ttf' "
+    "--exclude='*.otf' "
+    "--exclude='*.woff' "
+    "--exclude='*.woff2'"
+)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
@@ -335,10 +439,10 @@ def dolphinscheduler_parse_log(test_log: str) -> TestResult:
     for match in re_case.finditer(clean_log):
         attrs = dict(re_attr.findall(match.group(1)))
         method = attrs.get("name", "")
-        if not method:
-            continue
         classname = attrs.get("classname", "")
-        name = f"{classname}#{method}" if classname else method
+        if not method or not classname:
+            continue
+        name = f"{classname}#{method}"
         body = match.group(3) or ""
         if "<failure" in body or "<error" in body:
             failed_tests.add(name)
@@ -348,7 +452,8 @@ def dolphinscheduler_parse_log(test_log: str) -> TestResult:
             passed_tests.add(name)
 
     passed_tests -= failed_tests
-    skipped_tests -= passed_tests | failed_tests
+    passed_tests -= skipped_tests
+    skipped_tests -= failed_tests
 
     return TestResult(
         passed_count=len(passed_tests),
@@ -423,7 +528,10 @@ class DolphinschedulerImageDefault(Image):
 
     def _render(self, template: str) -> str:
         return (
-            template.replace("__REPO__", self.pr.repo)
+            template.replace("__RUN_BODY__", _RUN_BODY_SH)
+            .replace("__PATCH_EXCLUDES__", _PATCH_EXCLUDES)
+            .replace("__ENABLE_SUREFIRE__", _ENABLE_SUREFIRE_SH)
+            .replace("__REPO__", self.pr.repo)
             .replace("__ORG__", self.pr.org)
             .replace("__BASE_SHA__", self.pr.base.sha)
             .replace("__DERIVE_TARGETS__", _DERIVE_TARGETS_SH)

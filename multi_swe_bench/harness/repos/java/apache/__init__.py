@@ -6,6 +6,8 @@ from multi_swe_bench.harness.repos.java.apache.druid_18790_to_99999 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_5278_to_11682 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_17821_to_17132 import *
+from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_5122_to_1225 import *
+from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_16842_to_12321 import *
 from multi_swe_bench.harness.repos.java.apache.dubbo import *
 from multi_swe_bench.harness.repos.java.apache.dubbo_0_to_6278 import *
 from multi_swe_bench.harness.repos.java.apache.dubbo_6279_to_99999 import *
