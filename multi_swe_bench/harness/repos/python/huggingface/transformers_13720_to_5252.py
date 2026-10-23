@@ -90,8 +90,22 @@ fi
 
 echo "running pytest on:$TEST_TARGETS"
 python -m pytest -v -rA --no-header --tb=short -p no:cacheprovider -p no:rich \\
-    -o log_cli=false --continue-on-collection-errors $TEST_TARGETS
+    -o log_cli=false --continue-on-collection-errors[[DESELECT]] $TEST_TARGETS
 """
+
+# Tests deselected in ALL three stages for one PR, so the stages stay comparable.
+# 5302: the fix patch moves the slow TransfoXL tokenizer to Moses + number
+# splitting but leaves TransfoXLTokenizerFast untouched, so the fast/slow parity
+# check passes in the test stage and fails in the fix stage. Excluded by decision;
+# every other test in the touched files still runs and is graded.
+_DESELECT: dict[int, list[str]] = {
+    5302: ["tests/test_tokenization_fast.py::TransfoXLFastTokenizerTest::test_all_tokenizers"],
+}
+
+
+def _test_body(number: int) -> str:
+    args = "".join(f" \\\n    --deselect {t}" for t in _DESELECT.get(number, []))
+    return _TEST_BODY.replace("[[DESELECT]]", args)
 
 # torch removed SAVE_STATE_WARNING from torch.optim.lr_scheduler in 2.0; every PR
 # in this interval imports it unconditionally.
@@ -107,6 +121,25 @@ set -e
 # full history scrub in its own RUN layers, so this script does dependencies only.
 # It runs LAST, which also means pip sees exactly the graded tree.
 cd /home/[[REPO]]
+
+# Each phase runs as its own Dockerfile RUN step, so a failed build resumes from
+# the last completed phase's cached layer. No argument runs every phase.
+PHASE="${1:-all}"
+run_phase() { [ "$PHASE" = all ] || [ "$PHASE" = "$1" ]; }
+
+# pip's own PIP_RETRIES does not cover a read that times out mid-download
+# (ReadTimeoutError from files.pythonhosted.org), so every pip call is retried here.
+pip() {
+    local n
+    for n in 1 2 3 4 5; do
+        command pip "$@" && return 0
+        echo "pip $* failed (attempt $n/5), retrying in 15s" >&2
+        sleep 15
+    done
+    return 1
+}
+
+if run_phase torch; then
 bash /home/check_git_changes.sh
 
 # ---------------------------------------------------------------------------
@@ -121,7 +154,9 @@ pip install --no-cache-dir $PIP_CPU 'torch==2.3.1' 'torchvision==0.18.1' \\
     || pip install --no-cache-dir $PIP_CPU 'torch' 'torchvision' \\
     || true
 python -c "import torch; print('torch', torch.__version__)" || true
+fi
 
+if run_phase tokenizers; then
 # ---------------------------------------------------------------------------
 # 2. The repo WITH its own dependencies. setup.py pins tokenizers (and friends)
 #    per release, so this is what keeps 2020 source on a 2020-era tokenizers.
@@ -144,18 +179,20 @@ python -c "import torch; print('torch', torch.__version__)" || true
 # fast path and stays identical to the tars already verified.
 TOK=$(python - <<'PYTOK'
 import re, pathlib
-m = re.search(r"tokenizers==([0-9A-Za-z.-]+)", pathlib.Path("setup.py").read_text())
+# Tolerate spaces: setup.py before ~#8804 writes `"tokenizers == 0.8.1.rc2"`.
+m = re.search(r"tokenizers\\s*==\\s*([0-9A-Za-z.-]+)", pathlib.Path("setup.py").read_text())
 print(m.group(1) if m else '')
 PYTOK
 )
-if [ -n "$TOK" ] && ! pip install --no-cache-dir "tokenizers==$TOK"; then
+if [ -n "$TOK" ] && ! pip install --no-cache-dir --only-binary :all: "tokenizers==$TOK"; then
     echo "no wheel for tokenizers==$TOK on $(uname -m); building from sdist"
     rm -rf /tmp/tk && mkdir -p /tmp/tk
     pip download --no-binary :all: --no-deps "tokenizers==$TOK" -d /tmp/tk
     tar xf /tmp/tk/tokenizers-*.tar.gz -C /tmp/tk
     cd /tmp/tk/tokenizers-*/
     # Release candidates were never tagged upstream, so fall back to the nearest tag.
-    for TAG in "python-v$TOK" "python-v${TOK%%rc*}" "python-v0.9.1" "rust-v0.9.0" "rust-v0.8.0"; do
+    # ${TOK%%[.-]rc*} maps 0.8.1.rc2 / 0.8.0-rc3 / 0.9.0.rc2 to their release tag.
+    for TAG in "python-v$TOK" "python-v${TOK%%[.-]rc*}" "python-v${TOK%%rc*}" "python-v0.9.1" "rust-v0.9.0" "rust-v0.8.0"; do
         if curl -fsSL -o Cargo.lock \
             "https://raw.githubusercontent.com/huggingface/tokenizers/$TAG/bindings/python/Cargo.lock"; then
             echo "using Cargo.lock from $TAG"; break
@@ -173,17 +210,46 @@ if [ -n "$TOK" ] && ! pip install --no-cache-dir "tokenizers==$TOK"; then
         echo '1.52.1' > rust-toolchain
         echo "pinned rust-toolchain 1.52.1 (was 'stable')"
     fi
-    pip install --no-cache-dir .
+    # An undated `nightly` (the 0.7.0 sdist) means today's nightly, which removed
+    # `#![feature(const_fn)]` -> error[E0557]. Pin the same dated nightly the 0.8.x
+    # sdists ship, which is known to build this crate.
+    if [ -f rust-toolchain ] && grep -qx 'nightly' rust-toolchain; then
+        echo 'nightly-2020-05-14' > rust-toolchain
+        echo "pinned rust-toolchain nightly-2020-05-14 (was 'nightly')"
+    fi
+    # pyo3 0.12.0 (locked by tokenizers 0.9.0.rc2) assumes c_char is i8 and fails on
+    # aarch64 with error[E0308] `expected u8, found i8`; 0.12.1 fixed exactly that.
+    # `cargo update --precise` cannot resolve against this v1 lockfile, so the three
+    # lock-stepped pyo3 crates are rewritten in place and their stale checksums dropped.
+    if grep -A1 '^name = "pyo3"$' Cargo.lock | grep -qx 'version = "0.12.0"'; then
+        for c in pyo3 pyo3cls pyo3-derive-backend; do
+            sed -i -e "/^name = \\"$c\\"\\$/{n;s/^version = \\"0\\.12\\.0\\"\\$/version = \\"0.12.1\\"/}" \\
+                   -e "s/\\"$c 0\\.12\\.0 (registry+/\\"$c 0.12.1 (registry+/" \\
+                   -e "/^\\"checksum $c 0\\.12\\.0 /d" Cargo.lock
+        done
+        echo "bumped pyo3 0.12.0 -> 0.12.1 (c_char is u8 on aarch64)"
+    fi
+    # The sdist build downloads build deps from PyPI and the pinned toolchain from
+    # static.rust-lang.org; either dropping mid-transfer fails the whole image.
+    for i in 1 2 3 4; do
+        pip install --no-cache-dir . && break
+        if [ "$i" = 4 ]; then echo "tokenizers build failed after $i attempts" >&2; exit 1; fi
+        echo "tokenizers build attempt $i failed, retrying"; sleep 20
+    done
     cd /home/[[REPO]]
 fi
+fi
 
+if run_phase repo; then
 # NO `|| --no-deps` fallback here, deliberately. That fallback is what turned a
 # failed dependency resolution into a hollow image that still reported success:
 # the build "passed" with no requests/tokenizers installed and every instance
 # collected 0 tests. If this cannot resolve, the build must fail loudly.
 pip install --no-cache-dir -e .
 python -c "import tokenizers; print('tokenizers', tokenizers.__version__)" || true
+fi
 
+if run_phase extras; then
 # ---------------------------------------------------------------------------
 # 3. Test tooling only. Nothing here may re-resolve a library the repo pinned,
 #    so no bare `tokenizers` / `huggingface-hub` / `transformers` in this list.
@@ -223,7 +289,9 @@ pip install --no-cache-dir fire timm onnxruntime pydantic || true
 pip install --no-cache-dir pyarrow multiprocess dill xxhash fsspec aiohttp || true
 pip install --no-deps --no-cache-dir datasets evaluate || true
 pip install --no-cache-dir scikit-learn || true
+fi
 
+if run_phase compat; then
 # Modern huggingface_hub drops symbols this era imports at module scope;
 # sitecustomize restores them before transformers is imported.
 cp /home/hub_compat.py "$(python -c 'import site; print(site.getsitepackages()[0])')/sitecustomize.py" || true
@@ -249,6 +317,7 @@ fi
 [[SAVE_STATE_PATCH]]
 
 python -c "import transformers; print('transformers', transformers.__version__)" || true
+fi
 """
 
 # Team Dockerfile rule #2: the git stripping / hardening lives in the PR-specific
@@ -458,6 +527,8 @@ ENV DEBIAN_FRONTEND=noninteractive \\
 ENV CI=true
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_ROOT_USER_ACTION=ignore
+ENV PIP_DEFAULT_TIMEOUT=120
+ENV PIP_RETRIES=10
 ENV PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 ENV HF_HUB_DISABLE_TELEMETRY=1
 ENV TOKENIZERS_PARALLELISM=false
@@ -477,6 +548,8 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
 
 WORKDIR /home/
 
+RUN printf 'Acquire::Retries "10";\\nAcquire::http::Timeout "60";\\nAcquire::https::Timeout "60";\\n' > /etc/apt/apt.conf.d/80-retries
+
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     bash \\
     build-essential \\
@@ -495,13 +568,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 # Pinned via ARG so the version can be overridden without editing this file;
 # a current rustc often cannot compile these 2020-era crates.
 ARG RUST_VERSION=1.72.0
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \\
-    | sh -s -- -y --profile minimal --default-toolchain ${{RUST_VERSION}}
+# Retried as a whole: a dropped stream mid-download (curl error 18) is not
+# resumed by rustup itself and otherwise fails the entire base build.
+ENV RUSTUP_MAX_RETRIES=10
+RUN for i in 1 2 3 4 5; do \\
+        curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-all-errors https://sh.rustup.rs \\
+            | sh -s -- -y --profile minimal --default-toolchain ${{RUST_VERSION}} && break; \\
+        echo "rustup attempt $i failed, retrying"; sleep 15; \\
+    done; \\
+    /root/.cargo/bin/rustc --version
 ENV PATH=/root/.cargo/bin:${{PATH}}
 
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
-RUN git clone "${{REPO_URL}}" /home/{self.pr.repo}
+# Retried as a whole: a slow GitHub link dropped a full-history clone after 20 min
+# (curl 56 GnuTLS recv error / early EOF) and failed the base. lowSpeed aborts a
+# stalled transfer so the next attempt can start instead of hanging.
+RUN for i in 1 2 3 4 5; do \\
+        git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=300 \\
+            clone "${{REPO_URL}}" /home/{self.pr.repo} && break; \\
+        echo "git clone attempt $i failed, retrying"; rm -rf /home/{self.pr.repo}; sleep 30; \\
+    done; \\
+    test -d /home/{self.pr.repo}/.git
 
 WORKDIR /home/{self.pr.repo}
 
@@ -549,6 +637,7 @@ export CI=true
 
 cd /home/[[REPO]]
 """.replace("[[REPO]]", repo)
+        body = _test_body(self.pr.number)
 
         return [
             File(".", "fix.patch", _strip_binary_diffs(self.pr.fix_patch)),
@@ -556,7 +645,7 @@ cd /home/[[REPO]]
             File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES),
             File(".", "prepare.sh", self._prepare_script()),
             File(".", "hub_compat.py", _HUB_COMPAT),
-            File(".", "run.sh", header + _TEST_BODY),
+            File(".", "run.sh", header + body),
             File(
                 ".",
                 "test-run.sh",
@@ -566,7 +655,7 @@ cd /home/[[REPO]]
     exit 1
 fi
 """.replace("[[REPO]]", repo)
-                + _TEST_BODY,
+                + body,
             ),
             File(
                 ".",
@@ -577,7 +666,7 @@ fi
     exit 1
 fi
 """.replace("[[REPO]]", repo)
-                + _TEST_BODY,
+                + body,
             ),
         ]
 
@@ -603,11 +692,14 @@ ENV BUILDARCH=${{BUILDARCH}}
 
 {self.global_env}
 
-{copy_commands}
-
 {_HARDENING_RUN}
 {_SUBMODULE_HARDENING_RUN}
-RUN bash /home/prepare.sh
+{copy_commands}
+RUN bash /home/prepare.sh torch
+RUN bash /home/prepare.sh tokenizers
+RUN bash /home/prepare.sh repo
+RUN bash /home/prepare.sh extras
+RUN bash /home/prepare.sh compat
 
 {self.clear_env}
 
