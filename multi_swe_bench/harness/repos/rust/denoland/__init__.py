@@ -3,3 +3,4 @@ from multi_swe_bench.harness.repos.rust.denoland.deno_4240_to_3965 import *
 from multi_swe_bench.harness.repos.rust.denoland.deno_3352_to_3023 import *
 from multi_swe_bench.harness.repos.rust.denoland.deno_24909_to_21183 import *
 from multi_swe_bench.harness.repos.rust.denoland.deno_30999_to_25049 import *
+from multi_swe_bench.harness.repos.rust.denoland.deno_13687_to_11909 import *

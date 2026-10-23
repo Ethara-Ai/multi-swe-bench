@@ -104,3 +104,5 @@ from multi_swe_bench.harness.repos.rust.modular_bitfield import *
 from multi_swe_bench.harness.repos.rust.alex_dukhno import *
 from multi_swe_bench.harness.repos.rust.aaif_goose import *
 from multi_swe_bench.harness.repos.rust.kornia_rs import *
+from multi_swe_bench.harness.repos.rust.linebender import *
+from multi_swe_bench.harness.repos.rust.leapdao import *
