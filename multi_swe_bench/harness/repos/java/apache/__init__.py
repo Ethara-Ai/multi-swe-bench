@@ -18,6 +18,8 @@ from multi_swe_bench.harness.repos.java.apache.maven import *
 from multi_swe_bench.harness.repos.java.apache.rocketmq import *
 from multi_swe_bench.harness.repos.java.apache.shenyu import *
 from multi_swe_bench.harness.repos.java.apache.skywalking import *
+from multi_swe_bench.harness.repos.java.apache.skywalking_106_to_9710 import *
+from multi_swe_bench.harness.repos.java.apache.skywalking_10415_to_13539 import *
 from multi_swe_bench.harness.repos.java.apache.flink import *
 from multi_swe_bench.harness.repos.java.apache.commons_codec import *
 from multi_swe_bench.harness.repos.java.apache.druid_7113_to_6221 import *
