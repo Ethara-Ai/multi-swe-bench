@@ -175,6 +175,7 @@ cython_debug/
 .pypirc
 
 data/
+data_*/
 tmp/
 temp/
 token

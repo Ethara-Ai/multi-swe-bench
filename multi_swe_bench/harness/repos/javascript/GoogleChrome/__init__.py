@@ -5,3 +5,4 @@ from multi_swe_bench.harness.repos.javascript.GoogleChrome.lighthouse_9576_to_90
 from multi_swe_bench.harness.repos.javascript.GoogleChrome.lighthouse_9073_to_8340 import *
 from multi_swe_bench.harness.repos.javascript.GoogleChrome.lighthouse_7007_to_5270 import *
 from multi_swe_bench.harness.repos.javascript.GoogleChrome.lighthouse_763_to_312 import *
+from multi_swe_bench.harness.repos.javascript.GoogleChrome.lighthouse_9193_to_180 import *
