@@ -7,33 +7,6 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 
-# ---------------------------------------------------------------------------
-# oh-my-claudecode: Yeachan-Heo/oh-my-claudecode
-# ---------------------------------------------------------------------------
-# TypeScript CLI/plugin project. npm (package-lock.json). node >=20.
-#
-# 10 PRs in dataset, range #258 - #764.
-# 1 era: node >=20, vitest ^4.0.17, test="vitest", prepare="npm run build" --
-#   verified unchanged at both 89d57ea2 (#258) and 58e85243 (#764).
-#
-# Base image clones only -- no checkout, no pin, no hardening (see the project
-#   reference Dockerfile). Each PR image checks out its own base.sha and runs
-#   the full hardening in prepare.sh, so the finished image is still pruned to
-#   that commit with origin removed.
-#
-# PR 348: base orphaned upstream by a force-push; reachable from no ref, but
-#   GitHub serves it by full sha -- prepare.sh refetches it.
-# PR 742: fix patch carries a payload-less binary hunk -> _binary_excludes.
-#
-# Image chain: node:20 -> ImageBase (clone) -> ImageDefault (checkout + harden)
-#
-# Test output: vitest verbose
-#   ✓ src/f.test.ts > suite > name 2ms   -- pass
-#   × src/f.test.ts > suite > name 5ms   -- fail
-#   ↓ src/f.test.ts > suite > name       -- skip
-#   FAIL src/f.test.ts [ src/f.test.ts ] -- suite failed to collect
-
-
 class OhMyClaudecodeImageBase(Image):
     """Shared base image: toolchain, clone, checkout and history hardening."""
 
@@ -183,6 +156,14 @@ if ! git cat-file -e {self.pr.base.sha}^{{commit}} 2>/dev/null; then
 fi
 git checkout {self.pr.base.sha}
 bash /home/check_git_changes.sh
+
+# PRs 1584/1605/1606/1833 commit node_modules as a mode-120000 symlink to the
+# author's worktree. skip-worktree must precede install, or the `git checkout
+# -- .` below restores the symlink and destroys it (npx then finds no vitest).
+if [ -n "$(git ls-files node_modules)" ]; then
+    git update-index --skip-worktree node_modules
+    rm -rf node_modules
+fi
 
 npm install --no-audit --no-fund || true
 
