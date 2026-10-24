@@ -3,3 +3,4 @@ from multi_swe_bench.harness.repos.javascript.hakimel.reveal_js_2702_to_99999 im
 from multi_swe_bench.harness.repos.javascript.hakimel.reveal_js_0_to_2745 import *
 from multi_swe_bench.harness.repos.javascript.hakimel.reveal_js_2746_to_99999 import *
 from multi_swe_bench.harness.repos.javascript.hakimel.reveal_js import *
+from multi_swe_bench.harness.repos.javascript.hakimel.reveal_js_3039_to_907 import *
