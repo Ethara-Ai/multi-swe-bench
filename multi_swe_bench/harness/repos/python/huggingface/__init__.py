@@ -14,3 +14,4 @@ from multi_swe_bench.harness.repos.python.huggingface.transformers_36555_to_3077
 from multi_swe_bench.harness.repos.python.huggingface.transformers_44949_to_44487 import *
 from multi_swe_bench.harness.repos.python.huggingface.transformers_16554_to_9128 import *
 from multi_swe_bench.harness.repos.python.huggingface.transformers_1383_to_711 import *
+from multi_swe_bench.harness.repos.python.huggingface.transformers_23909_to_16792 import *
