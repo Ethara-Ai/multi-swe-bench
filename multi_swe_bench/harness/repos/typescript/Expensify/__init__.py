@@ -11,3 +11,4 @@ from multi_swe_bench.harness.repos.typescript.Expensify.App_83193_to_82931 impor
 
 from multi_swe_bench.harness.repos.typescript.Expensify.App_84698_to_84481 import *
 from multi_swe_bench.harness.repos.typescript.Expensify.App_80729_to_80258 import *
+from multi_swe_bench.harness.repos.typescript.Expensify.App_81705_to_82030 import *
