@@ -84,6 +84,7 @@ from multi_swe_bench.harness.repos.python.equinor import *
 from multi_swe_bench.harness.repos.python.executablebooks import *
 from multi_swe_bench.harness.repos.python.Ericsson import *
 from multi_swe_bench.harness.repos.python.ethyca import *
+from multi_swe_bench.harness.repos.python.EuroEval import *
 from multi_swe_bench.harness.repos.python.exercism import *
 from multi_swe_bench.harness.repos.python.explosion import *
 from multi_swe_bench.harness.repos.python.F5Networks import *

@@ -49,6 +49,7 @@ from multi_swe_bench.harness.repos.java.TeamNewPipe.NewPipe_5927_to_5927 import 
 from multi_swe_bench.harness.repos.java.termux import *
 from multi_swe_bench.harness.repos.java.TheAlgorithms import *
 from multi_swe_bench.harness.repos.java.vavr_io import *
+from multi_swe_bench.harness.repos.java.wpilibsuite import *
 from multi_swe_bench.harness.repos.java.libgdx import *
 from multi_swe_bench.harness.repos.java.skylot import *
 from multi_swe_bench.harness.repos.java.dbeaver import *

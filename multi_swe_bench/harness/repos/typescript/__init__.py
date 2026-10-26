@@ -43,6 +43,7 @@ from multi_swe_bench.harness.repos.typescript.ChainSafe import *
 from multi_swe_bench.harness.repos.typescript.chakra_ui import *
 from multi_swe_bench.harness.repos.typescript.clash_verge_rev import *
 from multi_swe_bench.harness.repos.typescript.cline import *
+from multi_swe_bench.harness.repos.typescript.codeBelt import *
 from multi_swe_bench.harness.repos.typescript.coder import *
 from multi_swe_bench.harness.repos.typescript.colinhacks import *
 from multi_swe_bench.harness.repos.typescript.comixed import *
