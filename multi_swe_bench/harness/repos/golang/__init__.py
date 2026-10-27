@@ -236,3 +236,4 @@ from multi_swe_bench.harness.repos.golang.openfaas import *
 from multi_swe_bench.harness.repos.golang.openkruise import *
 from multi_swe_bench.harness.repos.golang.bitnami import *
 from multi_swe_bench.harness.repos.golang.github import *
+from multi_swe_bench.harness.repos.golang.henrygd import *
