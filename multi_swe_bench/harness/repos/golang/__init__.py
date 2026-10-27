@@ -234,4 +234,5 @@ from multi_swe_bench.harness.repos.golang.eclipse_paho import *
 from multi_swe_bench.harness.repos.golang.kubernetes import *
 from multi_swe_bench.harness.repos.golang.openfaas import *
 from multi_swe_bench.harness.repos.golang.openkruise import *
+from multi_swe_bench.harness.repos.golang.bitnami import *
 from multi_swe_bench.harness.repos.golang.github import *
