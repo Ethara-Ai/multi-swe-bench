@@ -1088,8 +1088,8 @@ mvn clean test -Dsurefire.useFile=false -Dmaven.test.skip=false -Dtest=com.faste
 
 """
 
-
 @Instance.register("FasterXML", "jackson-databind")
+@Instance.register("fasterxml", "jackson-databind")
 class JacksonDatabind(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
