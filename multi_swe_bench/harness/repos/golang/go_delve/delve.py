@@ -27,7 +27,7 @@ from multi_swe_bench.harness.repos.golang.go_delve.delve_go1_21 import (
     _ImageDefault as _Go121ImageDefault,
 )
 from multi_swe_bench.harness.repos.golang.go_delve.delve_go1_24 import (
-    _ImageDefault as _Go124ImageDefault,
+    DELVE_4448_TO_4181,
 )
 
 
@@ -38,8 +38,13 @@ class Delve(_PremodInstanceBase):
     PR 1300-2499 -> golang:1.11  module
     PR 2500-3499 -> golang:1.17  module
     PR 3500-3977 -> golang:1.21  module
-    PR >= 3978   -> golang:1.24  module (backward compat for go 1.22)
+    PR >= 3978   -> DELVE_4448_TO_4181 (golang:1.26, delve_go1_24.py)
     """
+
+    def __new__(cls, pr: PullRequest, config: Config, *args, **kwargs):
+        if pr.number >= 3978:
+            return DELVE_4448_TO_4181(pr, config, *args, **kwargs)
+        return super().__new__(cls)
 
     def dependency(self) -> Optional[Image]:
         if self.pr.number <= 1299:
@@ -48,10 +53,8 @@ class Delve(_PremodInstanceBase):
             return _Go111ImageDefault(self.pr, self._config)
         elif self.pr.number <= 3499:
             return _Go117ImageDefault(self.pr, self._config)
-        elif self.pr.number <= 3977:
-            return _Go121ImageDefault(self.pr, self._config)
         else:
-            return _Go124ImageDefault(self.pr, self._config)
+            return _Go121ImageDefault(self.pr, self._config)
 
 
 Instance.register("go-delve", "delve")(Delve)
