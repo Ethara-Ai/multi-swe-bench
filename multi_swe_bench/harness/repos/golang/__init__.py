@@ -11,6 +11,7 @@ from multi_swe_bench.harness.repos.golang.fatedier import *
 from multi_swe_bench.harness.repos.golang.gin_gonic import *
 from multi_swe_bench.harness.repos.golang.go_gorm import *
 from multi_swe_bench.harness.repos.golang.go_kit import *
+from multi_swe_bench.harness.repos.golang.go_kratos import *
 from multi_swe_bench.harness.repos.golang.gohugoio import *
 from multi_swe_bench.harness.repos.golang.grpc import *
 from multi_swe_bench.harness.repos.golang.istio import *

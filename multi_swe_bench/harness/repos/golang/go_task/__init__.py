@@ -4,3 +4,4 @@ from multi_swe_bench.harness.repos.golang.go_task.task_go1_16 import *
 from multi_swe_bench.harness.repos.golang.go_task.task_go1_18 import *
 from multi_swe_bench.harness.repos.golang.go_task.task_go1_20 import *
 from multi_swe_bench.harness.repos.golang.go_task.task_go1_22 import *
+from multi_swe_bench.harness.repos.golang.go_task.task_2898_to_2847 import *
