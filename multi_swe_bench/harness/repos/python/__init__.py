@@ -461,3 +461,4 @@ from multi_swe_bench.harness.repos.python.kornia_rs import *
 from multi_swe_bench.harness.repos.python.onyx_dot_app import *
 
 from multi_swe_bench.harness.repos.python.JustAJobApp import *
+from multi_swe_bench.harness.repos.python.darrenburns import *
