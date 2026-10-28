@@ -4,3 +4,4 @@ from multi_swe_bench.harness.repos.golang.schollz.croc_450_to_529 import *
 from multi_swe_bench.harness.repos.golang.schollz.croc_530_to_869 import *
 from multi_swe_bench.harness.repos.golang.schollz.croc_870_to_939 import *
 from multi_swe_bench.harness.repos.golang.schollz.croc_940_to_99999 import *
+from multi_swe_bench.harness.repos.golang.schollz.croc_1144_to_1300 import *
