@@ -24,6 +24,41 @@ from multi_swe_bench.harness.pull_request import PullRequest
 _ERA_RANGE = "12325-to-12325"
 
 
+def _filter_binary_patches(patch_content: str) -> str:
+    """Drop binary diff sections from a git patch.
+
+    `git apply` refuses a binary hunk that has no full index line with "cannot
+    apply binary patch without full index line", and because that aborts the
+    WHOLE `git apply` invocation the fix/test stage then applies nothing and
+    reports (0,0,0) -- which is exactly how PR 10283 graded invalid despite
+    building. The binary hunks here are screenshot PNGs under fastlane/ that no
+    test compiles against, so stripping them is safe and lets the source hunks
+    apply.
+    """
+    if not patch_content:
+        return patch_content
+    lines = patch_content.split("\n")
+    result: list[str] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith("diff --git"):
+            start = i
+            i += 1
+            is_binary = False
+            while i < len(lines) and not lines[i].startswith("diff --git"):
+                if lines[i].startswith("GIT binary patch") or lines[i].startswith(
+                    "Binary files"
+                ):
+                    is_binary = True
+                i += 1
+            if not is_binary:
+                result.extend(lines[start:i])
+        else:
+            result.append(lines[i])
+            i += 1
+    return "\n".join(result)
+
+
 
 class ImageBase(Image):
     """Toolchain + cloned sources. Nothing after the clone.
@@ -287,13 +322,13 @@ def _prepare_sh(pr: PullRequest) -> str:
         '  fi',
         '  (unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; \\',
         '     yes | sdkmanager --licenses > /dev/null 2>&1; \\',
-        '     sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0") || true',
+        '     sdkmanager "platform-tools" "platforms;android-30" "platforms;android-31" "platforms;android-32" "platforms;android-33" "platforms;android-34" "platforms;android-35" "platforms;android-36" "build-tools;30.0.3" "build-tools;31.0.0" "build-tools;32.0.0" "build-tools;33.0.2" "build-tools;34.0.0" "build-tools;35.0.0" "build-tools;36.0.0") || true',
         '  # Google ships aapt/aapt2/zipalign/dexdump as x86_64-only in every',
         '  # build-tools release, so on arm64 they are replaced with aarch64 builds.',
         '  if [ "$ARCH" = "aarch64" ]; then',
         '    curl -fsSL "https://github.com/lzhiyong/android-sdk-tools/releases/download/33.0.3/android-sdk-tools-static-aarch64.zip" -o /tmp/bt.zip \\',
         '      && unzip -qo /tmp/bt.zip -d /tmp/bt \\',
-        '      && for V in 34.0.0; do for B in aapt aapt2 aidl zipalign dexdump split-select; do \\',
+        '      && for V in 30.0.3 31.0.0 32.0.0 33.0.2 34.0.0 35.0.0 36.0.0; do for B in aapt aapt2 aidl zipalign dexdump split-select; do \\',
         '           BT_SRC=$(find /tmp/bt -type f -name "$B" | head -1); \\\n           [ -n "$BT_SRC" ] && [ -d "$ANDROID_HOME/build-tools/$V" ] && install -m755 "$BT_SRC" "$ANDROID_HOME/build-tools/$V/$B"; \\',
         '         done; done; rm -rf /tmp/bt.zip /tmp/bt',
         '  fi',
@@ -303,7 +338,7 @@ def _prepare_sh(pr: PullRequest) -> str:
         '# redirects to a GitHub CDN that defeats its Java downloader (Connection refused on',
         '# Gradle 4.x, timeout on 8.x, every time). curl handles the same URL fine, so the',
         '# exact versions each commit pins are fetched here and invoked directly.',
-        'for V in 8.9 8.12.1; do',
+        'for V in 7.1.1 7.3.3 7.4 7.4.2 7.5.1 8.1 8.1.1 8.2 8.9 8.12.1 8.13 9.3.1; do',
         '  [ -d "/opt/gradle/gradle-$V" ] && continue',
         '  mkdir -p /opt/gradle',
         '  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 60 --max-time 900 \\',
@@ -323,14 +358,45 @@ def _prepare_sh(pr: PullRequest) -> str:
         '# dirty the worktree and trip the clean-tree assert.',
         'mkdir -p /root/.gradle',
         "cat > /root/.gradle/init.gradle <<'GRADLE'",
-        'allprojects {',
-        '  repositories {',
-        '    mavenLocal()',
-        '    mavenCentral()',
-        '    google()',
-        '    maven { url "https://maven.aliyun.com/repository/public" }',
-        '    maven { url "https://maven.aliyun.com/repository/jcenter" }',
+        '// Newer NewPipe commits (Gradle 8.1+/8.9/8.13/9.x) set',
+        '// dependencyResolutionManagement.repositoriesMode = FAIL_ON_PROJECT_REPOS in',
+        '// settings.gradle.kts, which makes Gradle HARD-FAIL (not catchable) if any',
+        '// repository is added via allprojects { repositories {} } from an init',
+        '// script. The only safe place to add mirrors for those builds is the',
+        '// settings level, and the mode must be relaxed to PREFER_SETTINGS so the',
+        '// addition is allowed. Older 7.x PRs have no such block but the',
+        '// dependencyResolutionManagement API still exists (since Gradle 6.8), so the',
+        '// settings injection works for every PR this era handles and the fragile',
+        '// project-level repositories block is dropped entirely.',
+        'settingsEvaluated { settings ->',
+        '  try {',
+        '    def drm = settings.dependencyResolutionManagement',
+        '    drm.repositoriesMode.set(org.gradle.api.initialization.resolve.RepositoriesMode.PREFER_SETTINGS)',
+        '    drm.repositories {',
+        '      mavenLocal()',
+        '      mavenCentral()',
+        '      google()',
+        '      maven { url "https://jitpack.io" }',
+        '      maven { url "https://maven.aliyun.com/repository/public" }',
+        '      maven { url "https://maven.aliyun.com/repository/jcenter" }',
+        '      maven { url "https://maven.aliyun.com/repository/google" }',
+        '    }',
+        '  } catch (Throwable ignored) {',
+        '    // No dependencyResolutionManagement on this Gradle -- fall back to',
+        '    // adding project repos, which such versions always accept.',
+        '    gradle.allprojects { p ->',
+        '      p.repositories {',
+        '        mavenLocal()',
+        '        mavenCentral()',
+        '        google()',
+        '        maven { url "https://jitpack.io" }',
+        '        maven { url "https://maven.aliyun.com/repository/public" }',
+        '        maven { url "https://maven.aliyun.com/repository/jcenter" }',
+        '      }',
+        '    }',
         '  }',
+        '}',
+        'allprojects {',
         '  tasks.withType(Test) {',
         '    outputs.upToDateWhen { false }',
         '    testLogging { events "passed", "failed", "skipped" }',
@@ -345,7 +411,31 @@ def _prepare_sh(pr: PullRequest) -> str:
         '# GRADLE_USER_HOME/gradle.properties outranks the project file, so omitting',
         "# them would silently drop upstream's heap setting.",
         "PROJ_JVMARGS=$(grep -h '^org\\.gradle\\.jvmargs' gradle.properties 2>/dev/null | head -1 | sed 's/^[^=]*=//')",
-        'echo "org.gradle.jvmargs=${PROJ_JVMARGS} -XX:-UsePerfData" >> /root/.gradle/gradle.properties',
+        '# kapt (Kotlin annotation processing) reflects into the jdk.compiler internal',
+        '# packages that JDK 16+ strongly-encapsulated, so on JDK 17 it dies with',
+        '# IllegalAccessException ("module jdk.compiler does not export',
+        '# com.sun.tools.javac.model") during :app:kaptDebugKotlin. The "does not',
+        '# EXPORT" wording means --add-opens alone is insufficient: the package must be',
+        '# --add-exports (readable at compile/reflype level) AND --add-opens (deep',
+        '# reflection). Supply both for the full jdk.compiler set the kapt javac uses.',
+        '# Harmless to the AGP-8 PRs that already dropped kapt.',
+        'KAPT_PKGS="api code comp file main model parser processing tree util jvm"',
+        'KAPT_OPENS=""',
+        'for P in $KAPT_PKGS; do',
+        '  KAPT_OPENS="$KAPT_OPENS --add-exports=jdk.compiler/com.sun.tools.javac.$P=ALL-UNNAMED"',
+        '  KAPT_OPENS="$KAPT_OPENS --add-opens=jdk.compiler/com.sun.tools.javac.$P=ALL-UNNAMED"',
+        'done',
+        'echo "org.gradle.jvmargs=${PROJ_JVMARGS} -XX:-UsePerfData ${KAPT_OPENS}" >> /root/.gradle/gradle.properties',
+        '# kapt stub generation and annotation processing actually run inside the',
+        '# KOTLIN daemon, not the Gradle daemon, and the Kotlin daemon reads',
+        '# kotlin.daemon.jvmargs -- NOT org.gradle.jvmargs. Without the flags here the',
+        '# Clojure-based processor NewPipe uses still hits "jdk.compiler does not',
+        '# export com.sun.tools.javac.model". Set both so whichever JVM ends up hosting',
+        '# the processor has the exports/opens.',
+        'echo "kotlin.daemon.jvmargs=${KAPT_OPENS}" >> /root/.gradle/gradle.properties',
+        '# isolation=none keeps the processor in a JVM that carries the flags rather',
+        '# than a bare forked worker that would not.',
+        'echo "kapt.workers.isolation=none" >> /root/.gradle/gradle.properties',
         '',
         '# AGP resolves its own x86_64-only aapt2 from Maven and prefers it over the',
         '# SDK\'s, so arm64 resource merging fails with "AAPT2 ... Daemon startup',
@@ -374,7 +464,7 @@ def _prepare_sh(pr: PullRequest) -> str:
         '#   com.github.<user>.<repo>:<repo>:<ref> -> same (multi-module form)',
         '# Only coordinates that actually 404 on JitPack are built, so this costs one',
         '# HEAD request per dependency when everything resolves normally.',
-        'for COORD in $(grep -oE "com\\.github\\.[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9._-]+" app/build.gradle | sort -u); do',
+        'for COORD in $(grep -hoE "com\\.github\\.[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9._-]+" app/build.gradle app/build.gradle.kts 2>/dev/null | sort -u); do',
         '  DEP_G=${COORD%%:*}; DEP_REST=${COORD#*:}',
         '  DEP_A=${DEP_REST%%:*}; DEP_V=${DEP_REST##*:}',
         '  DEP_USER=${DEP_G#com.github.}; DEP_USER=${DEP_USER%%.*}',
@@ -514,8 +604,8 @@ class ImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(".", "fix.patch", f"{self.pr.fix_patch}"),
-            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "fix.patch", f"{_filter_binary_patches(self.pr.fix_patch)}"),
+            File(".", "test.patch", f"{_filter_binary_patches(self.pr.test_patch)}"),
             File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES),
             File(".", "prepare.sh", _prepare_sh(self.pr)),
             File(

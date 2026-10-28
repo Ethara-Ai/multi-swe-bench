@@ -4,3 +4,5 @@ from multi_swe_bench.harness.repos.golang.syncthing.syncthing_6876_to_5398 impor
 from multi_swe_bench.harness.repos.golang.syncthing.syncthing_8449_to_6925 import *
 from multi_swe_bench.harness.repos.golang.syncthing.syncthing_9038_to_8486 import *
 from multi_swe_bench.harness.repos.golang.syncthing.syncthing_9314_to_9094 import *
+from multi_swe_bench.harness.repos.golang.syncthing.syncthing_5379_to_756 import *
+from multi_swe_bench.harness.repos.golang.syncthing.syncthing_9305_to_6444 import *

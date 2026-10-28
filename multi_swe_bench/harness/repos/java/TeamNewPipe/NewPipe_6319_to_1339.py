@@ -1,7 +1,8 @@
-"""TeamNewPipe/NewPipe -- JDK 8 era (PRs 1339, 3278, 3294, 6319).
+"""TeamNewPipe/NewPipe -- JDK 8 era (PRs 397, 1339, 3278, 3294, 6319).
 
 Era boundary, measured at each PR's own base commit rather than guessed:
 
+    PR 397    2016-12-28  Gradle 2.14.1   AGP 2.2.3  compileSdk 25  Java 1.7
     PR 1339   2018-04-21  Gradle 4.6      AGP 3.1.1  compileSdk 27  Java 1.8
     PR 3278   2020-03-28  Gradle 5.4.1    AGP 3.5.1  compileSdk 28  Java 1.8  Kotlin 1.3.50
     PR 3294   2020-04-08  Gradle 5.4.1    AGP 3.5.1  compileSdk 28  Java 1.8  Kotlin 1.3.50
@@ -26,6 +27,39 @@ from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
 _ERA_RANGE = "6319-to-1339"
+
+
+def _filter_binary_patches(patch_content: str) -> str:
+    """Drop binary diff sections from a git patch.
+
+    `git apply` aborts the whole invocation on a binary hunk that lacks a full
+    index line ("cannot apply binary patch without full index line"), so the
+    fix/test stage then applies nothing and reports (0,0,0). The binary hunks in
+    this dataset are screenshot PNGs that no test compiles against, so stripping
+    them is safe and lets the source hunks apply.
+    """
+    if not patch_content:
+        return patch_content
+    lines = patch_content.split("\n")
+    result: list[str] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith("diff --git"):
+            start = i
+            i += 1
+            is_binary = False
+            while i < len(lines) and not lines[i].startswith("diff --git"):
+                if lines[i].startswith("GIT binary patch") or lines[i].startswith(
+                    "Binary files"
+                ):
+                    is_binary = True
+                i += 1
+            if not is_binary:
+                result.extend(lines[start:i])
+        else:
+            result.append(lines[i])
+            i += 1
+    return "\n".join(result)
 
 
 
@@ -179,6 +213,10 @@ set -uo pipefail
 export CI=true
 export JAVA_HOME=/usr/lib/jvm/java-8
 export GRADLE_USER_HOME=/root/.gradle
+# The aarch64 aapt v1 used on arm64 (PR 397's AGP 2.2.3 predates aapt2) aborts
+# with "ANDROID_DATA not set" unless this points somewhere writable. Harmless on
+# x86, where the stock Google aapt ignores it.
+export ANDROID_DATA=${ANDROID_HOME:-/opt/android-sdk}
 
 # The wrapper cannot download a distribution here (the CDN redirect defeats its
 # Java downloader), so use the pre-seeded binary of the exact version this
@@ -262,6 +300,9 @@ def _prepare_sh(pr: PullRequest) -> str:
         "",
         "export JAVA_HOME=/usr/lib/jvm/java-8",
         "export GRADLE_USER_HOME=/root/.gradle",
+        "# The aarch64 aapt v1 used on arm64 (PR 397's AGP 2.2.3 predates aapt2)",
+        '# aborts with "ANDROID_DATA not set" unless this is set; harmless on x86.',
+        "export ANDROID_DATA=${ANDROID_HOME:-/opt/android-sdk}",
         "",
         f"cd /home/{pr.repo}",
         "bash /home/check_git_changes.sh",
@@ -291,13 +332,13 @@ def _prepare_sh(pr: PullRequest) -> str:
         '  fi',
         '  (unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; \\',
         '     yes | sdkmanager --licenses > /dev/null 2>&1; \\',
-        '     sdkmanager "platform-tools" "platforms;android-27" "platforms;android-28" "platforms;android-29" "platforms;android-30" "build-tools;27.0.3" "build-tools;28.0.3" "build-tools;29.0.3" "build-tools;30.0.3") || true',
+        '     sdkmanager "platform-tools" "platforms;android-25" "platforms;android-27" "platforms;android-28" "platforms;android-29" "platforms;android-30" "build-tools;23.0.3" "build-tools;27.0.1" "build-tools;27.0.3" "build-tools;28.0.3" "build-tools;29.0.3" "build-tools;30.0.3") || true',
         '  # Google ships aapt/aapt2/zipalign/dexdump as x86_64-only in every',
         '  # build-tools release, so on arm64 they are replaced with aarch64 builds.',
         '  if [ "$ARCH" = "aarch64" ]; then',
         '    curl -fsSL "https://github.com/lzhiyong/android-sdk-tools/releases/download/33.0.3/android-sdk-tools-static-aarch64.zip" -o /tmp/bt.zip \\',
         '      && unzip -qo /tmp/bt.zip -d /tmp/bt \\',
-        '      && for V in 27.0.3 28.0.3 29.0.3 30.0.3; do for B in aapt aapt2 aidl zipalign dexdump split-select; do \\',
+        '      && for V in 23.0.3 27.0.1 27.0.3 28.0.3 29.0.3 30.0.3; do for B in aapt aapt2 aidl zipalign dexdump split-select; do \\',
         '           BT_SRC=$(find /tmp/bt -type f -name "$B" | head -1); \\\n           [ -n "$BT_SRC" ] && [ -d "$ANDROID_HOME/build-tools/$V" ] && install -m755 "$BT_SRC" "$ANDROID_HOME/build-tools/$V/$B"; \\',
         '         done; done; rm -rf /tmp/bt.zip /tmp/bt',
         '  fi',
@@ -307,7 +348,7 @@ def _prepare_sh(pr: PullRequest) -> str:
         '# redirects to a GitHub CDN that defeats its Java downloader (Connection refused on',
         '# Gradle 4.x, timeout on 8.x, every time). curl handles the same URL fine, so the',
         '# exact versions each commit pins are fetched here and invoked directly.',
-        'for V in 4.2.1 4.6 5.4.1 5.5.1 6.8.2 6.8.3; do',
+        'for V in 2.14.1 4.2.1 4.3.1 4.6 5.1.1 5.4.1 5.5.1 5.6.4 6.5 6.8.2 6.8.3; do',
         '  [ -d "/opt/gradle/gradle-$V" ] && continue',
         '  mkdir -p /opt/gradle',
         '  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 60 --max-time 900 \\',
@@ -327,13 +368,46 @@ def _prepare_sh(pr: PullRequest) -> str:
         '# dirty the worktree and trip the clean-tree assert.',
         'mkdir -p /root/.gradle',
         "cat > /root/.gradle/init.gradle <<'GRADLE'",
+        "// The buildscript classpath (AGP itself) is resolved from each project's",
+        '// own buildscript.repositories, which init-script allprojects.repositories',
+        "// does NOT feed. PR 397's root build.gradle points that block at jcenter(),",
+        '// whose host (jcenter.bintray.com) was decommissioned in 2022, so',
+        '// com.android.tools.build:gradle:2.2.3 404s and configuration aborts before',
+        '// any task runs. Add the live mirrors to the buildscript classpath here, in',
+        '// addition to the dependency repositories below, so AGP resolves from a',
+        "// host that still exists without editing the project's build.gradle.",
+        'allprojects {',
+        '  buildscript {',
+        '    repositories {',
+        '      mavenLocal()',
+        '      mavenCentral()',
+        '      if (repositories.metaClass.respondsTo(repositories, "google")) {',
+        '        google()',
+        '      } else {',
+        '        maven { url "https://dl.google.com/dl/android/maven2/" }',
+        '      }',
+        '      maven { url "https://maven.aliyun.com/repository/public" }',
+        '      maven { url "https://maven.aliyun.com/repository/jcenter" }',
+        '      maven { url "https://maven.aliyun.com/repository/google" }',
+        '    }',
+        '  }',
+        '}',
         'allprojects {',
         '  repositories {',
         '    mavenLocal()',
         '    mavenCentral()',
-        '    google()',
+        '    // google() only exists from Gradle 4.0; PR 397 pins Gradle 2.14.1,',
+        '    // where the method is absent and the script aborts at eval time. Call',
+        '    // it when present, else add the same repo by its well-known URL so',
+        '    // every era resolves Android artifacts identically.',
+        '    if (repositories.metaClass.respondsTo(repositories, "google")) {',
+        '      google()',
+        '    } else {',
+        '      maven { url "https://dl.google.com/dl/android/maven2/" }',
+        '    }',
         '    maven { url "https://maven.aliyun.com/repository/public" }',
         '    maven { url "https://maven.aliyun.com/repository/jcenter" }',
+        '    maven { url "https://maven.aliyun.com/repository/google" }',
         '  }',
         '  tasks.withType(Test) {',
         '    outputs.upToDateWhen { false }',
@@ -359,6 +433,17 @@ def _prepare_sh(pr: PullRequest) -> str:
         '  if [ -n "$AAPT2_BIN" ]; then',
         '    echo "android.aapt2FromMavenOverride=$AAPT2_BIN" >> /root/.gradle/gradle.properties',
         '    echo "prepare: AGP aapt2 override -> $AAPT2_BIN"',
+        '  fi',
+        '  # AGP 3.0-3.2 ship an aapt2 daemon protocol too old for the aarch64 aapt2',
+        '  # above, so resource merging dies with "AAPT2 ... No server to serve',
+        '  # request". Those AGP versions still support the legacy aapt (v1), which',
+        '  # DOES have a working aarch64 build, via android.enableAapt2=false. AGP 3.3+',
+        '  # removed that flag, so only set it when the project pins AGP < 3.3.',
+        '  AGP_VER=$(grep -rhoE "com.android.tools.build:gradle:[0-9]+\\.[0-9]+" build.gradle */build.gradle 2>/dev/null | grep -oE "[0-9]+\\.[0-9]+" | head -1)',
+        '  AGP_MAJ=${AGP_VER%%.*}; AGP_MIN=${AGP_VER#*.}',
+        '  if [ -n "$AGP_VER" ] && [ "$AGP_MAJ" = "3" ] && [ "${AGP_MIN:-9}" -lt 3 ]; then',
+        '    echo "android.enableAapt2=false" >> /root/.gradle/gradle.properties',
+        '    echo "prepare: AGP $AGP_VER < 3.3 on arm64 -> using legacy aapt (v1)"',
         '  fi',
         'fi',
         '',
@@ -518,8 +603,8 @@ class ImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(".", "fix.patch", f"{self.pr.fix_patch}"),
-            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "fix.patch", f"{_filter_binary_patches(self.pr.fix_patch)}"),
+            File(".", "test.patch", f"{_filter_binary_patches(self.pr.test_patch)}"),
             File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES),
             File(".", "prepare.sh", _prepare_sh(self.pr)),
             File(
