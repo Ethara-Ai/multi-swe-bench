@@ -9,4 +9,5 @@ from multi_swe_bench.harness.repos.golang.kubernetes.kubernetes_124209_to_120300
 from multi_swe_bench.harness.repos.golang.kubernetes.kubernetes_126763_to_124210 import *
 from multi_swe_bench.harness.repos.golang.kubernetes.kubernetes_131305_to_126764 import *
 from multi_swe_bench.harness.repos.golang.kubernetes.kubernetes_137240_to_131306 import *
+from multi_swe_bench.harness.repos.golang.kubernetes.minikube_23791_to_23051 import *
 from multi_swe_bench.harness.repos.golang.kubernetes.perf_tests import *
