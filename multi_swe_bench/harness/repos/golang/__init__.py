@@ -240,3 +240,5 @@ from multi_swe_bench.harness.repos.golang.bitnami import *
 from multi_swe_bench.harness.repos.golang.github import *
 from multi_swe_bench.harness.repos.golang.henrygd import *
 from multi_swe_bench.harness.repos.golang.dgraph_io import *
+from multi_swe_bench.harness.repos.golang.d2lang import *
+from multi_swe_bench.harness.repos.golang.darrenburns import *

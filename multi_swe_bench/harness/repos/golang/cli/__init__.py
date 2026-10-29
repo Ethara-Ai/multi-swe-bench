@@ -8,3 +8,4 @@ from multi_swe_bench.harness.repos.golang.cli.cli_go1_22 import *
 from multi_swe_bench.harness.repos.golang.cli.cli_go1_23 import *
 from multi_swe_bench.harness.repos.golang.cli.cli_go1_24 import *
 from multi_swe_bench.harness.repos.golang.cli.cli_go1_25 import *
+from multi_swe_bench.harness.repos.golang.cli.cli_14578_to_13057 import *
