@@ -13,3 +13,5 @@ from multi_swe_bench.harness.repos.typescript.mui.material_ui_21638_to_14827 imp
 from multi_swe_bench.harness.repos.typescript.mui.material_ui_14082_to_12549 import *
 from multi_swe_bench.harness.repos.typescript.mui.material_ui_12481_to_10144 import *
 from multi_swe_bench.harness.repos.typescript.mui.material_ui_8634_to_6576 import *
+from multi_swe_bench.harness.repos.typescript.mui.material_ui_36843_to_34324 import *
+from multi_swe_bench.harness.repos.typescript.mui.material_ui_45426_to_42839 import *
