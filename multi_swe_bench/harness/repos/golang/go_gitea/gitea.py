@@ -2,9 +2,52 @@ import json
 import re
 from typing import Optional
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+_TEST_PACKAGES = """MODULE=$(go list -m)
+PKGS=$(go list ./... | grep -vE "^${MODULE}/(modelmigration(/.*)?|tests|tests/integration|tests/integration/migration-test)$")"""
+
+_TEST_CMD = "go test -json -count=1 -timeout 90m -skip '^(TestDebounce|TestPullRequest_AddToTaskQueue)$' $PKGS || status=$?"
+
+_INTEGRATION_FILE = re.compile(r"^tests/integration/[^/]+_test\.go$")
+_ADDED_TEST = re.compile(r"^\+func (Test\w+)\(")
+_HUNK_TEST = re.compile(r"^@@ [^@]* @@ func (Test\w+)\(")
+
+
+def _integration_tests(test_patch: str) -> list[str]:
+    names = set()
+    current = None
+    for line in test_patch.splitlines():
+        if line.startswith("diff --git "):
+            m = re.match(r"diff --git a/\S+ b/(\S+)", line)
+            current = m.group(1) if m else None
+            continue
+        if not current or not _INTEGRATION_FILE.match(current):
+            continue
+        m = _ADDED_TEST.match(line) or _HUNK_TEST.match(line)
+        if m and m.group(1) != "TestMain":
+            names.add(m.group(1))
+    return sorted(names)
+
+
+def _integration_cmd(tests: list[str]) -> str:
+    if not tests:
+        return ""
+    # Integration tests exec the gitea binary from the source root (setting.AppPath).
+    return (
+        "(go build -o gitea . && GITEA_TEST_DATABASE=sqlite "
+        "go test -json -count=1 -timeout 40m "
+        f"-run '^({'|'.join(tests)})$' ./tests/integration) || status=$?"
+    )
+
+
+def _integration_warmup(tests: list[str]) -> str:
+    if not tests:
+        return ""
+    return "go build -o /dev/null .\ngo test -count=1 -exec /bin/true ./tests/integration"
 
 _PR_INTERVAL = "30205_to_40000"
 _TEST_USER = "giteatest"
@@ -116,6 +159,8 @@ class GiteaImageBase_30205_TO_40000(Image):
 
     def dependency(self) -> str:
         return _GO_IMAGE
+    def dependency(self) -> str | Image:
+        return "golang:1.27.1-bookworm"
 
     def image_tag(self) -> str:
         return _BASE_TAG
@@ -127,94 +172,58 @@ class GiteaImageBase_30205_TO_40000(Image):
         return []
 
     def dockerfile(self) -> str:
+        org = self.pr.org
+        repo = self.pr.repo
+
         if self.config.need_clone:
+            code = f'RUN git clone "${{REPO_URL}}" /home/{repo}'
             code = (
                 f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo} && \\\n'
                 f"    cd /home/{self.pr.repo} && git rev-parse HEAD >/dev/null"
             )
         else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+            code = f"COPY {repo} /home/{repo}"
 
         return f"""# syntax=docker/dockerfile:1.6
-
-FROM {_GO_IMAGE}
+FROM {image_name}
 
 ARG TARGETARCH
-ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
 ARG BASE_COMMIT
 
-ARG http_proxy=""
-ARG https_proxy=""
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG no_proxy="localhost,127.0.0.1,::1"
-ARG NO_PROXY="localhost,127.0.0.1,::1"
-ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+{DockerfileEnhancer._PROXY_ARGS}
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC \\
-    http_proxy=${{http_proxy}} \\
-    https_proxy=${{https_proxy}} \\
-    HTTP_PROXY=${{HTTP_PROXY}} \\
-    HTTPS_PROXY=${{HTTPS_PROXY}} \\
-    no_proxy=${{no_proxy}} \\
-    NO_PROXY=${{NO_PROXY}} \\
-    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
-    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    GIT_SSL_CAINFO=${{CA_CERT_PATH}}
+{DockerfileEnhancer._ENV_BLOCK}
 
-ENV CGO_ENABLED=0 \\
-    GOTOOLCHAIN=local \\
-    GOPROXY=https://proxy.golang.org,direct \\
-    GOPATH=/go \\
-    GITEA_TEST_DATABASE=sqlite \\
-    CI=true
+ENV CI=true \\
+    CGO_ENABLED=0 \\
+    GOTOOLCHAIN= \\
+    GOFLAGS=-buildvcs=false \\
+    SNAP=1 \\
+    SNAP_NAME=gitea
 
-LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
-      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
-      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
 
-RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+{DockerfileEnhancer._CERT_SYMLINKS}
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git ca-certificates gnupg openssh-client \\
-    && rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update && \\
-    if ! apt-get install -y --no-install-recommends git-lfs; then \\
-        dpkg --configure -a || true; \\
-    fi && \\
-    test -x /usr/bin/git-lfs && \\
-    rm -rf /var/lib/apt/lists/*
-
-RUN id -u {_TEST_USER} >/dev/null 2>&1 || useradd -m -s /bin/bash {_TEST_USER}
-
-RUN git config --system --add safe.directory '*' && \\
-    git config --system user.name "Gitea Test" && \\
-    git config --system user.email "gitea-test@example.com" && \\
-    git config --system filter.lfs.clean 'git-lfs clean -- %f' && \\
-    git config --system filter.lfs.smudge 'git-lfs smudge -- %f' && \\
-    git config --system filter.lfs.process 'git-lfs filter-process' && \\
-    git config --system filter.lfs.required true
+{self.global_env}
 
 WORKDIR /home/
 
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates git \\
+    && rm -rf /var/lib/apt/lists/*
+
 {code}
 
-RUN cd /home/{self.pr.repo} && go mod download
+WORKDIR /home/{repo}
 
-RUN chown -R {_TEST_USER}:{_TEST_USER} /go
+{self.clear_env}
 
+CMD ["/bin/bash"]
 CMD ["/bin/bash"]
 """
 
@@ -242,6 +251,10 @@ class GiteaImageDefault_30205_TO_40000(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        integration_tests = _integration_tests(self.pr.test_patch)
+        integration = _integration_cmd(integration_tests)
+        warmup = _integration_warmup(integration_tests)
+
         test_command = _test_command(self.pr.test_patch, self.pr.fix_patch)
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
@@ -264,35 +277,50 @@ fi
 
 echo "check_git_changes: No uncommitted changes"
 exit 0
+
+""",
 """,
             ),
             File(
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -euo pipefail
+set -euo pipefailo pipefail
+export CI=true
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git reset --hard
+git clean -fdx
 git clean -fdx
 bash /home/check_git_changes.sh
 git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null || git fetch --no-tags origin {pr.base.sha}
-git checkout --detach {pr.base.sha}
+git checkout --detach --detach {sha}
 bash /home/check_git_changes.sh
 
-export CI=true
-export GITEA_TEST_DATABASE=sqlite
-export CGO_ENABLED=0
-export GOTOOLCHAIN=local
-
+GO_VERSION=$(awk '/^toolchain /{{print $2; exit}}' go.mod)
+if [ -z "$GO_VERSION" ]; then
+  GO_VERSION=go$(awk '/^go /{{print $2; exit}}' go.mod)
+  case "$GO_VERSION" in
+    go*.*.*) ;;
+    *) GO_VERSION="$GO_VERSION.0" ;;
+  esac
+fi
+go env -w GOTOOLCHAIN="$GO_VERSION"
 go version
-go mod download
-go build -o gitea .
 
-go build ./...
-go test -c -o /dev/null ./{integration_dir}
+go mod download
+
+{packages}
+go test -count=1 -exec /bin/true $PKGS
+{warmup}
 echo DEPS_OK
-""".format(pr=self.pr, integration_dir=_INTEGRATION_DIR),
+
+""".format(
+                    repo=self.pr.repo,
+                    sha=self.pr.base.sha,
+                    packages=_TEST_PACKAGES,
+                    warmup=warmup,
+                ),
             ),
             File(
                 ".",
@@ -314,37 +342,63 @@ cd /home/{pr.repo}
                 "test-run.sh",
                 """#!/bin/bash
 set -eo pipefail
+export CI=trueo pipefail
 
 export CI=true
 export GITEA_TEST_DATABASE=sqlite
 export CGO_ENABLED=0
 export GOTOOLCHAIN=local
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch
-{test_command}
-""".format(pr=self.pr, test_command=test_command),
+{packages}
+status=0
+{cmd}
+{integration}
+exit $status
+
+""".format(
+                    repo=self.pr.repo,
+                    packages=_TEST_PACKAGES,
+                    cmd=_TEST_CMD,
+                    integration=integration,
+                ),
             ),
             File(
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
 set -eo pipefail
+export CI=trueo pipefail
 
 export CI=true
 export GITEA_TEST_DATABASE=sqlite
 export CGO_ENABLED=0
 export GOTOOLCHAIN=local
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-{test_command}
-""".format(pr=self.pr, test_command=test_command),
+{packages}
+status=0
+{cmd}
+{integration}
+exit $status
+
+""".format(
+                    repo=self.pr.repo,
+                    packages=_TEST_PACKAGES,
+                    cmd=_TEST_CMD,
+                    integration=integration,
+                ),
             ),
         ]
 
     def dockerfile(self) -> str:
-        base = self.dependency()
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+        repo = self.pr.repo
+
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
@@ -357,42 +411,9 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 {copy_commands}
 RUN bash /home/prepare.sh
 
-RUN set -eux; \\
-    cd /home/{repo}; \\
-    git checkout --detach "{sha}"; \\
-    git remote remove origin 2>/dev/null || true; \\
-    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
-        | xargs -r -n1 git update-ref -d; \\
-    git reflog expire --expire=now --all; \\
-    git reflog expire --expire-unreachable=now --all; \\
-    git gc --prune=now --aggressive; \\
-    git repack -a -d -l --quiet; \\
-    rm -f .git/objects/info/alternates; \\
-    git config --local gc.auto 0; \\
-    git config --local fetch.recurseSubmodules false; \\
-    git config --local remote.pushDefault ""; \\
-    test "$(git rev-parse HEAD)" = "{sha}"; \\
-    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
-    test -z "$(git remote)"; \\
-    test -z "$(git reflog)"; \\
-    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+{Image._HARDENING_BLOCK}
 
-RUN if [ -f /home/{repo}/.gitmodules ]; then \\
-        cd /home/{repo} && git submodule foreach --recursive ' \\
-            git checkout --detach HEAD; \\
-            git remote remove origin 2>/dev/null || true; \\
-            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
-                | xargs -r -n1 git update-ref -d; \\
-            git reflog expire --expire=now --all; \\
-            git reflog expire --expire-unreachable=now --all; \\
-            git gc --prune=now --aggressive; \\
-            rm -f .git/objects/info/alternates; \\
-        '; \\
-    fi
-
-RUN chown -R {_TEST_USER}:{_TEST_USER} /home/{repo}
-
-USER {_TEST_USER}
+{self.clear_env}
 """
 
 
@@ -407,7 +428,7 @@ class GITEA_30205_TO_40000(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image | None:
         return GiteaImageDefault_30205_TO_40000(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -439,7 +460,7 @@ class GITEA_30205_TO_40000(Instance):
 
         for line in log.splitlines():
             line = line.strip()
-            if not line.startswith("{") or '"Action"' not in line:
+            if not line.startswith("{"):
                 continue
             try:
                 event = json.loads(line)
@@ -448,29 +469,18 @@ class GITEA_30205_TO_40000(Instance):
             if not isinstance(event, dict):
                 continue
 
+            test = event.get("Test")
             action = event.get("Action")
-            package = event.get("Package") or event.get("ImportPath") or ""
-            package = package.split(" [", 1)[0].strip()
-            test = event.get("Test") or ""
-            if not package:
+            if not test or action not in ("pass", "fail", "skip"):
                 continue
 
-            if test:
-                if action not in ("pass", "fail", "skip"):
-                    continue
-                packages_with_tests.add(package)
-                name = f"{package}::{test}"
-                if action == "pass":
-                    passed_tests.add(name)
-                elif action == "fail":
-                    failed_tests.add(name)
-                else:
-                    skipped_tests.add(name)
-            elif action in ("fail", "build-fail"):
-                broken_packages.add(package)
-
-        for package in broken_packages - packages_with_tests:
-            failed_tests.add(f"{package}::[package]")
+            name = f"{event.get('Package', '')}::{test}"
+            if action == "pass":
+                passed_tests.add(name)
+            elif action == "fail":
+                failed_tests.add(name)
+            else:
+                skipped_tests.add(name)
 
         passed_tests -= failed_tests
         passed_tests -= skipped_tests
