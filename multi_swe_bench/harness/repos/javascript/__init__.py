@@ -192,3 +192,5 @@ from multi_swe_bench.harness.repos.javascript.thenewboston_blockchain import *
 from multi_swe_bench.harness.repos.javascript.ipfs import *
 from multi_swe_bench.harness.repos.javascript.npm import *
 from multi_swe_bench.harness.repos.javascript.career_ops_hq import *
+from multi_swe_bench.harness.repos.javascript.immerjs import *
+from multi_swe_bench.harness.repos.javascript.ljharb import *
