@@ -181,7 +181,7 @@ from multi_swe_bench.harness.repos.golang.j178 import *
 from multi_swe_bench.harness.repos.golang.openebs import *
 from multi_swe_bench.harness.repos.golang.tsuru import *
 from multi_swe_bench.harness.repos.golang.mock import *
-# from multi_swe_bench.harness.repos.golang.microsoft import *  # module not present
+from multi_swe_bench.harness.repos.golang.microsoft import *
 from multi_swe_bench.harness.repos.golang.vouch import *
 from multi_swe_bench.harness.repos.golang.litmuschaos import *
 from multi_swe_bench.harness.repos.golang.oapi_codegen import *
