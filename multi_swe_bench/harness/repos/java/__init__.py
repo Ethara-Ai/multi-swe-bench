@@ -20,6 +20,7 @@ from multi_swe_bench.harness.repos.java.googlecontainertools import *
 from multi_swe_bench.harness.repos.java.Graylog2 import *
 from multi_swe_bench.harness.repos.java.halodev import *
 from multi_swe_bench.harness.repos.java.hrldcpr import *
+from multi_swe_bench.harness.repos.java.JanusGraph import *
 from multi_swe_bench.harness.repos.java.javaparser import *
 from multi_swe_bench.harness.repos.java.jenkinsci import *
 from multi_swe_bench.harness.repos.java.JodaOrg import *
