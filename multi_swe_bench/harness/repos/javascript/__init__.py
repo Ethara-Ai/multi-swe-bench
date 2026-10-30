@@ -99,6 +99,7 @@ from multi_swe_bench.harness.repos.javascript.markedjs import *
 from multi_swe_bench.harness.repos.javascript.mde import *
 from multi_swe_bench.harness.repos.javascript.mattermost import *
 from multi_swe_bench.harness.repos.javascript.microsoft import *
+from multi_swe_bench.harness.repos.javascript.moment import *
 from multi_swe_bench.harness.repos.javascript.motdotla import *
 from multi_swe_bench.harness.repos.javascript.mozilla import *
 from multi_swe_bench.harness.repos.javascript.mochajs import *
