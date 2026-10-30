@@ -1,5 +1,6 @@
 from multi_swe_bench.harness.repos.javascript.sveltejs.svelte import *
 from multi_swe_bench.harness.repos.javascript.sveltejs.kit import *
+from multi_swe_bench.harness.repos.javascript.sveltejs.svelte_18869_to_18330 import *
 from multi_swe_bench.harness.repos.javascript.sveltejs.svelte_15892_to_15506 import *
 from multi_swe_bench.harness.repos.javascript.sveltejs.svelte_15451_to_15056 import *
 from multi_swe_bench.harness.repos.javascript.sveltejs.svelte_15056_to_14714 import *
