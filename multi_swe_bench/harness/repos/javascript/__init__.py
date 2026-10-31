@@ -81,6 +81,7 @@ from multi_swe_bench.harness.repos.javascript.honeybadger_io import *
 from multi_swe_bench.harness.repos.javascript.iamkun import *
 from multi_swe_bench.harness.repos.javascript.IgniteUI import *
 from multi_swe_bench.harness.repos.javascript.ing_bank import *
+from multi_swe_bench.harness.repos.javascript.isomorphic_git import *
 from multi_swe_bench.harness.repos.javascript.jshint import *
 from multi_swe_bench.harness.repos.javascript.json_editor import *
 from multi_swe_bench.harness.repos.javascript.jsx_eslint import *
@@ -114,7 +115,7 @@ from multi_swe_bench.harness.repos.javascript.open_gsd import *
 from multi_swe_bench.harness.repos.javascript.openlayers import *
 from multi_swe_bench.harness.repos.javascript.openscope import *
 from multi_swe_bench.harness.repos.javascript.postcss import *
-# from multi_swe_bench.harness.repos.javascript.preactjs import *  # missing module
+from multi_swe_bench.harness.repos.javascript.preactjs import *
 from multi_swe_bench.harness.repos.javascript.prettier import *
 from multi_swe_bench.harness.repos.javascript.PrismJS import *
 from multi_swe_bench.harness.repos.javascript.PrismarineJS import *
