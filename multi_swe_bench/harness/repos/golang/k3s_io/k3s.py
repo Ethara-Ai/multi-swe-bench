@@ -1,7 +1,6 @@
 import re
-from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -33,7 +32,7 @@ def _test_pkgs(patch: str) -> list[str]:
         # container, so they only ever hang (capped by -timeout) or fail, adding
         # noise. A PR whose ONLY tests are e2e/integration yields no unit signal
         # and is correctly left with nothing to run (-> invalid).
-        if pkg.startswith(("tests/e2e", "tests/integration", "tests/perf")):
+        if pkg.startswith(("tests/e2e", "tests/integration", "tests/perf", "tests/docker")):
             continue
         pkgs.add(pkg)
     return sorted(pkgs)
@@ -42,16 +41,10 @@ def _test_pkgs(patch: str) -> list[str]:
 class K3sImageBase(Image):
     """ONE shared toolchain base image (golang + k3s build deps). Tag ``:base``.
 
-    The harness builds this once and every PR image builds ``FROM`` it. It
-    deliberately does NOT clone the repo and does NOT check out any commit, so a
-    single ``:base`` can serve every PR. This matters because ``dependency()``
-    returns a *string*, which means (a) DockerfileEnhancer rewrites any clone
-    line here into "clone + checkout ${BASE_COMMIT} + _HARDENING_BLOCK", and
-    (b) build_dataset.py passes BASE_COMMIT as a build arg. A clone in this
-    layer would therefore gc-prune the shared base down to whichever single PR
-    happened to trigger the base build, breaking every other PR. With no clone
-    line, the enhancer contributes only the infra ARGs/ENV/LABEL and never
-    hardens or pins this layer. The per-PR clone + checkout + hardening live in
+    The harness builds this once and every PR image builds ``FROM`` it, so it
+    must never clone the repo or consume ``${BASE_COMMIT}``. It opts out of
+    DockerfileEnhancer with the syntax directive and carries the proxy/CA/label
+    infrastructure itself. The per-PR clone + checkout + hardening live in
     K3sImageDefault.
     """
 
@@ -67,8 +60,8 @@ class K3sImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+    def dependency(self) -> str | Image:
+        return "golang:1.27.1-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -84,15 +77,37 @@ class K3sImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        return f"""FROM {image_name}
+        org = self.pr.org
+        repo = self.pr.repo
+
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+# Declared only, so the harness build-arg is consumed; NEVER expanded here.
+# This base is shared by every PR (image_tag() == "base"), so expanding it would
+# bake one arbitrary PR's tree into the layer all the others inherit.
+ARG BASE_COMMIT
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+ENV CI=true \\
+    GOTOOLCHAIN=auto \\
+    GOFLAGS=-mod=mod
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
 
 {self.global_env}
 
 WORKDIR /home/
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV GOTOOLCHAIN=auto
-ENV GOFLAGS=-mod=mod
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
     ca-certificates \\
@@ -109,6 +124,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -125,7 +141,7 @@ class K3sImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Image:
         # Chains to the ONE shared :base. Because this returns an Image (not a
         # string), DockerfileEnhancer returns dockerfile() verbatim and
         # build_dataset.py supplies no build args — so this layer bakes
@@ -141,7 +157,14 @@ class K3sImageDefault(Image):
 
     def files(self) -> list[File]:
         pkgs = _test_pkgs(self.pr.test_patch)
-        pkg_list = " ".join(pkgs) if pkgs else "./..."
+        # Empty stays empty. Falling back to "./..." here would reinstate the
+        # whole-repo run _test_pkgs exists to prevent, and would do it WITHOUT
+        # the per-package fences parse_log needs, so same-named tests in
+        # different packages collapse onto one id and the `-=` dedup turns a
+        # passing test into a failing one. The scripts treat "" as "no unit
+        # signal" and produce no results, which is what invalidates the
+        # instance at report.py:204.
+        pkg_list = " ".join(pkgs)
         return [
             File(
                 ".",
@@ -178,22 +201,33 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-# Warm the Go module + build caches so the eval runs don't need network. The
-# repo is already cloned and checked out at ${{BASE_COMMIT}} by the Dockerfile,
-# and the hardening block runs right after this script, so prepare performs no
-# git checkout of its own. The download/build steps are allowed to fail
-# (|| true): their only job here is to populate caches, and the real pass/fail
-# signal comes from run/test-run/fix-run.
-set -e
+set -eo pipefail
+export CI=true GOFLAGS=-mod=mod GOTOOLCHAIN=auto
 
-cd /home/{pr.repo}
+cd /home/{repo}
 git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+git checkout --detach {base_sha}
 bash /home/check_git_changes.sh
 
-go mod download 2>&1 || true
-go build -mod=mod ./... 2>&1 || true
+go version
+go mod download
+go build ./... || true
 
-""".format(pr=self.pr),
+PKGS="{pkgs}"
+if [ -z "$PKGS" ]; then
+  go list ./... > /dev/null
+  echo NO_UNIT_TEST_PKGS
+else
+  for pkg in $PKGS; do
+    [ -d "$pkg" ] || continue
+    go test -count=1 -vet=off -run '^$' "./$pkg/"
+  done
+fi
+echo DEPS_OK
+
+""".format(repo=self.pr.repo, pkgs=pkg_list, base_sha=self.pr.base.sha),
             ),
             File(
                 ".",
@@ -201,26 +235,39 @@ go build -mod=mod ./... 2>&1 || true
                 # Per-package `go test`, scoped to the packages the test patch
                 # touches (baked as PKGS). Each package is fenced with
                 # `### K3SPKG: <pkg> ###` so parse_log can namespace test ids and
-                # avoid cross-package name collisions. -timeout caps hung
-                # integration tests; -vet=off stops vet-only failures from
-                # masking the real outcome; GOFLAGS=-mod=mod avoids the
-                # double `go test` fallback.
+                # avoid cross-package name collisions. A failing package is
+                # recorded and the loop continues; the script fails only when
+                # no package produced any result.
+                #
+                # Empty PKGS exits 0 having printed nothing test-shaped: all
+                # three stages then parse to 0/0/0 and report.py:204 invalidates
+                # the instance. Exiting 0 rather than 1 keeps a stop_on_error
+                # batch from aborting over an instance that is merely unusable.
                 """#!/bin/bash
-set -uo pipefail
+set -eo pipefail
+export CI=true GOFLAGS=-mod=mod GOTOOLCHAIN=auto
 cd /home/{repo}
-export GOFLAGS=-mod=mod GOTOOLCHAIN=auto
-go mod download 2>/dev/null || true
+command -v go > /dev/null
 
 PKGS="{pkgs}"
-if [ "$PKGS" = "./..." ]; then
-  go test -v -count=1 -vet=off -timeout=20m ./... 2>&1 || true
-else
+if [ -z "$PKGS" ]; then
+  echo "### K3SNOPKGS: test.patch touches no runnable unit-test package ###"
+  exit 0
+fi
+
+run_pkgs() {{
+  local pkg
   for pkg in $PKGS; do
     [ -d "$pkg" ] || continue
     echo "### K3SPKG: $pkg ###"
-    go test -v -count=1 -vet=off -timeout=20m "./$pkg/" 2>&1 || true
+    if ! go test -v -count=1 -vet=off -timeout=20m "./$pkg/" 2>&1; then
+      echo "### K3SSTATUS: $pkg nonzero ###"
+    fi
   done
-fi
+}}
+
+run_pkgs 2>&1 | tee /tmp/k3s_test_output.log
+grep -Eq '^[[:space:]]*--- (PASS|FAIL|SKIP): |^(ok|FAIL)[[:space:]]' /tmp/k3s_test_output.log
 """.format(repo=self.pr.repo, pkgs=pkg_list),
             ),
             File(
@@ -228,6 +275,7 @@ fi
                 "run.sh",
                 """#!/bin/bash
 set -eo pipefail
+export CI=true
 cd /home/{repo}
 bash /home/run_tests.sh
 """.format(repo=self.pr.repo),
@@ -237,10 +285,11 @@ bash /home/run_tests.sh
                 "test-run.sh",
                 """#!/bin/bash
 set -eo pipefail
+export CI=true
 cd /home/{repo}
-git checkout -- . 2>/dev/null || true
+git checkout -- .
 git apply --whitespace=nowarn /home/test.patch \\
-  || git apply --whitespace=nowarn --3way /home/test.patch || true
+  || git apply --whitespace=nowarn --3way /home/test.patch
 bash /home/run_tests.sh
 """.format(repo=self.pr.repo),
             ),
@@ -249,12 +298,13 @@ bash /home/run_tests.sh
                 "fix-run.sh",
                 """#!/bin/bash
 set -eo pipefail
+export CI=true
 cd /home/{repo}
-git checkout -- . 2>/dev/null || true
+git checkout -- .
 git apply --whitespace=nowarn /home/test.patch \\
-  || git apply --whitespace=nowarn --3way /home/test.patch || true
+  || git apply --whitespace=nowarn --3way /home/test.patch
 git apply --whitespace=nowarn /home/fix.patch \\
-  || git apply --whitespace=nowarn --3way /home/fix.patch || true
+  || git apply --whitespace=nowarn --3way /home/fix.patch
 bash /home/run_tests.sh
 """.format(repo=self.pr.repo),
             ),
@@ -321,85 +371,23 @@ class K3s(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
+    def dependency(self) -> Image:
         return K3sImageDefault(self.pr, self._config)
-
-    _APPLY_OPTS = "--whitespace=nowarn"
-
-    # Warm the module cache; -mod=mod so a single `go test` resolves deps without
-    # the old `|| go test -mod=mod` double-run (which recompiled the whole tree
-    # and was the ~2x eval slowness on old-era instances).
-    _SETUP = "export GOFLAGS=-mod=mod GOTOOLCHAIN=auto ; go mod download 2>/dev/null || true"
-
-    def _test_loop(self) -> str:
-        """Per-package `go test` bash, scoped to the test patch's packages.
-
-        Fenced with `### K3SPKG: <pkg> ###` (parse_log namespaces ids by it);
-        -timeout caps hung integration tests; -vet=off avoids vet-only failures
-        masking outcomes. Falls back to `./...` only when the patch carries no
-        `*_test.go` (rare). See _test_pkgs for why scoping matters.
-        """
-        gotest = "go test -v -count=1 -vet=off -timeout=20m"
-        pkgs = _test_pkgs(self.pr.test_patch)
-        if not pkgs:
-            return f"{gotest} ./... 2>&1 || true"
-        pkg_list = " ".join(pkgs)
-        return (
-            f"for pkg in {pkg_list} ; do "
-            f'[ -d "$pkg" ] || continue ; '
-            f'echo "### K3SPKG: $pkg ###" ; '
-            f'{gotest} "./$pkg/" 2>&1 || true ; '
-            f"done"
-        )
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-        return "bash -c 'cd /home/{repo} ; {setup} ; {loop}'".format(
-            repo=self.pr.repo,
-            setup=self._SETUP,
-            loop=self._test_loop(),
-        )
+        return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-        return (
-            "bash -c '"
-            "cd /home/{repo} ; "
-            "git checkout -- . ; "
-            "git apply {opts} /home/test.patch || "
-            "git apply {opts} --3way /home/test.patch || true ; "
-            "{setup} ; "
-            "{loop}"
-            "'".format(
-                repo=self.pr.repo,
-                opts=self._APPLY_OPTS,
-                setup=self._SETUP,
-                loop=self._test_loop(),
-            )
-        )
+        return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-        return (
-            "bash -c '"
-            "cd /home/{repo} ; "
-            "git checkout -- . ; "
-            "git apply {opts} /home/test.patch || "
-            "git apply {opts} --3way /home/test.patch || true ; "
-            "git apply {opts} /home/fix.patch || "
-            "git apply {opts} --3way /home/fix.patch || true ; "
-            "{setup} ; "
-            "{loop}"
-            "'".format(
-                repo=self.pr.repo,
-                opts=self._APPLY_OPTS,
-                setup=self._SETUP,
-                loop=self._test_loop(),
-            )
-        )
+        return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
         passed_tests = set()
@@ -412,16 +400,11 @@ class K3s(Instance):
         re_result = re.compile(r"^\s*--- (PASS|FAIL|SKIP):\s+(\S+)")
         re_pkg = re.compile(r"^### K3SPKG:\s+(\S+)\s+###")
 
-        def get_base_name(test_name: str) -> str:
-            index = test_name.rfind("/")
-            if index == -1:
-                return test_name
-            return test_name[:index]
-
         # Namespace each test id by the package fence (`### K3SPKG: <pkg> ###`
         # emitted by the per-package run loop) so identically named tests in
-        # different packages do not collide. Logs without the fence (e.g. the
-        # `./...` fallback) parse exactly as before.
+        # different packages do not collide. Subtests keep their full
+        # `Parent/sub` name so a parent's result is never overwritten by one of
+        # its subtests.
         pkg = ""
         for line in test_log.splitlines():
             line = line.strip()
@@ -436,8 +419,7 @@ class K3s(Instance):
                 continue
 
             status, test_name = result_match.group(1), result_match.group(2)
-            base_name = get_base_name(test_name)
-            tid = f"{pkg}::{base_name}" if pkg and pkg != "." else base_name
+            tid = f"{pkg}::{test_name}" if pkg and pkg != "." else test_name
 
             if status == "PASS":
                 failed_tests.discard(tid)
@@ -451,6 +433,10 @@ class K3s(Instance):
                 if tid in passed_tests or tid in failed_tests:
                     continue
                 skipped_tests.add(tid)
+
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
