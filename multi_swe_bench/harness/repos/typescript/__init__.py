@@ -273,3 +273,5 @@ from multi_swe_bench.harness.repos.typescript.ocean_ds import *
 from multi_swe_bench.harness.repos.typescript.Sofie_Automation import *
 from multi_swe_bench.harness.repos.typescript.tsparticles import *
 from multi_swe_bench.harness.repos.typescript.Fission_AI import *
+import importlib as _importlib
+_importlib.import_module("multi_swe_bench.harness.repos.typescript.shadcn-ui")
