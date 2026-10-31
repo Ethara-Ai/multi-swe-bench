@@ -91,6 +91,8 @@ from multi_swe_bench.harness.repos.javascript.Kong import *
 from multi_swe_bench.harness.repos.javascript.LaunchPadLab import *
 from multi_swe_bench.harness.repos.javascript.LiberatedPixelCup import *
 from multi_swe_bench.harness.repos.javascript.leapdao import *
+from multi_swe_bench.harness.repos.javascript.leonxlnx import *
+from multi_swe_bench.harness.repos.javascript.librespeed import *
 from multi_swe_bench.harness.repos.javascript.LiskHQ import *
 from multi_swe_bench.harness.repos.javascript.lodash import *
 from multi_swe_bench.harness.repos.javascript.lokus_ai import *
@@ -115,6 +117,7 @@ from multi_swe_bench.harness.repos.javascript.postcss import *
 # from multi_swe_bench.harness.repos.javascript.preactjs import *  # missing module
 from multi_swe_bench.harness.repos.javascript.prettier import *
 from multi_swe_bench.harness.repos.javascript.PrismJS import *
+from multi_swe_bench.harness.repos.javascript.PrismarineJS import *
 from multi_swe_bench.harness.repos.javascript.ProcessMaker import *
 from multi_swe_bench.harness.repos.javascript.ProjectMirador import *
 from multi_swe_bench.harness.repos.javascript.ProxeusApp import *
@@ -122,7 +125,6 @@ from multi_swe_bench.harness.repos.javascript.publiclab import *
 from multi_swe_bench.harness.repos.javascript.quartodev import *
 from multi_swe_bench.harness.repos.javascript.RaspberryPiFoundation import *
 from multi_swe_bench.harness.repos.javascript.Real_Dev_Squad import *
-from multi_swe_bench.harness.repos.javascript.rollup import *
 from multi_swe_bench.harness.repos.javascript.SchemaStore import *
 from multi_swe_bench.harness.repos.javascript.scratchfoundation import *
 from multi_swe_bench.harness.repos.javascript.screwdriver_cd import *
