@@ -10,6 +10,7 @@ _RUST_IMAGE = "rust:1.99-bookworm"
 _NODE_IMAGE = "node:20-bookworm"
 _RUST_TOOLCHAIN = "nightly-2026-04-10"
 _PNPM_VERSION = "10.33.3"
+_SCCACHE_VERSION = "v0.10.0"
 _INTERVAL = "swc_12580_to_12252"
 _PACKAGE_MARKER = "cargo-test-package:"
 
@@ -276,17 +277,47 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
     def dockerfile(self) -> str:
         base = self.dependency()
+        # prepare.sh only depends on (base sha, test packages), so copying it
+        # before the patches lets PRs that share both reuse the compile layer.
+        prepare_files = ("check_git_changes.sh", "prepare.sh")
+        prepare_copy = ""
         copy_commands = ""
         for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+            if file.name in prepare_files:
+                prepare_copy += f"COPY {file.name} /home/\n"
+            else:
+                copy_commands += f"COPY {file.name} /home/\n"
 
         repo = self.pr.repo
         sha = self.pr.base.sha
 
+        # sccache lives only in a BuildKit cache mount (per arch) and in /tmp
+        # for this RUN; nothing from it is left in the image. Both platforms'
+        # RUN steps share a network namespace, so each gets its own port.
         return f"""FROM {base.image_full_name()}
 
+ARG TARGETARCH
+
+{prepare_copy}
+RUN --mount=type=cache,id=swc-sccache-${{TARGETARCH}},target=/root/.cache/sccache,sharing=locked \\
+    set -eux; \\
+    case "${{TARGETARCH}}" in amd64) arch=x86_64; port=4227 ;; arm64) arch=aarch64; port=4226 ;; *) exit 1 ;; esac; \\
+    mkdir -p /tmp/sccache-bin; \\
+    curl -fsSL --retry 5 "https://github.com/mozilla/sccache/releases/download/{_SCCACHE_VERSION}/sccache-{_SCCACHE_VERSION}-$arch-unknown-linux-musl.tar.gz" \\
+        | tar -xz -C /tmp/sccache-bin --strip-components=1; \\
+    export RUSTC_WRAPPER=/tmp/sccache-bin/sccache SCCACHE_DIR=/root/.cache/sccache SCCACHE_CACHE_SIZE=25G SCCACHE_IDLE_TIMEOUT=0 SCCACHE_SERVER_PORT=$port; \\
+    ok=0; \\
+    for i in 1 2 3 4 5; do \\
+        if /tmp/sccache-bin/sccache --start-server && /tmp/sccache-bin/sccache --show-stats >/dev/null; then ok=1; break; fi; \\
+        /tmp/sccache-bin/sccache --stop-server || true; sleep 5; \\
+    done; \\
+    if [ "$ok" != 1 ]; then echo "sccache unavailable, building without it"; unset RUSTC_WRAPPER; fi; \\
+    bash /home/prepare.sh; \\
+    /tmp/sccache-bin/sccache --show-stats || true; \\
+    /tmp/sccache-bin/sccache --stop-server || true; \\
+    rm -rf /tmp/sccache-bin
+
 {copy_commands}
-RUN bash /home/prepare.sh
 
 RUN set -eux; \\
     cd /home/{repo}; \\
