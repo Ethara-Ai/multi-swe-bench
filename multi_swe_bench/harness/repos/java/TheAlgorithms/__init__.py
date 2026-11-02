@@ -3,3 +3,4 @@ from multi_swe_bench.harness.repos.java.TheAlgorithms.TheAlgorithms_Java_0_to_28
 from multi_swe_bench.harness.repos.java.TheAlgorithms.TheAlgorithms_Java_2823_to_5142 import *
 from multi_swe_bench.harness.repos.java.TheAlgorithms.TheAlgorithms_Java_5142_to_9999 import *
 from multi_swe_bench.harness.repos.java.TheAlgorithms.TheAlgorithms_Java_6566_to_3464 import *
+from multi_swe_bench.harness.repos.java.TheAlgorithms.TheAlgorithms_Java_6756_to_6818 import *

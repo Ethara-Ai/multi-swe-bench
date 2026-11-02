@@ -108,3 +108,4 @@ from multi_swe_bench.harness.repos.rust.linebender import *
 from multi_swe_bench.harness.repos.rust.leapdao import *
 from multi_swe_bench.harness.repos.rust.katanemo import *
 from multi_swe_bench.harness.repos.rust.farion1231 import *
+from multi_swe_bench.harness.repos.rust.trycua import *
