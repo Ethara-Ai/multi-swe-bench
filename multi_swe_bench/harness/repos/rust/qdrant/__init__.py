@@ -1,3 +1,4 @@
 from multi_swe_bench.harness.repos.rust.qdrant.qdrant import *
 from multi_swe_bench.harness.repos.rust.qdrant.qdrant_4994_to_2979 import *
 from multi_swe_bench.harness.repos.rust.qdrant.qdrant_4941_to_1466 import *
+from multi_swe_bench.harness.repos.rust.qdrant.qdrant_9531_to_11118 import *
