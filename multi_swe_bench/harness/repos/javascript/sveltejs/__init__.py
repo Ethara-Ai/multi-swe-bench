@@ -16,3 +16,4 @@ from multi_swe_bench.harness.repos.javascript.sveltejs.svelte_9124_to_8632 impor
 from multi_swe_bench.harness.repos.javascript.sveltejs.svelte_8618_to_7489 import *
 from multi_swe_bench.harness.repos.javascript.sveltejs.svelte_6032_to_3726 import *
 from multi_swe_bench.harness.repos.javascript.sveltejs.svelte_3351_to_1266 import *
+from multi_swe_bench.harness.repos.javascript.sveltejs.sveltejs_17293_to_16635 import *
