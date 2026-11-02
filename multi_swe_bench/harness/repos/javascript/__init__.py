@@ -198,3 +198,4 @@ from multi_swe_bench.harness.repos.javascript.career_ops_hq import *
 from multi_swe_bench.harness.repos.javascript.immerjs import *
 from multi_swe_bench.harness.repos.javascript.ljharb import *
 from multi_swe_bench.harness.repos.javascript.jackwener import *
+from multi_swe_bench.harness.repos.javascript.rollup import *
