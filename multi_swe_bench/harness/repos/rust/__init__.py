@@ -111,3 +111,4 @@ from multi_swe_bench.harness.repos.rust.farion1231 import *
 from multi_swe_bench.harness.repos.rust.trycua import *
 from multi_swe_bench.harness.repos.rust.vercel import *
 from multi_swe_bench.harness.repos.rust.Automattic import *
+from multi_swe_bench.harness.repos.rust.pbakaus import *
