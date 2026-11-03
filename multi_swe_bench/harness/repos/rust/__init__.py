@@ -112,3 +112,4 @@ from multi_swe_bench.harness.repos.rust.trycua import *
 from multi_swe_bench.harness.repos.rust.vercel import *
 from multi_swe_bench.harness.repos.rust.Automattic import *
 from multi_swe_bench.harness.repos.rust.pbakaus import *
+from multi_swe_bench.harness.repos.rust.openai import *
