@@ -1,36 +1,14 @@
 from __future__ import annotations
 
 import json as _json
+import os
 import re
 from typing import Optional, Union
 
-from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
+from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# ---------------------------------------------------------------------------
-# Emit `number_interval` on the OUTPUT (resolved jsonl) rows for netbirdio/netbird.
-#
-# Each instance is a release-delta BUNDLE. The raw record carries
-# `prs_in_bundle` (e.g. [1005, 1044, 1047, 1049, 1051, 1052, 1053]) but an EMPTY
-# `number_interval`. The required output format is the dash-JOINED bundle list
-# ("1005-1044-1047-1049-1051-1052-1053") -- NOT a "1005-1053" range, which would
-# wrongly imply every PR in between is part of the bundle.
-#
-# Two constraints force the approach below:
-#   * `prs_in_bundle` is NOT a PullRequest field, so the dataclass-json schema
-#     loader DROPS it -- the registry classes never see it.
-#   * Setting `pr.number_interval` during load would change the ROUTING key
-#     (instance.py: name becomes "netbirdio/1005-1044-..."), which is not
-#     registered -> instance creation fails.
-#
-# So, following the aquasecurity/tfsec convention, we do two import-time
-# monkeypatches SCOPED TO THIS REGISTRY (no edits to harness source):
-#   1. PullRequest.from_json -- re-read the raw json and stash the dash-joined
-#      value in a NON-field attr `_netbird_number_interval` (routing key stays "").
-#   2. Dataset.build -- stamp `ds.number_interval` from that stash onto the
-#      OUTPUT row only. gen_report.run_dataset builds every resolved-jsonl row
-#      via Dataset.build(raw_dataset[id], report), so the output then carries it.
 import multi_swe_bench.harness.pull_request as _pull_request
 
 if not getattr(_pull_request.PullRequest, "_netbird_number_interval_patched", False):
@@ -45,7 +23,6 @@ if not getattr(_pull_request.PullRequest, "_netbird_number_interval_patched", Fa
                 and raw.get("repo") == "netbird"
                 and raw.get("prs_in_bundle")
             ):
-                # Stash only -- do NOT set pr.number_interval (the routing key).
                 pr._netbird_number_interval = "-".join(
                     str(p) for p in raw["prs_in_bundle"]
                 )
@@ -56,10 +33,6 @@ if not getattr(_pull_request.PullRequest, "_netbird_number_interval_patched", Fa
     _pull_request.PullRequest.from_json = classmethod(_netbird_from_json)
     _pull_request.PullRequest._netbird_number_interval_patched = True
 
-    # Stamp number_interval onto the OUTPUT row only.
-    # NOTE: Dataset subclasses PullRequest, so it INHERITS the flag set above;
-    # use a distinct flag and check the class's OWN __dict__ (not getattr, which
-    # would see the inherited PullRequest flag and wrongly skip this patch).
     from multi_swe_bench.harness.dataset import Dataset as _Dataset
 
     if not _Dataset.__dict__.get("_netbird_build_patched", False):
@@ -74,126 +47,192 @@ if not getattr(_pull_request.PullRequest, "_netbird_number_interval_patched", Fa
 
         _Dataset.build = classmethod(_netbird_build)
         _Dataset._netbird_build_patched = True
-# ---------------------------------------------------------------------------
 
 
-# ERA-SPLIT Go toolchain. netbird go.mod goes `go 1.16` (PR 152 / v0.2) ->
-# `go 1.21` (PR ~1732) -> `go 1.23.0` (PR 2712 / v0.30) -> `go 1.25.5` (PR 5202+).
-#
-# Go 1.23 tightened `//go:linkname`: the linker now REJECTS a linkname to an
-# undeclared runtime symbol. Old `golang.org/x/net/internal/socket` linknames
-# `syscall.recvmsg`, so under go1.25 the TEST binaries of iface/peer/internal/cmd
-# fail to link (`FAIL ... [build failed]: invalid reference to syscall.recvmsg`)
-# for every pre-1.23 bundle -- which is why those instances came back unresolved.
-# GOTOOLCHAIN=auto CANNOT fix this (it only upgrades), so old-era PRs need a
-# pre-1.23 toolchain. go1.22 is the last strict-linkname-free release that still
-# builds go1.16-1.22 modules; the go1.23+ bundles bumped x/net, so go1.25 is fine
-# for them. Boundary = go.mod's `go 1.21 -> 1.23` jump at PR 2712.
-#
-# CGO + libpcap-dev: gopacket/pcap. X11/mesa/appindicator: client/ui (glfw) and
-# client/cmd (systray) won't compile without them, knocking out those test pkgs.
-def _netbird_era(number: int) -> str:
-    return "old" if number < 2712 else "new"
+_GO_IMAGE = "golang:1.26-bookworm"
+
+_GO_TAG = "go1.26"
+
+_APT_PACKAGES = [
+    "git",
+    "ca-certificates",
+    "build-essential",
+    "pkg-config",
+    "libpcap-dev",
+    "libx11-dev",
+    "libgl1-mesa-dev",
+    "libgtk-3-dev",
+    "libayatana-appindicator3-dev",
+]
 
 
-_ERA_GO_IMAGE = {"old": "golang:1.22-bookworm", "new": "golang:1.25-bookworm"}
-_ERA_GOTOOLCHAIN = {"old": "local", "new": "auto"}
+def _test_packages(pr: PullRequest) -> str:
+    dirs: set[str] = set()
+    for patch in (pr.test_patch or "", pr.fix_patch or ""):
+        for path in re.findall(r"^diff --git a/(\S+)", patch, re.M):
+            if not path.endswith(".go"):
+                continue
+            directory = os.path.dirname(path)
+            dirs.add(directory if directory else ".")
+
+    if not dirs:
+        return "./..."
+
+    return " ".join(f"./{d}" for d in sorted(dirs))
 
 
-# ---------------------------------------------------------------------------
-# Build-context scripts (COPY'd into the image, run at build/eval time).
-# ---------------------------------------------------------------------------
+def _go_test_cmd(pr: PullRequest) -> str:
+    return f"go test -v -count=1 -timeout 1800s {_test_packages(pr)}"
 
-# Warms the go module + build cache at base.sha so the three eval runs start from
-# a compiled state. Runs BEFORE the hardening strip, so it may still see the full
-# clone; `|| true` keeps a flaky/partial baseline (e.g. the UI packages that need
-# X11 headers) from breaking the build.
-_INSTALL_SH = """#!/bin/bash
+
+_CHECK_GIT_CHANGES_SH = """\
+#!/bin/bash
 set -e
 
-git config --global --add safe.directory /home/netbird || true
-cd /home/netbird
-
-go mod download || true
-
-# Compile-warm the go build/test cache ONLY on the native build arch. Under
-# multi-arch buildx the non-native arch runs under QEMU (~10-20x slower) and its
-# image is never graded on this host (the run phase uses the native-arch image),
-# so the expensive `go build`/`go test` warm there is pure waste -- skip it.
-# TARGETARCH/BUILDARCH are buildx auto-args (passed in via the Dockerfile RUN);
-# empty under the classic single-arch builder, in which case we always warm
-# (that build IS native).
-if [ -z "${TARGETARCH:-}" ] || [ "${TARGETARCH:-}" = "${BUILDARCH:-}" ]; then
-    go build ./... >/dev/null 2>&1 || true
-    go test -count=1 ./... >/dev/null 2>&1 || true
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
 fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  git status --porcelain
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
 """
 
-# Patch excludes shared by the three run scripts: binary/asset blobs a text
-# `git apply` would choke on. Kept identical to netbird's scored dataset so the
-# regraded results stay comparable.
-_APPLY_EXCLUDES = (
-    "--exclude='*.o' --exclude='*.png' --exclude='*.ico' --exclude='*.sqlite' "
-    "--exclude='*.db' --exclude='*.mmdb' --exclude='*.gif' --exclude='*.ttf' "
-    "--exclude='*.syso'"
-)
+_PREPARE_SH = """\
+#!/bin/bash
+set -e
 
-# Baseline: clean base.sha, no patches. Full `./...` matches the golden p2p set.
-# base.sha stays checkout-able after the hardening strip because it IS HEAD
-# (reachable, not pruned).
-_RUN_SH = """#!/bin/bash
-set -eo pipefail
+# -------- Section 1: PIN --------
+# cd explicitly rather than trusting the Dockerfile WORKDIR: prepare.sh is also
+# invoked at container start, where that WORKDIR may not be in effect.
+cd /home/{repo}
 
-cd /home/netbird
 git reset --hard
-git checkout {pr.base.sha}
+git clean -fdx
+bash /home/check_git_changes.sh
 
-go test -v -count=1 ./...
+# --detach is required, not stylistic. The hardening block in the Dockerfile
+# ASSERTS HEAD == BASE_COMMIT and then deletes every ref; if HEAD were left on a
+# branch, that branch would either be deleted out from under HEAD or keep the
+# fix commit reachable inside the shipped image.
+git checkout --detach {sha}
+bash /home/check_git_changes.sh
+
+# -------- Section 2: PROVISION --------
+go version
+go env GOVERSION GOTOOLCHAIN
+
+# Pull the module graph into the image layer so the three graded stages never
+# reach proxy.golang.org. `timeout` covers what `|| true` cannot: `|| true`
+# handles a command that FAILS, but one that HANGS never returns and never
+# reaches `||`, and Docker has no per-step timeout, so a stalled module fetch
+# would block the build forever.
+#
+# RETRIED, and the retry is not defensive padding -- it is the fix for an
+# observed failure. proxy.golang.org intermittently resets HTTP/2 streams
+# mid-fetch:
+#
+#   go: github.com/oapi-codegen/runtime@v1.1.2: read
+#   "https://proxy.golang.org/...": stream error: stream ID 425;
+#   INTERNAL_ERROR; received from peer
+#
+# netbird pulls a very large module graph, so a single attempt is quite likely
+# to lose at least one module -- and a PARTIAL cache is the worst outcome
+# available: `go mod download` exits 1, then every scoped package reports
+# `[setup failed]`, the baseline yields 0 results, and the gate below fails the
+# whole image. Attempt 3 onward drops to HTTP/1.1 via GODEBUG=http2client=0,
+# which is the documented workaround for this error class.
+#
+# This step and the build warm below are the ONLY tolerated ones, and they are
+# tolerated solely because the Section 3 gate re-checks what they were supposed
+# to accomplish. `if/else` rather than `|| true` so the reported exit status is
+# the real one -- after `cmd || true`, `$?` is always 0 and the log would claim
+# success for a step that failed.
+for attempt in 1 2 3 4 5; do
+    if [ "$attempt" -ge 3 ]; then
+        export GODEBUG=http2client=0
+        echo "go mod download: retrying over HTTP/1.1"
+    fi
+    if timeout 1800 go mod download; then
+        echo "go mod download: OK (attempt $attempt)"
+        break
+    fi
+    echo "go mod download: attempt $attempt INCOMPLETE"
+    if [ "$attempt" -lt 5 ]; then
+        sleep 20
+    fi
+done
+
+# Warm the non-test build cache for the scoped packages. This also back-fills
+# any module the download loop still missed.
+if timeout 1800 go build {packages} > /tmp/build.log 2>&1; then
+    echo "build warm: OK"
+else
+    echo "build warm: INCOMPLETE (exit $?)"
+    tail -20 /tmp/build.log || true
+fi
+
+# -------- Section 3: GATE --------
+# Run the baseline suite once, tolerantly, then assert on its OUTPUT. The run is
+# tolerant on purpose: netbird's scoped sets legitimately contain packages that
+# cannot compile for linux (client/android, client/ios/NetBirdSDK carry mobile
+# build tags), and a non-zero exit from those must not fail the image build.
+# Running it here also warms the test cache, so the three graded stages start
+# from compiled package objects.
+if timeout 5400 {go_test} > /tmp/baseline.log 2>&1; then
+    echo "baseline suite: exit 0"
+else
+    echo "baseline suite: exit $? (expected when a scoped package cannot build)"
+fi
+echo "baseline package summary:"
+grep -E '^(ok|FAIL|[?])' /tmp/baseline.log | head -40 || true
+echo "baseline results: $(grep -cE '^[[:space:]]*--- (PASS|FAIL|SKIP): ' /tmp/baseline.log)"
+
+# THE GATE -- last, and not tolerated. `^ok ` appears only when a test binary was
+# compiled, linked and executed, so this fails loudly on a broken module graph, a
+# missing C header or an unusable toolchain. A missing image is honest; a silently
+# hollow one that reports 0/0/0 three stages later is not.
+grep -qE '^ok ' /tmp/baseline.log
+echo "DEPS_OK"
 """
 
-# Test patch only: the new tests exercise behaviour the fix has not introduced
-# yet, so they fail (or their package fails to compile) -- genuine f2p / n2p.
-_TEST_RUN_SH = """#!/bin/bash
+_RUN_SH = """\
+#!/bin/bash
 set -eo pipefail
+export CI=true
 
-cd /home/netbird
-git reset --hard
-git checkout {pr.base.sha}
-git apply --whitespace=nowarn {excludes} /home/test.patch
-
-go test -v -count=1 ./...
+cd /home/{repo}
+{go_test}
 """
 
-# Test + fix patches: production fix present, the suite passes.
-_FIX_RUN_SH = """#!/bin/bash
+_TEST_RUN_SH = """\
+#!/bin/bash
 set -eo pipefail
+export CI=true
 
-cd /home/netbird
-git reset --hard
-git checkout {pr.base.sha}
-git apply --whitespace=nowarn {excludes} /home/test.patch /home/fix.patch
+cd /home/{repo}
+git apply --whitespace=nowarn /home/test.patch
+{go_test}
+"""
 
-go test -v -count=1 ./...
+_FIX_RUN_SH = """\
+#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/{repo}
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+{go_test}
 """
 
 
 class NetbirdImageBase(Image):
-    """Level 1: toolchain-only base image (shared by all PRs).
-
-    Does NOT clone the repo -- the clone lives in NetbirdImageDefault, done
-    per-PR (mirrors the cloudwego/eino pattern). A shared string-dependency image
-    that performs a `git clone` would be force-pinned to a single ${BASE_COMMIT}
-    and history-stripped, breaking `git checkout` for every other PR sharing the
-    base; keeping the clone per-PR avoids that.
-
-    The leading `# syntax=docker/dockerfile:1.6` directive makes
-    DockerfileEnhancer.enhance() return this Dockerfile VERBATIM (early-return),
-    so the enhancer's infrastructure block is NOT injected. That is deliberate:
-    netbird is kept proxy/cert-free at the REGISTRY level (no proxy build-args,
-    no proxy/SSL ENVs, no CA-cert symlinks, no MITM secret mount). The plain
-    `ca-certificates` apt package is unrelated -- it is the standard CA bundle
-    required for HTTPS `git clone` / `go mod download`, not injected proxy config.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -208,16 +247,16 @@ class NetbirdImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return _ERA_GO_IMAGE[_netbird_era(self.pr.number)]
+        return _GO_IMAGE
 
     def image_prefix(self) -> str:
         return "mswebench"
 
     def image_tag(self) -> str:
-        return f"base-{_netbird_era(self.pr.number)}"
+        return f"base-{_GO_TAG}"
 
     def workdir(self) -> str:
-        return f"base-{_netbird_era(self.pr.number)}"
+        return f"base-{_GO_TAG}"
 
     def files(self) -> list[File]:
         return []
@@ -229,67 +268,69 @@ class NetbirdImageBase(Image):
 
         org = self.pr.org
         repo = self.pr.repo
-        gotoolchain = _ERA_GOTOOLCHAIN[_netbird_era(self.pr.number)]
+        apt = " \\\n    ".join(_APT_PACKAGES)
 
         return f"""# syntax=docker/dockerfile:1.6
+
 FROM {image_name}
 
 ARG TARGETARCH
 ARG REPO_URL="https://github.com/{org}/{repo}.git"
 ARG BASE_COMMIT
 
-{DockerfileEnhancer._PROXY_ARGS}
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 ENV DEBIAN_FRONTEND=noninteractive \\
-    TZ=UTC \\
     LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
     CGO_ENABLED=1 \\
-    GOTOOLCHAIN={gotoolchain} \\
+    GOTOOLCHAIN=local \\
     GOFLAGS="-buildvcs=false -mod=mod"
-
-{DockerfileEnhancer._ENV_BLOCK}
 
 LABEL org.opencontainers.image.title="{org}/{repo}" \\
       org.opencontainers.image.description="{org}/{repo} Docker image" \\
       org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
       org.opencontainers.image.authors="https://www.ethara.ai/"
 
-{DockerfileEnhancer._CERT_SYMLINKS}
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    {apt} \\
+    && rm -rf /var/lib/apt/lists/* \\
+    && git config --global --add safe.directory '*'
 
 WORKDIR /home/
 
-# libpcap-dev: gopacket/pcap (cgo). libx11-dev/libgl1-mesa-dev: client/ui glfw.
-# libayatana-appindicator3-dev + libgtk-3-dev: client/cmd systray. Without these
-# those test packages fail to compile and their tests never run (false unresolved).
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    git \\
-    ca-certificates \\
-    build-essential \\
-    pkg-config \\
-    libpcap-dev \\
-    libx11-dev \\
-    libgl1-mesa-dev \\
-    libgtk-3-dev \\
-    libayatana-appindicator3-dev \\
-    && rm -rf /var/lib/apt/lists/*
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
-RUN git config --global --add safe.directory '*'
+WORKDIR /home/{repo}
 
 CMD ["/bin/bash"]
 """
 
 
 class NetbirdImageDefault(Image):
-    """Level 2: per-PR image (built on the shared toolchain base).
-
-    dependency() returns NetbirdImageBase (an Image, not a string), so the
-    DockerfileEnhancer returns this Dockerfile VERBATIM -- no pin, no history
-    strip injected by the pipeline. The clone therefore lives here, per-PR: the
-    image clones full history, checks out ${BASE_COMMIT} inline, COPYs the
-    scripts, warms the build cache (install.sh), then the canonical
-    Image._HARDENING_BLOCK strips origin/refs/future history (with the four
-    post-condition asserts + submodule pass) while keeping base.sha reachable.
-    """
 
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
@@ -313,68 +354,45 @@ class NetbirdImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
+        go_test = _go_test_cmd(self.pr)
+        repo = self.pr.repo
+
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(".", "install.sh", _INSTALL_SH),
-            File(".", "run.sh", _RUN_SH.format(pr=self.pr)),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
             File(
                 ".",
-                "test-run.sh",
-                _TEST_RUN_SH.format(pr=self.pr, excludes=_APPLY_EXCLUDES),
+                "prepare.sh",
+                _PREPARE_SH.format(
+                    repo=repo,
+                    sha=self.pr.base.sha,
+                    packages=_test_packages(self.pr),
+                    go_test=go_test,
+                ),
             ),
-            File(
-                ".",
-                "fix-run.sh",
-                _FIX_RUN_SH.format(pr=self.pr, excludes=_APPLY_EXCLUDES),
-            ),
+            File(".", "run.sh", _RUN_SH.format(repo=repo, go_test=go_test)),
+            File(".", "test-run.sh", _TEST_RUN_SH.format(repo=repo, go_test=go_test)),
+            File(".", "fix-run.sh", _FIX_RUN_SH.format(repo=repo, go_test=go_test)),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        dep = self.dependency()
 
-        # Single COPY of all scripts/patches into /home/ (inline template style).
-        copy_files = " ".join(file.name for file in self.files())
+        copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
 
-        # The shared toolchain base does NOT clone, so this per-PR image clones
-        # full history first, then checks out ${BASE_COMMIT} inline. Because this
-        # image's dependency() is an Image, the DockerfileEnhancer returns the
-        # Dockerfile verbatim -- the clone + hardening below are kept as written
-        # (and pinning here is correct: it is per-PR, not the shared base).
-        header = f"""FROM {name}:{tag}
+        header = f"""FROM {dep.image_name()}:{dep.image_tag()}
 
 ARG BASE_COMMIT="{self.pr.base.sha}"
-ENV BASE_COMMIT=${{BASE_COMMIT}}
 
-{self.global_env}
+{copy_commands}
+RUN bash /home/prepare.sh
 
-WORKDIR /home/
-RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}
-
-WORKDIR /home/{self.pr.repo}
-RUN git reset --hard && git checkout ${{BASE_COMMIT}}
-
-COPY {copy_files} /home/
-
-ARG TARGETARCH
-ARG BUILDARCH
-RUN TARGETARCH="${{TARGETARCH}}" BUILDARCH="${{BUILDARCH}}" bash /home/install.sh || true
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
 
 """
-
-        # Anti-reward-hacking hardening -- the canonical Image._HARDENING_BLOCK
-        # (detach at ${BASE_COMMIT}, remove origin, delete all refs, reflog
-        # expire, gc/repack, drop alternates, + asserts incl. HEAD==BASE_COMMIT,
-        # then submodule strip). Concatenated raw (not via f-string) so its
-        # ${BASE_COMMIT} / %(refname) tokens stay literal.
-        tail = f"""
-{self.clear_env}
-
-CMD ["/bin/bash"]
-"""
-        return header + Image._HARDENING_BLOCK + tail
+        return header + Image._HARDENING_BLOCK
 
 
 @Instance.register("netbirdio", "netbird")
@@ -394,76 +412,49 @@ class Netbird(Instance):
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-        # Strip ANSI escape codes
-        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+        result_re = re.compile(r"^---\s+(?P<status>PASS|FAIL|SKIP):\s+(?P<name>\S+)")
 
-        re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
-        re_fail_tests = [
-            re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"FAIL:?\s?(.+?)\s"),
-        ]
-        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
+        for raw_line in test_log.split("\n"):
+            line = ansi_escape.sub("", raw_line).strip()
+            if not line:
+                continue
 
-        def get_base_name(test_name: str) -> str:
-            index = test_name.rfind("/")
-            if index == -1:
-                return test_name
-            return test_name[:index]
+            match = result_re.match(line)
+            if not match:
+                continue
 
-        for line in test_log.splitlines():
-            line = line.strip()
+            name = match.group("name").strip()
+            status = match.group("status")
 
-            for re_pass_test in re_pass_tests:
-                pass_match = re_pass_test.match(line)
-                if pass_match:
-                    test_name = pass_match.group(1)
-                    if test_name in failed_tests:
-                        continue
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    passed_tests.add(get_base_name(test_name))
-
-            for re_fail_test in re_fail_tests:
-                fail_match = re_fail_test.match(line)
-                if fail_match:
-                    test_name = fail_match.group(1)
-                    if test_name in passed_tests:
-                        passed_tests.remove(test_name)
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    failed_tests.add(get_base_name(test_name))
-
-            for re_skip_test in re_skip_tests:
-                skip_match = re_skip_test.match(line)
-                if skip_match:
-                    test_name = skip_match.group(1)
-                    if test_name in passed_tests:
-                        continue
-                    if test_name not in failed_tests:
-                        continue
-                    skipped_tests.add(get_base_name(test_name))
-
-        passed_tests -= failed_tests
+            if status == "FAIL":
+                passed_tests.discard(name)
+                skipped_tests.discard(name)
+                failed_tests.add(name)
+            elif status == "PASS":
+                if name not in failed_tests:
+                    skipped_tests.discard(name)
+                    passed_tests.add(name)
+            else:
+                if name not in failed_tests and name not in passed_tests:
+                    skipped_tests.add(name)
 
         return TestResult(
             passed_count=len(passed_tests),
@@ -475,9 +466,6 @@ class Netbird(Instance):
         )
 
 
-# === bundle number_interval routing (prs_in_bundle dash-joined) ===
-# Single-era repo -> every bundle key routes to the one Netbird class.
-# Original "netbirdio/netbird" registration above is kept.
 _BUNDLE_NIS_NETBIRD = [
     "4083-4145",
 ]

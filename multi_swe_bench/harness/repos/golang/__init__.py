@@ -245,3 +245,4 @@ from multi_swe_bench.harness.repos.golang.darrenburns import *
 from multi_swe_bench.harness.repos.golang.juliusbrussee import *
 from multi_swe_bench.harness.repos.golang.HyNetworks import *
 from multi_swe_bench.harness.repos.golang.multica_ai import *
+from multi_swe_bench.harness.repos.golang.tailscale import *
