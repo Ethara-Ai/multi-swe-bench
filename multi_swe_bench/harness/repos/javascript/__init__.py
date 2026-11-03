@@ -112,6 +112,7 @@ from multi_swe_bench.harness.repos.javascript.neherlab import *
 from multi_swe_bench.harness.repos.javascript.neomjs import *
 from multi_swe_bench.harness.repos.javascript.nextcloud import *
 from multi_swe_bench.harness.repos.javascript.nock import *
+from multi_swe_bench.harness.repos.javascript.notionnext_org import *
 from multi_swe_bench.harness.repos.javascript.open_gsd import *
 from multi_swe_bench.harness.repos.javascript.openlayers import *
 from multi_swe_bench.harness.repos.javascript.openscope import *
