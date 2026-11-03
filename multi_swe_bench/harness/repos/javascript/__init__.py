@@ -36,6 +36,7 @@ from multi_swe_bench.harness.repos.javascript.chalk import *
 from multi_swe_bench.harness.repos.javascript.char0n import *
 from multi_swe_bench.harness.repos.javascript.chartjs import *
 from multi_swe_bench.harness.repos.javascript.City_of_Helsinki import *
+from multi_swe_bench.harness.repos.javascript.clappr import *
 from multi_swe_bench.harness.repos.javascript.code_charity import *
 from multi_swe_bench.harness.repos.javascript.codeceptjs import *
 from multi_swe_bench.harness.repos.javascript.codemirror import *
