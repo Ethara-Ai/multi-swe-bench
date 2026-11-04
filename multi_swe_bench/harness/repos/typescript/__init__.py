@@ -81,6 +81,7 @@ from multi_swe_bench.harness.repos.typescript.grafana import *
 from multi_swe_bench.harness.repos.typescript.grahamearley import *
 from multi_swe_bench.harness.repos.typescript.Hacker0x01 import *
 from multi_swe_bench.harness.repos.typescript.hasadna import *
+from multi_swe_bench.harness.repos.typescript.heygen_com import *
 from multi_swe_bench.harness.repos.typescript.heylinda import *
 from multi_swe_bench.harness.repos.typescript.hilleer import *
 from multi_swe_bench.harness.repos.typescript.highcharts import *
