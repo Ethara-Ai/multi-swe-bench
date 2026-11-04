@@ -42,20 +42,6 @@ _MITM_CERT_SYMLINKS = (
     "    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt"
 )
 
-_APT_INSTALL = (
-    "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
-    "    ca-certificates \\\n"
-    "    curl \\\n"
-    "    build-essential \\\n"
-    "    git \\\n"
-    "    gnupg \\\n"
-    "    make \\\n"
-    "    python3 \\\n"
-    "    sudo \\\n"
-    "    wget \\\n"
-    "    && rm -rf /var/lib/apt/lists/*"
-)
-
 _HARDENING_BLOCK = """RUN set -eux; \\
     git checkout --detach "${BASE_COMMIT}"; \\
     git remote remove origin 2>/dev/null || true; \\
@@ -100,7 +86,7 @@ _ORG = "sharkdp"
 _REPO = "bat"
 _LEGACY_TOOLCHAIN_MAX_PR = 2999
 _LEGACY_RUST = "1.70"
-_MODERN_RUST = "1.85"
+_MODERN_RUST = "1.88"
 
 _SCRIPT_ENV = (
     "export CI=true\n"
@@ -110,7 +96,15 @@ _SCRIPT_ENV = (
     "export NO_COLOR=1"
 )
 
-_CARGO_TEST = "cargo test --locked --offline"
+_CARGO_TEST = "cargo test --locked --offline --no-fail-fast"
+
+_TOOLCHAIN_SYNC = """required=$(sed -n 's/^rust-version[[:space:]]*=[[:space:]]*"\\([0-9.]*\\)".*/\\1/p' Cargo.toml | head -n1)
+current=$(rustc --version | awk '{print $2}')
+if [ -n "$required" ] && ! printf '%s\\n%s\\n' "$required" "$current" | sort -V -C; then
+    rustup toolchain install "$required" --profile minimal
+    rustup default "$required"
+fi
+rustc --version"""
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 _TARGET_RE = re.compile(r"^\s*Running\s+(?:unittests\s+)?(\S+)\s+\(")
@@ -173,8 +167,6 @@ LABEL org.opencontainers.image.title="{org}/{repo}" \\
 {_MITM_CERT_SYMLINKS}
 
 WORKDIR /home/
-
-{_APT_INSTALL}
 
 RUN git clone "${{REPO_URL}}" /home/{repo}
 
@@ -251,6 +243,8 @@ git clean -fdx
 bash /home/check_git_changes.sh
 git checkout --detach {sha}
 bash /home/check_git_changes.sh
+
+{_TOOLCHAIN_SYNC}
 
 cargo fetch --locked
 cargo test --locked --offline --no-run
