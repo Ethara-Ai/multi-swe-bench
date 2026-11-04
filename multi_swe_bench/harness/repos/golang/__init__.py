@@ -165,6 +165,7 @@ from multi_swe_bench.harness.repos.golang.valyala import *
 from multi_swe_bench.harness.repos.golang.harness import *
 from multi_swe_bench.harness.repos.golang.Wei_Shaw import *
 from multi_swe_bench.harness.repos.golang.siderolabs import *
+from multi_swe_bench.harness.repos.golang.sipeed import *
 from multi_swe_bench.harness.repos.golang.aquasecurity import *
 from multi_swe_bench.harness.repos.golang.kubevela import *
 from multi_swe_bench.harness.repos.golang.grafana_pyroscope import *
