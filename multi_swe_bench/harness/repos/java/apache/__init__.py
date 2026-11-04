@@ -20,7 +20,7 @@ from multi_swe_bench.harness.repos.java.apache.shenyu import *
 from multi_swe_bench.harness.repos.java.apache.skywalking import *
 from multi_swe_bench.harness.repos.java.apache.skywalking_106_to_9710 import *
 from multi_swe_bench.harness.repos.java.apache.skywalking_10415_to_13539 import *
-from multi_swe_bench.harness.repos.java.apache.flink import *
+from multi_swe_bench.harness.repos.java.apache.flink_28395_to_28961 import *
 from multi_swe_bench.harness.repos.java.apache.commons_codec import *
 from multi_swe_bench.harness.repos.java.apache.druid_7113_to_6221 import *
 from multi_swe_bench.harness.repos.java.apache.rocketmq_8663_to_6798 import *
