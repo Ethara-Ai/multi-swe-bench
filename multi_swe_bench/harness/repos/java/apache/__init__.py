@@ -12,6 +12,7 @@ from multi_swe_bench.harness.repos.java.apache.dubbo import *
 from multi_swe_bench.harness.repos.java.apache.dubbo_0_to_6278 import *
 from multi_swe_bench.harness.repos.java.apache.dubbo_6279_to_99999 import *
 from multi_swe_bench.harness.repos.java.apache.dubbo_4548_to_1329 import *
+from multi_swe_bench.harness.repos.java.apache.incubator_seata_8278_to_8118 import *
 from multi_swe_bench.harness.repos.java.apache.logging_log4j2_0_to_2329 import *
 from multi_swe_bench.harness.repos.java.apache.logging_log4j2_2330_to_99999 import *
 from multi_swe_bench.harness.repos.java.apache.maven import *

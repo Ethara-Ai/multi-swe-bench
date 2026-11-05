@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.java.AutoMQ import *
 from multi_swe_bench.harness.repos.java.agentscope_ai import *
 from multi_swe_bench.harness.repos.java.airbnb import *
 from multi_swe_bench.harness.repos.java.alibaba import *
@@ -21,6 +22,7 @@ from multi_swe_bench.harness.repos.java.Graylog2 import *
 from multi_swe_bench.harness.repos.java.halodev import *
 from multi_swe_bench.harness.repos.java.hrldcpr import *
 from multi_swe_bench.harness.repos.java.JanusGraph import *
+from multi_swe_bench.harness.repos.java.h2database import *
 from multi_swe_bench.harness.repos.java.javaparser import *
 from multi_swe_bench.harness.repos.java.jenkinsci import *
 from multi_swe_bench.harness.repos.java.JodaOrg import *
@@ -40,6 +42,7 @@ from multi_swe_bench.harness.repos.java.provectus import *
 from multi_swe_bench.harness.repos.java.ReactiveX import *
 from multi_swe_bench.harness.repos.java.reactor import *
 from multi_swe_bench.harness.repos.java.resilience4j import *
+from multi_swe_bench.harness.repos.java.redis import *
 from multi_swe_bench.harness.repos.java.smallrye import *
 from multi_swe_bench.harness.repos.java.spotbugs import *
 from multi_swe_bench.harness.repos.java.spring_cloud import *
