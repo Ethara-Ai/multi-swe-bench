@@ -56,6 +56,7 @@ from multi_swe_bench.harness.repos.javascript.decred import *
 from multi_swe_bench.harness.repos.javascript.DevExpress import *
 from multi_swe_bench.harness.repos.javascript.dinerojs import *
 from multi_swe_bench.harness.repos.javascript.downshift_js import *
+from multi_swe_bench.harness.repos.javascript.DuarteSantos8 import *
 from multi_swe_bench.harness.repos.javascript.emotion_js import *
 from multi_swe_bench.harness.repos.javascript.enzymejs import *
 from multi_swe_bench.harness.repos.javascript.eslint import *
@@ -135,6 +136,7 @@ from multi_swe_bench.harness.repos.javascript.Semantic_Org import *
 from multi_swe_bench.harness.repos.javascript.Seneca_CDOT import *
 from multi_swe_bench.harness.repos.javascript.serverless import *
 from multi_swe_bench.harness.repos.javascript.serverless_operations import *
+from multi_swe_bench.harness.repos.javascript.shaka_project import *
 from multi_swe_bench.harness.repos.javascript.sindresorhus import *
 from multi_swe_bench.harness.repos.javascript.sinonjs import *
 from multi_swe_bench.harness.repos.javascript.sjbarag import *
