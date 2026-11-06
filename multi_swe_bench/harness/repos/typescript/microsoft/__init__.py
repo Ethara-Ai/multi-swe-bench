@@ -9,3 +9,4 @@ from multi_swe_bench.harness.repos.typescript.microsoft.rushstack_5573_to_5071 i
 from multi_swe_bench.harness.repos.typescript.microsoft.vscode_vsce import *
 from multi_swe_bench.harness.repos.typescript.microsoft.typespec_12339_to_11735 import *
 from multi_swe_bench.harness.repos.typescript.microsoft.vscode_cmake_tools import *
+from multi_swe_bench.harness.repos.typescript.microsoft.playwright_42972_to_41177 import *
