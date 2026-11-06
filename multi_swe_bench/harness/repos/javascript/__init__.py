@@ -203,3 +203,7 @@ from multi_swe_bench.harness.repos.javascript.immerjs import *
 from multi_swe_bench.harness.repos.javascript.ljharb import *
 from multi_swe_bench.harness.repos.javascript.jackwener import *
 from multi_swe_bench.harness.repos.javascript.rollup import *
+from multi_swe_bench.harness.repos.javascript.wekan import *
+from multi_swe_bench.harness.repos.javascript.necolas import *
+from multi_swe_bench.harness.repos.javascript.withmarbleapp import *
+from multi_swe_bench.harness.repos.javascript.brianc import *
