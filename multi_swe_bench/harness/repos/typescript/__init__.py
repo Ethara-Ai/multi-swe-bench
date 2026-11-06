@@ -280,3 +280,5 @@ _importlib.import_module("multi_swe_bench.harness.repos.typescript.shadcn-ui")
 from multi_swe_bench.harness.repos.typescript.vitejs import *
 from multi_swe_bench.harness.repos.typescript.ChromeDevTools import *
 from multi_swe_bench.harness.repos.typescript.dataelement import *
+from multi_swe_bench.harness.repos.typescript.actualbudget import *
+from multi_swe_bench.harness.repos.typescript.vercel import *

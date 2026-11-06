@@ -42,7 +42,8 @@ from multi_swe_bench.harness.repos.java.provectus import *
 from multi_swe_bench.harness.repos.java.ReactiveX import *
 from multi_swe_bench.harness.repos.java.reactor import *
 from multi_swe_bench.harness.repos.java.resilience4j import *
-from multi_swe_bench.harness.repos.java.redis import *
+# Disabled: java/redis/ was never committed (import added in 47d353df), so this line raised ModuleNotFoundError and broke loading of every repo config. Re-enable once java/redis/ is added.
+# from multi_swe_bench.harness.repos.java.redis import *
 from multi_swe_bench.harness.repos.java.smallrye import *
 from multi_swe_bench.harness.repos.java.spotbugs import *
 from multi_swe_bench.harness.repos.java.spring_cloud import *
