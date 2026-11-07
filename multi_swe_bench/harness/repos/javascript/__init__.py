@@ -207,3 +207,4 @@ from multi_swe_bench.harness.repos.javascript.wekan import *
 from multi_swe_bench.harness.repos.javascript.necolas import *
 from multi_swe_bench.harness.repos.javascript.withmarbleapp import *
 from multi_swe_bench.harness.repos.javascript.brianc import *
+from multi_swe_bench.harness.repos.javascript.OpenWhispr import *
