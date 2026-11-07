@@ -115,3 +115,4 @@ from multi_swe_bench.harness.repos.java.helidonio import *
 from multi_swe_bench.harness.repos.java.graphql_java import *
 from multi_swe_bench.harness.repos.java.plantuml import *
 from multi_swe_bench.harness.repos.java.logisim_evolution import *
+from multi_swe_bench.harness.repos.java.OtterMind import *
