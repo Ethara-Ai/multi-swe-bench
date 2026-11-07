@@ -117,3 +117,4 @@ from multi_swe_bench.harness.repos.rust.pbakaus import *
 from multi_swe_bench.harness.repos.rust.openai import *
 from multi_swe_bench.harness.repos.rust.tracel_ai import *
 from multi_swe_bench.harness.repos.rust.gfx_rs import *
+from multi_swe_bench.harness.repos.rust.jlcodes99 import *
