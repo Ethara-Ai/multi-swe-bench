@@ -208,3 +208,5 @@ from multi_swe_bench.harness.repos.javascript.necolas import *
 from multi_swe_bench.harness.repos.javascript.withmarbleapp import *
 from multi_swe_bench.harness.repos.javascript.brianc import *
 from multi_swe_bench.harness.repos.javascript.OpenWhispr import *
+from multi_swe_bench.harness.repos.javascript.Ripple_TS import *
+from multi_swe_bench.harness.repos.javascript.NomaDamas import *
