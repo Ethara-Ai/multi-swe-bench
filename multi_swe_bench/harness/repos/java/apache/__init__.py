@@ -32,3 +32,5 @@ from multi_swe_bench.harness.repos.java.apache.druid_11257_to_14136 import *
 from multi_swe_bench.harness.repos.java.apache.rocketmq_11473_to_10448 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_12264_to_17037 import *
 from multi_swe_bench.harness.repos.java.apache.shardingsphere import *
+from multi_swe_bench.harness.repos.java.apache.shiro_2925_to_2798 import *
+from multi_swe_bench.harness.repos.java.apache.storm_9159_to_8778 import *
