@@ -164,6 +164,7 @@ from multi_swe_bench.harness.repos.python.materialsproject import *
 from multi_swe_bench.harness.repos.python.matplotlib import *
 from multi_swe_bench.harness.repos.python.matrix_org import *
 from multi_swe_bench.harness.repos.python.mesonbuild import *
+from multi_swe_bench.harness.repos.python.mlflow import *
 from multi_swe_bench.harness.repos.python.mem0ai import *
 from multi_swe_bench.harness.repos.python.MemPalace import *
 from multi_swe_bench.harness.repos.python.meshtastic import *
