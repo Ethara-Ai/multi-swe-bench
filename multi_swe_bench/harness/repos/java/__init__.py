@@ -122,3 +122,4 @@ from multi_swe_bench.harness.repos.java.networknt import *
 from multi_swe_bench.harness.repos.java.LFDT_web3j import *
 from multi_swe_bench.harness.repos.java.baomidou import *
 from multi_swe_bench.harness.repos.java.grimmory_tools import *
+from multi_swe_bench.harness.repos.java.btraceio import *
