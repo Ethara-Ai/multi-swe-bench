@@ -284,3 +284,6 @@ from multi_swe_bench.harness.repos.typescript.actualbudget import *
 from multi_swe_bench.harness.repos.typescript.vercel import *
 from multi_swe_bench.harness.repos.typescript.outline import *
 from multi_swe_bench.harness.repos.typescript.Martian_Engineering import *
+
+from multi_swe_bench.harness.repos.typescript.Kilo_Org import *
+
