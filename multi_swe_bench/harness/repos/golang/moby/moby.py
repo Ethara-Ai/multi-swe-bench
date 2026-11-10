@@ -1,9 +1,43 @@
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+_SELECT_PKGS = r"""
+PKG_DIRS=$(grep -h '^diff --git a/' /home/test.patch /home/fix.patch 2>/dev/null \
+    | sed -e 's|^diff --git a/||' -e 's| b/.*$||' \
+    | grep -E '_test\.go$' \
+    | grep -v '^vendor/' \
+    | xargs -r -n1 dirname \
+    | sort -u) || PKG_DIRS=""
+
+GO_TEST_PKGS=""
+for d in $PKG_DIRS; do
+    if [ ! -d "$d" ]; then
+        continue
+    fi
+    # Drop directories owned by a nested module: moby carries its own go.mod
+    # under api/, and the root module cannot load those packages at all
+    # ("main module does not contain package ...").  Skipping them keeps the
+    # package set identical and loadable across all three stages.
+    nested=0
+    probe="$d"
+    while [ "$probe" != "." ]; do
+        if [ -f "$probe/go.mod" ]; then
+            nested=1
+            break
+        fi
+        probe=$(dirname "$probe")
+    done
+    if [ "$nested" -eq 1 ]; then
+        echo "Skipping $d: owned by nested module $probe" >&2
+        continue
+    fi
+    GO_TEST_PKGS="$GO_TEST_PKGS ./$d"
+done
+"""
 
 
 class MobyImageBase(Image):
@@ -19,8 +53,8 @@ class MobyImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "golang:1.24-bookworm"
+    def dependency(self) -> str | Image:
+        return "golang:1.26-bookworm"
 
     def image_tag(self) -> str:
         return "base"
@@ -36,53 +70,66 @@ class MobyImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org = self.pr.org
+        repo = self.pr.repo
+        repo_url = f"https://github.com/{org}/{repo}.git"
 
-        # System dependencies from moby's own Dockerfile.simple:
-        # https://github.com/moby/moby/blob/master/Dockerfile.simple
-        # These are needed to compile and test various moby subsystems
-        # (graphdrivers, networking, seccomp profiles, etc.)
-        # syntax directive prevents DockerfileEnhancer from injecting git checkout
-        # (checkout should happen in prepare.sh, not in shared base image)
+        extra_env = f"\n{self.global_env}\n" if self.global_env else ""
+
         return f"""# syntax=docker/dockerfile:1.6
+
 FROM {image_name}
 
-{self.global_env}
+ARG TARGETARCH
+ARG REPO_URL="{repo_url}"
+ARG BASE_COMMIT
 
-ENV GO111MODULE=off
-ENV GOTOOLCHAIN=local
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    build-essential \\
-    curl \\
-    cmake \\
-    libseccomp-dev \\
-    ca-certificates \\
-    e2fsprogs \\
-    iptables \\
-    pkg-config \\
-    pigz \\
-    procps \\
-    xfsprogs \\
-    xz-utils \\
-    libbtrfs-dev \\
-    libdevmapper-dev \\
-    vim-common \\
-    && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
 
-RUN mkdir -p /go/src/github.com/docker/
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
 
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+ENV GOPATH=/go \\
+    GOTOOLCHAIN=local \\
+    CGO_ENABLED=1 \\
+    GOFLAGS=-mod=vendor
+{extra_env}
 WORKDIR /home/
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{repo}
 
-RUN ln -sf /home/{self.pr.repo} /go/src/github.com/docker/docker
+WORKDIR /home/{repo}
 
-{self.clear_env}
-
+CMD ["/bin/bash"]
 """
 
 
@@ -109,21 +156,10 @@ class MobyImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+
+        check_git_changes = """#!/bin/bash
 set -e
 
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
@@ -138,122 +174,104 @@ fi
 
 echo "check_git_changes: No uncommitted changes"
 exit 0
+"""
 
-""".format(),
-            ),
-            File(
-                ".",
-                "extract_packages.sh",
-                """#!/bin/bash
-# Extract affected Go packages from patch files.
-# Reads diff headers from patches, finds .go files, extracts their
-# parent directory paths. Filters out vendor/ dirs and checks that
-# directories exist on disk before including them.
-# Usage: source /home/extract_packages.sh [patch_file1] [patch_file2]
-# Sets GO_TEST_PKGS variable with space-separated ./pkg paths.
-
-_extract_go_packages() {{
-    local PKGS
-    PKGS=$(grep -h '^diff --git a/' "$@" 2>/dev/null \\
-        | sed 's|diff --git a/||;s| b/.*||' \\
-        | grep '\\.go$' \\
-        | grep -v '^vendor/' \\
-        | xargs -I{{}} dirname {{}} \\
-        | sort -u)
-
-    local result=""
-    for pkg in $PKGS; do
-        if [ -d "$pkg" ]; then
-            result="$result ./$pkg"
-        fi
-    done
-    echo "$result"
-}}
-
-GO_TEST_PKGS=$(_extract_go_packages "$@")
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
+        prepare = """#!/bin/bash
 set -e
 
-cd /home/{pr.repo}
+# --- Section 1: PIN ---
+cd /home/__REPO__
 git reset --hard
+git clean -fdx
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach __BASE_SHA__
 bash /home/check_git_changes.sh
 
-# Warmup: compile only the affected packages (not ./...)
-cd /go/src/github.com/docker/docker
-source /home/extract_packages.sh /home/test.patch /home/fix.patch
-if [ -n "$GO_TEST_PKGS" ]; then
-    go test -v -count=1 $GO_TEST_PKGS || true
-else
-    echo "No testable Go packages found in patches"
+# --- Section 2: PROVISION ---
+# Pre-`go.mod` moby (CalVer era) keeps its module graph in vendor.mod/vendor.sum
+# and expects them to be linked into place before any go command runs; this is
+# what moby's own hack/with-go-mod.sh does.
+if [ ! -f go.mod ] && [ -f vendor.mod ]; then
+    ln -sf vendor.mod go.mod
+    ln -sf vendor.sum go.sum
 fi
 
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -eo pipefail
+# Warm the build cache for the packages the three stages will exercise.  The
+# fix patch may be what creates them, so a failure here is expected and the
+# gate below is what actually proves the toolchain and vendor tree are usable.
+__SELECT_PKGS__
+if [ -n "$GO_TEST_PKGS" ]; then
+    go build $GO_TEST_PKGS || true
+fi
 
-cd /go/src/github.com/docker/docker
-source /home/extract_packages.sh /home/test.patch /home/fix.patch
+# --- Section 3: GATE ---
+go version
+test -f go.mod
+go list ./daemon/... > /dev/null
+echo "DEPS_OK"
+"""
+
+        run = """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/__REPO__
+__SELECT_PKGS__
 if [ -z "$GO_TEST_PKGS" ]; then
     echo "No testable Go packages found in patches"
     exit 0
 fi
 echo "Testing packages: $GO_TEST_PKGS"
 go test -v -count=1 $GO_TEST_PKGS
+"""
 
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
+        test_run = """#!/bin/bash
 set -eo pipefail
+export CI=true
 
-cd /home/{pr.repo}
+cd /home/__REPO__
 git apply --whitespace=nowarn /home/test.patch
 
-cd /go/src/github.com/docker/docker
-source /home/extract_packages.sh /home/test.patch /home/fix.patch
+__SELECT_PKGS__
 if [ -z "$GO_TEST_PKGS" ]; then
     echo "No testable Go packages found in patches"
     exit 0
 fi
 echo "Testing packages: $GO_TEST_PKGS"
 go test -v -count=1 $GO_TEST_PKGS
+"""
 
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
+        fix_run = """#!/bin/bash
 set -eo pipefail
+export CI=true
 
-cd /home/{pr.repo}
+cd /home/__REPO__
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 
-cd /go/src/github.com/docker/docker
-source /home/extract_packages.sh /home/test.patch /home/fix.patch
+__SELECT_PKGS__
 if [ -z "$GO_TEST_PKGS" ]; then
     echo "No testable Go packages found in patches"
     exit 0
 fi
 echo "Testing packages: $GO_TEST_PKGS"
 go test -v -count=1 $GO_TEST_PKGS
+"""
 
-""".format(pr=self.pr),
-            ),
+        def render(body: str) -> str:
+            return (
+                body.replace("__SELECT_PKGS__", _SELECT_PKGS.strip())
+                .replace("__REPO__", repo)
+                .replace("__BASE_SHA__", sha)
+            )
+
+        return [
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", check_git_changes),
+            File(".", "prepare.sh", render(prepare)),
+            File(".", "run.sh", render(run)),
+            File(".", "test-run.sh", render(test_run)),
+            File(".", "fix-run.sh", render(fix_run)),
         ]
 
     def dockerfile(self) -> str:
@@ -265,18 +283,56 @@ go test -v -count=1 $GO_TEST_PKGS
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
 
-        prepare_commands = "RUN bash /home/prepare.sh"
+        extra_env = f"\n{self.global_env}\n" if self.global_env else ""
 
         return f"""FROM {name}:{tag}
 
-{self.global_env}
-
+ARG BASE_COMMIT="{self.pr.base.sha}"
+{extra_env}
 {copy_commands}
+RUN bash /home/prepare.sh
 
-{prepare_commands}
+RUN git reset --hard
+RUN git checkout ${{BASE_COMMIT}}
 
-{self.clear_env}
+RUN set -eux; \\
+    git checkout --detach "${{BASE_COMMIT}}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git config --local pack.threads 1; \\
+    git config --local pack.windowMemory 32m; \\
+    git config --local pack.packSizeLimit 128m; \\
+    git config --local pack.deltaCacheSize 32m; \\
+    git gc --prune=now; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "${{BASE_COMMIT}}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git config --local pack.threads 1; \\
+            git config --local pack.windowMemory 32m; \\
+            git config --local pack.packSizeLimit 128m; \\
+            git config --local pack.deltaCacheSize 32m; \\
+            git gc --prune=now; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
 """
 
 
@@ -313,6 +369,8 @@ class Moby(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+
         passed_tests = set()
         failed_tests = set()
         skipped_tests = set()
@@ -321,10 +379,8 @@ class Moby(Instance):
         re_fail_tests = [re.compile(r"--- FAIL: (\S+)")]
         re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
 
-        # Package-level FAIL (e.g. panics in integration tests):
-        #   FAIL\tgithub.com/docker/docker/integration/networking\t0.014s
         re_pkg_fail = re.compile(
-            r"^FAIL\s+(github\.com/docker/docker/\S+)\s+[\d.]"
+            r"^FAIL\s+(github\.com/(?:moby/moby|docker/docker)\S*)\s+(?:\[|[\d.])"
         )
 
         def get_base_name(test_name: str) -> str:
@@ -363,11 +419,14 @@ class Moby(Instance):
                     if base_name not in passed_tests and base_name not in failed_tests:
                         skipped_tests.add(base_name)
 
-            # Package-level failures (panics, compilation errors)
             pkg_fail_match = re_pkg_fail.match(line)
             if pkg_fail_match:
                 pkg_name = pkg_fail_match.group(1)
                 failed_tests.add(pkg_name)
+
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

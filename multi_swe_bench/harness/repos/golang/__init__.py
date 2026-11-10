@@ -247,3 +247,5 @@ from multi_swe_bench.harness.repos.golang.juliusbrussee import *
 from multi_swe_bench.harness.repos.golang.HyNetworks import *
 from multi_swe_bench.harness.repos.golang.multica_ai import *
 from multi_swe_bench.harness.repos.golang.tailscale import *
+from multi_swe_bench.harness.repos.golang.ollama import *
+from multi_swe_bench.harness.repos.golang.router_for_me import *
