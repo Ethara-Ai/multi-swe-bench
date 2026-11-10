@@ -467,3 +467,5 @@ from multi_swe_bench.harness.repos.python.darrenburns import *
 from multi_swe_bench.harness.repos.python.Gathin23 import *
 
 from multi_swe_bench.harness.repos.python.usestrix import *
+
+from multi_swe_bench.harness.repos.python.semantica_agi import *
