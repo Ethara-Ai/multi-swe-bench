@@ -212,3 +212,4 @@ from multi_swe_bench.harness.repos.javascript.Ripple_TS import *
 from multi_swe_bench.harness.repos.javascript.NomaDamas import *
 from multi_swe_bench.harness.repos.javascript.tt_a1i import *
 from multi_swe_bench.harness.repos.javascript.Ebony_Vinyl import *
+from multi_swe_bench.harness.repos.javascript.playcanvas import *
