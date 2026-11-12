@@ -5,3 +5,4 @@ from multi_swe_bench.harness.repos.javascript.serverless.serverless_8561_to_7780
 from multi_swe_bench.harness.repos.javascript.serverless.serverless_8913_to_8652 import *
 from multi_swe_bench.harness.repos.javascript.serverless.serverless_11576_to_9192 import *
 from multi_swe_bench.harness.repos.javascript.serverless.serverless_google_cloudfunctions import *
+from multi_swe_bench.harness.repos.javascript.serverless.serverless_13989_to_13739 import *
