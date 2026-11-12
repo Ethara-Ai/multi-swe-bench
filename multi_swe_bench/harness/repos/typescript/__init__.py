@@ -287,3 +287,4 @@ from multi_swe_bench.harness.repos.typescript.Martian_Engineering import *
 
 from multi_swe_bench.harness.repos.typescript.Kilo_Org import *
 
+from multi_swe_bench.harness.repos.typescript.Pouzor import *
