@@ -476,3 +476,5 @@ from multi_swe_bench.harness.repos.python.D4Vinci import *
 from multi_swe_bench.harness.repos.python.jamiepine import *
 from multi_swe_bench.harness.repos.python.unslothai import *
 from multi_swe_bench.harness.repos.python.headroomlabs_ai import *
+from multi_swe_bench.harness.repos.python.shareAI_lab import *
+from multi_swe_bench.harness.repos.python.unclecode import *

@@ -1,7 +1,7 @@
 import re
 import shlex
 
-from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
@@ -10,54 +10,19 @@ _BASE_TAG = "base-1495_to_866"
 _PYTHON_IMAGE = "python:3.12-slim-bookworm"
 
 
-_BASE_DOCKERFILE = r"""# syntax=docker/dockerfile:1.6
+_BASE_DOCKERFILE = r"""__SYNTAX__
 
 FROM __BASE_IMAGE__
 
-ARG TARGETARCH
-ARG REPO_URL="https://github.com/__ORG__/__REPO__.git"
-ARG BASE_COMMIT
+__INFRA__
 
-ARG http_proxy=""
-ARG https_proxy=""
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG no_proxy="localhost,127.0.0.1,::1"
-ARG NO_PROXY="localhost,127.0.0.1,::1"
-ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    TZ=UTC \
-    http_proxy=${http_proxy} \
-    https_proxy=${https_proxy} \
-    HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    no_proxy=${no_proxy} \
-    NO_PROXY=${NO_PROXY} \
-    SSL_CERT_FILE=${CA_CERT_PATH} \
-    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \
-    CURL_CA_BUNDLE=${CA_CERT_PATH} \
+ENV LC_ALL=C.UTF-8 \
     PIP_CERT=${CA_CERT_PATH} \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DEFAULT_TIMEOUT=120 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
-
-LABEL org.opencontainers.image.title="__ORG__/__REPO__" \
-      org.opencontainers.image.description="__ORG__/__REPO__ Docker image" \
-      org.opencontainers.image.source="https://github.com/__ORG__/__REPO__" \
-      org.opencontainers.image.authors="https://www.ethara.ai/"
-
-RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
@@ -130,7 +95,7 @@ exit 0
 
 
 _PREPARE_SH = r"""#!/bin/bash
-set -eo pipefail
+set -e
 
 cd /home/__REPO__
 
@@ -149,39 +114,28 @@ python --version
 
 printf 'setuptools<81\n' > /tmp/pip-constraints.txt
 
-python -m pip install --upgrade pip
-python -m pip install --retries 5 --timeout 120 -c /tmp/pip-constraints.txt \
-    "pytest>=8,<9" \
-    "pytest-asyncio>=0.23,<1" \
-    "pytest-mock>=3.12,<4" \
-    "pytest-timeout>=2.2,<3"
+python -m pip install --upgrade pip || true
+if [ "$(uname -m)" = "x86_64" ]; then
+    # glibc uv segfaults under QEMU amd64 emulation; the static musl build does not.
+    curl -fsSL https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-musl.tar.gz \
+        | tar -xz -C /tmp && install -m 0755 /tmp/uv-x86_64-unknown-linux-musl/uv /usr/local/bin/uv || true
+else
+    python -m pip install --retries 5 --timeout 120 "uv==0.13.6" || true
+fi
+uv --version || true
 
-install_ok=0
-if [ -f pyproject.toml ]; then
-    if python -m pip install --retries 5 --timeout 120 -c /tmp/pip-constraints.txt -e ".[dev,test]"; then
-        install_ok=1
-    elif python -m pip install --retries 5 --timeout 120 -c /tmp/pip-constraints.txt -e ".[dev]"; then
-        install_ok=1
-    elif python -m pip install --retries 5 --timeout 120 -c /tmp/pip-constraints.txt -e ".[test]"; then
-        install_ok=1
-    elif python -m pip install --retries 5 --timeout 120 -c /tmp/pip-constraints.txt -e .; then
-        install_ok=1
-    fi
-elif [ -f setup.py ]; then
-    python -m pip install --retries 5 --timeout 120 -c /tmp/pip-constraints.txt -e . && install_ok=1
+# Install the exact dependency set pinned in the repo's uv.lock (project deps +
+# the default "dev" dependency group, which carries pytest / pytest-asyncio).
+if [ -f uv.lock ] && uv export --frozen --no-hashes --no-emit-project --format requirements-txt > /tmp/locked-requirements.txt; then
+    # uv.lock is authoritative here (it pins its own setuptools), so no extra constraints.
+    python -m pip install --retries 5 --timeout 120 -r /tmp/locked-requirements.txt || true
+    python -m pip install --retries 5 --timeout 120 --no-deps -e . || true
+else
+    echo "prepare.sh: uv.lock export unavailable, falling back to unlocked install" >&2
+    python -m pip install --retries 5 --timeout 120 -c /tmp/pip-constraints.txt -e . pytest pytest-asyncio || true
 fi
 
-for req in requirements-dev.txt requirements_dev.txt dev-requirements.txt requirements-test.txt test-requirements.txt requirements.txt; do
-    if [ -f "$req" ]; then
-        python -m pip install --retries 5 --timeout 120 -c /tmp/pip-constraints.txt -r "$req" || true
-    fi
-done
-
-if [ "$install_ok" -ne 1 ]; then
-    echo "prepare.sh: could not install project (no pyproject.toml / setup.py path succeeded)"
-    exit 1
-fi
-
+# Fail the build only if the environment is genuinely unusable.
 python -c "import pytest, strix; print('DEPS_OK')"
 """
 
@@ -354,7 +308,12 @@ class StrixImageBase_1495_TO_866(Image):
         code = _CLONE_CODE if self.config.need_clone else _COPY_CODE
 
         return (
-            _BASE_DOCKERFILE.replace("__BASE_IMAGE__", self.dependency())
+            _BASE_DOCKERFILE.replace("__SYNTAX__", DockerfileEnhancer.SYNTAX_DIRECTIVE)
+            .replace(
+                "__INFRA__",
+                DockerfileEnhancer._infrastructure_block(self, self.dependency()).rstrip("\n"),
+            )
+            .replace("__BASE_IMAGE__", self.dependency())
             .replace("__GLOBAL_ENV__", self.global_env)
             .replace("__CLEAR_ENV__", self.clear_env)
             .replace("__CODE__", code)
