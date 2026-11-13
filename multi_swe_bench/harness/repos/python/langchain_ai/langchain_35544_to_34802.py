@@ -180,7 +180,7 @@ if [ "${#test_targets[@]}" -eq 0 ]; then
     exit 0
 fi
 
-uv sync --group test --frozen
+uv sync --group test --frozen --offline || uv sync --group test --frozen
 
 .venv/bin/python -m pytest -o addopts= --no-header -v -rA --tb=no --color=no -p no:cacheprovider --disable-socket --allow-unix-socket "${test_targets[@]}"
 """
@@ -210,9 +210,6 @@ if [ -d "__PACKAGE__" ]; then
     .venv/bin/python -m pytest --version
     .venv/bin/python -c "import pytest_socket"
 fi
-
-cd /home/__REPO__
-bash /home/check_git_changes.sh
 """
 
 

@@ -471,3 +471,7 @@ from multi_swe_bench.harness.repos.python.usestrix import *
 from multi_swe_bench.harness.repos.python.semantica_agi import *
 
 from multi_swe_bench.harness.repos.python.bojieli import *
+
+from multi_swe_bench.harness.repos.python.D4Vinci import *
+from multi_swe_bench.harness.repos.python.jamiepine import *
+from multi_swe_bench.harness.repos.python.unslothai import *
