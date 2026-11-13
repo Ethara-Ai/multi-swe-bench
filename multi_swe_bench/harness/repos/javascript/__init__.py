@@ -219,3 +219,5 @@ from multi_swe_bench.harness.repos.javascript.marko_js import *
 from multi_swe_bench.harness.repos.javascript.node_red import *
 from multi_swe_bench.harness.repos.javascript.shipshapecode import *
 from multi_swe_bench.harness.repos.javascript.paperjs import *
+from multi_swe_bench.harness.repos.javascript.gpujs import *
+from multi_swe_bench.harness.repos.javascript.rabbitmq import *
