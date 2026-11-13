@@ -34,3 +34,4 @@ from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_12264_to_17037 i
 from multi_swe_bench.harness.repos.java.apache.shardingsphere import *
 from multi_swe_bench.harness.repos.java.apache.shiro_2925_to_2798 import *
 from multi_swe_bench.harness.repos.java.apache.storm_9159_to_8778 import *
+from multi_swe_bench.harness.repos.java.apache.camel_25773 import *
