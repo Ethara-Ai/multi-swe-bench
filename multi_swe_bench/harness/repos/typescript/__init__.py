@@ -291,6 +291,7 @@ from multi_swe_bench.harness.repos.typescript.Pouzor import *
 from multi_swe_bench.harness.repos.typescript.transloadit import *
 from multi_swe_bench.harness.repos.typescript.emdash_cms import *
 from multi_swe_bench.harness.repos.typescript.vbenjs import *
+from multi_swe_bench.harness.repos.typescript.tashfeenahmed import *
 from multi_swe_bench.harness.repos.typescript.shipshapecode import *
 from multi_swe_bench.harness.repos.typescript.appsmithorg import *
 
