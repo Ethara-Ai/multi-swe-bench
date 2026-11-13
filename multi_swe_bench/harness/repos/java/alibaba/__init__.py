@@ -6,3 +6,4 @@ from multi_swe_bench.harness.repos.java.alibaba.nacos_15920_to_15513 import *
 from multi_swe_bench.harness.repos.java.alibaba.spring_cloud_alibaba_1996_to_82 import *
 from multi_swe_bench.harness.repos.java.alibaba.sentinel import *
 from multi_swe_bench.harness.repos.java.alibaba.spring_cloud_alibaba_4068_to_3411 import *
+from multi_swe_bench.harness.repos.java.alibaba.spring_ai_alibaba_4826_to_4826 import *

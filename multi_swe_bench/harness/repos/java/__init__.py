@@ -129,3 +129,14 @@ from multi_swe_bench.harness.repos.java.osmandapp import *
 from multi_swe_bench.harness.repos.java.zhukunpenglinyutong import *
 from multi_swe_bench.harness.repos.java.prestodb import *
 from multi_swe_bench.harness.repos.java.graphhopper import *
+from multi_swe_bench.harness.repos.java.RoaringBitmap import *
+from multi_swe_bench.harness.repos.java.AxonIQ import *
+from multi_swe_bench.harness.repos.java.openrewrite import *
+from multi_swe_bench.harness.repos.java.questdb.questdb_7755_to_7013 import *
+from multi_swe_bench.harness.repos.java.unitycatalog import *
+from multi_swe_bench.harness.repos.java.apple import *
+from multi_swe_bench.harness.repos.java.supertokens import *
+from multi_swe_bench.harness.repos.java.zhukunpenglinyutong import *
+from multi_swe_bench.harness.repos.java.trinodb import *
+from multi_swe_bench.harness.repos.java.rstudio import *
+from multi_swe_bench.harness.repos.java.langchain4j import *

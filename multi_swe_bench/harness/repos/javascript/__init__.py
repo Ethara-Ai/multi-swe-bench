@@ -215,3 +215,7 @@ from multi_swe_bench.harness.repos.javascript.Ebony_Vinyl import *
 from multi_swe_bench.harness.repos.javascript.playcanvas import *
 from multi_swe_bench.harness.repos.javascript.mui import *
 from multi_swe_bench.harness.repos.javascript.usebruno import *
+from multi_swe_bench.harness.repos.javascript.marko_js import *
+from multi_swe_bench.harness.repos.javascript.node_red import *
+from multi_swe_bench.harness.repos.javascript.shipshapecode import *
+from multi_swe_bench.harness.repos.javascript.paperjs import *
