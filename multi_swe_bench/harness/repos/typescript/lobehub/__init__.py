@@ -4,3 +4,4 @@ from multi_swe_bench.harness.repos.typescript.lobehub.lobehub_13716_to_6474 impo
 from multi_swe_bench.harness.repos.typescript.lobehub.lobehub_3206_to_2231 import *
 from multi_swe_bench.harness.repos.typescript.lobehub.lobehub_router import *
 from multi_swe_bench.harness.repos.typescript.lobehub.lobehub_10011_to_7964 import *
+from multi_swe_bench.harness.repos.typescript.lobehub.lobehub_21367_to_17665 import *
