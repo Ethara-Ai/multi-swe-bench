@@ -127,3 +127,4 @@ from multi_swe_bench.harness.repos.java.grimmory_tools import *
 from multi_swe_bench.harness.repos.java.btraceio import *
 from multi_swe_bench.harness.repos.java.osmandapp import *
 from multi_swe_bench.harness.repos.java.zhukunpenglinyutong import *
+from multi_swe_bench.harness.repos.java.prestodb import *
