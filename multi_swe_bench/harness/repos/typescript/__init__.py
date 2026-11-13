@@ -296,3 +296,5 @@ from multi_swe_bench.harness.repos.typescript.shipshapecode import *
 from multi_swe_bench.harness.repos.typescript.appsmithorg import *
 
 from multi_swe_bench.harness.repos.typescript.langgenius import * 
+
+from multi_swe_bench.harness.repos.typescript.chenglou import *

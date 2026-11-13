@@ -221,3 +221,8 @@ from multi_swe_bench.harness.repos.javascript.shipshapecode import *
 from multi_swe_bench.harness.repos.javascript.paperjs import *
 from multi_swe_bench.harness.repos.javascript.gpujs import *
 from multi_swe_bench.harness.repos.javascript.rabbitmq import *
+
+from multi_swe_bench.harness.repos.javascript.protobufjs import *
+from multi_swe_bench.harness.repos.javascript.MagicMirrorOrg import *
+from multi_swe_bench.harness.repos.javascript.zotero import *
+from multi_swe_bench.harness.repos.javascript.whyour import *

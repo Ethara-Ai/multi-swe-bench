@@ -1,2 +1,3 @@
 from multi_swe_bench.harness.repos.javascript.affaan_m.everything_claude_code import *  # noqa: F401,F403
 from multi_swe_bench.harness.repos.javascript.affaan_m.ECC_3640_to_3001 import *  # noqa: F401,F403
+from multi_swe_bench.harness.repos.javascript.affaan_m.ecc_3251_to_3060 import *
