@@ -120,3 +120,11 @@ from multi_swe_bench.harness.repos.rust.gfx_rs import *
 from multi_swe_bench.harness.repos.rust.jlcodes99 import *
 from multi_swe_bench.harness.repos.rust.janhq import *
 from multi_swe_bench.harness.repos.rust.BigPizzaV3 import *
+from multi_swe_bench.harness.repos.rust.Byron import *
+from multi_swe_bench.harness.repos.rust.AlexsJones import *
+from multi_swe_bench.harness.repos.rust.lakehq import *
+from multi_swe_bench.harness.repos.rust.NVIDIA import *
+from multi_swe_bench.harness.repos.rust.lancedb import *
+from multi_swe_bench.harness.repos.rust.CapSoftware import *
+from multi_swe_bench.harness.repos.rust.jtroo import *
+from multi_swe_bench.harness.repos.rust.PrimeIntellect_ai import *

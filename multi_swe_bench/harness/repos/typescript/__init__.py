@@ -298,3 +298,4 @@ from multi_swe_bench.harness.repos.typescript.appsmithorg import *
 from multi_swe_bench.harness.repos.typescript.langgenius import * 
 
 from multi_swe_bench.harness.repos.typescript.chenglou import *
+from multi_swe_bench.harness.repos.typescript.garrytan import *

@@ -226,3 +226,6 @@ from multi_swe_bench.harness.repos.javascript.protobufjs import *
 from multi_swe_bench.harness.repos.javascript.MagicMirrorOrg import *
 from multi_swe_bench.harness.repos.javascript.zotero import *
 from multi_swe_bench.harness.repos.javascript.whyour import *
+from multi_swe_bench.harness.repos.javascript.jsdom import *
+from multi_swe_bench.harness.repos.javascript.Fei_Away import *
+from multi_swe_bench.harness.repos.javascript.HeyPuter import *

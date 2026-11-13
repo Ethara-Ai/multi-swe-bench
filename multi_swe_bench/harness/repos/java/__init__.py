@@ -140,3 +140,8 @@ from multi_swe_bench.harness.repos.java.zhukunpenglinyutong import *
 from multi_swe_bench.harness.repos.java.trinodb import *
 from multi_swe_bench.harness.repos.java.rstudio import *
 from multi_swe_bench.harness.repos.java.langchain4j import *
+from multi_swe_bench.harness.repos.java.floci_io import *
+from multi_swe_bench.harness.repos.java.DependencyTrack import *
+from multi_swe_bench.harness.repos.java.spring_projects import *
+from multi_swe_bench.harness.repos.java.netty import *
+from multi_swe_bench.harness.repos.java.questdb import *
