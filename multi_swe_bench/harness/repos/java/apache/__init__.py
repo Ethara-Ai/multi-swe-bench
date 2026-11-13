@@ -35,3 +35,4 @@ from multi_swe_bench.harness.repos.java.apache.shardingsphere import *
 from multi_swe_bench.harness.repos.java.apache.shiro_2925_to_2798 import *
 from multi_swe_bench.harness.repos.java.apache.storm_9159_to_8778 import *
 from multi_swe_bench.harness.repos.java.apache.camel_25773 import *
+from multi_swe_bench.harness.repos.java.apache.hudi_18816_to_19903 import *
