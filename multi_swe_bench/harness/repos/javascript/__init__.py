@@ -214,7 +214,6 @@ from multi_swe_bench.harness.repos.javascript.tt_a1i import *
 from multi_swe_bench.harness.repos.javascript.Ebony_Vinyl import *
 from multi_swe_bench.harness.repos.javascript.playcanvas import *
 from multi_swe_bench.harness.repos.javascript.mui import *
-from multi_swe_bench.harness.repos.javascript.usebruno import *
 from multi_swe_bench.harness.repos.javascript.marko_js import *
 from multi_swe_bench.harness.repos.javascript.node_red import *
 from multi_swe_bench.harness.repos.javascript.shipshapecode import *
@@ -229,3 +228,12 @@ from multi_swe_bench.harness.repos.javascript.whyour import *
 from multi_swe_bench.harness.repos.javascript.jsdom import *
 from multi_swe_bench.harness.repos.javascript.Fei_Away import *
 from multi_swe_bench.harness.repos.javascript.HeyPuter import *
+from multi_swe_bench.harness.repos.javascript.di_sukharev import *
+from multi_swe_bench.harness.repos.javascript.justlovemaki import *
+from multi_swe_bench.harness.repos.javascript.sockjs import *
+from multi_swe_bench.harness.repos.javascript.nodejs import *
+from multi_swe_bench.harness.repos.javascript.mrdoob import *
+from multi_swe_bench.harness.repos.javascript.addyosmani import *
+from multi_swe_bench.harness.repos.javascript.wheresryan22 import *
+from multi_swe_bench.harness.repos.javascript.vega import *
+from multi_swe_bench.harness.repos.javascript.usebruno import *
