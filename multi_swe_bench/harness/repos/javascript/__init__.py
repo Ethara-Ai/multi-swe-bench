@@ -237,3 +237,7 @@ from multi_swe_bench.harness.repos.javascript.addyosmani import *
 from multi_swe_bench.harness.repos.javascript.wheresryan22 import *
 from multi_swe_bench.harness.repos.javascript.vega import *
 from multi_swe_bench.harness.repos.javascript.usebruno import *
+from multi_swe_bench.harness.repos.javascript.maboloshi import *
+from multi_swe_bench.harness.repos.javascript.BrasilAPI import *
+from multi_swe_bench.harness.repos.javascript.NodeBB import *
+from multi_swe_bench.harness.repos.javascript.Acode_Foundation import *
