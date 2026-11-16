@@ -9,6 +9,22 @@ from multi_swe_bench.harness.pull_request import PullRequest
 
 REPO_DIR = "logisim-evolution"
 
+_JUNIT_INIT_GRADLE = r"""allprojects {
+    tasks.withType(Test).configureEach {
+        afterTest { desc, result ->
+            def name = desc.name.endsWith('()') ? desc.name[0..-3] : desc.name
+            def status = result.resultType == TestResult.ResultType.SUCCESS ? 'PASSED' : (result.resultType == TestResult.ResultType.FAILURE ? 'FAILED' : 'SKIPPED')
+            println('JUNIT ' + status + ' ' + (desc.className + '#' + name).replaceAll(/\s+/, ' ').trim())
+        }
+    }
+}"""
+
+_GRADLE = "./gradlew --no-daemon --console=plain"
+
+_GRADLE_TEST = (
+    _GRADLE + " --init-script /home/junit-ids.gradle --continue cleanTest test 2>&1"
+)
+
 
 class logisim_evolution_3111_to_2651_ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -41,24 +57,81 @@ class logisim_evolution_3111_to_2651_ImageBase(Image):
             image_name = image_name.image_full_name()
 
         if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{REPO_DIR}.git /home/{REPO_DIR}"
+            code = f'RUN git clone "${{REPO_URL}}" /home/{REPO_DIR}'
         else:
             code = f"COPY {REPO_DIR} /home/{REPO_DIR}"
 
-        return f"""FROM {image_name}
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{REPO_DIR}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
 
 {self.global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    CI=true \\
+    TEST_ENV_PROVIDER=oss-source \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
 
-RUN apt-get update && apt-get install -y --no-install-recommends git xxd fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
+LABEL org.opencontainers.image.title="{self.pr.org}/{REPO_DIR}" \\
+      org.opencontainers.image.description="{self.pr.org}/{REPO_DIR} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{REPO_DIR}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 WORKDIR /home/
 
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates \\
+    curl \\
+    fonts-dejavu-core \\
+    git \\
+    unzip \\
+    xxd \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git config --global --add safe.directory '*'
+
 {code}
+
+WORKDIR /home/{REPO_DIR}
+RUN git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""
+WORKDIR /home/
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -119,49 +192,6 @@ exit 0
             ),
             File(
                 ".",
-                "junit-ids.gradle",
-                r"""allprojects {
-    tasks.withType(Test).configureEach {
-        afterTest { desc, result ->
-            def name = desc.name.endsWith('()') ? desc.name[0..-3] : desc.name
-            def status = result.resultType == TestResult.ResultType.SUCCESS ? 'PASSED' : (result.resultType == TestResult.ResultType.FAILURE ? 'FAILED' : 'SKIPPED')
-            println('JUNIT ' + status + ' ' + (desc.className + '#' + name).replaceAll(/\s+/, ' ').trim())
-        }
-    }
-}
-""",
-            ),
-            File(
-                ".",
-                "logisim_tests.sh",
-                r"""#!/bin/bash
-REPO=/home/[[REPO_DIR]]
-GRADLE="./gradlew --no-daemon --console=plain"
-
-setup() {
-    set -e
-    cd $REPO
-    chmod +x gradlew
-    for i in 1 2 3 4 5 6; do
-        $GRADLE --version && break
-        sleep 60
-    done
-    $GRADLE testClasses
-}
-
-run_tests() {
-    cd $REPO
-    $GRADLE --init-script /home/junit-ids.gradle --continue cleanTest test 2>&1
-}
-
-case "$1" in
-    setup) setup ;;
-    run) run_tests ;;
-esac
-""".replace("[[REPO_DIR]]", REPO_DIR),
-            ),
-            File(
-                ".",
                 "prepare.sh",
                 """#!/bin/bash
 set -e
@@ -170,12 +200,23 @@ cd /home/{repo_dir}
 git reset --hard
 git clean -fdx
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach {pr.base.sha}
+test "$(git rev-parse HEAD)" = "$(git rev-parse {pr.base.sha})"
 bash /home/check_git_changes.sh
 
-bash /home/logisim_tests.sh setup
+cat > /home/junit-ids.gradle <<'JUNIT_INIT_EOF'
+__JUNIT_INIT_GRADLE__
+JUNIT_INIT_EOF
 
-""".format(pr=self.pr, repo_dir=REPO_DIR),
+chmod +x gradlew
+for i in 1 2 3 4 5 6; do
+    {gradle} --version && break
+    sleep 60
+done
+{gradle} testClasses
+""".format(pr=self.pr, repo_dir=REPO_DIR, gradle=_GRADLE).replace(
+                    "__JUNIT_INIT_GRADLE__", _JUNIT_INIT_GRADLE
+                ),
             ),
             File(
                 ".",
@@ -183,9 +224,9 @@ bash /home/logisim_tests.sh setup
                 """#!/bin/bash
 
 cd /home/{repo_dir}
-bash /home/logisim_tests.sh run
+{gradle_test}
 
-""".format(repo_dir=REPO_DIR),
+""".format(repo_dir=REPO_DIR, gradle_test=_GRADLE_TEST),
             ),
             File(
                 ".",
@@ -197,9 +238,9 @@ if ! git -C /home/{repo_dir} apply --whitespace=nowarn /home/test.patch; then
     echo "Error: git apply failed" >&2
     exit 1
 fi
-bash /home/logisim_tests.sh run
+{gradle_test}
 
-""".format(repo_dir=REPO_DIR),
+""".format(repo_dir=REPO_DIR, gradle_test=_GRADLE_TEST),
             ),
             File(
                 ".",
@@ -211,9 +252,9 @@ if ! git -C /home/{repo_dir} apply --whitespace=nowarn /home/test.patch /home/fi
     echo "Error: git apply failed" >&2
     exit 1
 fi
-bash /home/logisim_tests.sh run
+{gradle_test}
 
-""".format(repo_dir=REPO_DIR),
+""".format(repo_dir=REPO_DIR, gradle_test=_GRADLE_TEST),
             ),
         ]
 
@@ -232,9 +273,45 @@ bash /home/logisim_tests.sh run
 
 {self.global_env}
 
+WORKDIR /home/{REPO_DIR}
+
+RUN git reset --hard
+RUN git checkout {self.pr.base.sha}
+
 {copy_commands}
 
 {prepare_commands}
+
+RUN set -eux; \\
+    git checkout --detach "{self.pr.base.sha}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "$(git rev-parse "{self.pr.base.sha}")"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f .gitmodules ]; then \\
+        git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
 
 {self.clear_env}
 

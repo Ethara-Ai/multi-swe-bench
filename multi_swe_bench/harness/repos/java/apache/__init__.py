@@ -1,8 +1,6 @@
 from multi_swe_bench.harness.repos.java.apache.druid_0_to_16976 import *
 from multi_swe_bench.harness.repos.java.apache.druid_890_to_2209 import *
 from multi_swe_bench.harness.repos.java.apache.druid_3284_to_2285 import *
-from multi_swe_bench.harness.repos.java.apache.druid_16977_to_18789 import *
-from multi_swe_bench.harness.repos.java.apache.druid_18790_to_99999 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_5278_to_11682 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_17821_to_17132 import *
@@ -43,3 +41,5 @@ from multi_swe_bench.harness.repos.java.apache.beam import *
 from multi_swe_bench.harness.repos.java.apache.beam_40295_to_40027 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18715_to_17822 import *
 from multi_swe_bench.harness.repos.java.apache.beam_40153_to_40153 import *
+from multi_swe_bench.harness.repos.java.apache.druid_16977_to_18789 import *
+from multi_swe_bench.harness.repos.java.apache.druid_18790_to_99999 import *
