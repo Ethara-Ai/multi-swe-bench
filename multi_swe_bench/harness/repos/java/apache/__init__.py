@@ -41,3 +41,5 @@ from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18757_to_18414 i
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18088_to_99999 import *
 from multi_swe_bench.harness.repos.java.apache.beam import *
 from multi_swe_bench.harness.repos.java.apache.beam_40295_to_40027 import *
+from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18715_to_17822 import *
+from multi_swe_bench.harness.repos.java.apache.beam_40153_to_40153 import *

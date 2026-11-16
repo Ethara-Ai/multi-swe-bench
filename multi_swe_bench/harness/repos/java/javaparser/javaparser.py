@@ -5,6 +5,41 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+PRUNE_BLOCK = r"""RUN set -eux; \
+    cd /home/__REPO__; \
+    test "$(git rev-parse HEAD)" = "__SHA__"; \
+    git remote remove origin 2>/dev/null || true; \
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \
+        | xargs -r -n1 git update-ref -d; \
+    git reflog expire --expire=now --all; \
+    git reflog expire --expire-unreachable=now --all; \
+    git gc --prune=now --aggressive; \
+    git repack -a -d -l --quiet; \
+    rm -f .git/objects/info/alternates; \
+    git config --local gc.auto 0; \
+    git config --local fetch.recurseSubmodules false; \
+    git config --local remote.pushDefault ""; \
+    test "$(git rev-parse HEAD)" = "__SHA__"; \
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \
+    test -z "$(git remote)"; \
+    test -z "$(git reflog)"; \
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/__REPO__/.gitmodules ]; then \
+        cd /home/__REPO__ && git submodule foreach --recursive ' \
+            git checkout --detach HEAD; \
+            git remote remove origin 2>/dev/null || true; \
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \
+                | xargs -r -n1 git update-ref -d; \
+            git reflog expire --expire=now --all; \
+            git reflog expire --expire-unreachable=now --all; \
+            git gc --prune=now --aggressive; \
+            rm -f .git/objects/info/alternates; \
+        '; \
+    fi
+"""
+
+
 
 class JavaParserImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
@@ -36,29 +71,77 @@ class JavaParserImageBase(Image):
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+        org = self.pr.org
+        repo = self.pr.repo
 
-        return f"""FROM {image_name}
+        if self.config.need_clone:
+            code = f"""RUN git clone "${{REPO_URL}}" /home/{repo} && \\
+    cd /home/{repo} && git rev-parse HEAD >/dev/null"""
+        else:
+            code = f"COPY {repo} /home/{repo}"
+
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CI=true \\
+    MAVEN_OPTS="-Xmx4g -XX:+ExitOnOutOfMemoryError" \\
+    JAVA_HOME=/usr/lib/jvm/default-java
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 {self.global_env}
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-ENV CI=true
-ENV MAVEN_OPTS="-Xmx4g -XX:+ExitOnOutOfMemoryError"
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates curl unzip openjdk-11-jdk maven \\
+    && ln -sfn "$(dirname $(dirname $(readlink -f $(which javac))))" /usr/lib/jvm/default-java \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git config --global --add safe.directory '*'
+
 WORKDIR /home/
-RUN apt-get update && apt-get install -y git openjdk-11-jdk maven \
-    && ln -sfn "$(dirname $(dirname $(readlink -f $(which javac))))" /usr/lib/jvm/default-java
-ENV JAVA_HOME=/usr/lib/jvm/default-java
 
 {code}
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -126,46 +209,17 @@ export CI=true
 
 cd /home/{pr.repo}
 git reset --hard
+git clean -fdx
 bash /home/check_git_changes.sh
-git remote get-url origin >/dev/null 2>&1 || git remote add origin https://github.com/{pr.org}/{pr.repo}.git
-git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null || git fetch --depth=1 origin {pr.base.sha}
-git checkout {pr.base.sha}
+git cat-file -e {pr.base.sha}^{{commit}} 2>/dev/null || git fetch origin {pr.base.sha}
+git checkout --detach {pr.base.sha}
 bash /home/check_git_changes.sh
-if [ ! -f ~/.m2/settings.xml ]; then
-    mkdir -p ~/.m2 && cat <<EOF > ~/.m2/settings.xml
-<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
-          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
-
-    <mirrors>
-        <mirror>
-            <id>aliyunmaven</id>
-            <mirrorOf>central</mirrorOf>
-            <name>Aliyun Maven Mirror</name>
-            <url>https://maven.aliyun.com/repository/public</url>
-        </mirror>
-    </mirrors>
-
-</settings>
-EOF
-else
-  grep -q "<mirror>" ~/.m2/settings.xml || sed -i '/<\\/settings>/i \\
-  <mirrors> \\
-      <mirror> \\
-          <id>aliyunmaven</id> \\
-          <mirrorOf>central</mirrorOf> \\
-          <name>Aliyun Maven Mirror</name> \\
-          <url>https://maven.aliyun.com/repository/public</url> \\
-      </mirror> \\
-  </mirrors>' ~/.m2/settings.xml
-fi
-if [ -f ./mvnw ]; then
-    ./mvnw -B -q dependency:go-offline -fae || true
-    ./mvnw -B -q test-compile -fae || true
-else
-    mvn -B -q dependency:go-offline -fae || true
-    mvn -B -q test-compile -fae || true
-fi
+if [ -f ./mvnw ]; then MVN=./mvnw; else MVN=mvn; fi
+$MVN -B -q dependency:go-offline -fae || true
+$MVN -B -q test-compile -fae || true
+MODS=$(grep -oE '^diff --git a/[^ ]+' /home/test.patch | sed 's@^diff --git a/@@' | cut -d/ -f1 | sort -u | while read -r d; do [ -f "$d/pom.xml" ] && echo "$d"; done | paste -sd, -)
+java -version
+$MVN -B -q -o test-compile ${{MODS:+-pl "$MODS" -am}}
 """.format(pr=self.pr),
             ),
             File(
@@ -176,7 +230,10 @@ set -eo pipefail
 export CI=true
 
 cd /home/{pr.repo}
-if [ -f ./mvnw ]; then ./mvnw -B clean test -fae; else mvn -B clean test -fae; fi
+if [ -f ./mvnw ]; then MVN=./mvnw; else MVN=mvn; fi
+rc=0
+$MVN -B clean test -fae || rc=$?
+exit $rc
 """.format(pr=self.pr),
             ),
             File(
@@ -188,8 +245,10 @@ export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
-if [ -f ./mvnw ]; then ./mvnw -B clean test -fae; else mvn -B clean test -fae; fi
-
+if [ -f ./mvnw ]; then MVN=./mvnw; else MVN=mvn; fi
+rc=0
+$MVN -B clean test -fae || rc=$?
+exit $rc
 """.format(pr=self.pr),
             ),
             File(
@@ -201,8 +260,10 @@ export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-if [ -f ./mvnw ]; then ./mvnw -B clean test -fae; else mvn -B clean test -fae; fi
-
+if [ -f ./mvnw ]; then MVN=./mvnw; else MVN=mvn; fi
+rc=0
+$MVN -B clean test -fae || rc=$?
+exit $rc
 """.format(pr=self.pr),
             ),
         ]
@@ -217,6 +278,9 @@ if [ -f ./mvnw ]; then ./mvnw -B clean test -fae; else mvn -B clean test -fae; f
             copy_commands += f"COPY {file.name} /home/\n"
 
         prepare_commands = "RUN bash /home/prepare.sh"
+        prune = PRUNE_BLOCK.replace("__REPO__", self.pr.repo).replace(
+            "__SHA__", self.pr.base.sha
+        )
         proxy_setup = ""
         proxy_cleanup = ""
 
@@ -276,6 +340,7 @@ if [ -f ./mvnw ]; then ./mvnw -B clean test -fae; else mvn -B clean test -fae; f
 
 {prepare_commands}
 
+{prune}
 {proxy_cleanup}
 
 {self.clear_env}
@@ -283,11 +348,6 @@ if [ -f ./mvnw ]; then ./mvnw -B clean test -fae; else mvn -B clean test -fae; f
 """
 
 
-# Era coverage: PRs #2522..#3034 (span 512, ~2020-08 to ~2021-06).
-# Verified across all 5 dataset base SHAs (4b2858cc, cac75a4c, bdf9ac04,
-# f20d6fdc, b75521515b93): pom.xml pins <java.version>1.8</java.version>
-# with Maven and maven-surefire-plugin throughout. JDK 11 in the image
-# compiles Java 8 source cleanly. Single-era configuration is justified.
 @Instance.register("javaparser", "javaparser")
 class JavaParser(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
@@ -325,7 +385,7 @@ class JavaParser(Instance):
         re_running = re.compile(r"\[INFO\] Running (\S+)")
         re_perclass = re.compile(
             r"\[(?:INFO|ERROR|WARNING)\] Tests run: (\d+), Failures: (\d+), "
-            r"Errors: (\d+), Skipped: (\d+),\s+Time elapsed:.* - in (\S+)"
+            r"Errors: (\d+), Skipped: (\d+),\s+Time elapsed:.* -+ in (\S+)"
         )
         re_compile_err = re.compile(
             r"[\w./]+/([A-Z]\w+)\.java:\[\d+,\d+\] cannot find symbol"

@@ -1,10 +1,319 @@
 import re
-import textwrap
-from typing import Union
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+_RE_COMPILE_FAIL = re.compile(r"COMPILATION ERROR|Compilation failure")
+_RE_TEST_ANNOT = re.compile(r"@(?:org\.junit(?:\.\w+)*\.)?Test\b(?:\s*\([^)]*\))?")
+_RE_LEADING_ANNOT = re.compile(r"^(?:@[\w.]+(?:\s*\((?:[^()]|\([^()]*\))*\))?\s*)+")
+_RE_METHOD_DECL = re.compile(r"\b(\w+)\s*\(")
+_RE_PARAM_SUFFIX = re.compile(r"^(.*?::[^\[]+)\[.*\]$")
+_RE_JAVA_KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "new", "synchronized"}
+
+
+_RE_PATCH_BLOCK = re.compile(
+    r"^[^\n]*MSWE_TEST_PATCH_BEGIN[^\n]*\n(.*?)(?:MSWE_TEST_PATCH_END[^\n]*(?:\n|$)|\Z)",
+    re.S | re.M,
+)
+
+
+def _split_patch_block(log: str):
+    m = _RE_PATCH_BLOCK.search(log or "")
+    if not m:
+        return log, ""
+    return log[: m.start()] + log[m.end():], m.group(1).replace("\r\n", "\n")
+
+
+def _added_test_names(test_patch: str, sep: str) -> set:
+    found = {"+": set(), "-": set()}
+    pending = {"+": False, "-": False}
+    path = None
+    for line in (test_patch or "").splitlines():
+        if line.startswith("diff --git "):
+            path = None
+            continue
+        if line.startswith("+++ "):
+            p = line[4:].strip()
+            if p.startswith("b/"):
+                p = p[2:]
+            path = p if "/src/test/java/" in p and p.endswith(".java") else None
+            pending = {"+": False, "-": False}
+            continue
+        if path is None or line.startswith("--- ") or line.startswith("\\"):
+            continue
+        if line.startswith("@@"):
+            pending = {"+": False, "-": False}
+            continue
+        kind = line[:1]
+        kinds = [kind] if kind in found else ["+", "-"]
+        body = line[1:].strip()
+        m = _RE_TEST_ANNOT.match(body)
+        if m:
+            for k in kinds:
+                pending[k] = True
+            body = body[m.end():].strip()
+        if not body or body.startswith("//") or body.startswith("*") or body.startswith("/*"):
+            continue
+        body = _RE_LEADING_ANNOT.sub("", body).strip()
+        if not body:
+            continue
+        fqn = path.split("/src/test/java/", 1)[1][: -len(".java")].replace("/", ".")
+        for k in kinds:
+            if pending[k] and kind in found:
+                for mm in _RE_METHOD_DECL.finditer(body):
+                    if mm.group(1) not in _RE_JAVA_KEYWORDS:
+                        found[k].add(f"{fqn}{sep}{mm.group(1)}")
+                        break
+            pending[k] = False
+    return found["+"] - found["-"]
+
+
+_TARGETS = r"""TEST_FILES="$(grep -E '^diff --git a/.*/src/test/java/.*\.java b/' /home/test.patch | sed -E 's#^diff --git a/(.*) b/.*$#\1#' | sort -u)" || TEST_FILES=""
+CLASSES=""
+MODULES=""
+for f in $TEST_FILES; do
+  c="$(basename "$f" .java)"
+  case "$c" in
+    Abstract*) continue ;;
+    *Test|*Tests|*IT) ;;
+    *) continue ;;
+  esac
+  d="$(dirname "$f")"
+  while [ "$d" != "." ] && [ "$d" != "/" ] && [ ! -f "$d/pom.xml" ]; do d="$(dirname "$d")"; done
+  if [ "$d" = "." ] || [ "$d" = "/" ] || [ ! -f "$d/pom.xml" ]; then continue; fi
+  CLASSES="$CLASSES,$c"
+  case ",$MODULES," in *",$d,"*) ;; *) MODULES="$MODULES,$d" ;; esac
+done
+if [ -z "$CLASSES" ]; then
+  for f in $(grep -E '^diff --git a/' /home/test.patch | sed -E 's#^diff --git a/(.*) b/.*$#\1#' | sort -u); do
+    d="$(dirname "$f")"
+    while [ "$d" != "." ] && [ "$d" != "/" ] && [ ! -f "$d/pom.xml" ]; do d="$(dirname "$d")"; done
+    if [ "$d" = "." ] || [ "$d" = "/" ] || [ ! -f "$d/pom.xml" ]; then continue; fi
+    case "$f" in
+      */src/test/java/*) c="$(dirname "${f#*/src/test/java/}")/**/*Test" ;;
+      *) c="" ;;
+    esac
+    if [ -n "$c" ]; then
+      case ",$CLASSES," in *",$c,"*) ;; *) CLASSES="$CLASSES,$c" ;; esac
+    fi
+    case ",$MODULES," in *",$d,"*) ;; *) MODULES="$MODULES,$d" ;; esac
+  done
+fi
+CLASSES="${CLASSES#,}"
+MODULES="${MODULES#,}"
+"""
+
+_EXCLUDES = """EXCLUDES=""
+for p in $(grep -E '^Binary files .* differ$' /home/fix.patch /home/test.patch | sed -E 's#^[^:]*:Binary files (.*) and (.*) differ$#\\1 \\2#'); do
+  case "$p" in
+    /dev/null) ;;
+    a/*|b/*) EXCLUDES="$EXCLUDES --exclude=${p#?/}" ;;
+  esac
+done
+"""
+
+_CHECK_GIT_CHANGES = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain --ignore-submodules=all) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+"""
+
+_PLATFORM = """case "$(uname -m)" in
+  aarch64|arm64) QDB_PLAT=linux-aarch64 ;;
+  *) QDB_PLAT=linux-x86-64 ;;
+esac
+"""
+
+_PREPARE = """#!/bin/bash
+set -e
+
+cd /home/@@REPO@@
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+git cat-file -e @@SHA@@^{commit} 2>/dev/null || git fetch origin @@SHA@@
+git checkout --detach @@SHA@@
+git submodule update --init --recursive java-questdb-client core/src/main/c/share/jemalloc core/src/main/c/share/simdjson core/src/main/c/share/zlib core/src/main/c/share/fsst || true
+bash /home/check_git_changes.sh
+
+@@PLATFORM@@
+cd /home/@@REPO@@/java-questdb-client/core
+cmake -DCMAKE_BUILD_TYPE=Release -B /home/qdb-client-native -S . || true
+cmake --build /home/qdb-client-native --parallel "$(nproc)" || true
+mkdir -p src/main/resources/io/questdb/client/bin/$QDB_PLAT
+cp target/classes/io/questdb/client/bin-local/libquestdb.so src/main/resources/io/questdb/client/bin/$QDB_PLAT/libquestdb.so || true
+cd /home/@@REPO@@/java-questdb-client
+mvn -B -q install -DskipTests -Dmaven.javadoc.skip=true -pl core -am || true
+
+cd /home/@@REPO@@/core
+cmake -DCMAKE_BUILD_TYPE=Release -B /home/qdb-native -S . || true
+cmake --build /home/qdb-native --parallel "$(nproc)" || true
+rm -rf /home/qdb-native-out
+cp -a target/classes/io/questdb/bin-local /home/qdb-native-out || true
+rm -rf target questdb
+
+cd /home/@@REPO@@
+mvn -B clean test -pl core -Dmaven.javadoc.skip=true -Dtest=DirectLongHashSetTest -Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false || true
+
+java -version
+test -f /home/qdb-native/CMakeCache.txt
+test -d /home/qdb-native-out
+test -f core/src/main/resources/io/questdb/bin/$QDB_PLAT/libquestdb.so
+mvn -B -o -q test -pl core -Dmaven.javadoc.skip=true -Dtest=DirectLongHashSetTest -Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false && mvn -B -o -q clean -pl core && echo DEPS_OK
+"""
+
+_REPORT = r"""find . -path '*/target/surefire-reports/TEST-*.xml' 2>/dev/null | sort | while read -r f; do
+  awk '
+    function attr(s, k,   r) {
+      if (match(s, " " k "=\"[^\"]*\"")) {
+        r = substr(s, RSTART + length(k) + 3, RLENGTH - length(k) - 4)
+        return r
+      }
+      return ""
+    }
+    function emit() {
+      if (cur != "") print "QDB_TESTCASE " st " " cur
+      cur = ""
+    }
+    /^[ \t]*<testcase / {
+      emit()
+      cur = attr($0, "classname") "::" attr($0, "name")
+      st = "PASSED"
+      if ($0 ~ /\/>[ \t]*$/) emit()
+      next
+    }
+    cur != "" && /^[ \t]*<(failure|error)[ \t\/>]/ { st = "FAILED" }
+    cur != "" && /^[ \t]*<skipped[ \t\/>]/ { if (st == "PASSED") st = "SKIPPED" }
+    cur != "" && /<\/testcase>/ { emit() }
+    END { emit() }
+  ' "$f"
+done
+"""
+
+_RUN_TESTS = """cd /home/@@REPO@@
+@@TARGETS@@
+rc=0
+if [ -n "$CLASSES" ] && [ -n "$MODULES" ]; then
+  mvn -B -o clean test -pl "$MODULES" -Dmaven.javadoc.skip=true -Dstyle.color=never -Dmaven.test.redirectTestOutputToFile=true -Dfuzz.s0=1 -Dfuzz.s1=1 -Dtest="$CLASSES" -Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false || rc=$?
+else
+  mvn -B -o clean test -pl "${MODULES:-core}" -Dmaven.javadoc.skip=true -Dstyle.color=never -Dmaven.test.redirectTestOutputToFile=true -Dfuzz.s0=1 -Dfuzz.s1=1 || rc=$?
+fi
+@@REPORT@@
+exit $rc"""
+
+_RUN = """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/@@REPO@@
+@@RUN_TESTS@@
+"""
+
+_TEST_RUN = """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/@@REPO@@
+echo "MSWE_TEST_PATCH_BEGIN"
+cat /home/test.patch
+echo "MSWE_TEST_PATCH_END"
+git apply --whitespace=nowarn /home/test.patch
+@@RUN_TESTS@@
+"""
+
+_FIX_RUN = """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/@@REPO@@
+@@EXCLUDES@@
+git apply --whitespace=nowarn $EXCLUDES /home/test.patch /home/fix.patch
+if grep -q '^diff --git a/core/src/main/c/' /home/fix.patch; then
+  @@PLATFORM@@
+  cd /home/@@REPO@@/core
+  rm -rf target questdb
+  mkdir -p target/classes/io/questdb
+  cp -a /home/qdb-native-out target/classes/io/questdb/bin-local
+  cmake --build /home/qdb-native --parallel "$(nproc)" && cp target/classes/io/questdb/bin-local/libquestdb.so src/main/resources/io/questdb/bin/$QDB_PLAT/libquestdb.so
+  rm -rf target questdb
+fi
+@@RUN_TESTS@@
+"""
+
+
+def _fill(body: str, pr: PullRequest) -> str:
+    return (
+        body.replace("@@RUN_TESTS@@", _RUN_TESTS)
+        .replace("@@REPORT@@", _REPORT)
+        .replace("@@PLATFORM@@", _PLATFORM)
+        .replace("@@TARGETS@@", _TARGETS)
+        .replace("@@EXCLUDES@@", _EXCLUDES)
+        .replace("@@REPO@@", pr.repo)
+        .replace("@@ORG@@", pr.org)
+        .replace("@@SHA@@", pr.base.sha)
+    )
+
+
+def _pr_dockerfile(image: Image) -> str:
+    base = image.dependency()
+    repo = image.pr.repo
+    sha = image.pr.base.sha
+    copy_commands = "".join(f"COPY {file.name} /home/\n" for file in image.files())
+    return f"""FROM {base.image_full_name()}
+
+{image.global_env}
+
+{copy_commands}
+RUN bash /home/prepare.sh
+
+RUN set -eux; \\
+    cd /home/{repo}; \\
+    git checkout --detach "{sha}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "{sha}"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test -z "$(git reflog)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/{repo}/.gitmodules ]; then \\
+        cd /home/{repo} && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+
+{image.clear_env}
+"""
 
 
 class QuestdbImageBase(Image):
@@ -20,8 +329,8 @@ class QuestdbImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:22.04"
+    def dependency(self) -> str | Image:
+        return "eclipse-temurin:25-jdk-noble"
 
     def image_tag(self) -> str:
         return "base"
@@ -33,26 +342,70 @@ class QuestdbImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        return f"""# syntax=docker/dockerfile:1.6
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+FROM {self.dependency()}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
 
-{self.global_env}
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+ENV MAVEN_OPTS="-Xmx2g" \\
+    CI=true
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    git ca-certificates curl cmake g++ make nasm \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries/apache-maven-3.9.11-bin.tar.gz | tar -xz -C /opt && \\
+    ln -sf /opt/apache-maven-3.9.11/bin/mvn /usr/local/bin/mvn && \\
+    mvn -v && java -version
+
+RUN git config --global --add safe.directory '*'
 
 WORKDIR /home/
-RUN apt-get update && apt-get install -y git
 
-{code}
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo} && \\
+    cd /home/{self.pr.repo} && git rev-parse HEAD >/dev/null
 
 {self.clear_env}
 
+CMD ["/bin/bash"]
 """
 
 
@@ -72,9 +425,6 @@ class QuestdbImageDefault(Image):
     def dependency(self) -> Image:
         return QuestdbImageBase(self.pr, self._config)
 
-    def image_prefix(self) -> str:
-        return "mswebench"
-
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
 
@@ -83,199 +433,21 @@ class QuestdbImageDefault(Image):
 
     def files(self) -> list[File]:
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{repo}
-git reset --hard
-bash /home/check_git_changes.sh
-git checkout {base_sha}
-bash /home/check_git_changes.sh
-
-# Detect required Java version from pom.xml, default to 11
-JAVA_VERSION=11
-if [ -f pom.xml ]; then
-    for prop in maven.compiler.source java.version release; do
-        ver=$(sed -n "s/.*<$prop>\\([^<]*\\)<.*/\\1/p" pom.xml | head -1)
-        if [ -n "$ver" ]; then
-            case "$ver" in 1.*) ver=${{ver#1.}} ;; esac
-            JAVA_VERSION=$ver
-            break
-        fi
-    done
-fi
-
-apt-get update && apt-get install -y openjdk-${{JAVA_VERSION}}-jdk maven && rm -rf /var/lib/apt/lists/*
-
-mvn clean test -pl core -fae -Dstyle.color=never || true
-""".format(repo=self.pr.repo, base_sha=self.pr.base.sha),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{repo}
-mvn clean test -pl core -fae -Dstyle.color=never
-""".format(repo=self.pr.repo),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{repo}
-if ! git -C /home/{repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
-mvn clean test -pl core -fae -Dstyle.color=never
-""".format(repo=self.pr.repo),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-set -e
-
-cd /home/{repo}
-if ! git -C /home/{repo} apply --whitespace=nowarn /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1
-fi
-mvn clean test -pl core -fae -Dstyle.color=never
-""".format(repo=self.pr.repo),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES),
+            File(".", "prepare.sh", _fill(_PREPARE, self.pr)),
+            File(".", "run.sh", _fill(_RUN, self.pr)),
+            File(".", "test-run.sh", _fill(_TEST_RUN, self.pr)),
+            File(".", "fix-run.sh", _fill(_FIX_RUN, self.pr)),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        mirror_setup = textwrap.dedent(
-            """
-                RUN mkdir -p ~/.m2 && \\
-                    echo '<?xml version="1.0" encoding="UTF-8"?>' > ~/.m2/settings.xml && \\
-                    echo '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"' >> ~/.m2/settings.xml && \\
-                    echo '          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"' >> ~/.m2/settings.xml && \\
-                    echo '          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">' >> ~/.m2/settings.xml && \\
-                    echo '    <mirrors>' >> ~/.m2/settings.xml && \\
-                    echo '        <mirror>' >> ~/.m2/settings.xml && \\
-                    echo '            <id>aliyunmaven</id>' >> ~/.m2/settings.xml && \\
-                    echo '            <mirrorOf>central</mirrorOf>' >> ~/.m2/settings.xml && \\
-                    echo '            <name>Aliyun Maven Mirror</name>' >> ~/.m2/settings.xml && \\
-                    echo '            <url>https://maven.aliyun.com/repository/public</url>' >> ~/.m2/settings.xml && \\
-                    echo '        </mirror>' >> ~/.m2/settings.xml && \\
-                    echo '    </mirrors>' >> ~/.m2/settings.xml && \\
-                    echo '</settings>' >> ~/.m2/settings.xml
-            """
-        )
-
-        proxy_setup = ""
-        proxy_cleanup = ""
-
-        if self.global_env:
-            proxy_host = None
-            proxy_port = None
-
-            for line in self.global_env.splitlines():
-                match = re.match(
-                    r"^ENV\s*(http[s]?_proxy)=http[s]?://([^:]+):(\d+)", line
-                )
-                if match:
-                    proxy_host = match.group(2)
-                    proxy_port = match.group(3)
-                    break
-
-            if proxy_host and proxy_port:
-                proxy_setup = textwrap.dedent(
-                    f"""
-                RUN sed -i '$d' ~/.m2/settings.xml && \\
-                    echo '<proxies>' >> ~/.m2/settings.xml && \\
-                    echo '    <proxy>' >> ~/.m2/settings.xml && \\
-                    echo '        <id>example-proxy</id>' >> ~/.m2/settings.xml && \\
-                    echo '        <active>true</active>' >> ~/.m2/settings.xml && \\
-                    echo '        <protocol>http</protocol>' >> ~/.m2/settings.xml && \\
-                    echo '        <host>{proxy_host}</host>' >> ~/.m2/settings.xml && \\
-                    echo '        <port>{proxy_port}</port>' >> ~/.m2/settings.xml && \\
-                    echo '        <username></username>' >> ~/.m2/settings.xml && \\
-                    echo '        <password></password>' >> ~/.m2/settings.xml && \\
-                    echo '        <nonProxyHosts></nonProxyHosts>' >> ~/.m2/settings.xml && \\
-                    echo '    </proxy>' >> ~/.m2/settings.xml && \\
-                    echo '</proxies>' >> ~/.m2/settings.xml && \\
-                    echo '</settings>' >> ~/.m2/settings.xml
-                """
-                )
-
-                proxy_cleanup = textwrap.dedent(
-                    """
-                    RUN sed -i '/<proxies>/,/<\\/proxies>/d' ~/.m2/settings.xml
-                """
-                )
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
-
-{mirror_setup}
-
-{proxy_setup}
-
-{copy_commands}
-
-{prepare_commands}
-
-{proxy_cleanup}
-
-{self.clear_env}
-
-"""
+        return _pr_dockerfile(self)
 
 
 @Instance.register("questdb", "questdb")
+@Instance.register("questdb", "questdb_7681_to_7655")
 class Questdb(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -286,7 +458,7 @@ class Questdb(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Image:
+    def dependency(self) -> Image | None:
         return QuestdbImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -305,36 +477,38 @@ class Questdb(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        re_running = re.compile(r"\[INFO\] Running (.+)")
-        re_error = re.compile(r"\[ERROR\] Tests run")
+        re_case = re.compile(r"^QDB_TESTCASE (PASSED|FAILED|SKIPPED) (\S.*?)\s*$")
+        test_log, patch_text = _split_patch_block(re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log))
 
         passed_tests = set()
         failed_tests = set()
+        skipped_tests = set()
 
-        current_test = None
-        passed_count = failed_count = 0
-
-        for line in test_log.split("\n"):
-            if current_test is None:
-                running_match = re_running.search(line)
-                if running_match:
-                    current_test = running_match.group(1)
+        for line in test_log.splitlines():
+            m = re_case.match(line)
+            if not m:
                 continue
-
-            if re_error.search(line):
-                failed_tests.add(current_test)
-                failed_count += 1
+            status, name = m.group(1), m.group(2)
+            name = _RE_PARAM_SUFFIX.sub(r"\1", name)
+            if status == "FAILED":
+                failed_tests.add(name)
+            elif status == "SKIPPED":
+                skipped_tests.add(name)
             else:
-                passed_tests.add(current_test)
-                passed_count += 1
+                passed_tests.add(name)
 
-            current_test = None
+        if _RE_COMPILE_FAIL.search(test_log):
+            failed_tests |= _added_test_names(self.pr.test_patch or patch_text, "::") - passed_tests
+
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
-            passed_count=passed_count,
-            failed_count=failed_count,
-            skipped_count=0,
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
             passed_tests=passed_tests,
             failed_tests=failed_tests,
-            skipped_tests=set(),
+            skipped_tests=skipped_tests,
         )
