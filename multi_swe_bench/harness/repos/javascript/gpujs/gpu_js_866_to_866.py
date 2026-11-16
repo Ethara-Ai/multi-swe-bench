@@ -50,10 +50,10 @@ bash /home/check_git_changes.sh
 git checkout --detach {sha}
 bash /home/check_git_changes.sh
 
+export CI=true
 npm ci --no-audit --no-fund
-bash /home/check_git_changes.sh
 
-node -e 'require(process.cwd())'
+node -e 'require(process.cwd()); require("qunit")'
 """
 
 
@@ -98,7 +98,7 @@ def _tap_result(line: str) -> tuple[str, str] | None:
     return name, "pass" if status.lower() == "ok" else "fail"
 
 
-class GpuJsEraImageBase(Image):
+class GpuJs866To866ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -195,7 +195,7 @@ RUN git clone "${{REPO_URL}}" /home/{repo} && \\
         )
 
 
-class GpuJsEraImageDefault(Image):
+class GpuJs866To866ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -209,7 +209,7 @@ class GpuJsEraImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return GpuJsEraImageBase(self.pr, self._config)
+        return GpuJs866To866ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -264,7 +264,7 @@ class GPU_JS_866_TO_866(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return GpuJsEraImageDefault(self.pr, self._config)
+        return GpuJs866To866ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
@@ -286,10 +286,15 @@ class GPU_JS_866_TO_866(Instance):
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
         buckets = {"pass": passed_tests, "fail": failed_tests, "skip": skipped_tests}
+        seen: dict[str, int] = {}
         for raw in _ANSI.sub("", test_log).splitlines():
             result = _tap_result(raw.strip())
             if result:
-                buckets[result[1]].add(result[0])
+                name, status = result
+                seen[name] = seen.get(name, 0) + 1
+                if seen[name] > 1:
+                    name = f"{name} [{seen[name]}]"
+                buckets[status].add(name)
         passed_tests -= failed_tests
         passed_tests -= skipped_tests
         skipped_tests -= failed_tests

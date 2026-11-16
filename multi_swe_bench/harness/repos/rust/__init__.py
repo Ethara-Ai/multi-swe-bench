@@ -128,3 +128,5 @@ from multi_swe_bench.harness.repos.rust.lancedb import *
 from multi_swe_bench.harness.repos.rust.CapSoftware import *
 from multi_swe_bench.harness.repos.rust.jtroo import *
 from multi_swe_bench.harness.repos.rust.PrimeIntellect_ai import *
+from multi_swe_bench.harness.repos.rust.chroma_core import *
+from multi_swe_bench.harness.repos.rust.cjpais import *

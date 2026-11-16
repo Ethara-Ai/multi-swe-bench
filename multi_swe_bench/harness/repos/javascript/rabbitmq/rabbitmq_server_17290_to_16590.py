@@ -20,6 +20,17 @@ _BINARY_DIFF = re.compile(r"^Binary files (?:a/(.+?)|/dev/null) and (?:b/(.+?)|/
 _GLOB_SPECIAL = re.compile(r"([*?\[\\])")
 _CT_LINE = re.compile(r"^CTRESULT\s+(\S+)\s+(\S+)")
 _CT_STATUS = (("ok", "pass"), ("failed", "fail"), ("auto_skipped", "skip"), ("user_skipped", "skip"), ("skipped", "skip"))
+_BUILD_ATTEMPTS = "3"
+_BUILD_RETRY_DELAY = "30"
+_LOAD_GATE = (
+    "try "
+    "Apps = [list_to_atom(A) || A <- init:get_plain_arguments()], "
+    "[begin ok = application:load(App), {ok, Mods} = application:get_key(App, modules), "
+    "[{module, _} = code:ensure_loaded(M) || M <- Mods] end || App <- Apps], "
+    "{module, _} = code:ensure_loaded(rabbit_ct_helpers), "
+    "io:format(\"prepare: modules load for ~p~n\", [Apps]), halt(0) "
+    "catch C:R -> io:format(\"prepare: load check failed ~p:~p~n\", [C, R]), halt(1) end."
+)
 
 _CHECK_GIT_CHANGES = """#!/bin/bash
 set -e
@@ -112,13 +123,30 @@ bash /home/check_git_changes.sh
 git checkout --detach {sha}
 bash /home/check_git_changes.sh
 
+built=""
 for app in {targets}; do
-    if [ -d "$app" ]; then
-        make -C "$app" test-build {_CT_ARGS}
+    if [ ! -d "$app" ]; then
+        echo "prepare: $app is not present at the base commit"
+        continue
     fi
+    for attempt in $(seq 1 {_BUILD_ATTEMPTS}); do
+        if make -C "$app" test-build {_CT_ARGS}; then
+            break
+        fi
+        if [ "$attempt" -eq {_BUILD_ATTEMPTS} ]; then
+            exit 1
+        fi
+        sleep {_BUILD_RETRY_DELAY}
+    done
+    built="$built $(basename "$app")"
 done
 
-bash /home/check_git_changes.sh
+if [ -z "$built" ]; then
+    echo "prepare: no test application was built"
+    exit 1
+fi
+
+erl -noshell -pa deps/*/ebin -eval {shlex.quote(_LOAD_GATE)} -extra $built
 """
 
 
@@ -161,7 +189,7 @@ def _ct_result(line: str) -> tuple[str, str] | None:
     return None
 
 
-class RabbitmqServerEraImageBase(Image):
+class RabbitmqServer17290To16590ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -257,7 +285,7 @@ RUN git clone "${{REPO_URL}}" /home/{repo} && \\
         )
 
 
-class RabbitmqServerEraImageDefault(Image):
+class RabbitmqServer17290To16590ImageDefault(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -271,7 +299,7 @@ class RabbitmqServerEraImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return RabbitmqServerEraImageBase(self.pr, self._config)
+        return RabbitmqServer17290To16590ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -329,7 +357,7 @@ class RABBITMQ_SERVER_17290_TO_16590(Instance):
         return self._pr
 
     def dependency(self) -> Image:
-        return RabbitmqServerEraImageDefault(self.pr, self._config)
+        return RabbitmqServer17290To16590ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
