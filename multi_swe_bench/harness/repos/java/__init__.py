@@ -153,5 +153,3 @@ from multi_swe_bench.harness.repos.java.micrometer_metrics import *
 from multi_swe_bench.harness.repos.java.liquibase import *
 from multi_swe_bench.harness.repos.java.grpc import *
 from multi_swe_bench.harness.repos.java.spinnaker import *
-from multi_swe_bench.harness.repos.java.axoniq import *
-from multi_swe_bench.harness.repos.java.dependencytrack import *
