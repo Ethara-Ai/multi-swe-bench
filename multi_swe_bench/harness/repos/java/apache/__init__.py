@@ -40,3 +40,4 @@ from multi_swe_bench.harness.repos.java.apache.beam_39203_to_39203 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18757_to_18414 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18088_to_99999 import *
 from multi_swe_bench.harness.repos.java.apache.beam import *
+from multi_swe_bench.harness.repos.java.apache.beam_40295_to_40027 import *

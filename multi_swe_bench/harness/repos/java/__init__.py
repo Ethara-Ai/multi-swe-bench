@@ -150,3 +150,4 @@ from multi_swe_bench.harness.repos.java.GeyserMC import *
 from multi_swe_bench.harness.repos.java.codecentric import *
 from multi_swe_bench.harness.repos.java.jwtk import *
 from multi_swe_bench.harness.repos.java.micrometer_metrics import *
+from multi_swe_bench.harness.repos.java.liquibase import *
