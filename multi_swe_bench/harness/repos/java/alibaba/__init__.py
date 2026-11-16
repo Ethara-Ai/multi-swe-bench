@@ -7,3 +7,7 @@ from multi_swe_bench.harness.repos.java.alibaba.spring_cloud_alibaba_1996_to_82 
 from multi_swe_bench.harness.repos.java.alibaba.sentinel import *
 from multi_swe_bench.harness.repos.java.alibaba.spring_cloud_alibaba_4068_to_3411 import *
 from multi_swe_bench.harness.repos.java.alibaba.spring_ai_alibaba_4826_to_4826 import *
+from multi_swe_bench.harness.repos.java.alibaba.qlexpress_443_to_443 import *
+from multi_swe_bench.harness.repos.java.alibaba.qlexpress_466_to_466 import *
+from multi_swe_bench.harness.repos.java.alibaba.druid_6652_to_6652 import *
+from multi_swe_bench.harness.repos.java.alibaba.fastjson2_7766_to_7766 import *

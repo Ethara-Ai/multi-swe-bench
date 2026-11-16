@@ -130,3 +130,12 @@ from multi_swe_bench.harness.repos.rust.jtroo import *
 from multi_swe_bench.harness.repos.rust.PrimeIntellect_ai import *
 from multi_swe_bench.harness.repos.rust.chroma_core import *
 from multi_swe_bench.harness.repos.rust.cjpais import *
+from multi_swe_bench.harness.repos.rust.deeplethe import *
+from multi_swe_bench.harness.repos.rust.getzola import *
+from multi_swe_bench.harness.repos.rust.juhaku import *
+from multi_swe_bench.harness.repos.rust.meilisearch import *
+from multi_swe_bench.harness.repos.rust.nubjs import *
+from multi_swe_bench.harness.repos.rust.otter_sec import *
+from multi_swe_bench.harness.repos.rust.supabase_community import *
+from multi_swe_bench.harness.repos.rust.zeronsh import *
+from multi_swe_bench.harness.repos.rust.numaproj import *

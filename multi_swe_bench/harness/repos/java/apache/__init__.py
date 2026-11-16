@@ -43,3 +43,8 @@ from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18715_to_17822 i
 from multi_swe_bench.harness.repos.java.apache.beam_40153_to_40153 import *
 from multi_swe_bench.harness.repos.java.apache.druid_16977_to_18789 import *
 from multi_swe_bench.harness.repos.java.apache.druid_18790_to_99999 import *
+from multi_swe_bench.harness.repos.java.apache.camel_26049_to_26049 import *
+from multi_swe_bench.harness.repos.java.apache.camel_26134_to_26134 import *
+from multi_swe_bench.harness.repos.java.apache.camel_28051_to_28051 import *
+from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18688_to_18688 import *
+from multi_swe_bench.harness.repos.java.apache.beam_40229_to_40229 import *
