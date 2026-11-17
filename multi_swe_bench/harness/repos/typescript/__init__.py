@@ -301,3 +301,4 @@ from multi_swe_bench.harness.repos.typescript.garrytan import *
 
 from multi_swe_bench.harness.repos.typescript.vbenjs import *
 from multi_swe_bench.harness.repos.typescript.freeCodeCamp import *
+from multi_swe_bench.harness.repos.typescript.colbymchenry import *
