@@ -139,3 +139,8 @@ from multi_swe_bench.harness.repos.rust.otter_sec import *
 from multi_swe_bench.harness.repos.rust.supabase_community import *
 from multi_swe_bench.harness.repos.rust.zeronsh import *
 from multi_swe_bench.harness.repos.rust.numaproj import *
+from multi_swe_bench.harness.repos.rust.lbjlaq import *
+from multi_swe_bench.harness.repos.rust.DioxusLabs import *
+from multi_swe_bench.harness.repos.rust.cloudflare import *
+from multi_swe_bench.harness.repos.rust.louis_e import *
+from multi_swe_bench.harness.repos.rust.ultraworkers import *
