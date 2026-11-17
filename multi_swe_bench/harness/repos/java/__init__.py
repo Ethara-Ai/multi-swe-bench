@@ -146,6 +146,7 @@ from multi_swe_bench.harness.repos.java.spring_projects import *
 from multi_swe_bench.harness.repos.java.netty import *
 from multi_swe_bench.harness.repos.java.questdb import *
 from multi_swe_bench.harness.repos.java.iluwatar import *
+from multi_swe_bench.harness.repos.java.redisson import *
 from multi_swe_bench.harness.repos.java.GeyserMC import *
 from multi_swe_bench.harness.repos.java.codecentric import *
 from multi_swe_bench.harness.repos.java.jwtk import *

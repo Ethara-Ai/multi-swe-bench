@@ -48,3 +48,4 @@ from multi_swe_bench.harness.repos.java.apache.camel_26134_to_26134 import *
 from multi_swe_bench.harness.repos.java.apache.camel_28051_to_28051 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18688_to_18688 import *
 from multi_swe_bench.harness.repos.java.apache.beam_40229_to_40229 import *
+from multi_swe_bench.harness.repos.java.apache.iotdb_18921_to_17810 import *

@@ -6,9 +6,33 @@ from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-_BASE_IMAGE = "maven:3.9-eclipse-temurin-25"
+_BASE_IMAGE = "maven:3.9.11-eclipse-temurin-25"
 _BASE_TAG = "base-9159_to_8778"
 _REPO_DIR = "/home/storm"
+
+_ORG = "apache"
+_REPO = "storm"
+_INTERVAL = "storm_9159_to_8778"
+_BOUNDS = [int(n) for n in re.search(r"_(\d+)_to_(\d+)$", _INTERVAL).groups()]
+_PR_MIN = min(_BOUNDS)
+_PR_MAX = max(_BOUNDS)
+_ROUTING_FLAG = "_apache_storm_9159_to_8778_routed"
+
+if not getattr(Instance, _ROUTING_FLAG, False):
+    _orig_create = Instance.create.__func__
+
+    def _routed_create(cls, pr, config, *args, **kwargs):
+        if (
+            not pr.number_interval
+            and pr.org == _ORG
+            and pr.repo == _REPO
+            and _PR_MIN <= pr.number <= _PR_MAX
+        ):
+            pr.number_interval = _INTERVAL
+        return _orig_create(cls, pr, config, *args, **kwargs)
+
+    Instance.create = classmethod(_routed_create)
+    setattr(Instance, _ROUTING_FLAG, True)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 _MODULE_RE = re.compile(r"^=== MSB_MODULE: (\S+) (\S+) ===$", re.M)
@@ -135,12 +159,12 @@ fi
 find . -path '*/target/surefire-reports/*' -name 'TEST-*.xml' -delete 2>/dev/null || true
 
 build=0
-timeout 3600 mvn -Pnative,all-tests,examples,externals {_MVN_FLAGS} -DskipTests install -pl "$SEL" -am > /tmp/msb-build.log 2>&1 || build=$?
+timeout 3600 mvn -Pall-tests,examples,externals {_MVN_FLAGS} -DskipTests install -pl "$SEL" -am > /tmp/msb-build.log 2>&1 || build=$?
 cat /tmp/msb-build.log
 echo "upstream build exit: $build"
 
 rc=0
-timeout 3600 mvn -Pnative,all-tests,examples,externals {_MVN_FLAGS} -pl "$SEL" test > /tmp/msb-mvn.log 2>&1 || rc=$?
+timeout 3600 mvn -Pall-tests,examples,externals {_MVN_FLAGS} -pl "$SEL" test > /tmp/msb-mvn.log 2>&1 || rc=$?
 cat /tmp/msb-mvn.log
 
 echo "===== TEST REPORTS BEGIN ====="
@@ -230,7 +254,7 @@ test -n "$SEL"
 
 attempt=1
 while [ "$attempt" -le 3 ]; do
-    if timeout 7200 mvn -Pnative,all-tests,examples,externals {_MVN_FLAGS} -DskipTests install > /tmp/msb-install.log 2>&1; then
+    if timeout 7200 mvn -Pall-tests,examples,externals {_MVN_FLAGS} -DskipTests install > /tmp/msb-install.log 2>&1; then
         break
     fi
     tail -40 /tmp/msb-install.log
@@ -242,12 +266,12 @@ while [ "$attempt" -le 3 ]; do
     break
 done
 
-timeout 7200 mvn -Pnative,all-tests,examples,externals {_MVN_FLAGS} -DskipTests install -pl "$SEL" -am > /tmp/msb-install-sel.log 2>&1 || true
+timeout 7200 mvn -Pall-tests,examples,externals {_MVN_FLAGS} -DskipTests install -pl "$SEL" -am > /tmp/msb-install-sel.log 2>&1 || true
 tail -20 /tmp/msb-install-sel.log
 
 attempt=1
 while [ "$attempt" -le 3 ]; do
-    if timeout 5400 mvn -Pnative,all-tests,examples,externals {_MVN_FLAGS} -pl "$SEL" test > /tmp/msb-warm.log 2>&1; then
+    if timeout 5400 mvn -Pall-tests,examples,externals {_MVN_FLAGS} -pl "$SEL" test > /tmp/msb-warm.log 2>&1; then
         break
     fi
     tail -40 /tmp/msb-warm.log
@@ -262,9 +286,9 @@ done
 find . -path '*/target/surefire-reports/*' -name 'TEST-*.xml' -delete 2>/dev/null || true
 
 build=0
-timeout 5400 mvn -o -Pnative,all-tests,examples,externals {_MVN_FLAGS} -DskipTests install -pl "$SEL" -am > /tmp/msb-gate.log 2>&1 || build=$?
+timeout 5400 mvn -o -Pall-tests,examples,externals {_MVN_FLAGS} -DskipTests install -pl "$SEL" -am > /tmp/msb-gate.log 2>&1 || build=$?
 gate=0
-timeout 5400 mvn -o -Pnative,all-tests,examples,externals {_MVN_FLAGS} -pl "$SEL" test >> /tmp/msb-gate.log 2>&1 || gate=$?
+timeout 5400 mvn -o -Pall-tests,examples,externals {_MVN_FLAGS} -pl "$SEL" test >> /tmp/msb-gate.log 2>&1 || gate=$?
 reports=$(find . -path '*/target/surefire-reports/*' -name 'TEST-*.xml' | wc -l)
 tail -40 /tmp/msb-gate.log
 echo "gate build exit: $build, gate exit: $gate, gate reports: $reports"
@@ -400,15 +424,6 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/ca-trust/extracted/pem /usr/local/share
     ln -sf ${{CA_CERT_PATH}} /usr/local/share/ca-certificates/ca-certificates.crt && \\
     ln -sf ${{CA_CERT_PATH}} /etc/ssl/certs/ca-bundle.crt
 
-RUN --mount=type=secret,id=mitm_ca,required=0 \\
-    if [ -s /run/secrets/mitm_ca ]; then \\
-        cp /run/secrets/mitm_ca /usr/local/share/ca-certificates/mitm_ca.crt && \\
-        update-ca-certificates && \\
-        keytool -importcert -noprompt -storepass changeit \\
-            -alias msb-mitm -file /run/secrets/mitm_ca \\
-            -keystore "$(ls -1 $JAVA_HOME/jre/lib/security/cacerts $JAVA_HOME/lib/security/cacerts 2>/dev/null | head -1)"; \\
-    fi
-
 WORKDIR /home/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
@@ -418,6 +433,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     g++ \\
     gcc \\
     git \\
+    libssl-dev \\
     libtool \\
     make \\
     python3 \\
@@ -540,7 +556,7 @@ RUN if [ -f {_REPO_DIR}/.gitmodules ]; then \\
 """
 
 
-@Instance.register("apache", "storm_9159_to_8778")
+@Instance.register(_ORG, _INTERVAL)
 class STORM_9159_TO_8778(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
