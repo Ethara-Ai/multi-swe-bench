@@ -117,7 +117,11 @@ for attempt in 1 2 3; do
     [ "$attempt" -lt 3 ] || { echo "prepare.sh: pnpm install failed 3 times"; exit 1; }
     sleep 30
 done
-test -x node_modules/.bin/vitest || { echo "prepare.sh: vitest is not installed in frontend"; exit 1; }
+if [ -f rstest.config.ts ]; then
+    test -x node_modules/.bin/rstest || { echo "prepare.sh: rstest is not installed in frontend"; exit 1; }
+else
+    test -x node_modules/.bin/vitest || { echo "prepare.sh: vitest is not installed in frontend"; exit 1; }
+fi
 pnpm store prune
 """
 
@@ -129,7 +133,11 @@ for f in __JS_FILES__; do
     fi
 done
 if [ ${#js_files[@]} -gt 0 ]; then
-    node_modules/.bin/vitest list --filesOnly "${js_files[@]}" > /tmp/mswb_collect_js.log
+    if [ -f rstest.config.ts ]; then
+        node_modules/.bin/rstest list --filesOnly "${js_files[@]}" > /tmp/mswb_collect_js.log
+    else
+        node_modules/.bin/vitest list --filesOnly "${js_files[@]}" > /tmp/mswb_collect_js.log
+    fi
     tail -n 1 /tmp/mswb_collect_js.log
 fi
 cd /home/__REPO__/backend
@@ -239,15 +247,21 @@ if [ ${#files[@]} -eq 0 ]; then
 fi
 
 rc=0
-node_modules/.bin/vitest run --reporter=json --outputFile="$out" "${files[@]}" < /dev/null || rc=$?
-echo "mswb: vitest exit $rc"
+tool=vitest
+if [ -f rstest.config.ts ]; then
+    tool=rstest
+    node_modules/.bin/rstest run --reporter json "${files[@]}" > "$out" < /dev/null || rc=$?
+else
+    node_modules/.bin/vitest run --reporter=json --outputFile="$out" "${files[@]}" < /dev/null || rc=$?
+fi
+echo "mswb: $tool exit $rc"
 node /home/mswb_digest.js "$out" || exit 1
 if [ "$rc" -gt 1 ]; then
-    echo "=== MSB: vitest exited with status $rc ==="
+    echo "=== MSB: $tool exited with status $rc ==="
     exit "$rc"
 fi
 if [ ! -f "$out" ] && [ "$rc" -ne 0 ]; then
-    echo "=== MSB: vitest wrote no report (status $rc) ==="
+    echo "=== MSB: $tool wrote no report (status $rc) ==="
     exit 1
 fi
 exit 0
@@ -264,20 +278,51 @@ if (!fs.existsSync(out)) {
 const root = '/home/__REPO__';
 const rank = { PASSED: 0, SKIPPED: 1, FAILED: 2 };
 const status = new Map();
-const report = JSON.parse(fs.readFileSync(out, 'utf8'));
-for (const file of report.testResults || []) {
-  const rel = path.relative(root, file.name);
-  const results = file.assertionResults || [];
-  for (const t of results) {
-    const title = [...(t.ancestorTitles || []), t.title].map((x) => String(x).replace(/\s+/g, ' ').trim()).join(' > ');
-    const st = t.status === 'passed' ? 'PASSED' : t.status === 'failed' ? 'FAILED' : 'SKIPPED';
-    const key = 'vitest::' + rel + '::' + title;
-    if (!status.has(key) || rank[st] > rank[status.get(key)]) {
-      status.set(key, st);
+const raw = fs.readFileSync(out, 'utf8');
+const start = raw.indexOf('{\n  "tool": "rstest"');
+let report;
+if (start >= 0) {
+  const end = raw.indexOf('\n}\n', start);
+  report = JSON.parse(raw.slice(start, end < 0 ? raw.length : end + 2));
+} else if (raw.trim() === '') {
+  console.log('mswb: the test report is empty');
+  process.exit(1);
+} else {
+  report = JSON.parse(raw);
+}
+const clean = (x) => String(x).replace(/\s+/g, ' ').trim();
+const put = (key, st) => {
+  if (!status.has(key) || rank[st] > rank[status.get(key)]) {
+    status.set(key, st);
+  }
+};
+if (report.tool === 'rstest') {
+  const front = path.join(root, 'frontend');
+  for (const file of report.files || []) {
+    const rel = path.relative(root, path.resolve(front, file.testPath));
+    const results = file.results || [];
+    for (const t of results) {
+      const title = [...(t.parentNames || []), t.name].map(clean).join(' > ');
+      const st = t.status === 'pass' ? 'PASSED' : t.status === 'fail' ? 'FAILED' : 'SKIPPED';
+      put('rstest::' + rel + '::' + title, st);
+    }
+    if (results.length === 0 && file.status === 'fail') {
+      const err = (file.errors || [])[0] || {};
+      console.log('mswb: suite error in ' + rel + ': ' + String(err.message || '').split('\n')[0]);
     }
   }
-  if (results.length === 0 && file.status === 'failed') {
-    console.log('mswb: suite error in ' + rel + ': ' + String(file.message || '').split('\n')[0]);
+} else {
+  for (const file of report.testResults || []) {
+    const rel = path.relative(root, file.name);
+    const results = file.assertionResults || [];
+    for (const t of results) {
+      const title = [...(t.ancestorTitles || []), t.title].map(clean).join(' > ');
+      const st = t.status === 'passed' ? 'PASSED' : t.status === 'failed' ? 'FAILED' : 'SKIPPED';
+      put('vitest::' + rel + '::' + title, st);
+    }
+    if (results.length === 0 && file.status === 'failed') {
+      console.log('mswb: suite error in ' + rel + ': ' + String(file.message || '').split('\n')[0]);
+    }
   }
 }
 for (const key of [...status.keys()].sort()) {
@@ -513,7 +558,7 @@ RUN bash /home/prepare.sh
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 _LINE_RE = re.compile(
-    r"^(?P<name>(?:pytest::backend/tests/\S.*?\.py|vitest::frontend/tests/\S.*?\.[cm]?[jt]sx?)(?:::.+)?) (?P<status>PASSED|FAILED|SKIPPED)$"
+    r"^(?P<name>(?:pytest::backend/tests/\S.*?\.py|(?:vitest|rstest)::frontend/tests/\S.*?\.[cm]?[jt]sx?)(?:::.+)?) (?P<status>PASSED|FAILED|SKIPPED)$"
 )
 
 
