@@ -250,3 +250,4 @@ from multi_swe_bench.harness.repos.golang.tailscale import *
 from multi_swe_bench.harness.repos.golang.ollama import *
 from multi_swe_bench.harness.repos.golang.router_for_me import *
 from multi_swe_bench.harness.repos.golang.php import *
+from multi_swe_bench.harness.repos.golang.vektra import *
