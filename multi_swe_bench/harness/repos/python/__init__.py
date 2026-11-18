@@ -480,3 +480,4 @@ from multi_swe_bench.harness.repos.python.shareAI_lab import *
 from multi_swe_bench.harness.repos.python.unclecode import *
 from multi_swe_bench.harness.repos.python.nesquena import *
 from multi_swe_bench.harness.repos.python.bytedance import *
+from multi_swe_bench.harness.repos.python.roboflow import *
