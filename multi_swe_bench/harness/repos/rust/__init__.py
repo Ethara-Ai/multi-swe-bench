@@ -145,3 +145,5 @@ from multi_swe_bench.harness.repos.rust.cloudflare import *
 from multi_swe_bench.harness.repos.rust.louis_e import *
 from multi_swe_bench.harness.repos.rust.ultraworkers import *
 from multi_swe_bench.harness.repos.rust.rustfs import *
+from multi_swe_bench.harness.repos.rust.wealthfolio import *
+from multi_swe_bench.harness.repos.rust.Amanieu import *
