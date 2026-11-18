@@ -19,3 +19,4 @@ from multi_swe_bench.harness.repos.python.pylint_dev.pylint_2926_to_2220 import 
 from multi_swe_bench.harness.repos.python.pylint_dev.pylint_2630_to_1842 import *
 from multi_swe_bench.harness.repos.python.pylint_dev.pylint_2090_to_1856 import *
 from multi_swe_bench.harness.repos.python.pylint_dev.pylint_1745_to_1188 import *
+from multi_swe_bench.harness.repos.python.pylint_dev.pylint_11570_to_2999 import *
