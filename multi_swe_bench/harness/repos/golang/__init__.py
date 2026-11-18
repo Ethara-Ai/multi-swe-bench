@@ -251,3 +251,12 @@ from multi_swe_bench.harness.repos.golang.ollama import *
 from multi_swe_bench.harness.repos.golang.router_for_me import *
 from multi_swe_bench.harness.repos.golang.php import *
 from multi_swe_bench.harness.repos.golang.vektra import *
+from multi_swe_bench.harness.repos.golang.getsentry import *
+from multi_swe_bench.harness.repos.golang.go_fuego import *
+from multi_swe_bench.harness.repos.golang.gophercloud import *
+from multi_swe_bench.harness.repos.golang.lestrrat_go import *
+from multi_swe_bench.harness.repos.golang.ludo_technologies import *
+from multi_swe_bench.harness.repos.golang.pulseaiclub import *
+from multi_swe_bench.harness.repos.golang.revive_lint import *
+from multi_swe_bench.harness.repos.golang.tomasz_tomczyk import *
+from multi_swe_bench.harness.repos.golang.wazero import *

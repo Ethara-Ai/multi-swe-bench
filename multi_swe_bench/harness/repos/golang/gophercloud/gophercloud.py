@@ -1,0 +1,446 @@
+import re
+from typing import Optional, Union
+
+from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.instance import Instance, TestResult
+from multi_swe_bench.harness.pull_request import PullRequest
+
+# gophercloud/gophercloud spans the v1 module (github.com/gophercloud/gophercloud,
+# acceptance tests under acceptance/) and the v2 module
+# (github.com/gophercloud/gophercloud/v2, acceptance tests under
+# internal/acceptance/). The Go toolchain is chosen per PR from the `go`
+# directive in go.mod at the PR's base commit:
+#   * #1871, #1952 (2020): go.mod has no `go` directive -> golang:1.16
+#   * #2552, #2696 (2023): `go 1.14`                     -> golang:1.20
+#   * #3442 (2025, v2):    `go 1.23.0`                   -> golang:1.23
+# The official golang images (non-slim) are multi-arch and already ship git and
+# gcc, so no apt step is needed (the buster/bullseye apt mirrors are archived).
+DEFAULT_GO_VERSION = "1.23"
+GO_VERSION_BY_PR = {
+    1871: "1.16",
+    1952: "1.16",
+    2552: "1.20",
+    2696: "1.20",
+    3442: "1.23",
+}
+
+
+def go_version_for(pr: PullRequest) -> str:
+    return GO_VERSION_BY_PR.get(pr.number, DEFAULT_GO_VERSION)
+
+
+# Unit tests only: every package under acceptance/ (v1) or internal/acceptance/
+# (v2) talks to a real OpenStack cloud and is dropped from the package list.
+TEST_COMMAND = """pkgs="$(go list ./... | grep -v '/acceptance')"
+go test -v -count=1 ${pkgs} 2>&1"""
+
+
+V1_MODULE = "github.com/gophercloud/gophercloud"
+V2_MODULE = "github.com/gophercloud/gophercloud/v2"
+
+_RE_DIFF_FILE = re.compile(r"^diff --git a/(\S+) b/(\S+)")
+_RE_HUNK = re.compile(r"^@@ [^@]* @@ ?(.*)$")
+_RE_TEST_FUNC = re.compile(r"^func (Test\w+)\(")
+
+
+def touched_test_funcs(patch: str) -> dict[str, set[str]]:
+    """Map a package dir (relative to the module root, "" for the root) to the
+    top-level Test functions that `patch` adds, removes or edits in that
+    directory's *_test.go files."""
+    touched: dict[str, set[str]] = {}
+    current_file = None
+    current_func = None
+    for line in patch.splitlines():
+        m = _RE_DIFF_FILE.match(line)
+        if m:
+            path = m.group(2)
+            current_file = path if path.endswith("_test.go") else None
+            current_func = None
+            continue
+        if current_file is None:
+            continue
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        m = _RE_HUNK.match(line)
+        if m:
+            fm = _RE_TEST_FUNC.match(m.group(1))
+            current_func = fm.group(1) if fm else None
+            continue
+        if not line or line[0] not in " +-":
+            continue
+        body = line[1:]
+        if body.startswith("func "):
+            fm = _RE_TEST_FUNC.match(body)
+            current_func = fm.group(1) if fm else None
+        if line[0] in "+-" and current_func and body.strip():
+            pkg_dir = current_file.rsplit("/", 1)[0] if "/" in current_file else ""
+            touched.setdefault(pkg_dir, set()).add(current_func)
+    return touched
+
+
+class GophercloudImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Union[str, "Image"]:
+        return f"golang:{go_version_for(self.pr)}"
+
+    def image_tag(self) -> str:
+        return f"base-go{go_version_for(self.pr)}"
+
+    def workdir(self) -> str:
+        return f"base-go{go_version_for(self.pr)}"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        image_name = self.dependency()
+        if isinstance(image_name, Image):
+            image_name = image_name.image_full_name()
+
+        if self.config.need_clone:
+            code = f"""RUN git clone "${{REPO_URL}}" /home/{self.pr.repo} && \\
+    cd /home/{self.pr.repo} && git rev-parse HEAD >/dev/null"""
+        else:
+            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {image_name}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    GOTOOLCHAIN=local \\
+    GO111MODULE=on \\
+    CGO_ENABLED=0 \\
+    CI=true
+
+{self.global_env}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+RUN git --version && go version
+
+RUN git config --global --add safe.directory '*'
+
+WORKDIR /home/
+
+{code}
+
+CMD ["/bin/bash"]
+"""
+
+
+class GophercloudImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image | None:
+        return GophercloudImageBase(self.pr, self._config)
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def test_command(self) -> str:
+        return TEST_COMMAND
+
+    def files(self) -> list[File]:
+        return [
+            File(
+                ".",
+                "fix.patch",
+                f"{self.pr.fix_patch}",
+            ),
+            File(
+                ".",
+                "test.patch",
+                f"{self.pr.test_patch}",
+            ),
+            File(
+                ".",
+                "check_git_changes.sh",
+                """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+
+""",
+            ),
+            File(
+                ".",
+                "prepare.sh",
+                """#!/bin/bash
+set -euo pipefail
+
+cd /home/{pr.repo}
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+git checkout --detach {pr.base.sha}
+bash /home/check_git_changes.sh
+
+go mod download
+go build ./...
+go test -count=1 -run '^$' $(go list ./... | grep -v '/acceptance') > /dev/null
+
+# go.mod/go.sum must be untouched: run stages start from a clean checkout.
+git checkout -- .
+# Final hard gate (last step): the restored tree still builds.
+go build ./...
+echo DEPS_OK
+
+""".format(pr=self.pr),
+            ),
+            File(
+                ".",
+                "run.sh",
+                """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/{pr.repo}
+{test_command}
+
+""".format(pr=self.pr, test_command=self.test_command()),
+            ),
+            File(
+                ".",
+                "test-run.sh",
+                """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/{pr.repo}
+git apply --whitespace=nowarn /home/test.patch
+{test_command}
+
+""".format(pr=self.pr, test_command=self.test_command()),
+            ),
+            File(
+                ".",
+                "fix-run.sh",
+                """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/{pr.repo}
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+{test_command}
+
+""".format(pr=self.pr, test_command=self.test_command()),
+            ),
+        ]
+
+    def dockerfile(self) -> str:
+        image = self.dependency()
+        name = image.image_name()
+        tag = image.image_tag()
+
+        copy_commands = ""
+        for file in self.files():
+            copy_commands += f"COPY {file.name} /home/\n"
+
+        return f"""FROM {name}:{tag}
+
+{self.global_env}
+
+{copy_commands}
+RUN bash /home/prepare.sh
+
+RUN set -eux; \\
+    cd /home/{self.pr.repo}; \\
+    test "$(git rev-parse HEAD)" = "{self.pr.base.sha}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "{self.pr.base.sha}"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+{self.clear_env}
+
+"""
+
+
+@Instance.register("gophercloud", "gophercloud")
+class Gophercloud(Instance):
+    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
+        super().__init__()
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    def dependency(self) -> Optional[Image]:
+        return GophercloudImageDefault(self.pr, self._config)
+
+    def run(self, run_cmd: str = "") -> str:
+        if run_cmd:
+            return run_cmd
+
+        return "bash /home/run.sh"
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+        if test_patch_run_cmd:
+            return test_patch_run_cmd
+
+        return "bash /home/test-run.sh"
+
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+        if fix_patch_run_cmd:
+            return fix_patch_run_cmd
+
+        return "bash /home/fix-run.sh"
+
+    def parse_log(self, test_log: str) -> TestResult:
+        passed_tests = set()
+        failed_tests = set()
+        skipped_tests = set()
+
+        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+
+        re_run = re.compile(r"^=== RUN\s+(\S+)")
+        re_result = re.compile(r"^\s*--- (PASS|FAIL|SKIP): (\S+)")
+        re_package = re.compile(r"^(ok|FAIL)\s+(\S+)(\s|$)")
+
+        pending_run = set()
+        pending_result = {}
+
+        for line in log.splitlines():
+            run_match = re_run.match(line)
+            if run_match:
+                pending_run.add(run_match.group(1))
+                continue
+
+            result_match = re_result.match(line)
+            if result_match:
+                pending_result[result_match.group(2)] = result_match.group(1)
+                continue
+
+            package_match = re_package.match(line)
+            if not package_match:
+                continue
+
+            package = package_match.group(2)
+            for name in pending_run - set(pending_result):
+                pending_result[name] = "FAIL"
+            for name, status in pending_result.items():
+                full_name = f"{package}/{name}"
+                if status == "PASS":
+                    passed_tests.add(full_name)
+                elif status == "FAIL":
+                    failed_tests.add(full_name)
+                else:
+                    skipped_tests.add(full_name)
+            pending_run = set()
+            pending_result = {}
+
+        # A test package that does not compile prints only
+        # "FAIL <pkg> [build failed]" and no test events. At the test.patch-only
+        # stage this is the expected outcome whenever the test patch exercises
+        # API that only the fix introduces (new fields/functions/signatures).
+        # Record the Test functions that test.patch adds or edits in such a
+        # package as FAILED, so they show up as fail-to-pass once the fix makes
+        # the package compile. Untouched tests of the package are not recorded.
+        build_failed = set(
+            re.findall(r"^FAIL\s+(\S+)\s+\[(?:build|setup) failed\]", log, re.M)
+        )
+        if build_failed:
+            module = V2_MODULE if any(
+                p == V2_MODULE or p.startswith(V2_MODULE + "/") for p in build_failed
+            ) else V1_MODULE
+            for pkg_dir, funcs in touched_test_funcs(self.pr.test_patch).items():
+                pkg = f"{module}/{pkg_dir}" if pkg_dir else module
+                if pkg in build_failed:
+                    for func in funcs:
+                        failed_tests.add(f"{pkg}/{func}")
+
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        passed_tests -= skipped_tests
+
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
+        )
