@@ -244,3 +244,6 @@ from multi_swe_bench.harness.repos.javascript.Acode_Foundation import *
 from multi_swe_bench.harness.repos.javascript.spencermountain import *
 from multi_swe_bench.harness.repos.javascript.decaporg import *
 from multi_swe_bench.harness.repos.javascript.AlaSQL import *
+from multi_swe_bench.harness.repos.javascript.mksglu import *
+from multi_swe_bench.harness.repos.javascript.plotly import *
+from multi_swe_bench.harness.repos.javascript.tabulator_tables import *

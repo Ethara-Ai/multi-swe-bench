@@ -147,3 +147,4 @@ from multi_swe_bench.harness.repos.rust.ultraworkers import *
 from multi_swe_bench.harness.repos.rust.rustfs import *
 from multi_swe_bench.harness.repos.rust.wealthfolio import *
 from multi_swe_bench.harness.repos.rust.Amanieu import *
+from multi_swe_bench.harness.repos.rust.cachix import *

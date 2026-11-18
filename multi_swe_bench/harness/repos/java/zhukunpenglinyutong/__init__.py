@@ -4,3 +4,4 @@ from .jetbrains_cc_gui import *
 from multi_swe_bench.harness.repos.java.zhukunpenglinyutong.jetbrains_cc_gui_1732_to_1727 import *
 from multi_swe_bench.harness.repos.java.zhukunpenglinyutong.jetbrains_cc_gui_1688_to_1688 import *
 from multi_swe_bench.harness.repos.java.zhukunpenglinyutong.jetbrains_cc_gui_2011_to_2011 import *
+from .jetbrains_cc_gui_1557_to_1557 import *

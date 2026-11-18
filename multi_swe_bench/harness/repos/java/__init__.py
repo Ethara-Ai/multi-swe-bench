@@ -156,3 +156,5 @@ from multi_swe_bench.harness.repos.java.grpc import *
 from multi_swe_bench.harness.repos.java.spinnaker import *
 from multi_swe_bench.harness.repos.java.oshi import *
 from multi_swe_bench.harness.repos.java.rubenlagus import *
+from multi_swe_bench.harness.repos.java.grobidOrg import *
+from multi_swe_bench.harness.repos.java.mapstruct import *
