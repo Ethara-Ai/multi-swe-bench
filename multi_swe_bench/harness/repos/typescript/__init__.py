@@ -302,3 +302,5 @@ from multi_swe_bench.harness.repos.typescript.garrytan import *
 from multi_swe_bench.harness.repos.typescript.vbenjs import *
 from multi_swe_bench.harness.repos.typescript.freeCodeCamp import *
 from multi_swe_bench.harness.repos.typescript.colbymchenry import *
+from multi_swe_bench.harness.repos.typescript.vercel_labs import *
+from multi_swe_bench.harness.repos.typescript.xdan import *

@@ -243,3 +243,4 @@ from multi_swe_bench.harness.repos.javascript.NodeBB import *
 from multi_swe_bench.harness.repos.javascript.Acode_Foundation import *
 from multi_swe_bench.harness.repos.javascript.spencermountain import *
 from multi_swe_bench.harness.repos.javascript.decaporg import *
+from multi_swe_bench.harness.repos.javascript.AlaSQL import *
