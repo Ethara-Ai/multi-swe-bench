@@ -261,12 +261,13 @@ exit 0
                     ".",
                     "prepare.sh",
                     """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach {pr.base.sha}
 bash /home/check_git_changes.sh
 {gradle_jvmargs}
 mkdir -p ~/.gradle && cat <<'INITGRADLE' > ~/.gradle/init.gradle
@@ -308,13 +309,23 @@ if [ "$HAS_NEBULA" -gt 0 ]; then
     sed -i '/^license {{/,/^}}/d' build.gradle || true
 fi
 ./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue || true
+
+find . -path '*/build/test-results/*' -name 'TEST-*.xml' | grep -q .
+find . -path '*/build/classes/*' -name '*.class' | grep -q .
+
+git checkout -- build.gradle
+git reset --hard
+git clean -fdq
+
+echo DEPS_OK
 """.format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
                 ),
                 File(
                     ".",
                     "run.sh",
                     """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 {gradle_jvmargs}
@@ -325,7 +336,8 @@ cd /home/{pr.repo}
                     ".",
                     "test-run.sh",
                     """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
@@ -338,7 +350,8 @@ git apply --whitespace=nowarn /home/test.patch
                     ".",
                     "fix-run.sh",
                     """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
@@ -384,12 +397,13 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach {pr.base.sha}
 bash /home/check_git_changes.sh
 {gradle_jvmargs}
 mkdir -p ~/.gradle && cat <<'INITGRADLE' > ~/.gradle/init.gradle
@@ -421,13 +435,23 @@ sed -i "/build-info-extractor-gradle/d" build.gradle || true
 sed -i "/oss.jfrog.org/d" build.gradle || true
 sed -i "/groovy.jfrog.io/d" build.gradle || true
 ./gradlew clean test --init-script ~/.gradle/init.gradle --max-workers 2 --continue || true
+
+find . -path '*/build/test-results/*' -name 'TEST-*.xml' | grep -q .
+find . -path '*/build/classes/*' -name '*.class' | grep -q .
+
+git checkout -- build.gradle
+git reset --hard
+git clean -fdq
+
+echo DEPS_OK
 """.format(pr=self.pr, gradle_jvmargs=gradle_jvmargs),
             ),
             File(
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 {gradle_jvmargs}
@@ -438,7 +462,8 @@ cd /home/{pr.repo}
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch
@@ -451,7 +476,8 @@ git apply --whitespace=nowarn /home/test.patch
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply --whitespace=nowarn /home/test.patch /home/fix.patch
@@ -472,6 +498,10 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
             copy_commands += f"COPY {file.name} /home/\n"
 
         prepare_commands = "RUN bash /home/prepare.sh"
+
+        hardening = Image._HARDENING_BLOCK.replace(
+            "${BASE_COMMIT}", self.pr.base.sha
+        ).rstrip("\n")
 
         proxy_setup = ""
         proxy_cleanup = ""
@@ -521,6 +551,10 @@ git apply --whitespace=nowarn /home/test.patch /home/fix.patch
 {prepare_commands}
 
 {proxy_cleanup}
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
 
 {self.clear_env}
 
@@ -590,6 +624,8 @@ class RxJava(Instance):
             re.compile(r"^:(\S+) NO-SOURCE$"),
             re.compile(r"^(.+ > .+) SKIPPED$"),
         ]
+
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
         for line in test_log.splitlines():
             for passed_re in passed_res:

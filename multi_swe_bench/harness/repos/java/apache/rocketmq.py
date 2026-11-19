@@ -415,6 +415,9 @@ test "$(git rev-parse HEAD)" = "{sha}"
 
 {pl_resolver}
 {mvn_warmup} || true
+
+find . -path '*/target/test-classes/*' -name '*.class' | grep -q .
+echo DEPS_OK
 """.format(
                     org=self.pr.org,
                     repo=self.pr.repo,

@@ -21,7 +21,7 @@ class LogstashImageBase(Image):
         return self._config
 
     def dependency(self) -> Union[str, "Image"]:
-        return "ubuntu:latest"
+        return "ubuntu:22.04"
 
     def image_tag(self) -> str:
         return "base"
@@ -36,11 +36,6 @@ class LogstashImageBase(Image):
         image_name = self.dependency()
         if isinstance(image_name, Image):
             image_name = image_name.image_full_name()
-
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         copy_commands = ""
         for file in self.files():
@@ -60,9 +55,23 @@ WORKDIR /home/
 RUN apt update && apt install -y gnupg ca-certificates git curl
 RUN curl -s https://repos.azul.com/azul-repo.key | gpg --dearmor -o /usr/share/keyrings/azul.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/azul.gpg] https://repos.azul.com/zulu/deb stable main" | tee /etc/apt/sources.list.d/zulu.list
-RUN apt update && apt install -y zulu11-jdk
+RUN apt update && apt install -y zulu11-jdk unzip
 
-{code}
+RUN set -eu; \
+    mkdir -p /opt/gradle-dist; \
+    for spec in "8.11.1:bpt9gzteqjrbo1mjrsomdt32c" "9.7.0:d4tj7w02tcgubx9zk9hbippn6"; do \
+        v=${{spec%%:*}}; h=${{spec##*:}}; \
+        url="https://services.gradle.org/distributions/gradle-$v-bin.zip"; \
+        zip="/opt/gradle-dist/gradle-$v-bin.zip"; \
+        curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 60 --max-time 1800 -o "$zip" "$url"; \
+        test -s "$zip"; \
+        dest="/root/.gradle/wrapper/dists/gradle-$v-bin/$h"; \
+        mkdir -p "$dest"; \
+        cp "$zip" "$dest/gradle-$v-bin.zip"; \
+        (cd "$dest" && unzip -q "gradle-$v-bin.zip" && touch "gradle-$v-bin.zip.ok"); \
+        test -x "$dest/gradle-$v/bin/gradle"; \
+    done
 
 {copy_commands}
 
@@ -130,15 +139,28 @@ exit 0
                 ".",
                 "prepare.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
+git config --global --add safe.directory /home/{pr.repo}
 git reset --hard
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git cat-file -e {pr.base.sha} 2>/dev/null || git fetch --quiet origin "+refs/pull/*/head:refs/mswb/pull/*" || true
+git checkout --detach {pr.base.sha}
+git for-each-ref --format='%(refname)' refs/mswb | xargs -r -n1 git update-ref -d
 bash /home/check_git_changes.sh
 
 ./gradlew clean test --continue || true
+
+find . -path '*/build/test-results/*' -name 'TEST-*.xml' | grep -q .
+find . -path '*/build/classes/*' -name '*.class' | grep -q .
+
+git reset --hard
+git clean -fdq
+bash /home/check_git_changes.sh
+
+echo DEPS_OK
 
 """.format(pr=self.pr),
             ),
@@ -146,7 +168,8 @@ bash /home/check_git_changes.sh
                 ".",
                 "run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 ./gradlew clean test --continue
@@ -157,7 +180,8 @@ cd /home/{pr.repo}
                 ".",
                 "test-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply /home/test.patch
@@ -169,7 +193,8 @@ git apply /home/test.patch
                 ".",
                 "fix-run.sh",
                 """#!/bin/bash
-set -e
+set -eo pipefail
+export CI=true
 
 cd /home/{pr.repo}
 git apply /home/test.patch /home/fix.patch
@@ -187,6 +212,14 @@ git apply /home/test.patch /home/fix.patch
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
+
+        if self.config.need_clone:
+            clone = (
+                f'RUN git clone "https://github.com/{self.pr.org}/{self.pr.repo}.git" '
+                f"/home/{self.pr.repo}"
+            )
+        else:
+            clone = f"COPY {self.pr.repo} /home/{self.pr.repo}"
 
         prepare_commands = "RUN bash /home/prepare.sh"
 
@@ -235,7 +268,15 @@ git apply /home/test.patch /home/fix.patch
 
 {copy_commands}
 
+{clone}
+
 {prepare_commands}
+
+WORKDIR /home/{self.pr.repo}
+ARG BASE_COMMIT="{self.pr.base.sha}"
+RUN git config --global --add safe.directory /home/{self.pr.repo}
+{Image._HARDENING_BLOCK}
+WORKDIR /home
 
 {proxy_cleanup}
 
@@ -298,6 +339,8 @@ class Logstash(Instance):
             re.compile(r"^(.+ > .+) SKIPPED$"),
         ]
 
+        test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
+
         for line in test_log.splitlines():
             for passed_re in passed_res:
                 m = passed_re.match(line)
@@ -315,6 +358,10 @@ class Logstash(Instance):
                 m = skipped_re.match(line)
                 if m:
                     skipped_tests.add(m.group(1))
+
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),

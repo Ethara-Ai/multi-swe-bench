@@ -209,13 +209,6 @@ class RxJavaImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def _gradle_jvmargs(self) -> str:
-        """Inject org.gradle.jvmargs into gradle.properties to set daemon heap.
-
-        GRADLE_OPTS only affects the Gradle client/wrapper process.
-        The daemon JVM args come from org.gradle.jvmargs in gradle.properties.
-        RxJava's gradle.properties does NOT have this line by default,
-        so we append it. Following elasticsearch.py pattern.
-        """
         return (
             'sed -i "/^org.gradle.jvmargs=/d" gradle.properties 2>/dev/null || true\n'
             'echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m" >> gradle.properties'
@@ -565,15 +558,12 @@ class RxJava(Instance):
         skipped_tests = set()
 
         passed_res = [
-            # New Gradle (6+): "> Task :taskName"
             re.compile(r"^> Task :(\S+)$"),
             re.compile(r"^> Task :(\S+) UP-TO-DATE$"),
             re.compile(r"^> Task :(\S+) FROM-CACHE$"),
-            # Old Gradle (2.x-4.x): ":taskName"
             re.compile(r"^:(\S+)$"),
             re.compile(r"^:(\S+) UP-TO-DATE$"),
             re.compile(r"^:(\S+) FROM-CACHE$"),
-            # Individual test method results (same format in all Gradle versions)
             re.compile(r"^(.+ > .+) PASSED$"),
         ]
 
@@ -609,8 +599,6 @@ class RxJava(Instance):
                 if m:
                     skipped_tests.add(m.group(1))
 
-        # Clean up overlaps to avoid ValueError in TestResult.__post_init__
-        # (can occur with malformed logs from daemon crashes or truncation)
         passed_tests -= failed_tests
         passed_tests -= skipped_tests
         skipped_tests -= failed_tests

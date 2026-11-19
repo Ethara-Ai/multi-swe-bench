@@ -5,3 +5,4 @@ from multi_swe_bench.harness.repos.javascript.Automattic.mongoose import *
 # reach it through their JSONL `number_interval`, so mongoose.py and the bare
 # "Automattic/mongoose" key are untouched.
 from multi_swe_bench.harness.repos.javascript.Automattic.mongoose_16582_to_16244 import *  # noqa: F401,F403
+from multi_swe_bench.harness.repos.javascript.Automattic.node_canvas_2602_to_2602 import *  # noqa: F401,F403

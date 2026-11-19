@@ -158,3 +158,17 @@ from multi_swe_bench.harness.repos.java.oshi import *
 from multi_swe_bench.harness.repos.java.rubenlagus import *
 from multi_swe_bench.harness.repos.java.grobidOrg import *
 from multi_swe_bench.harness.repos.java.mapstruct import *
+from multi_swe_bench.harness.repos.java.alipay import *
+from multi_swe_bench.harness.repos.java.auth0 import *
+from multi_swe_bench.harness.repos.java.spring_io import *
+from multi_swe_bench.harness.repos.java.swagger_api import *
+from multi_swe_bench.harness.repos.java.yuliskov import *
+from multi_swe_bench.harness.repos.java.kekingcn import *
+from multi_swe_bench.harness.repos.java.nageoffer import *
+from multi_swe_bench.harness.repos.java.projectlombok import *
+from multi_swe_bench.harness.repos.java.eclipse_openj9 import *
+from multi_swe_bench.harness.repos.java.jindrapetrik import *
+from multi_swe_bench.harness.repos.java.PaperMC import *
+from multi_swe_bench.harness.repos.java.pentaho import *
+import importlib as _importlib
+_importlib.import_module("multi_swe_bench.harness.repos.java.648540858")

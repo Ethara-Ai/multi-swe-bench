@@ -52,3 +52,5 @@ from multi_swe_bench.harness.repos.java.apache.iotdb_18921_to_17810 import *
 from multi_swe_bench.harness.repos.java.apache.beam_39600_to_39600 import *
 from multi_swe_bench.harness.repos.java.apache.camel_25996_to_29342 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18676_to_18729 import *
+from multi_swe_bench.harness.repos.java.apache.streampark_4507_to_4417 import *
+from multi_swe_bench.harness.repos.java.apache.rocketmq_10386_to_10386 import *
