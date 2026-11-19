@@ -5,3 +5,7 @@ from multi_swe_bench.harness.repos.javascript.rollup.rollup_4574_to_4021 import 
 from multi_swe_bench.harness.repos.javascript.rollup.rollup_5026_to_4593 import *
 from multi_swe_bench.harness.repos.javascript.rollup.rollup_5737_to_5207 import *
 from multi_swe_bench.harness.repos.javascript.rollup.rollup_6583_to_6065 import *
+from multi_swe_bench.harness.repos.javascript.rollup.rollup_777_to_777 import *
+from multi_swe_bench.harness.repos.javascript.rollup.rollup_2254_to_2218 import *
+from multi_swe_bench.harness.repos.javascript.rollup.rollup_5944_to_5778 import *
+from multi_swe_bench.harness.repos.javascript.rollup.rollup_6651_to_6628 import *
