@@ -37,6 +37,7 @@ from multi_swe_bench.harness.repos.java.micronautprojects import *
 from multi_swe_bench.harness.repos.java.mockito import *
 from multi_swe_bench.harness.repos.java.mybatis import *
 from multi_swe_bench.harness.repos.java.openequella import *
+from multi_swe_bench.harness.repos.java.OpenFeign import *
 from multi_swe_bench.harness.repos.java.OpenRefine import *
 from multi_swe_bench.harness.repos.java.opentracing import *
 from multi_swe_bench.harness.repos.java.pmd import *

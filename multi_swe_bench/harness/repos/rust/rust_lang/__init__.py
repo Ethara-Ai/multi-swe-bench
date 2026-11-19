@@ -15,3 +15,4 @@ from multi_swe_bench.harness.repos.rust.rust_lang.cargo_7848_to_6772 import *
 from multi_swe_bench.harness.repos.rust.rust_lang.cargo_10877 import *
 from multi_swe_bench.harness.repos.rust.rust_lang.rust_clippy import *
 from multi_swe_bench.harness.repos.rust.rust_lang.rustup import *
+from multi_swe_bench.harness.repos.rust.rust_lang.crates_io_14437_to_14437 import *
