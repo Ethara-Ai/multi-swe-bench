@@ -3,3 +3,4 @@ from .trino import *
 from multi_swe_bench.harness.repos.java.trinodb.trino_29295_to_29295 import *
 from multi_swe_bench.harness.repos.java.trinodb.trino_31377_to_31377 import *
 from multi_swe_bench.harness.repos.java.trinodb.trino_30341_to_30341 import *
+from multi_swe_bench.harness.repos.java.trinodb.trino_31634_to_31634 import *

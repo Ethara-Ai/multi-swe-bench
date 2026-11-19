@@ -1,0 +1,885 @@
+import json
+import posixpath
+import re
+from typing import Optional
+
+from multi_swe_bench.harness.image import Config, File, Image
+from multi_swe_bench.harness.instance import Instance, TestResult
+from multi_swe_bench.harness.pull_request import PullRequest
+
+_INTERVAL = "numaflow_3570_to_3570"
+
+# Toolchain pins at the base sha (2026-08-07):
+#   rust/rust-toolchain.toml -> channel = "1.97.1"
+#   go.mod                   -> go 1.25.10 (GOTOOLCHAIN=local keeps it from self-upgrading)
+# Official Docker library image via its ECR Public mirror (same digests as Docker Hub,
+# multi-arch, not subject to Hub pull-rate limits).
+_RUST_IMAGE = "public.ecr.aws/docker/library/rust:1.97.1-bookworm"
+_GO_VERSION = "1.25.10"
+_GO_SHA256 = {
+    "amd64": "42d4f7a32316aa66591eca7e89867256057a4264451aca10570a715b3637ba70",
+    "arm64": "654da1f9b50a5d1c2a85ccf8ed405aa89c06e94d18384628bf186f7712677b08",
+}
+# rdkafka (extns/numaflow-kafka: cmake-build, ssl-vendored, gssapi-vendored, curl-static)
+# compiles librdkafka, OpenSSL, krb5/cyrus-sasl and curl from source: cmake, perl, bison;
+# zstd-sys runs bindgen, which needs libclang; pulsar's build.rs runs protoc (CI installs it
+# with arduino/setup-protoc).
+_EXTRA_APT = "pkg-config libssl-dev cmake perl bison flex curl clang libclang-dev protobuf-compiler"
+
+# The Rust workspace lives in rust/. Only the numaflow-core library tests are run, and
+# only the modules whose test helpers test.patch changes (mapper::, source::) plus the
+# transformer the fix reworks; NATS/Kafka/Pulsar/SQS suites are feature-gated off.
+_EXTRA_PKG_DIRS: list[str] = []
+_CARGO_TARGET_ARGS = "--lib"
+_TEST_FILTERS = "mapper:: source:: transformer::"
+# #[test]s that fix.patch itself adds are not graded: they are skipped in every stage
+# (they do not exist before the fix anyway), so only test.patch can author credited tests.
+_RS_TEST_ATTR = re.compile(r"^\+\s*#\[\s*(?:(?:[A-Za-z_]\w*::)*test\b|rstest\b|quickcheck\b)")
+_RS_ADDED_FN = re.compile(r"^\+\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)")
+
+_PKG_FEATURES: dict[str, str] = {}
+
+_CARGO_FLAGS = "--offline"
+_BUILD_TIMEOUT = "2400"
+_RUN_TIMEOUT = "1500"
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_FILE_HEADER = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_PKG_MARK = re.compile(r"^@@PKGDIR (\S+)$")
+_SYNTH = re.compile(r"^@@SYNTH_FAIL (\S+)$")
+_RUNNING = re.compile(r"^Running (?:unittests )?(\S+) \(")
+_RESULT = re.compile(r"^test (\S.*?) \.\.\. (ok|FAILED|ignored)\b")
+
+_CHECK_GIT_CHANGES = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo "check_git_changes: Not inside a git repository"
+    exit 1
+fi
+
+if [[ -n $(git status --porcelain) ]]; then
+    echo "check_git_changes: Uncommitted changes"
+    git status --porcelain
+    exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+"""
+
+_PREPARE = """#!/bin/bash
+set -euo pipefail
+
+# ---------- Section 1: PIN the tree to this PR's base commit ----------
+cd /home/[[REPO]]
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+git checkout --detach [[SHA]]
+bash /home/check_git_changes.sh
+
+# ---------- Section 2: PROVISION (build time, pinned by go.sum and rust/Cargo.lock) ----------
+go mod download
+cargo fetch --locked --manifest-path rust/Cargo.toml
+
+# ---------- Section 3: HARD GATE (non-tolerant) ----------
+# Compiles the Go test binaries and the Rust test targets the graded runs exercise,
+# which also warms the Go build cache and rust/target those runs reuse.
+bash /home/select_go_pkgs.sh
+test -s /home/go_test_pkgs.txt
+xargs go test -count=1 -run '^$' < /home/go_test_pkgs.txt > /dev/null
+bash /home/select_pkgs.sh
+test -s /home/test_pkgs.txt
+python3 /home/cargo_tests.py --gate
+echo DEPS_OK
+"""
+
+_SELECT = """#!/bin/bash
+set -eo pipefail
+
+cd /home/[[REPO]]
+out=/home/test_pkgs.txt
+: > "$out"
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+        *.rs|*Cargo.toml) ;;
+        *) continue ;;
+    esac
+    d=$(dirname "$f")
+    while :; do
+        if [ -f "$d/Cargo.toml" ] && grep -q '^\\[package\\]' "$d/Cargo.toml"; then
+            echo "$d" >> "$out"
+            break
+        fi
+        [ "$d" = "." ] && break
+        d=$(dirname "$d")
+    done
+done < /home/test_files.txt
+for d in [[EXTRA_PKG_DIRS]]; do
+    if [ -f "$d/Cargo.toml" ]; then echo "$d" >> "$out"; fi
+done
+sort -u -o "$out" "$out"
+echo "selected packages:"
+cat "$out"
+"""
+
+_SELECT_GO = """#!/bin/bash
+set -eo pipefail
+
+cd /home/[[REPO]]
+out=/home/go_test_pkgs.txt
+: > "$out"
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+        *.go) ;;
+        *) continue ;;
+    esac
+    d=$(dirname "$f")
+    while :; do
+        case "/$d/" in
+            */testdata/*|*/vendor/*|*/node_modules/*|/rust/*) ;;
+            *)
+                if [ -d "$d" ] && ls "$d"/*.go > /dev/null 2>&1 && go list "./$d" > /dev/null 2>&1; then
+                    echo "./$d" >> "$out"
+                    break
+                fi
+                ;;
+        esac
+        [ "$d" = "." ] && break
+        d=$(dirname "$d")
+    done
+done < /home/go_test_files.txt
+sort -u -o "$out" "$out"
+echo "selected go packages:"
+cat "$out"
+"""
+
+# A Go package whose tests do not compile at this stage reports each test function that
+# test.patch touches as failed (go test -json shape), then drops that package's uncompilable
+# _test.go edits so the rest of the run still executes.
+_GUARD_GO = """#!/bin/bash
+set -eo pipefail
+
+cd /home/[[REPO]]
+targets=/home/go_test_targets.txt
+[ -s "$targets" ] || exit 0
+
+cut -f1 "$targets" | sort -u | while read -r dir; do
+    [ -d "$dir" ] || continue
+    if go test -count=1 -run '^$' "./$dir" > /dev/null 2>&1; then
+        continue
+    fi
+    pkg=$(go list -e -f '{{.ImportPath}}' "./$dir")
+    awk -F'\\t' -v d="$dir" '$1 == d {print $2 "\\t" $3}' "$targets" | sort -u | while IFS=$'\\t' read -r file name; do
+        if [ -n "$name" ] && [ -f "$file" ] && grep -q "^func ${name}(" "$file"; then
+            printf '{"Action":"fail","Package":"%s","Test":"%s"}\\n' "$pkg" "$name"
+        fi
+    done
+    git status --porcelain --untracked-files=all -- "$dir" | cut -c4- | while read -r file; do
+        case "$file" in
+            *_test.go) ;;
+            *) continue ;;
+        esac
+        [ "$(dirname "$file")" = "$dir" ] || continue
+        if git cat-file -e "HEAD:$file" 2>/dev/null; then
+            git checkout -q HEAD -- "$file"
+        else
+            rm -f "$file"
+        fi
+    done
+done
+"""
+
+# Runs `cargo test --tests` per selected package. If a package's test targets do not
+# compile at this stage (typically: test.patch needs code from fix.patch), each target is
+# compiled on its own; targets that still fail report every #[test] whose body test.patch
+# touched as FAILED, so a compile break is graded as a failure instead of vanishing.
+_CARGO_TESTS = r'''import json
+import os
+import re
+import subprocess
+import sys
+
+REPO = "/home/[[REPO]]"
+FLAGS = "[[CARGO_FLAGS]]".split()
+GATE_TARGETS = "[[CARGO_TARGET_ARGS]]".split()
+TARGET_ARGS = "[[CARGO_TARGET_ARGS]]".split()
+FILTERS = "[[TEST_FILTERS]]".split() + [
+    arg for name in "[[FIX_AUTHORED_TESTS]]".split() for arg in ("--skip", name)
+]
+FEATURES = dict(
+    item.split("=", 1) for item in "[[PKG_FEATURES]]".split(";") if "=" in item
+)
+BUILD_TIMEOUT = [[BUILD_TIMEOUT]]
+RUN_TIMEOUT = [[RUN_TIMEOUT]]
+
+ATTR = re.compile(r"^\s*#\[\s*(?:(?:[A-Za-z_]\w*::)*test\b|rstest\b|quickcheck\b)")
+FN = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)")
+MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*\{")
+
+
+def cargo(args, timeout):
+    cmd = ["cargo", "test"] + FLAGS + args
+    print("+ " + " ".join(cmd), flush=True)
+    try:
+        # stderr (cargo's "Running <target>" lines) shares stdout's fd so the target
+        # header always precedes that target's test lines in the captured log.
+        return subprocess.run(cmd, cwd=REPO, timeout=timeout, stderr=subprocess.STDOUT).returncode
+    except subprocess.TimeoutExpired:
+        print("CARGO_TIMEOUT " + " ".join(args), flush=True)
+        return 124
+
+
+def touched_lines():
+    rows = {}
+    with open("/home/rs_test_targets.txt") as fh:
+        for line in fh:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) == 2 and parts[1].isdigit():
+                rows.setdefault(parts[0], set()).add(int(parts[1]))
+    return rows
+
+
+def strip_code(line):
+    line = re.sub(r'"(?:\\.|[^"\\])*"', '""', line)
+    line = re.sub(r"'(?:\\.|[^'\\])'", "''", line)
+    return line.split("//", 1)[0]
+
+
+def tests_in(path, prefix):
+    try:
+        with open(os.path.join(REPO, path)) as fh:
+            lines = fh.read().split("\n")
+    except OSError:
+        return []
+    found = []
+    mods = []
+    depth = 0
+    pending = None
+    for idx, raw in enumerate(lines, start=1):
+        code = strip_code(raw)
+        if ATTR.match(code) and pending is None:
+            pending = idx
+        mod = MOD.match(code)
+        fn = FN.match(code)
+        if fn and pending is not None:
+            start = pending
+            end = idx
+            level = 0
+            opened = False
+            for j in range(idx - 1, len(lines)):
+                c = strip_code(lines[j])
+                level += c.count("{") - c.count("}")
+                if "{" in c:
+                    opened = True
+                if opened and level <= 0:
+                    end = j + 1
+                    break
+            name = "::".join([p for p in prefix + [m for m, _ in mods] if p] + [fn.group(1)])
+            found.append((name, start, end))
+            pending = None
+        elif fn:
+            pending = None
+        before = depth
+        depth += code.count("{") - code.count("}")
+        if mod:
+            mods.append((mod.group(1), before))
+        while mods and depth <= mods[-1][1]:
+            mods.pop()
+    return found
+
+
+def module_prefix(pkg, path, root):
+    if path == root:
+        return []
+    src = pkg + "/src/" if pkg != "." else "src/"
+    rel = path[len(src):] if path.startswith(src) else os.path.basename(path)
+    parts = rel[:-3].split("/") if rel.endswith(".rs") else rel.split("/")
+    if parts and parts[-1] == "mod":
+        parts = parts[:-1]
+    parts = [p.replace(".", "_") for p in parts]
+    return parts
+
+
+def synth(pkg, root, files, touched):
+    for path in files:
+        lines = touched.get(path, set())
+        if not lines:
+            continue
+        for name, start, end in tests_in(path, module_prefix(pkg, path, root)):
+            if any(start <= n <= end for n in lines):
+                print("@@SYNTH_FAIL %s::%s" % (root, name), flush=True)
+
+
+def pkg_files(pkg, touched):
+    pre = "" if pkg == "." else pkg + "/"
+    return sorted(p for p in touched if p.startswith(pre) and p.endswith(".rs"))
+
+
+def lib_root(pkg):
+    pre = "" if pkg == "." else pkg + "/"
+    for cand in ("src/lib.rs", "src/main.rs"):
+        if os.path.exists(os.path.join(REPO, pre + cand)):
+            return pre + cand
+    return pre + "src/lib.rs"
+
+
+def pkg_args(pkg):
+    manifest = "Cargo.toml" if pkg == "." else pkg + "/Cargo.toml"
+    args = ["--manifest-path", manifest]
+    if FEATURES.get(pkg):
+        args += ["--features", FEATURES[pkg]]
+    return args
+
+
+def fallback(pkg, manifest, touched):
+    files = pkg_files(pkg, touched)
+    meta = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1", "--manifest-path", manifest] + FLAGS,
+        cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+    targets = []
+    if meta.returncode == 0:
+        absman = os.path.realpath(os.path.join(REPO, manifest))
+        for p in json.loads(meta.stdout).get("packages", []):
+            if os.path.realpath(p["manifest_path"]) != absman:
+                continue
+            for t in p.get("targets", []):
+                kinds = t.get("kind", [])
+                if not t.get("test", True):
+                    continue
+                if TARGET_ARGS == ["--lib"] and not any(k in kinds for k in ("lib", "rlib", "proc-macro", "cdylib", "staticlib")):
+                    continue
+                src = os.path.relpath(os.path.realpath(t["src_path"]), os.path.realpath(REPO))
+                if "lib" in kinds or "rlib" in kinds or "proc-macro" in kinds or "cdylib" in kinds or "staticlib" in kinds:
+                    targets.append((["--lib"], src))
+                elif "bin" in kinds:
+                    targets.append((["--bin", t["name"]], src))
+                elif "test" in kinds:
+                    targets.append((["--test", t["name"]], src))
+    if not targets:
+        print("@@MANIFEST_BROKEN " + pkg, flush=True)
+        claimed = set()
+        for path in files:
+            rel = path[len(pkg) + 1:] if pkg != "." else path
+            if rel.startswith("tests/") and rel.count("/") == 1:
+                synth(pkg, path, [path], touched)
+                claimed.add(path)
+        rest = [p for p in files if p not in claimed and "/src/" in "/" + p]
+        if rest:
+            synth(pkg, lib_root(pkg), rest, touched)
+        return 1
+    rc = 0
+    for flag, src in targets:
+        base = pkg_args(pkg) + flag
+        if cargo(base + ["--no-run"], BUILD_TIMEOUT) == 0:
+            r = cargo(base + ["--no-fail-fast", "--"] + FILTERS, RUN_TIMEOUT)
+            rc = rc or r
+            continue
+        rc = 1
+        print("@@TARGET_BUILD_FAILED %s %s" % (pkg, " ".join(flag)), flush=True)
+        if flag[0] == "--test":
+            tdir = os.path.dirname(src)
+            mine = [p for p in files if p == src or (os.path.basename(src) == "main.rs" and p.startswith(tdir + "/"))]
+        elif flag[0] == "--bin":
+            mine = [p for p in files if p == src]
+        else:
+            pre = "" if pkg == "." else pkg + "/"
+            mine = [p for p in files if p.startswith(pre + "src/") and not p.startswith(pre + "src/bin/")]
+        synth(pkg, src, mine, touched)
+    return rc
+
+
+def gate(pkgs):
+    """Build-time gate: every graded test target compiles from the locked graph."""
+    for pkg in pkgs:
+        r = cargo(["--locked"] + pkg_args(pkg) + GATE_TARGETS + ["--no-run"], BUILD_TIMEOUT)
+        if r != 0:
+            print("@@GATE_FAILED " + pkg, flush=True)
+            return r
+    return 0
+
+
+def main():
+    touched = touched_lines()
+    with open("/home/test_pkgs.txt") as fh:
+        pkgs = [l.strip() for l in fh if l.strip()]
+    if "--gate" in sys.argv:
+        return gate(pkgs)
+    rc = 0
+    for pkg in pkgs:
+        manifest = "Cargo.toml" if pkg == "." else pkg + "/Cargo.toml"
+        print("@@PKGDIR " + pkg, flush=True)
+        if cargo(pkg_args(pkg) + TARGET_ARGS + ["--no-run"], BUILD_TIMEOUT) == 0:
+            r = cargo(pkg_args(pkg) + TARGET_ARGS + ["--no-fail-fast", "--"] + FILTERS, RUN_TIMEOUT)
+        else:
+            r = fallback(pkg, manifest, touched)
+        rc = rc or r
+    print("@@CARGO_TESTS_EXIT %d" % rc, flush=True)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+_RUN = """#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/[[REPO]]
+[[APPLY]]
+bash /home/guard_go_tests.sh
+bash /home/select_go_pkgs.sh
+go_rc=0
+xargs go test -json -count=1 -timeout 20m < /home/go_test_pkgs.txt || go_rc=$?
+echo "@@GO_TEST_EXIT $go_rc"
+bash /home/select_pkgs.sh
+python3 /home/cargo_tests.py
+exit "$go_rc"
+"""
+
+_APPLY_TEST = "git apply --whitespace=nowarn /home/test.patch"
+_APPLY_FIX = (
+    "git apply --whitespace=nowarn /home/test.patch\n"
+    "git apply --whitespace=nowarn /home/fix.patch"
+)
+
+
+def _patch_files(patch: str) -> list[str]:
+    found: dict[str, None] = {}
+    for line in patch.splitlines():
+        header = _FILE_HEADER.match(line)
+        if header:
+            found[header.group(2)] = None
+    return list(found)
+
+
+_TEST_FUNC = re.compile(r"^func ((?:Test|Fuzz|Example)\w*)\(")
+_GO_HUNK_CTX = re.compile(r"^@@ [^@]* @@ ?(.*)$")
+_VOLATILE_TIME = re.compile(r"time\.Date\([^()]*\)")
+_VOLATILE_ADDR = re.compile(r"0x[0-9a-fA-F]{6,}")
+
+
+def _go_test_name(text: str) -> Optional[str]:
+    match = _TEST_FUNC.match(text)
+    if match and match.group(1) != "TestMain":
+        return match.group(1)
+    return None
+
+
+def _go_test_targets(test_patch: str) -> str:
+    rows: dict[str, None] = {}
+    path: Optional[str] = None
+    in_hunk = False
+    current: Optional[str] = None
+    for line in test_patch.splitlines():
+        header = _FILE_HEADER.match(line)
+        if header:
+            target = header.group(2)
+            path = target if target.endswith("_test.go") else None
+            in_hunk = False
+            current = None
+            if path:
+                rows[f"{posixpath.dirname(path) or '.'}\t{path}\t"] = None
+            continue
+        if path is None:
+            continue
+        hunk = _GO_HUNK_CTX.match(line)
+        if hunk:
+            in_hunk = True
+            current = _go_test_name(hunk.group(1))
+            continue
+        if not in_hunk or not line or line[0] not in " +-":
+            continue
+        body = line[1:]
+        if body.startswith("func "):
+            current = _go_test_name(body)
+        # Comment/blank-only edits right after a function (e.g. a doc comment for the
+        # next, newly added test) do not touch the preceding test.
+        text = body.strip()
+        if line[0] != " " and current and text and not text.startswith("//"):
+            rows[f"{posixpath.dirname(path) or '.'}\t{path}\t{current}"] = None
+    return "".join(f"{row}\n" for row in rows)
+
+
+def _fix_authored_tests(fix_patch: str) -> list[str]:
+    found: dict[str, None] = {}
+    in_rs = False
+    pending = False
+    for line in fix_patch.splitlines():
+        header = _FILE_HEADER.match(line)
+        if header:
+            in_rs = header.group(2).endswith(".rs")
+            pending = False
+            continue
+        if not in_rs or line.startswith("+++"):
+            continue
+        if _RS_TEST_ATTR.match(line):
+            pending = True
+            continue
+        fn = _RS_ADDED_FN.match(line)
+        if fn and pending:
+            found[fn.group(1)] = None
+        if not line.startswith("+") or (line[1:].strip() and not line[1:].strip().startswith("#")):
+            pending = pending and bool(line.startswith("+") and line[1:].strip().startswith("#"))
+    return list(found)
+
+
+def _touched_lines(test_patch: str) -> str:
+    """New-side line numbers each test.patch hunk adds or sits next to a removal."""
+    rows: dict[str, None] = {}
+    path: Optional[str] = None
+    new_line = 0
+    for line in test_patch.splitlines():
+        header = _FILE_HEADER.match(line)
+        if header:
+            target = header.group(2)
+            path = target if target.endswith(".rs") else None
+            continue
+        if path is None:
+            continue
+        hunk = _HUNK.match(line)
+        if hunk:
+            new_line = int(hunk.group(1))
+            continue
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            rows[f"{path}\t{new_line}"] = None
+            new_line += 1
+        elif line.startswith("-"):
+            rows[f"{path}\t{new_line}"] = None
+        elif line.startswith(" ") or line == "":
+            new_line += 1
+    return "".join(f"{row}\n" for row in rows)
+
+
+def _render(template: str, pr: PullRequest, apply: str = "") -> str:
+    return (
+        template.replace("[[APPLY]]", apply)
+        .replace("[[CARGO_FLAGS]]", _CARGO_FLAGS)
+        .replace("[[BUILD_TIMEOUT]]", _BUILD_TIMEOUT)
+        .replace("[[RUN_TIMEOUT]]", _RUN_TIMEOUT)
+        .replace("[[EXTRA_PKG_DIRS]]", " ".join(_EXTRA_PKG_DIRS))
+        .replace("[[PKG_FEATURES]]", ";".join(f"{k}={v}" for k, v in _PKG_FEATURES.items()))
+        .replace("[[CARGO_TARGET_ARGS]]", _CARGO_TARGET_ARGS)
+        .replace("[[TEST_FILTERS]]", _TEST_FILTERS)
+        .replace("[[FIX_AUTHORED_TESTS]]", " ".join(_fix_authored_tests(pr.fix_patch)))
+        .replace("[[REPO]]", pr.repo)
+    )
+
+
+class Numaflow3570To3570ImageBase(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str:
+        return _RUST_IMAGE
+
+    def image_tag(self) -> str:
+        return f"base-{_INTERVAL}"
+
+    def workdir(self) -> str:
+        return f"base-{_INTERVAL}"
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        apt = " ".join(
+            p for p in ["git ca-certificates build-essential python3", _EXTRA_APT] if p
+        )
+        return f"""# syntax=docker/dockerfile:1.6
+
+FROM {_RUST_IMAGE}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}}
+
+ENV CARGO_TERM_COLOR=never \\
+    CARGO_INCREMENTAL=0 \\
+    CARGO_BUILD_JOBS=2 \\
+    CARGO_NET_RETRY=5 \\
+    CARGO_PROFILE_DEV_DEBUG=0 \\
+    CARGO_PROFILE_TEST_DEBUG=0 \\
+    CARGO_HTTP_CAINFO=${{CA_CERT_PATH}} \\
+    RUST_BACKTRACE=1 \\
+    RUST_TEST_THREADS=2 \\
+    GOTOOLCHAIN=local \\
+    GOFLAGS=-buildvcs=false \\
+    PATH=/usr/local/go/bin:/root/go/bin:${{PATH}}
+
+LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    {apt} \\
+    && rm -rf /var/lib/apt/lists/*
+
+# Go toolchain from go.dev, checksum-pinned per architecture.
+RUN set -eux; \\
+    arch="${{TARGETARCH:-$(dpkg --print-architecture)}}"; \\
+    case "$arch" in \\
+        amd64) sum={_GO_SHA256["amd64"]} ;; \\
+        arm64) sum={_GO_SHA256["arm64"]} ;; \\
+        *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \\
+    esac; \\
+    curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go{_GO_VERSION}.linux-${{arch}}.tar.gz"; \\
+    echo "${{sum}}  /tmp/go.tgz" | sha256sum -c -; \\
+    tar -C /usr/local -xzf /tmp/go.tgz; \\
+    rm -f /tmp/go.tgz; \\
+    go version
+
+RUN git config --global --add safe.directory '*' && \\
+    git config --global http.version HTTP/1.1 && \\
+    git config --global user.name "mswebench" && \\
+    git config --global user.email "mswebench@example.com" && \\
+    rustc --version && cargo --version && go version
+
+WORKDIR /home/
+
+RUN git clone "${{REPO_URL}}" /home/{self.pr.repo} && \\
+    cd /home/{self.pr.repo} && git rev-parse HEAD >/dev/null
+
+CMD ["/bin/bash"]
+"""
+
+
+class Numaflow3570To3570ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> Image:
+        return Numaflow3570To3570ImageBase(self.pr, self._config)
+
+    def image_tag(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def workdir(self) -> str:
+        return f"pr-{self.pr.number}"
+
+    def files(self) -> list[File]:
+        pr = self.pr
+        prepare = _render(_PREPARE, pr).replace("[[SHA]]", pr.base.sha)
+        test_files = "".join(f"{f}\n" for f in _patch_files(pr.test_patch))
+        go_files = "".join(
+            f"{f}\n"
+            for f in dict.fromkeys(_patch_files(pr.test_patch) + _patch_files(pr.fix_patch))
+            if f.endswith(".go")
+        )
+        return [
+            File(".", "fix.patch", f"{pr.fix_patch}"),
+            File(".", "test.patch", f"{pr.test_patch}"),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES),
+            File(".", "prepare.sh", prepare),
+            File(".", "test_files.txt", test_files),
+            File(".", "rs_test_targets.txt", _touched_lines(pr.test_patch)),
+            File(".", "go_test_files.txt", go_files),
+            File(".", "go_test_targets.txt", _go_test_targets(pr.test_patch)),
+            File(".", "select_go_pkgs.sh", _render(_SELECT_GO, pr)),
+            File(".", "guard_go_tests.sh", _render(_GUARD_GO, pr)),
+            File(".", "select_pkgs.sh", _render(_SELECT, pr)),
+            File(".", "cargo_tests.py", _render(_CARGO_TESTS, pr)),
+            File(".", "run.sh", _render(_RUN, pr)),
+            File(".", "test-run.sh", _render(_RUN, pr, _APPLY_TEST)),
+            File(".", "fix-run.sh", _render(_RUN, pr, _APPLY_FIX)),
+        ]
+
+    def dockerfile(self) -> str:
+        base = self.dependency()
+        copy_commands = "".join(f"COPY {file.name} /home/\n" for file in self.files())
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+        return f"""FROM {base.image_full_name()}
+
+{copy_commands}
+RUN bash /home/prepare.sh
+
+RUN set -eux; \\
+    cd /home/{repo}; \\
+    git checkout --detach "{sha}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "{sha}"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test -z "$(git reflog)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/{repo}/.gitmodules ]; then \\
+        cd /home/{repo} && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+"""
+
+
+@Instance.register("numaproj", _INTERVAL)
+class NUMAFLOW_3570_TO_3570(Instance):
+    def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
+        super().__init__()
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    def dependency(self) -> Optional[Image]:
+        return Numaflow3570To3570ImageDefault(self.pr, self._config)
+
+    def run(self, run_cmd: str = "") -> str:
+        if run_cmd:
+            return run_cmd
+        return "bash /home/run.sh"
+
+    def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
+        if test_patch_run_cmd:
+            return test_patch_run_cmd
+        return "bash /home/test-run.sh"
+
+    def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
+        if fix_patch_run_cmd:
+            return fix_patch_run_cmd
+        return "bash /home/fix-run.sh"
+
+    def parse_log(self, test_log: str) -> TestResult:
+        clean = _ANSI.sub("", test_log)
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
+        pkg = "."
+        root: Optional[str] = None
+        for raw in clean.splitlines():
+            line = raw.strip()
+            if line.startswith("{"):
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                package = event.get("Package")
+                test = event.get("Test")
+                if not package or not test:
+                    continue
+                test = _VOLATILE_TIME.sub("time.Date(<time>)", test)
+                test = _VOLATILE_ADDR.sub("0x<addr>", test)
+                name = f"{package}::{test}"
+                action = event.get("Action")
+                if action == "pass":
+                    passed_tests.add(name)
+                elif action == "fail":
+                    failed_tests.add(name)
+                elif action == "skip":
+                    skipped_tests.add(name)
+                continue
+            mark = _PKG_MARK.match(line)
+            if mark:
+                pkg = mark.group(1)
+                root = None
+                continue
+            synth = _SYNTH.match(line)
+            if synth:
+                failed_tests.add(synth.group(1))
+                continue
+            running = _RUNNING.match(line)
+            if running:
+                path = running.group(1)
+                if pkg != "." and not path.startswith(pkg + "/"):
+                    path = f"{pkg}/{path}"
+                root = path
+                continue
+            result = _RESULT.match(line)
+            if result and root:
+                name = f"{root}::{result.group(1)}"
+                status = result.group(2)
+                if status == "ok":
+                    passed_tests.add(name)
+                elif status == "FAILED":
+                    failed_tests.add(name)
+                else:
+                    skipped_tests.add(name)
+        passed_tests -= failed_tests
+        passed_tests -= skipped_tests
+        skipped_tests -= failed_tests
+        return TestResult(
+            passed_count=len(passed_tests),
+            failed_count=len(failed_tests),
+            skipped_count=len(skipped_tests),
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
+            skipped_tests=skipped_tests,
+        )

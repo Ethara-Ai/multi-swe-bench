@@ -173,3 +173,4 @@ from multi_swe_bench.harness.repos.java.PaperMC import *
 from multi_swe_bench.harness.repos.java.pentaho import *
 import importlib as _importlib
 _importlib.import_module("multi_swe_bench.harness.repos.java.648540858")
+from multi_swe_bench.harness.repos.java.modelcontextprotocol import *

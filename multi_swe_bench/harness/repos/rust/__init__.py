@@ -148,3 +148,7 @@ from multi_swe_bench.harness.repos.rust.rustfs import *
 from multi_swe_bench.harness.repos.rust.wealthfolio import *
 from multi_swe_bench.harness.repos.rust.Amanieu import *
 from multi_swe_bench.harness.repos.rust.cachix import *
+from multi_swe_bench.harness.repos.rust.h4ckf0r0day import *
+from multi_swe_bench.harness.repos.rust.julyx10 import *
+from multi_swe_bench.harness.repos.rust.libp2p import *
+from multi_swe_bench.harness.repos.rust.peetzweg import *

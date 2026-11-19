@@ -250,3 +250,4 @@ from multi_swe_bench.harness.repos.javascript.mksglu import *
 from multi_swe_bench.harness.repos.javascript.plotly import *
 from multi_swe_bench.harness.repos.javascript.tabulator_tables import *
 from multi_swe_bench.harness.repos.javascript.SVG_Edit import *
+from multi_swe_bench.harness.repos.javascript.TiddlyWiki import *

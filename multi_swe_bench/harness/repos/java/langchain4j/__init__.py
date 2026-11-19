@@ -2,3 +2,4 @@ from multi_swe_bench.harness.repos.java.langchain4j.langchain4j_6875_to_5048 imp
 from .langchain4j import *
 from multi_swe_bench.harness.repos.java.langchain4j.langchain4j_6627_to_6627 import *
 from multi_swe_bench.harness.repos.java.langchain4j.langchain4j_6839_to_6839 import *
+from multi_swe_bench.harness.repos.java.langchain4j.langchain4j_6674_to_6096 import *

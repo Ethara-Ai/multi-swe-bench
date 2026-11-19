@@ -2,3 +2,4 @@ from .dependency_track import *
 from multi_swe_bench.harness.repos.java.DependencyTrack.dependency_track_7746_to_7746 import *
 from multi_swe_bench.harness.repos.java.DependencyTrack.dependency_track_7358_to_7358 import *
 from multi_swe_bench.harness.repos.java.DependencyTrack.dependency_track_7610_to_7353 import *
+from multi_swe_bench.harness.repos.java.DependencyTrack.dependency_track_7323_to_7323 import *
