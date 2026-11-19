@@ -260,3 +260,5 @@ from multi_swe_bench.harness.repos.golang.pulseaiclub import *
 from multi_swe_bench.harness.repos.golang.revive_lint import *
 from multi_swe_bench.harness.repos.golang.tomasz_tomczyk import *
 from multi_swe_bench.harness.repos.golang.wazero import *
+from multi_swe_bench.harness.repos.golang.ent import *
+from multi_swe_bench.harness.repos.golang.sqlc_dev import *
