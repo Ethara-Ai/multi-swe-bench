@@ -484,3 +484,4 @@ from multi_swe_bench.harness.repos.python.roboflow import *
 from multi_swe_bench.harness.repos.python.iterative import *
 from multi_swe_bench.harness.repos.python.teng_lin import *
 from multi_swe_bench.harness.repos.python.Z4nzu import *
+from multi_swe_bench.harness.repos.python.netbox_community import *
