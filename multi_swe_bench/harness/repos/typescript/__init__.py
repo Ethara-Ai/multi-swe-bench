@@ -310,3 +310,4 @@ from multi_swe_bench.harness.repos.typescript.umami_software import *
 from multi_swe_bench.harness.repos.typescript.siyuan_note import *
 from multi_swe_bench.harness.repos.typescript.TriliumNext import *
 from multi_swe_bench.harness.repos.typescript.orval_labs import *
+from multi_swe_bench.harness.repos.typescript.stablyai import *
