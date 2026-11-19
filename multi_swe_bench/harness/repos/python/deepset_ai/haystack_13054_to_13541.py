@@ -48,6 +48,8 @@ print("\n".join(envs["default"]["dependencies"] + envs["test"]["dependencies"]))
 mapfile -t dep_list <<< "$deps"
 uv pip install --system --exclude-newer "$cutoff" --torch-backend cpu -e . "${dep_list[@]}" \
     || { echo "prepare.sh: dependency install failed"; exit 1; }
+NLTK_ALLOW_PROXIED_URLOPEN=1 python3 -c 'import nltk; nltk.download("punkt_tab", quiet=True, raise_on_error=True)' \
+    || { echo "prepare.sh: nltk data download failed"; exit 1; }
 python3 -m pytest -p no:cacheprovider --collect-only -qq -m "not integration" test
 """
 
