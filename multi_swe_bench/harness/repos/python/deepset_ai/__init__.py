@@ -4,3 +4,6 @@ from multi_swe_bench.harness.repos.python.deepset_ai.haystack_7319_to_6888 impor
 from multi_swe_bench.harness.repos.python.deepset_ai.haystack_6877_to_6497 import *
 from multi_swe_bench.harness.repos.python.deepset_ai.haystack_5961_to_5917 import *
 from multi_swe_bench.harness.repos.python.deepset_ai.haystack_5873_to_5515 import *
+from multi_swe_bench.harness.repos.python.deepset_ai.haystack_8619_to_10181 import *
+from multi_swe_bench.harness.repos.python.deepset_ai.haystack_10435_to_13006 import *
+from multi_swe_bench.harness.repos.python.deepset_ai.haystack_13054_to_13541 import *
