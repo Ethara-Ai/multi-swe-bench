@@ -19,3 +19,4 @@ from multi_swe_bench.harness.repos.python.microsoft.autogen_5961_to_87 import *
 from multi_swe_bench.harness.repos.python.microsoft.autogen import *
 from multi_swe_bench.harness.repos.python.microsoft.autogen_6845_to_5844 import *
 from multi_swe_bench.harness.repos.python.microsoft.autogen_2696_to_2696 import *
+from multi_swe_bench.harness.repos.python.microsoft.apm_2778_to_2578 import *
