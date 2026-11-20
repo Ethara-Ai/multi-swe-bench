@@ -1,1 +1,4 @@
 from multi_swe_bench.harness.repos.typescript.typescript_eslint.typescript_eslint import *
+from multi_swe_bench.harness.repos.typescript.typescript_eslint.typescript_eslint_3199_to_6 import *
+from multi_swe_bench.harness.repos.typescript.typescript_eslint.typescript_eslint_11974_to_7065 import *
+from multi_swe_bench.harness.repos.typescript.typescript_eslint.typescript_eslint_6947_to_3076 import *
