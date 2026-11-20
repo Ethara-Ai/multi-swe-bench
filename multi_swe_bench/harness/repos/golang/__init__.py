@@ -300,3 +300,4 @@ from multi_swe_bench.harness.repos.golang.caigee_cmd import *
 from multi_swe_bench.harness.repos.golang.refraction_networking import *
 from multi_swe_bench.harness.repos.golang.zhoushoujianwork import *
 from multi_swe_bench.harness.repos.golang.fxamacker import *
+from multi_swe_bench.harness.repos.golang.micro import *
