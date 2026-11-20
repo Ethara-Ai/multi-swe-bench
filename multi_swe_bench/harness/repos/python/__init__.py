@@ -269,6 +269,7 @@ from multi_swe_bench.harness.repos.python.Qiskit import *
 from multi_swe_bench.harness.repos.python.ranaroussi import *
 from multi_swe_bench.harness.repos.python.radical_cybertools import *
 from multi_swe_bench.harness.repos.python.randovania import *
+from multi_swe_bench.harness.repos.python.ray_project import *
 from multi_swe_bench.harness.repos.python.RasaHQ import *
 from multi_swe_bench.harness.repos.python.RDFLib import *
 from multi_swe_bench.harness.repos.python.reframe_hpc import *
