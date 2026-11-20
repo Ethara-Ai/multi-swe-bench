@@ -44,9 +44,9 @@ deps="$(python3 -c 'try:
 except ImportError:
     import tomli as tomllib
 envs = tomllib.load(open("pyproject.toml", "rb"))["tool"]["hatch"]["envs"]
-print("\n".join(envs["default"]["dependencies"] + envs["test"]["dependencies"]))')"
+print("\n".join(envs["default"].get("dependencies", []) + envs["test"].get("dependencies", []) + envs["test"].get("extra-dependencies", [])))')"
 mapfile -t dep_list <<< "$deps"
-uv pip install --system --exclude-newer "$cutoff" --torch-backend cpu -e . "${dep_list[@]}" \
+BLIS_ARCH=generic uv pip install --system --exclude-newer "$cutoff" --torch-backend cpu -e . "${dep_list[@]}" \
     || { echo "prepare.sh: dependency install failed"; exit 1; }
 NLTK_ALLOW_PROXIED_URLOPEN=1 python3 -c 'import nltk; nltk.download("punkt_tab", quiet=True, raise_on_error=True)' \
     || { echo "prepare.sh: nltk data download failed"; exit 1; }
