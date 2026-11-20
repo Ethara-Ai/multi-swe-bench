@@ -16,3 +16,4 @@ from multi_swe_bench.harness.repos.golang.prometheus.alertmanager import *
 from multi_swe_bench.harness.repos.golang.prometheus.prometheus_14506_to_11229 import *
 from multi_swe_bench.harness.repos.golang.prometheus.prometheus_prometheus_18217_to_18217 import *
 from multi_swe_bench.harness.repos.golang.prometheus.gomod_toolchain import *
+from multi_swe_bench.harness.repos.golang.prometheus.client_golang import *
