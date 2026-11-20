@@ -7,3 +7,11 @@ from multi_swe_bench.harness.repos.golang.gohugoio.hugo_14234_to_12641 import *
 from multi_swe_bench.harness.repos.golang.gohugoio.hugo_9544_to_9544 import *
 from multi_swe_bench.harness.repos.golang.gohugoio.hugo_6567_to_5331 import *
 from multi_swe_bench.harness.repos.golang.gohugoio.hugo_4039_to_2652 import *
+from multi_swe_bench.harness.repos.golang.gohugoio.hugo_5067_to_4700 import *
+from multi_swe_bench.harness.repos.golang.gohugoio.hugo_5196_to_5189 import *
+from multi_swe_bench.harness.repos.golang.gohugoio.hugo_6732_to_6693 import *
+from multi_swe_bench.harness.repos.golang.gohugoio.hugo_9575_to_9347 import *
+from multi_swe_bench.harness.repos.golang.gohugoio.hugo_11894_to_9717 import *
+from multi_swe_bench.harness.repos.golang.gohugoio.hugo_12619_to_11940 import *
+from multi_swe_bench.harness.repos.golang.gohugoio.hugo_15229_to_14267 import *
+from multi_swe_bench.harness.repos.golang.gohugoio.hugo_15534_to_15276 import *

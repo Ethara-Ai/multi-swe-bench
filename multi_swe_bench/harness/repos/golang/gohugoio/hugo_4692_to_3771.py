@@ -1,160 +1,243 @@
 import re
-from dataclasses import dataclass
+import shlex
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
-# gohugoio/hugo toolchain era: PRs 3771-4692. Self-contained registry for
-# JSONL rows with number_interval "hugo_4692_to_3771"; shared base image tag
-# base-3771_to_4692. Sibling eras live in their own hugo_<hi>_to_<lo>.py files.
+_INTERVAL = "hugo_4692_to_3771"
+_GO_IMAGE = "golang:1.10-stretch"
+_DIFF_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)", re.MULTILINE)
+_BINARY_RE = re.compile(r"^(?:GIT binary patch|Binary files .* differ)$", re.MULTILINE)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_RESULT_RE = re.compile(r"^\s*--- (PASS|FAIL|SKIP): (\S+)")
+_PACKAGE_RE = re.compile(r"^(ok|FAIL)\s+(\S+)(.*)$")
+_BROKEN_RE = re.compile(r"\[(?:build|setup) failed\]")
 
 
-@dataclass(frozen=True)
-class _Era:
-    lo: int
-    hi: int
-    go_image: str
-    # Shell environment shared by prepare.sh and the three run scripts.
-    go_env: str
-    # prepare.sh Section 2 (dependency provisioning).
-    provision: str
-    # Re-vendoring step in fix-run.sh (GOPATH eras only).
-    revendor: str
-    vet_flag: str
-
-    @property
-    def base_tag(self) -> str:
-        return f"base-{self.lo}_to_{self.hi}"
+def _apply_excludes(*patches: str) -> str:
+    paths: set[str] = set()
+    for patch in patches:
+        for section in re.split(r"^(?=diff --git )", patch or "", flags=re.MULTILINE):
+            head = _DIFF_RE.match(section)
+            if head and (_BINARY_RE.search(section) or "�" in section):
+                paths.update(head.groups())
+    return "".join(f" --exclude={shlex.quote(path)}" for path in sorted(paths))
 
 
-_GOPATH_PROVISION = """\
-# GOPATH layout: the import path is a symlink to the clone.
-mkdir -p "$(dirname "$GO_PKG_DIR")"
-ln -sfn /home/hugo "$GO_PKG_DIR"
-BASE_DATE="$(git log -1 --format=%cI HEAD)"
+_BASE_DOCKERFILE = """# syntax=docker/dockerfile:1.6
 
-# Vendoring tools, built from tagged releases (they vendor their own deps).
-if [ ! -x "$GOPATH/bin/govendor" ]; then
-  git clone -q --depth 1 -b v1.0.9 https://github.com/kardianos/govendor "$GOPATH/src/github.com/kardianos/govendor"
-  go install github.com/kardianos/govendor
+FROM __GO_IMAGE__
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/__ORG__/__REPO__.git"
+ARG BASE_COMMIT
+
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${http_proxy} \\
+    https_proxy=${https_proxy} \\
+    HTTP_PROXY=${HTTP_PROXY} \\
+    HTTPS_PROXY=${HTTPS_PROXY} \\
+    no_proxy=${no_proxy} \\
+    NO_PROXY=${NO_PROXY} \\
+    SSL_CERT_FILE=${CA_CERT_PATH} \\
+    REQUESTS_CA_BUNDLE=${CA_CERT_PATH} \\
+    CURL_CA_BUNDLE=${CA_CERT_PATH}
+
+ENV CI=true \\
+    GOPATH=/go \\
+    CGO_ENABLED=1 \\
+    GORACE=halt_on_error=1 \\
+    GIT_TERMINAL_PROMPT=0 \\
+    GO111MODULE=off
+
+LABEL org.opencontainers.image.title="__ORG__/__REPO__" \\
+      org.opencontainers.image.description="__ORG__/__REPO__ Docker image" \\
+      org.opencontainers.image.source="https://github.com/__ORG__/__REPO__" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+
+RUN git --version && gcc --version && make --version && \\
+    test -s /etc/ssl/certs/ca-certificates.crt
+
+RUN git --version && go version
+
+RUN git clone -q --depth 1 --branch v1.0.9 https://github.com/kardianos/govendor.git /go/src/github.com/kardianos/govendor && \\
+    cd /go/src/github.com/kardianos/govendor && go install . && \\
+    test -x /go/bin/govendor
+
+RUN git clone -q --depth 1 --branch v0.5.4 https://github.com/golang/dep.git /go/src/github.com/golang/dep && \\
+    cd /go/src/github.com/golang/dep && go install ./cmd/dep && \\
+    test -x /go/bin/dep
+
+RUN git config --global --add safe.directory '*'
+
+WORKDIR /home/
+
+__CODE__
+
+CMD ["/bin/bash"]
+"""
+
+_PR_DOCKERFILE = """FROM __BASE_IMAGE__
+
+__GLOBAL_ENV__
+
+__COPY_COMMANDS__
+RUN bash /home/prepare.sh
+
+RUN set -eux; \\
+    cd /home/__REPO__; \\
+    git checkout --detach "__SHA__"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "__SHA__"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test -z "$(git reflog)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
+
+RUN if [ -f /home/__REPO__/.gitmodules ]; then \\
+        cd /home/__REPO__ && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
+
+__CLEAR_ENV__
+"""
+
+_CHECK_GIT_CHANGES_SH = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  echo "check_git_changes: Not inside a git repository"
+  exit 1
 fi
-DEP_TOOL
-# Newest commit of every GOPATH dependency that predates the base commit.
-pin_gopath_deps() {
+
+if [[ -n $(git status --porcelain) ]]; then
+  echo "check_git_changes: Uncommitted changes"
+  git status --porcelain
+  exit 1
+fi
+
+echo "check_git_changes: No uncommitted changes"
+exit 0
+"""
+
+_GOPATH_DEPS_SH = r"""#!/bin/bash
+set -euo pipefail
+
+mkdir -p "$(dirname "/go/src/github.com/gohugoio/hugo")"
+ln -sfn /home/__REPO__ "/go/src/github.com/gohugoio/hugo"
+cd "/go/src/github.com/gohugoio/hugo"
+BASE_DATE="$(git log -1 --format=%cI HEAD)"
+if [ -f Gopkg.lock ]; then
+  for attempt in 1 2 3; do dep ensure -vendor-only && break; sleep 20; done
+elif [ -f vendor/vendor.json ]; then
+  for attempt in 1 2 3; do govendor sync && break; sleep 20; done
+fi
+for round in 1 2 3 4 5 6; do
+  go get -d -t ./... || true
   find "$GOPATH/src" -mindepth 2 -maxdepth 5 -type d -name .git -prune | while read -r g; do
     repo="$(dirname "$g")"
     case "$repo" in
-      */kardianos/govendor|*/golang/dep) continue ;;
+      "/go/src/github.com/gohugoio/hugo"|*/kardianos/govendor|*/golang/dep) continue ;;
     esac
     c="$(git -C "$repo" rev-list -1 --before="$BASE_DATE" HEAD 2>/dev/null || true)"
     if [ -n "$c" ]; then
       git -C "$repo" checkout -q --detach "$c" || true
     fi
   done
-}
-
-cd "$GO_PKG_DIR"
-if [ -f Gopkg.lock ]; then
-  dep ensure -vendor-only
-elif [ -f vendor/vendor.json ]; then
-  govendor sync
-fi
-# Anything the manifest does not cover (no manifest at all, or test-only
-# imports excluded by govendor's "ignore": "test") comes from GOPATH, pinned
-# by date. Six rounds: pinning changes the import set until it settles.
-# `|| true` is safe here because Section 3 re-checks the build.
-# Third-party packages newly imported by the patches (read only, never
-# applied here) are fetched too, so test-run/fix-run need no network.
-PATCH_PKGS="$(grep -hoE '^[+][[:space:]]*([A-Za-z_.]+[[:space:]]+)?"[a-z0-9.-]+[.][a-z]+/[^"]+"' /home/test.patch /home/fix.patch 2>/dev/null \\
-  | grep -oE '"[^"]+"' | tr -d '"' | grep -v -e '^github.com/spf13/hugo' -e '^github.com/gohugoio/hugo' | sort -u || true)"
-for round in 1 2 3 4 5 6; do
-  go get -d -t ./... $PATCH_PKGS || true
-  pin_gopath_deps
 done
 """
 
-_DEP_TOOL = """\
-if [ ! -x "$GOPATH/bin/dep" ]; then
-  git clone -q --depth 1 -b v0.5.4 https://github.com/golang/dep "$GOPATH/src/github.com/golang/dep"
-  go install github.com/golang/dep/cmd/dep
+_PREPARE_SH = r"""#!/bin/bash
+set -euo pipefail
+
+cd /home/__REPO__
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+if ! git cat-file -e "__SHA__^{commit}" 2>/dev/null; then
+  git fetch --no-tags origin "__SHA__"
 fi
+git checkout --detach "__SHA__"
+test "$(git rev-parse HEAD)" = "__SHA__"
+bash /home/check_git_changes.sh
+
+go version
+bash /home/gopath_deps.sh
+
+cd "/go/src/github.com/gohugoio/hugo"
+go build ./...
+go test -count=1 -vet=off -run '^$' ./... > /dev/null
+echo DEPS_OK
 """
 
-_GOPATH_REVENDOR = """\
-# Re-vendor when the fix patch changes the dependency manifest.
-if git diff --name-only HEAD | grep -qE '^(Gopkg[.]lock|Gopkg[.]toml|vendor/vendor[.]json)$'; then
-  ln -sfn /home/hugo "$GO_PKG_DIR"
-  (cd "$GO_PKG_DIR" && if [ -f Gopkg.lock ]; then dep ensure -vendor-only; elif [ -f vendor/vendor.json ]; then govendor sync; fi)
-fi
+_RUN_SH = r"""#!/bin/bash
+set -eo pipefail
+export CI=true
+
+cd /home/__REPO__
+cd "/go/src/github.com/gohugoio/hugo"
+go test -v -count=1 -vet=off -timeout 20m ./...
 """
 
-# 1.8.5 .. 1.10. Bases use dep (Gopkg.lock) or govendor (PRs 4023/4037).
-_ERA = _Era(
-    lo=3771,
-    hi=4692,
-    go_image="golang:1.10",
-    go_env="""export GOPATH=/go
-export GO111MODULE=off
-export GIT_TERMINAL_PROMPT=0
-export PATH="$GOPATH/bin:/usr/local/go/bin:$PATH"
-GO_PKG_DIR="/go/src/github.com/gohugoio/hugo"
-""",
-    provision=_GOPATH_PROVISION.replace("DEP_TOOL\n", _DEP_TOOL),
-    revendor=_GOPATH_REVENDOR,
-    vet_flag="-vet=off ",
-)
+_TEST_RUN_SH = r"""#!/bin/bash
+set -eo pipefail
+export CI=true
 
+cd /home/__REPO__
+git apply --whitespace=nowarn__EXCLUDES__ /home/test.patch
+bash /home/gopath_deps.sh
+cd "/go/src/github.com/gohugoio/hugo"
+go test -v -count=1 -vet=off -timeout 20m ./...
+"""
 
-def _test_dirs(test_patch: str) -> list[str]:
-    """Package directories touched by the test patch (Go files only)."""
-    dirs: set[str] = set()
-    for a, b in re.findall(r"^diff --git a/(\S+) b/(\S+)", test_patch, re.M):
-        for path in (a, b):
-            if not path.endswith(".go"):
-                continue
-            if "/testdata/" in f"/{path}" or path.startswith("vendor/"):
-                continue
-            dirs.add(path.rsplit("/", 1)[0] if "/" in path else ".")
-    return sorted(dirs)
+_FIX_RUN_SH = r"""#!/bin/bash
+set -eo pipefail
+export CI=true
 
-
-def _binary_excludes(*patches: str) -> str:
-    """`--exclude=` flags for binary files in the patches.
-
-    The dataset's binary hunks lack full index lines, so `git apply` cannot
-    apply them; they are test fixtures/images that the Go tests here do not
-    need to compile.
-    """
-    paths: set[str] = set()
-    for patch in patches:
-        for section in re.split(r"^(?=diff --git )", patch, flags=re.M):
-            m = re.match(r"diff --git a/(\S+) b/(\S+)", section)
-            if not m:
-                continue
-            if re.search(r"^(Binary files .* differ|GIT binary patch)$", section, re.M):
-                paths.update(m.groups())
-    return "".join(f" --exclude='{p}'" for p in sorted(paths))
-
-
-def _go_test_cmd(test_patch: str, vet_flag: str) -> str:
-    """Identical in run.sh, test-run.sh and fix-run.sh.
-
-    Only directories that exist and hold Go files at run time are passed, so
-    a package the test patch adds is simply absent from run.sh instead of
-    aborting the whole `go test` invocation. Falls back to ./... when empty.
-    """
-    dirs = " ".join(f"'{d}'" for d in _test_dirs(test_patch))
-    return f"""PKGS=""
-for d in {dirs}; do
-  if [ -d "$d" ] && ls "$d"/*.go >/dev/null 2>&1; then
-    PKGS="$PKGS ./$d"
-  fi
-done
-if [ -z "$PKGS" ]; then
-  PKGS="./..."
-fi
-go test {vet_flag}-v -count=1 $PKGS"""
+cd /home/__REPO__
+git apply --whitespace=nowarn__EXCLUDES__ /home/test.patch /home/fix.patch
+bash /home/gopath_deps.sh
+cd "/go/src/github.com/gohugoio/hugo"
+go test -v -count=1 -vet=off -timeout 20m ./...
+"""
 
 
 class HugoImageBase_HUGO_4692_TO_3771(Image):
@@ -171,101 +254,31 @@ class HugoImageBase_HUGO_4692_TO_3771(Image):
         return self._config
 
     def dependency(self) -> str:
-        return _ERA.go_image
+        return _GO_IMAGE
 
     def image_tag(self) -> str:
-        return _ERA.base_tag
+        return f"base-{_INTERVAL}"
 
     def workdir(self) -> str:
-        return _ERA.base_tag
+        return f"base-{_INTERVAL}"
 
     def files(self) -> list[File]:
         return []
 
     def dockerfile(self) -> str:
-        """Environment and clone only.
-
-        Emits the BuildKit syntax directive itself, which makes
-        DockerfileEnhancer.enhance() return this file untouched (image.py:317).
-        That keeps the injected checkout and history scrub out of the shared
-        base, and is why the ARGs, ENV block, OCI labels and CA-certificate
-        symlink farm are written here rather than inherited.
-
-        The symlink farm precedes every network RUN. No apt-get step: the
-        official golang images already ship git, curl and ca-certificates, and
-        the older Debian suites behind the early golang tags are no longer on
-        the live mirrors. BASE_COMMIT is declared because the harness passes
-        it, but deliberately unused: pinning happens in the PR layer.
-        """
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
-
         if self.config.need_clone:
             code = (
                 f'RUN git clone "${{REPO_URL}}" /home/{self.pr.repo} && \\\n'
-                f"    cd /home/{self.pr.repo} && git rev-parse HEAD > /dev/null"
+                f"    cd /home/{self.pr.repo} && git rev-parse HEAD >/dev/null"
             )
         else:
             code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
-
-        return f"""# syntax=docker/dockerfile:1.6
-
-FROM {image_name}
-
-ARG TARGETARCH
-ARG REPO_URL="https://github.com/{self.pr.org}/{self.pr.repo}.git"
-ARG BASE_COMMIT
-
-ARG http_proxy=""
-ARG https_proxy=""
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG no_proxy="localhost,127.0.0.1,::1"
-ARG NO_PROXY="localhost,127.0.0.1,::1"
-ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
-
-ENV DEBIAN_FRONTEND=noninteractive \\
-    LANG=C.UTF-8 \\
-    LC_ALL=C.UTF-8 \\
-    TZ=UTC \\
-    http_proxy=${{http_proxy}} \\
-    https_proxy=${{https_proxy}} \\
-    HTTP_PROXY=${{HTTP_PROXY}} \\
-    HTTPS_PROXY=${{HTTPS_PROXY}} \\
-    no_proxy=${{no_proxy}} \\
-    NO_PROXY=${{NO_PROXY}} \\
-    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
-    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
-    GIT_SSL_CAINFO=${{CA_CERT_PATH}}
-
-ENV CGO_ENABLED=1 \\
-    GOPROXY=https://proxy.golang.org,direct \\
-    GORACE=halt_on_error=1 \\
-    CI=true
-
-LABEL org.opencontainers.image.title="{self.pr.org}/{self.pr.repo}" \\
-      org.opencontainers.image.description="{self.pr.org}/{self.pr.repo} Docker image" \\
-      org.opencontainers.image.source="https://github.com/{self.pr.org}/{self.pr.repo}" \\
-      org.opencontainers.image.authors="https://www.ethara.ai/"
-
-RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
-    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
-
-WORKDIR /home/
-
-RUN git config --global --add safe.directory '*'
-
-{code}
-
-CMD ["/bin/bash"]
-"""
+        return (
+            _BASE_DOCKERFILE.replace("__GO_IMAGE__", _GO_IMAGE)
+            .replace("__CODE__", code)
+            .replace("__ORG__", self.pr.org)
+            .replace("__REPO__", self.pr.repo)
+        )
 
 
 class HugoImageDefault_HUGO_4692_TO_3771(Image):
@@ -281,205 +294,51 @@ class HugoImageDefault_HUGO_4692_TO_3771(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Image | None:
-        return HugoImageBase_HUGO_4692_TO_3771(self.pr, self.config)
+    def dependency(self) -> Image:
+        return HugoImageBase_HUGO_4692_TO_3771(self.pr, self._config)
 
     def image_tag(self) -> str:
-        # Registry-scoped so it never collides with hugo.py's pr-{n} images,
-        # which share the image name mswebench/gohugoio_m_hugo.
-        return f"pr-{self.pr.number}-hugo_4692_to_3771"
+        return f"pr-{self.pr.number}"
 
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def _render(self, template: str, excludes: str = "") -> str:
+        return (
+            template.replace("__REPO__", self.pr.repo)
+            .replace("__SHA__", self.pr.base.sha)
+            .replace("__EXCLUDES__", excludes)
+        )
+
     def files(self) -> list[File]:
-        era = _ERA
-        test_cmd = _go_test_cmd(self.pr.test_patch, era.vet_flag)
-        test_excludes = _binary_excludes(self.pr.test_patch)
-        fix_excludes = _binary_excludes(self.pr.test_patch, self.pr.fix_patch)
+        test_excludes = _apply_excludes(self.pr.test_patch)
+        fix_excludes = _apply_excludes(self.pr.test_patch, self.pr.fix_patch)
         return [
             File(".", "fix.patch", f"{self.pr.fix_patch}"),
             File(".", "test.patch", f"{self.pr.test_patch}"),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """\
-#!/bin/bash
-set -e
-
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "check_git_changes: Not inside a git repository"
-  exit 1
-fi
-
-if [[ -n $(git status --porcelain) ]]; then
-  echo "check_git_changes: Uncommitted changes"
-  exit 1
-fi
-
-echo "check_git_changes: No uncommitted changes"
-exit 0
-""",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """\
-#!/bin/bash
-set -euo pipefail
-
-# --- Section 1: pin the base commit on a clean tree ---
-cd /home/REPO
-git reset --hard
-git clean -fdx
-bash /home/check_git_changes.sh
-git checkout --detach BASE_SHA
-bash /home/check_git_changes.sh
-
-# --- Section 2: provision the toolchain and dependencies ---
-GO_ENV
-PROVISION
-# --- Section 3: hard gate -- base commit and its test files must compile ---
-cd "$GO_PKG_DIR"
-go version
-go build ./...
-go test VET_FLAG-count=1 -run '^$' ./...
-echo DEPS_OK
-""".replace("PROVISION\n", era.provision)
-                .replace("VET_FLAG", era.vet_flag)
-                .replace("REPO", self.pr.repo)
-                .replace("BASE_SHA", self.pr.base.sha)
-                .replace("GO_ENV", era.go_env),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-export CI=true
-GO_ENV
-
-cd /home/REPO
-cd "$GO_PKG_DIR"
-TEST_CMD
-""".replace("REPO", self.pr.repo)
-                .replace("GO_ENV", era.go_env)
-                .replace("TEST_CMD", test_cmd),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-export CI=true
-GO_ENV
-
-cd /home/REPO
-git apply --whitespace=nowarnTEST_EXCLUDES /home/test.patch
-cd "$GO_PKG_DIR"
-TEST_CMD
-""".replace("TEST_EXCLUDES", test_excludes)
-                .replace("REPO", self.pr.repo)
-                .replace("GO_ENV", era.go_env)
-                .replace("TEST_CMD", test_cmd),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """\
-#!/bin/bash
-set -eo pipefail
-export CI=true
-GO_ENV
-
-cd /home/REPO
-git apply --whitespace=nowarnFIX_EXCLUDES /home/test.patch /home/fix.patch
-REVENDOR
-cd "$GO_PKG_DIR"
-TEST_CMD
-""".replace("FIX_EXCLUDES", fix_excludes)
-                .replace("REVENDOR\n", era.revendor)
-                .replace("REPO", self.pr.repo)
-                .replace("GO_ENV", era.go_env)
-                .replace("TEST_CMD", test_cmd),
-            ),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
+            File(".", "gopath_deps.sh", self._render(_GOPATH_DEPS_SH)),
+            File(".", "prepare.sh", self._render(_PREPARE_SH)),
+            File(".", "run.sh", self._render(_RUN_SH)),
+            File(".", "test-run.sh", self._render(_TEST_RUN_SH, test_excludes)),
+            File(".", "fix-run.sh", self._render(_FIX_RUN_SH, fix_excludes)),
         ]
 
     def dockerfile(self) -> str:
-        """Pin to the base commit, COPY scripts, install deps, then scrub.
-
-        Never touched by DockerfileEnhancer (dependency() is an Image, see
-        image.py:315), so BASE_COMMIT is declared here with a default taken
-        from self.pr.base.sha. The base SHA is fetched explicitly when it is
-        not reachable from any cloned ref (e.g. PRs 2520, 2619, 3254). The four
-        `test` lines assert HEAD is the base commit, no refs survive, no remote
-        survives, and no unreachable history survives.
-        """
         image = self.dependency()
-        if isinstance(image, str):
-            raise ValueError("dependency must be an Image")
-        name = image.image_name()
-        tag = image.image_tag()
-
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
-
-        return f"""FROM {name}:{tag}
-
-ARG BASE_COMMIT="{self.pr.base.sha}"
-
-{self.global_env}
-
-WORKDIR /home/{self.pr.repo}
-
-RUN git cat-file -e "${{BASE_COMMIT}}^{{commit}}" 2>/dev/null \\
-    || git fetch --no-tags origin "${{BASE_COMMIT}}"
-
-RUN git reset --hard
-RUN git checkout ${{BASE_COMMIT}}
-
-{copy_commands}
-RUN bash /home/prepare.sh
-
-RUN set -eux; \\
-    test "$(git rev-parse HEAD)" = "${{BASE_COMMIT}}"; \\
-    git remote remove origin 2>/dev/null || true; \\
-    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
-        | xargs -r -n1 git update-ref -d; \\
-    git reflog expire --expire=now --all; \\
-    git reflog expire --expire-unreachable=now --all; \\
-    git gc --prune=now --aggressive; \\
-    git repack -a -d -l --quiet; \\
-    rm -f .git/objects/info/alternates; \\
-    git config --local gc.auto 0; \\
-    git config --local fetch.recurseSubmodules false; \\
-    git config --local remote.pushDefault ""; \\
-    test "$(git rev-parse HEAD)" = "${{BASE_COMMIT}}"; \\
-    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
-    test -z "$(git remote)"; \\
-    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
-
-RUN if [ -f /home/{self.pr.repo}/.gitmodules ]; then \\
-        git submodule foreach --recursive ' \\
-            git checkout --detach HEAD; \\
-            git remote remove origin 2>/dev/null || true; \\
-            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
-                | xargs -r -n1 git update-ref -d; \\
-            git reflog expire --expire=now --all; \\
-            git reflog expire --expire-unreachable=now --all; \\
-            git gc --prune=now --aggressive; \\
-            rm -f .git/objects/info/alternates; \\
-        '; \\
-    fi
-
-{self.clear_env}
-"""
+        copy_commands = "".join(f"COPY {file.name} /home/\n" for file in self.files())
+        rendered = (
+            _PR_DOCKERFILE.replace("__BASE_IMAGE__", f"{image.image_name()}:{image.image_tag()}")
+            .replace("__GLOBAL_ENV__", self.global_env)
+            .replace("__CLEAR_ENV__", self.clear_env)
+            .replace("__COPY_COMMANDS__", copy_commands)
+            .replace("__REPO__", self.pr.repo)
+            .replace("__SHA__", self.pr.base.sha)
+        )
+        return re.sub(r"\n{3,}", "\n\n", rendered).rstrip("\n") + "\n"
 
 
-@Instance.register("gohugoio", "hugo_4692_to_3771")
+@Instance.register("gohugoio", _INTERVAL)
 class HUGO_4692_TO_3771(Instance):
     def __init__(self, pr: PullRequest, config: Config, *args, **kwargs):
         super().__init__()
@@ -490,7 +349,7 @@ class HUGO_4692_TO_3771(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Image | None:
+    def dependency(self) -> Image:
         return HugoImageDefault_HUGO_4692_TO_3771(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
@@ -509,44 +368,27 @@ class HUGO_4692_TO_3771(Instance):
         return "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
-
         passed_tests: set[str] = set()
         failed_tests: set[str] = set()
         skipped_tests: set[str] = set()
-
-        re_result = re.compile(r"^\s*--- (PASS|FAIL|SKIP): (\S+)")
-        # Package summary line, e.g. "ok  \tpkg\t0.1s" or "FAIL\tpkg [build failed]".
-        re_pkg = re.compile(r"^(ok|FAIL)\s+(\S+)(.*)$")
-        re_pkg_broken = re.compile(r"\[(?:build|setup) failed\]")
-
         buckets = {"PASS": passed_tests, "FAIL": failed_tests, "SKIP": skipped_tests}
-        # go test prints a package's results before its summary line, so
-        # buffer results and prefix them with the package once it is known.
         pending: list[tuple[str, str]] = []
-
-        for line in log.splitlines():
-            m = re_result.match(line)
-            if m:
-                pending.append((m.group(1), m.group(2)))
+        for line in _ANSI_RE.sub("", test_log).splitlines():
+            result = _RESULT_RE.match(line)
+            if result:
+                pending.append((result.group(1), result.group(2)))
                 continue
-            m = re_pkg.match(line)
-            if m:
-                pkg = m.group(2)
-                for status, name in pending:
-                    buckets[status].add(f"{pkg}/{name}")
-                pending.clear()
-                if m.group(1) == "FAIL" and re_pkg_broken.search(m.group(3)):
-                    failed_tests.add(pkg)
-
-        # Results without a trailing summary (e.g. killed run) keep bare names.
-        for status, name in pending:
-            buckets[status].add(name)
-
+            package = _PACKAGE_RE.match(line)
+            if not package:
+                continue
+            for status, name in pending:
+                buckets[status].add(f"{package.group(2)}::{name}")
+            pending.clear()
+            if package.group(1) == "FAIL" and _BROKEN_RE.search(package.group(3)):
+                failed_tests.add(package.group(2))
         passed_tests -= failed_tests
         passed_tests -= skipped_tests
         skipped_tests -= failed_tests
-
         return TestResult(
             passed_count=len(passed_tests),
             failed_count=len(failed_tests),
