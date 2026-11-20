@@ -75,6 +75,9 @@ RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /et
     ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
     ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
+RUN printf 'deb [trusted=yes] http://archive.debian.org/debian stretch main\\ndeb [trusted=yes] http://archive.debian.org/debian-security stretch/updates main\\n' > /etc/apt/sources.list && \\
+    printf 'Acquire::Check-Valid-Until "false";\\n' > /etc/apt/apt.conf.d/99archive
+
 RUN git --version && gcc --version && make --version && \\
     test -s /etc/ssl/certs/ca-certificates.crt
 
