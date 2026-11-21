@@ -120,3 +120,5 @@ from multi_swe_bench.harness.repos.python.dask.dask_2025_5_1_to_2025_7_0 import 
 from multi_swe_bench.harness.repos.python.dask.dask_2025_7_0_to_2025_9_0 import *
 from multi_swe_bench.harness.repos.python.dask.dask_2025_9_0_to_2025_9_1 import *
 from multi_swe_bench.harness.repos.python.dask.dask_2026_1_1_to_2026_1_2 import *
+from multi_swe_bench.harness.repos.python.dask.dask_7276_to_7276 import *
+from multi_swe_bench.harness.repos.python.dask.dask_10738_to_10738 import *

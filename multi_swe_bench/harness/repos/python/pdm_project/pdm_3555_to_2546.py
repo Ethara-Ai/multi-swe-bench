@@ -1,13 +1,266 @@
-import re
-import json
-from typing import Optional, Union
+from __future__ import annotations
 
-from multi_swe_bench.harness.image import Config, File, Image
+import re
+import shlex
+
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_DIFF_HEADER_RE = re.compile(r"^diff --git a/\S+ b/(\S+)$", re.M)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_STATUSES = ("PASSED", "FAILED", "ERROR", "SKIPPED", "XFAIL", "XPASS")
+_TRAILING_RE = re.compile(
+    r"^(?P<name>tests/\S+?)\s+(?P<status>" + "|".join(_STATUSES) + r")\b"
+)
+_LEADING_RE = re.compile(
+    r"^(?:\[gw\d+\]\s+\[\s*\d+%\]\s+)?(?P<status>"
+    + "|".join(_STATUSES)
+    + r")\s+(?P<name>tests/\S+)"
+)
+_SKIP_SUMMARY_RE = re.compile(r"^SKIPPED \[\d+\] (?P<name>tests/[^:\s]+:\d+)")
 
-class ImageDefault(Image):
+
+def _test_files(test_patch: str) -> list[str]:
+    files = []
+    for path in _DIFF_HEADER_RE.findall(test_patch):
+        name = path.rsplit("/", 1)[-1]
+        if path.startswith("tests/") and name.startswith("test_") and name.endswith(".py"):
+            if path not in files:
+                files.append(path)
+    return files
+
+
+def _test_command(test_patch: str) -> str:
+    modules = " ".join(shlex.quote(path) for path in _test_files(test_patch))
+    return f"""files=()
+for module in {modules}; do
+    if [ -f "$module" ]; then
+        files+=("$module")
+    fi
+done
+if [ ${{#files[@]}} -eq 0 ]; then
+    echo "no test modules to run"
+    exit 0
+fi
+python -m pytest -p no:cacheprovider -rA -v "${{files[@]}}"
+"""
+
+
+_CHECK_GIT_CHANGES_SH = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo "check_git_changes.sh: not inside a git work tree" >&2
+    exit 1
+fi
+
+if [[ -n $(git status --porcelain --ignore-submodules=dirty) ]]; then
+    echo "check_git_changes.sh: unexpected changes in the work tree" >&2
+    git status --porcelain | head -20
+    exit 1
+fi
+
+echo "check_git_changes.sh: no changes in the work tree"
+exit 0
+"""
+
+_LOCK_REQS_PY = r"""import re
+import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+SELF_NAME = "pdm"
+BOOTSTRAP = ("pip", "setuptools", "wheel")
+BUILD = ("pdm-pep517", "setuptools", "wheel")
+
+
+def canon(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def req_name(req):
+    match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", req)
+    if not match:
+        raise SystemExit(f"cannot parse requirement: {req!r}")
+    return match.group(1)
+
+
+def req_extras(req):
+    match = re.match(r"\s*[A-Za-z0-9][A-Za-z0-9._-]*\s*\[([^\]]*)\]", req)
+    if not match:
+        return []
+    return [item.strip() for item in match.group(1).split(",") if item.strip()]
+
+
+def from_table(name, spec):
+    if isinstance(spec, str):
+        spec = {"version": spec}
+    unknown = set(spec) - {"version", "marker", "markers", "extras"}
+    if unknown:
+        raise SystemExit(f"unsupported dependency table for {name}: {sorted(unknown)}")
+    text = name
+    extras = spec.get("extras") or []
+    if extras:
+        text += "[" + ",".join(extras) + "]"
+    version = (spec.get("version") or "").strip()
+    if version and version != "*":
+        text += version
+    marker = spec.get("marker") or spec.get("markers")
+    if marker:
+        text += "; " + marker
+    return text
+
+
+def as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [from_table(name, spec) for name, spec in value.items()]
+    return list(value)
+
+
+def dev_groups(data):
+    tool_pdm = data.get("tool", {}).get("pdm", {})
+    project = data.get("project", {})
+    groups = {}
+    for name, items in data.get("dependency-groups", {}).items():
+        groups[name] = list(items)
+    dev = tool_pdm.get("dev-dependencies")
+    if isinstance(dev, dict) and dev and all(isinstance(v, list) for v in dev.values()):
+        for name, items in dev.items():
+            groups.setdefault(name, list(items))
+    elif dev:
+        groups.setdefault("dev", as_list(dev))
+    if project.get("dev-dependencies"):
+        groups.setdefault("dev", as_list(project["dev-dependencies"]))
+    return groups
+
+
+def expand(items, groups, optional, seen):
+    result = []
+    for item in items:
+        if isinstance(item, dict):
+            include = item.get("include-group")
+            if include is None:
+                raise SystemExit(f"unsupported group entry: {item!r}")
+            if ("group", include) not in seen:
+                seen.add(("group", include))
+                result += expand(groups.get(include, []), groups, optional, seen)
+            continue
+        if canon(req_name(item)) == SELF_NAME:
+            for extra in req_extras(item):
+                if ("extra", extra) not in seen:
+                    seen.add(("extra", extra))
+                    result += expand(optional.get(extra, []), groups, optional, seen)
+            continue
+        result.append(item)
+    return result
+
+
+def main():
+    lock_path, pyproject_path, out_dir = sys.argv[1:4]
+    wanted = sys.argv[4:]
+    pyproject = tomllib.loads(Path(pyproject_path).read_text(encoding="utf-8"))
+    lock = tomllib.loads(Path(lock_path).read_text(encoding="utf-8"))
+    project = pyproject.get("project", {})
+    tool_pdm = pyproject.get("tool", {}).get("pdm", {})
+    optional = {k: as_list(v) for k, v in project.get("optional-dependencies", {}).items()}
+
+    requirements = as_list(project.get("dependencies")) or as_list(tool_pdm.get("dependencies"))
+    groups = dev_groups(pyproject)
+    found = [name for name in wanted if name in groups]
+    if not found:
+        raise SystemExit(f"none of the groups {wanted} exist; available: {sorted(groups)}")
+    seen = set()
+    for name in found:
+        seen.add(("group", name))
+        requirements += expand(groups[name], groups, optional, seen)
+    requirements = expand(requirements, groups, optional, seen)
+
+    pins = {}
+    for package in lock.get("package", []):
+        if "version" not in package:
+            continue
+        key = canon(package["name"])
+        if key == SELF_NAME:
+            continue
+        pins.setdefault(key, []).append((package["name"], package["version"], package.get("marker")))
+
+    constraints = []
+    for key in sorted(pins):
+        entries = pins[key]
+        versions = {version for _, version, _ in entries}
+        if len(versions) == 1:
+            constraints.append(f"{entries[0][0]}=={entries[0][1]}")
+        elif all(marker for _, _, marker in entries):
+            for name, version, marker in entries:
+                constraints.append(f"{name}=={version}; {marker}")
+        else:
+            print(f"pdm_lock_reqs: {key} has several unmarked versions, left unconstrained", file=sys.stderr)
+
+    for req in requirements:
+        if canon(req_name(req)) not in pins:
+            print(f"pdm_lock_reqs: {req_name(req)} is not in the lock file", file=sys.stderr)
+
+    bootstrap = [f"{pins[k][0][0]}=={pins[k][0][1]}" for k in BOOTSTRAP if k in pins and len(pins[k]) == 1]
+
+    build = [f"{pins[k][0][0]}=={pins[k][0][1]}" for k in BUILD if k in pins and len(pins[k]) == 1]
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "requirements.txt").write_text("\n".join(dict.fromkeys(requirements)) + "\n", encoding="utf-8")
+    (out / "constraints.txt").write_text("\n".join(constraints) + "\n", encoding="utf-8")
+    (out / "bootstrap.txt").write_text("\n".join(bootstrap) + "\n", encoding="utf-8")
+    (out / "build-constraints.txt").write_text("\n".join(build) + "\n", encoding="utf-8")
+    for name in ("bootstrap.txt", "build-constraints.txt", "requirements.txt"):
+        print(f"--- {name}")
+        print((out / name).read_text(encoding="utf-8"), end="")
+    print(f"--- constraints.txt: {len(constraints)} pins")
+
+
+if __name__ == "__main__":
+    main()
+"""
+
+_PREPARE_SH = """#!/bin/bash
+set -eo pipefail
+
+export PATH="/home/venv/bin:$PATH"
+
+cd /home/__REPO__
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+git checkout --detach __BASE_SHA__
+bash /home/check_git_changes.sh
+
+python -m venv /home/venv
+/home/venv/bin/python -I /home/pdm_lock_reqs.py pdm.lock pyproject.toml /home/pdm_reqs test
+/home/venv/bin/python -m pip install --no-cache-dir "pip==23.3.2" -r /home/pdm_reqs/bootstrap.txt
+/home/venv/bin/python -m pip install --no-cache-dir -c /home/pdm_reqs/constraints.txt -r /home/pdm_reqs/requirements.txt "pdm-backend==2.1.8" "editables==0.5"
+/home/venv/bin/python -m pip install --no-cache-dir --no-deps --no-build-isolation -e .
+
+/home/venv/bin/python -I -c "import pdm.core as m, pdm.pytest, pytest; assert m.__file__.startswith('/home/__REPO__/src/pdm/'), m.__file__; print(m.Core().version)"
+/home/venv/bin/python -m pytest --version
+"""
+
+_HEADER_SH = """#!/bin/bash
+set -eo pipefail
+
+export CI=true
+export PYTHONDONTWRITEBYTECODE=1
+export PATH="/home/venv/bin:$PATH"
+
+cd /home/__REPO__
+"""
+
+
+class Pdm3555To2546ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,11 +273,73 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.11-slim"
+    def dependency(self) -> str | Image:
+        return "python:3.11.7-slim-bookworm"
 
-    def image_prefix(self) -> str:
-        return "envagent"
+    def image_tag(self) -> str:
+        interval = self.pr.number_interval.removeprefix(f"{self.pr.repo}_")
+        return f"base-{interval}"
+
+    def workdir(self) -> str:
+        return self.image_tag()
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        org = self.pr.org
+        repo = self.pr.repo
+
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+
+FROM {self.dependency()}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+LABEL org.opencontainers.image.title="{org}/{repo} multi-swe-bench base"
+LABEL org.opencontainers.image.description="Shared base image for {org}/{repo} {self.pr.number_interval} instances"
+LABEL org.opencontainers.image.source="https://github.com/{org}/{repo}"
+LABEL org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
+
+{self.global_env}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        git build-essential libffi-dev libssl-dev zlib1g-dev \\
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /home/
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+
+
+class Pdm3555To2546ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str | Image:
+        return Pdm3555To2546ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -32,108 +347,88 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def _script(self, template: str) -> str:
+        return template.replace("__REPO__", self.pr.repo).replace(
+            "__BASE_SHA__", self.pr.base.sha
+        )
+
     def files(self) -> list[File]:
+        header = self._script(_HEADER_SH)
+        test_cmd = _test_command(self.pr.test_patch)
+        test_apply = "git apply --whitespace=nowarn /home/test.patch"
+        fix_apply = "git apply --whitespace=nowarn /home/test.patch /home/fix.patch"
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """ls -la
-###ACTION_DELIMITER###
-pip install tox tox-pdm
-###ACTION_DELIMITER###
-pdm install
-###ACTION_DELIMITER###
-pip install pdm
-###ACTION_DELIMITER###
-pdm install
-###ACTION_DELIMITER###
-echo 'pdm run pytest -v --no-header -rA --tb=no -p no:cacheprovider' > test_commands.sh""",
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-pdm run pytest -v --no-header -rA --tb=no -p no:cacheprovider
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-pdm run pytest -v --no-header -rA --tb=no -p no:cacheprovider
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-pdm run pytest -v --no-header -rA --tb=no -p no:cacheprovider
-
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
+            File(".", "pdm_lock_reqs.py", _LOCK_REQS_PY),
+            File(".", "prepare.sh", self._script(_PREPARE_SH)),
+            File(".", "run.sh", f"{header}\n{test_cmd}"),
+            File(".", "test-run.sh", f"{header}\n{test_apply}\n\n{test_cmd}"),
+            File(".", "fix-run.sh", f"{header}\n{fix_apply}\n\n{test_cmd}"),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
+        hardening = Image._HARDENING_BLOCK.replace('"${BASE_COMMIT}"', self.pr.base.sha)
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        return f"""FROM {image.image_full_name()}
 
-# Choose an appropriate base image based on the project's requirements - replace python:3.11-slim with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.11-slim
+{self.global_env}
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/pdm-project/pdm.git /home/pdm
-
-WORKDIR /home/pdm
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+{self.clear_env}
 """
-        return dockerfile_content.format(pr=self.pr)
+
+
+def _parse_log(test_log: str) -> TestResult:
+    passed_tests: set[str] = set()
+    failed_tests: set[str] = set()
+    skipped_tests: set[str] = set()
+
+    test_log = _ANSI_RE.sub("", test_log)
+    for raw in test_log.splitlines():
+        line = raw.strip()
+        status = None
+        name = None
+        match = _TRAILING_RE.match(line) or _LEADING_RE.match(line)
+        if match:
+            status = match.group("status")
+            name = match.group("name")
+        else:
+            skip = _SKIP_SUMMARY_RE.match(line)
+            if skip:
+                status = "SKIPPED"
+                name = skip.group("name")
+        if not name or ("::" not in name and status != "SKIPPED"):
+            continue
+        if status in ("PASSED", "XFAIL", "XPASS"):
+            passed_tests.add(name)
+        elif status in ("FAILED", "ERROR"):
+            failed_tests.add(name)
+        elif status == "SKIPPED":
+            skipped_tests.add(name)
+
+    passed_tests -= failed_tests
+    skipped_tests -= failed_tests
+    skipped_tests -= passed_tests
+
+    return TestResult(
+        passed_count=len(passed_tests),
+        failed_count=len(failed_tests),
+        skipped_count=len(skipped_tests),
+        passed_tests=passed_tests,
+        failed_tests=failed_tests,
+        skipped_tests=skipped_tests,
+    )
 
 
 @Instance.register("pdm-project", "pdm_3555_to_2546")
@@ -147,76 +442,23 @@ class PDM_3555_TO_2546(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+    def dependency(self) -> Image | None:
+        return Pdm3555To2546ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests: set[str] = set()  # Tests that passed successfully
-        failed_tests: set[str] = set()  # Tests that failed
-        skipped_tests: set[str] = set()  # Tests that were skipped
-        import re
-
-        # Parse log lines to extract test names and statuses
-        lines = log.split("\n")
-        # Regex patterns to match test lines (test-first or status-first)
-        test_first_pattern = re.compile(
-            r"(tests/.*?\.py::[^ ]+)\s+(PASSED|FAILED|SKIPPED|XFAIL)\b", re.IGNORECASE
-        )
-        status_first_pattern = re.compile(
-            r"(PASSED|FAILED|SKIPPED|XFAIL)\b.*?\s(tests/.*?\.py::[^ ]+)", re.IGNORECASE
-        )
-        for line in lines:
-            line = line.strip()
-            # Check for test-first pattern
-            match = test_first_pattern.search(line)
-            if match:
-                test_name = match.group(1).strip()
-                status = match.group(2).upper()
-            else:
-                # Check for status-first pattern
-                match = status_first_pattern.search(line)
-                if match:
-                    status = match.group(1).upper()
-                    test_name = match.group(2).strip()
-                else:
-                    continue  # No match
-            # Add to the appropriate set
-            if status == "PASSED":
-                passed_tests.add(test_name)
-            elif status == "FAILED":
-                failed_tests.add(test_name)
-            elif status == "SKIPPED":
-                skipped_tests.add(test_name)
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+    def parse_log(self, test_log: str) -> TestResult:
+        return _parse_log(test_log)

@@ -4,3 +4,4 @@ from multi_swe_bench.harness.repos.python.python_poetry.poetry_3660_to_1935 impo
 from multi_swe_bench.harness.repos.python.python_poetry.poetry_1912_to_1867 import *
 from multi_swe_bench.harness.repos.python.python_poetry.poetry_1815_to_421 import *
 from multi_swe_bench.harness.repos.python.python_poetry.poetry_421_to_377 import *
+from multi_swe_bench.harness.repos.python.python_poetry.poetry_10845_to_10845 import *

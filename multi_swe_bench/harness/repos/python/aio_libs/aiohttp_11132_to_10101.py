@@ -1,13 +1,103 @@
-import re
-import json
-from typing import Optional, Union
+from __future__ import annotations
 
-from multi_swe_bench.harness.image import Config, File, Image
+import re
+import shlex
+
+from multi_swe_bench.harness.image import Config, DockerfileEnhancer, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
 
+_DIFF_HEADER_RE = re.compile(r"^diff --git a/\S+ b/(\S+)$", re.M)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_STATUSES = ("PASSED", "FAILED", "ERROR", "SKIPPED", "XFAIL", "XPASS")
+_TRAILING_RE = re.compile(
+    r"^(?P<name>tests/\S+?)\s+(?P<status>" + "|".join(_STATUSES) + r")\b"
+)
+_LEADING_RE = re.compile(
+    r"^(?:\[gw\d+\]\s+\[\s*\d+%\]\s+)?(?P<status>"
+    + "|".join(_STATUSES)
+    + r")\s+(?P<name>tests/\S+)"
+)
+_SKIP_SUMMARY_RE = re.compile(r"^SKIPPED \[\d+\] (?P<name>tests/[^:\s]+:\d+)")
 
-class ImageDefault(Image):
+
+def _test_files(test_patch: str) -> list[str]:
+    files = []
+    for path in _DIFF_HEADER_RE.findall(test_patch):
+        name = path.rsplit("/", 1)[-1]
+        if path.startswith("tests/") and name.startswith("test_") and name.endswith(".py"):
+            if path not in files:
+                files.append(path)
+    return files
+
+
+def _test_command(test_patch: str) -> str:
+    modules = " ".join(shlex.quote(path) for path in _test_files(test_patch))
+    return f"""files=()
+for module in {modules}; do
+    if [ -f "$module" ]; then
+        files+=("$module")
+    fi
+done
+if [ ${{#files[@]}} -eq 0 ]; then
+    echo "no test modules to run"
+    exit 0
+fi
+python -m pytest -p no:cacheprovider --no-cov -n 0 -rA -v "${{files[@]}}"
+"""
+
+
+_CHECK_GIT_CHANGES_SH = """#!/bin/bash
+set -e
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo "check_git_changes.sh: not inside a git work tree" >&2
+    exit 1
+fi
+
+if [[ -n $(git status --porcelain --ignore-submodules=dirty) ]]; then
+    echo "check_git_changes.sh: unexpected changes in the work tree" >&2
+    git status --porcelain | head -20
+    exit 1
+fi
+
+echo "check_git_changes.sh: no changes in the work tree"
+exit 0
+"""
+
+_PREPARE_SH = """#!/bin/bash
+set -eo pipefail
+
+cd /home/__REPO__
+git reset --hard
+git clean -fdx
+bash /home/check_git_changes.sh
+git checkout --detach __BASE_SHA__
+git submodule update --init --recursive
+bash /home/check_git_changes.sh
+
+python -m venv /home/venv
+/home/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel
+/home/venv/bin/pip install --no-cache-dir -r requirements/test.txt
+AIOHTTP_NO_EXTENSIONS=1 /home/venv/bin/pip install --no-cache-dir --no-deps --no-build-isolation -e .
+
+/home/venv/bin/python -c "import aiohttp, aiohttp.web, pytest, pytest_cov"
+/home/venv/bin/python -m pytest --version
+"""
+
+_HEADER_SH = """#!/bin/bash
+set -eo pipefail
+
+export CI=true
+export AIOHTTP_NO_EXTENSIONS=1
+export PYTHONDONTWRITEBYTECODE=1
+export PATH="/home/venv/bin:$PATH"
+
+cd /home/__REPO__
+"""
+
+
+class Aiohttp11132To10101ImageBase(Image):
     def __init__(self, pr: PullRequest, config: Config):
         self._pr = pr
         self._config = config
@@ -20,11 +110,73 @@ class ImageDefault(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> str:
-        return "python:3.9-slim"
+    def dependency(self) -> str | Image:
+        return "python:3.12-slim-bookworm"
 
-    def image_prefix(self) -> str:
-        return "envagent"
+    def image_tag(self) -> str:
+        interval = self.pr.number_interval.removeprefix(f"{self.pr.repo}_")
+        return f"base-{interval}"
+
+    def workdir(self) -> str:
+        return self.image_tag()
+
+    def files(self) -> list[File]:
+        return []
+
+    def dockerfile(self) -> str:
+        org = self.pr.org
+        repo = self.pr.repo
+
+        return f"""{DockerfileEnhancer.SYNTAX_DIRECTIVE}
+
+FROM {self.dependency()}
+
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
+
+{DockerfileEnhancer._PROXY_ARGS}
+
+{DockerfileEnhancer._ENV_BLOCK}
+
+LABEL org.opencontainers.image.title="{org}/{repo} multi-swe-bench base"
+LABEL org.opencontainers.image.description="Shared base image for {org}/{repo} {self.pr.number_interval} instances"
+LABEL org.opencontainers.image.source="https://github.com/{org}/{repo}"
+LABEL org.opencontainers.image.authors="https://www.ethara.ai/"
+
+{DockerfileEnhancer._CERT_SYMLINKS}
+
+{self.global_env}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        git build-essential libffi-dev libssl-dev zlib1g-dev \\
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /home/
+
+RUN git clone "${{REPO_URL}}" /home/{repo}
+
+{self.clear_env}
+
+CMD ["/bin/bash"]
+"""
+
+
+class Aiohttp11132To10101ImageDefault(Image):
+    def __init__(self, pr: PullRequest, config: Config):
+        self._pr = pr
+        self._config = config
+
+    @property
+    def pr(self) -> PullRequest:
+        return self._pr
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    def dependency(self) -> str | Image:
+        return Aiohttp11132To10101ImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -32,144 +184,87 @@ class ImageDefault(Image):
     def workdir(self) -> str:
         return f"pr-{self.pr.number}"
 
+    def _script(self, template: str) -> str:
+        return template.replace("__REPO__", self.pr.repo).replace(
+            "__BASE_SHA__", self.pr.base.sha
+        )
+
     def files(self) -> list[File]:
+        header = self._script(_HEADER_SH)
+        test_cmd = _test_command(self.pr.test_patch)
+        test_apply = "git apply --whitespace=nowarn /home/test.patch"
+        fix_apply = "git apply --whitespace=nowarn /home/test.patch /home/fix.patch"
         return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """ls
-###ACTION_DELIMITER###
-make develop
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y make
-###ACTION_DELIMITER###
-make develop
-###ACTION_DELIMITER###
-make .develop
-###ACTION_DELIMITER###
-pip install -r requirements/dev.in
-###ACTION_DELIMITER###
-pip install -e .
-###ACTION_DELIMITER###
-git submodule update --init
-###ACTION_DELIMITER###
-pip install -e .
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y gcc python3-dev
-###ACTION_DELIMITER###
-pip install -e .
-###ACTION_DELIMITER###
-make generate-llhttp
-###ACTION_DELIMITER###
-apt-get update && apt-get install -y nodejs npm
-###ACTION_DELIMITER###
-make generate-llhttp
-###ACTION_DELIMITER###
-cd vendor/llhttp && npm ci && npm run build
-###ACTION_DELIMITER###
-ls vendor/llhttp/build/include/llhttp.h
-###ACTION_DELIMITER###
-cd vendor/llhttp && npm run build --verbose
-###ACTION_DELIMITER###
-npm run build && ls build/include/llhttp.h
-###ACTION_DELIMITER###
-ls -R build
-###ACTION_DELIMITER###
-export CFLAGS="-I$(pwd)/vendor/llhttp/build" && pip install -e .
-###ACTION_DELIMITER###
-cd /home/aiohttp && export CFLAGS="-I$(pwd)/vendor/llhttp/build" && pip install -e .
-###ACTION_DELIMITER###
-pytest -v
-###ACTION_DELIMITER###
-echo 'pytest -v' > /home/aiohttp/test_commands.sh
-###ACTION_DELIMITER###
-cat /home/aiohttp/test_commands.sh""",
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-pytest -v
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn /home/test.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-pytest -v
-
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
-cd /home/{pr.repo}
-if ! git -C /home/{pr.repo} apply --whitespace=nowarn  /home/test.patch /home/fix.patch; then
-    echo "Error: git apply failed" >&2
-    exit 1  
-fi
-pytest -v
-
-""".format(pr=self.pr),
-            ),
+            File(".", "fix.patch", f"{self.pr.fix_patch}"),
+            File(".", "test.patch", f"{self.pr.test_patch}"),
+            File(".", "check_git_changes.sh", _CHECK_GIT_CHANGES_SH),
+            File(".", "prepare.sh", self._script(_PREPARE_SH)),
+            File(".", "run.sh", f"{header}\n{test_cmd}"),
+            File(".", "test-run.sh", f"{header}\n{test_apply}\n\n{test_cmd}"),
+            File(".", "fix-run.sh", f"{header}\n{fix_apply}\n\n{test_cmd}"),
         ]
 
     def dockerfile(self) -> str:
+        image = self.dependency()
         copy_commands = ""
         for file in self.files():
             copy_commands += f"COPY {file.name} /home/\n"
+        hardening = Image._HARDENING_BLOCK.replace('"${BASE_COMMIT}"', self.pr.base.sha)
 
-        dockerfile_content = """
-# This is a template for creating a Dockerfile to test patches
-# LLM should fill in the appropriate values based on the context
+        return f"""FROM {image.image_full_name()}
 
-# Choose an appropriate base image based on the project's requirements - replace python:3.9-slim with actual base image
-# For example: FROM ubuntu:**, FROM python:**, FROM node:**, FROM centos:**, etc.
-FROM python:3.9-slim
+{self.global_env}
 
-## Set noninteractive
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic requirements
-# For example: RUN apt-get update && apt-get install -y git
-# For example: RUN yum install -y git
-# For example: RUN apk add --no-cache git
-RUN apt-get update && apt-get install -y git
-
-# Ensure bash is available
-RUN if [ ! -f /bin/bash ]; then         if command -v apk >/dev/null 2>&1; then             apk add --no-cache bash;         elif command -v apt-get >/dev/null 2>&1; then             apt-get update && apt-get install -y bash;         elif command -v yum >/dev/null 2>&1; then             yum install -y bash;         else             exit 1;         fi     fi
-
-WORKDIR /home/
-COPY fix.patch /home/
-COPY test.patch /home/
-RUN git clone https://github.com/aio-libs/aiohttp.git /home/aiohttp
-
-WORKDIR /home/aiohttp
-RUN git reset --hard
-RUN git checkout {pr.base.sha}
-"""
-        dockerfile_content += f"""
 {copy_commands}
+RUN bash /home/prepare.sh
+
+WORKDIR /home/{self.pr.repo}
+
+{hardening}
+{self.clear_env}
 """
-        return dockerfile_content.format(pr=self.pr)
+
+
+def _parse_log(test_log: str) -> TestResult:
+    passed_tests: set[str] = set()
+    failed_tests: set[str] = set()
+    skipped_tests: set[str] = set()
+
+    test_log = _ANSI_RE.sub("", test_log)
+    for raw in test_log.splitlines():
+        line = raw.strip()
+        status = None
+        name = None
+        match = _TRAILING_RE.match(line) or _LEADING_RE.match(line)
+        if match:
+            status = match.group("status")
+            name = match.group("name")
+        else:
+            skip = _SKIP_SUMMARY_RE.match(line)
+            if skip:
+                status = "SKIPPED"
+                name = skip.group("name")
+        if not name or ("::" not in name and status != "SKIPPED"):
+            continue
+        if status in ("PASSED", "XFAIL", "XPASS"):
+            passed_tests.add(name)
+        elif status in ("FAILED", "ERROR"):
+            failed_tests.add(name)
+        elif status == "SKIPPED":
+            skipped_tests.add(name)
+
+    passed_tests -= failed_tests
+    skipped_tests -= failed_tests
+    skipped_tests -= passed_tests
+
+    return TestResult(
+        passed_count=len(passed_tests),
+        failed_count=len(failed_tests),
+        skipped_count=len(skipped_tests),
+        passed_tests=passed_tests,
+        failed_tests=failed_tests,
+        skipped_tests=skipped_tests,
+    )
 
 
 @Instance.register("aio-libs", "aiohttp_11132_to_10101")
@@ -183,54 +278,23 @@ class AIOHTTP_11132_TO_10101(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Optional[Image]:
-        return ImageDefault(self.pr, self._config)
+    def dependency(self) -> Image | None:
+        return Aiohttp11132To10101ImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
         if run_cmd:
             return run_cmd
-
         return "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
         if test_patch_run_cmd:
             return test_patch_run_cmd
-
         return "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
         if fix_patch_run_cmd:
             return fix_patch_run_cmd
-
         return "bash /home/fix-run.sh"
 
-    def parse_log(self, log: str) -> TestResult:
-        # Parse the log content and extract test execution results.
-        passed_tests = set()  # Tests that passed successfully
-        failed_tests = set()  # Tests that failed
-        skipped_tests = set()  # Tests that were skipped
-        import re
-
-        # Extract passed tests using regex
-        passed_pattern = re.compile(r"PASSED (tests/[^ ]+)")
-        passed_tests = set(passed_pattern.findall(log))
-        # Extract failed tests using regex
-        failed_pattern = re.compile(r"FAILED (tests/[^ ]+)")
-        failed_tests = set(failed_pattern.findall(log))
-        # Extract skipped tests using regex
-        skipped_pattern = re.compile(r"SKIPPED (?:\[\d+\] )?(tests/[^:]+:\d+)")
-        skipped_tests = set(skipped_pattern.findall(log))
-        parsed_results = {
-            "passed_tests": passed_tests,
-            "failed_tests": failed_tests,
-            "skipped_tests": skipped_tests,
-        }
-
-        return TestResult(
-            passed_count=len(passed_tests),
-            failed_count=len(failed_tests),
-            skipped_count=len(skipped_tests),
-            passed_tests=passed_tests,
-            failed_tests=failed_tests,
-            skipped_tests=skipped_tests,
-        )
+    def parse_log(self, test_log: str) -> TestResult:
+        return _parse_log(test_log)
