@@ -52,3 +52,4 @@ from multi_swe_bench.harness.repos.python.pydantic.pydantic_v2_9_0 import *
 from multi_swe_bench.harness.repos.python.pydantic.pydantic_v2_10_0b1 import *
 from multi_swe_bench.harness.repos.python.pydantic.pydantic_v1_6_1 import *
 from multi_swe_bench.harness.repos.python.pydantic.pydantic_v1_0b2 import *
+from multi_swe_bench.harness.repos.python.pydantic.pydantic_ai_14038_to_13214 import *
