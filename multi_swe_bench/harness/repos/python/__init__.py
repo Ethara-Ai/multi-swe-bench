@@ -491,3 +491,4 @@ from multi_swe_bench.harness.repos.python.basicmachines_co import *
 from multi_swe_bench.harness.repos.python.securo_finance import *
 from multi_swe_bench.harness.repos.python.saga_soft import *
 from multi_swe_bench.harness.repos.python.tconbeer import *
+from multi_swe_bench.harness.repos.python.langgenius import *
