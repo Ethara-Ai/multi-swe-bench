@@ -2,3 +2,10 @@ from multi_swe_bench.harness.repos.golang.traefik.traefik import *
 from multi_swe_bench.harness.repos.golang.traefik.traefik_8624_to_1331 import *
 from multi_swe_bench.harness.repos.golang.traefik.traefik_12845_to_4694 import *
 from multi_swe_bench.harness.repos.golang.traefik.traefik_12645_to_8393 import *
+from multi_swe_bench.harness.repos.golang.traefik.yaegi_1489_to_1428 import *
+from multi_swe_bench.harness.repos.golang.traefik.yaegi_1392_to_1257 import *
+from multi_swe_bench.harness.repos.golang.traefik.yaegi_1171_to_943 import *
+from multi_swe_bench.harness.repos.golang.traefik.yaegi_802_to_559 import *
+from multi_swe_bench.harness.repos.golang.traefik.yaegi_526_to_391 import *
+from multi_swe_bench.harness.repos.golang.traefik.yaegi_344_to_149 import *
+from multi_swe_bench.harness.repos.golang.traefik.yaegi_113_to_72 import *
