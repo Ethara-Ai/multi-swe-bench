@@ -45,6 +45,10 @@ _APPLY = "git apply --whitespace=nowarn"
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 _RESULT = re.compile(r"^MSWB_GO (PASS|FAIL|SKIP) (\S.*?)\s*$", re.MULTILINE)
+# Table-driven subtests named after a t.TempDir() path carry its random digits
+# (e.g. TestTargetConfigHome/.../tmp/TestTargetConfigHome3273789492/001/glab); fold them
+# to a fixed "N" so the same subtest has the same name in every run.
+_TEMPDIR_DIGITS = re.compile(r"(/tmp/[A-Za-z0-9_]*?[A-Za-z_])\d{6,12}(?=/\d{3}(?:/|$))")
 
 _CHECK_GIT_CHANGES = """#!/bin/bash
 set -e
@@ -408,6 +412,7 @@ class SKILLSHARE_854_TO_502(Instance):
         skipped_tests: set[str] = set()
 
         for status, name in _RESULT.findall(test_log):
+            name = _TEMPDIR_DIGITS.sub(r"\1N", name)
             if status == "PASS":
                 passed_tests.add(name)
             elif status == "FAIL":
