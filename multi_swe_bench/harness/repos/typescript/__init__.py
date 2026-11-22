@@ -313,3 +313,4 @@ from multi_swe_bench.harness.repos.typescript.TriliumNext import *
 from multi_swe_bench.harness.repos.typescript.orval_labs import *
 from multi_swe_bench.harness.repos.typescript.stablyai import *
 from multi_swe_bench.harness.repos.typescript.coleam00 import *
+from multi_swe_bench.harness.repos.typescript.unocss import *
