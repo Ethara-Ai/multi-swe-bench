@@ -174,12 +174,14 @@ class Yaegi344To149ImageBase(Image):
             code = (
                 f'RUN mkdir -p "$(dirname {_REPO_DIR})" && \\\n'
                 f'    git clone "${{REPO_URL}}" {_REPO_DIR} && \\\n'
-                f"    cd {_REPO_DIR} && git rev-parse HEAD > /dev/null"
+                f"    ln -s {_REPO_DIR} /home/{self.pr.repo} && \\\n"
+                f"    cd /home/{self.pr.repo} && git rev-parse HEAD > /dev/null"
             )
         else:
             code = (
                 f'RUN mkdir -p "$(dirname {_REPO_DIR})"\n'
-                f"COPY {self.pr.repo} {_REPO_DIR}"
+                f"COPY {self.pr.repo} {_REPO_DIR}\n"
+                f"RUN ln -s {_REPO_DIR} /home/{self.pr.repo}"
             )
 
         return (
