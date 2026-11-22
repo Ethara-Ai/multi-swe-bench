@@ -92,7 +92,6 @@ from multi_swe_bench.harness.repos.python.facebookincubator import *
 from multi_swe_bench.harness.repos.python.facebookresearch import *
 from multi_swe_bench.harness.repos.python.falconry import *
 from multi_swe_bench.harness.repos.python.fastapi import *
-from multi_swe_bench.harness.repos.python.feast_dev import *
 from multi_swe_bench.harness.repos.python.feature_engine import *
 from multi_swe_bench.harness.repos.python.fecgov import *
 from multi_swe_bench.harness.repos.python.fetchai import *
@@ -112,7 +111,6 @@ from multi_swe_bench.harness.repos.python.github import *
 from multi_swe_bench.harness.repos.python.globus import *
 from multi_swe_bench.harness.repos.python.google import *
 from multi_swe_bench.harness.repos.python.googleapis import *
-from multi_swe_bench.harness.repos.python.great_expectations import *
 from multi_swe_bench.harness.repos.python.griptape_ai import *
 from multi_swe_bench.harness.repos.python.gwastro import *
 from multi_swe_bench.harness.repos.python.haddocking import *
@@ -283,7 +281,6 @@ from multi_swe_bench.harness.repos.python.sanic_org import *
 from multi_swe_bench.harness.repos.python.SatelliteQE import *
 from multi_swe_bench.harness.repos.python.Sceptre import *
 from multi_swe_bench.harness.repos.python.scikit_hep import *
-from multi_swe_bench.harness.repos.python.scikit_image import *
 from multi_swe_bench.harness.repos.python.scikit_learn import *
 from multi_swe_bench.harness.repos.python.SciTools import *
 from multi_swe_bench.harness.repos.python.scottcjn import *
@@ -331,7 +328,6 @@ from multi_swe_bench.harness.repos.python.vacanza import *
 from multi_swe_bench.harness.repos.python.vega import *
 from multi_swe_bench.harness.repos.python.vprusso import *
 from multi_swe_bench.harness.repos.python.vyperlang import *
-from multi_swe_bench.harness.repos.python.wagtail import *
 from multi_swe_bench.harness.repos.python.wemake_services import *
 from multi_swe_bench.harness.repos.python.xCDAT import *
 from multi_swe_bench.harness.repos.python.xonsh import *
@@ -487,3 +483,12 @@ from multi_swe_bench.harness.repos.python.teng_lin import *
 from multi_swe_bench.harness.repos.python.Z4nzu import *
 from multi_swe_bench.harness.repos.python.netbox_community import *
 from multi_swe_bench.harness.repos.python.modin_project import *
+from multi_swe_bench.harness.repos.python.BerriAI import *
+from multi_swe_bench.harness.repos.python.basicmachines_co import *
+from multi_swe_bench.harness.repos.python.debpalash import *
+from multi_swe_bench.harness.repos.python.frappe import *
+from multi_swe_bench.harness.repos.python.langgenius import *
+from multi_swe_bench.harness.repos.python.saga_soft import *
+from multi_swe_bench.harness.repos.python.securo_finance import *
+from multi_swe_bench.harness.repos.python.spec_kitty import *
+from multi_swe_bench.harness.repos.python.tconbeer import *
