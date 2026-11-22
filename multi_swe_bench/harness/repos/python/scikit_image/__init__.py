@@ -1,3 +1,4 @@
+from multi_swe_bench.harness.repos.python.scikit_image.scikit_image_8287_to_3072 import *
 from multi_swe_bench.harness.repos.python.scikit_image.scikit_image_7595_to_4165 import *
 from multi_swe_bench.harness.repos.python.scikit_image.scikit_image_6892 import *
 from multi_swe_bench.harness.repos.python.scikit_image.scikit_image_6814 import *

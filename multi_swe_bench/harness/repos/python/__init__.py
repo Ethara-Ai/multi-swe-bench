@@ -486,12 +486,4 @@ from multi_swe_bench.harness.repos.python.iterative import *
 from multi_swe_bench.harness.repos.python.teng_lin import *
 from multi_swe_bench.harness.repos.python.Z4nzu import *
 from multi_swe_bench.harness.repos.python.netbox_community import *
-from multi_swe_bench.harness.repos.python.frappe import *
-from multi_swe_bench.harness.repos.python.basicmachines_co import *
-from multi_swe_bench.harness.repos.python.securo_finance import *
-from multi_swe_bench.harness.repos.python.saga_soft import *
-from multi_swe_bench.harness.repos.python.tconbeer import *
-from multi_swe_bench.harness.repos.python.langgenius import *
-from multi_swe_bench.harness.repos.python.spec_kitty import *
-from multi_swe_bench.harness.repos.python.BerriAI import *
-from multi_swe_bench.harness.repos.python.debpalash import *
+from multi_swe_bench.harness.repos.python.modin_project import *
