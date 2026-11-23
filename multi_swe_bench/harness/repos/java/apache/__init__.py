@@ -56,3 +56,4 @@ from multi_swe_bench.harness.repos.java.apache.streampark_4507_to_4417 import *
 from multi_swe_bench.harness.repos.java.apache.rocketmq_10386_to_10386 import *
 from multi_swe_bench.harness.repos.java.apache.camel_26519_to_25764 import *
 from multi_swe_bench.harness.repos.java.apache.dolphinscheduler_18549_to_18549 import *
+from multi_swe_bench.harness.repos.java.apache.skywalking_14122_to_14013 import *

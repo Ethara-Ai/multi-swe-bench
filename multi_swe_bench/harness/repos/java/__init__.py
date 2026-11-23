@@ -40,6 +40,7 @@ from multi_swe_bench.harness.repos.java.openequella import *
 from multi_swe_bench.harness.repos.java.OpenFeign import *
 from multi_swe_bench.harness.repos.java.OpenRefine import *
 from multi_swe_bench.harness.repos.java.opentracing import *
+from multi_swe_bench.harness.repos.java.pinpoint_apm import *
 from multi_swe_bench.harness.repos.java.pmd import *
 from multi_swe_bench.harness.repos.java.provectus import *
 from multi_swe_bench.harness.repos.java.ReactiveX import *
