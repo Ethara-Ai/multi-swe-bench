@@ -305,3 +305,4 @@ from multi_swe_bench.harness.repos.golang.versity import *
 from multi_swe_bench.harness.repos.golang.runkids import *
 from multi_swe_bench.harness.repos.golang.go_acme import *
 from multi_swe_bench.harness.repos.golang.gastownhall import *
+from multi_swe_bench.harness.repos.golang.velero_io import *
