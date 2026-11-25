@@ -494,5 +494,7 @@ from multi_swe_bench.harness.repos.python.securo_finance import *
 from multi_swe_bench.harness.repos.python.spec_kitty import *
 from multi_swe_bench.harness.repos.python.tconbeer import *
 from multi_swe_bench.harness.repos.python.IBM import *
+from multi_swe_bench.harness.repos.python.django_oauth import *
+from multi_swe_bench.harness.repos.python.python_websockets import *
 from multi_swe_bench.harness.repos.python.amd import *
 from multi_swe_bench.harness.repos.python.vectorize_io import *

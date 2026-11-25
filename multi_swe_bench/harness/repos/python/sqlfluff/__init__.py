@@ -14,3 +14,4 @@ from multi_swe_bench.harness.repos.python.sqlfluff.sqlfluff_373_to_26 import *
 from multi_swe_bench.harness.repos.python.sqlfluff.sqlfluff_sqlfluff_7048_to_8818 import *
 from multi_swe_bench.harness.repos.python.sqlfluff.sqlfluff_sqlfluff_5602_to_6874 import *
 from multi_swe_bench.harness.repos.python.sqlfluff.sqlfluff_sqlfluff_8936_to_8936 import *
+from multi_swe_bench.harness.repos.python.sqlfluff.sqlfluff_sqlfluff_4747_to_4780 import *
