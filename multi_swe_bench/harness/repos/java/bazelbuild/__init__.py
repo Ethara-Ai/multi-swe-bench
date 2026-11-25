@@ -7,3 +7,4 @@ from multi_swe_bench.harness.repos.java.bazelbuild.bazel_era4_27934_to_28343 imp
 from multi_swe_bench.harness.repos.java.bazelbuild.bazel_targets import *
 from multi_swe_bench.harness.repos.java.bazelbuild.bazel_26751_to_25490 import *
 from multi_swe_bench.harness.repos.java.bazelbuild.bazel_28801_to_24443 import *
+from multi_swe_bench.harness.repos.java.bazelbuild.bazel_32039_to_30948 import *
