@@ -1,9 +1,31 @@
+from __future__ import annotations
+
 import re
-from typing import Union
+from typing import Optional
 
 from multi_swe_bench.harness.image import Config, File, Image
 from multi_swe_bench.harness.instance import Instance, TestResult
 from multi_swe_bench.harness.pull_request import PullRequest
+
+
+_BASE_IMAGE = "golang:1.26-bookworm"
+_APT_PACKAGES = "git ca-certificates build-essential make"
+_MODULE_PREFIX = "github.com/kyverno/kyverno"
+_GO_PARALLEL = 2
+_TEST_TIMEOUT = "60m"
+# Grade only tests under pkg/ and cmd/.  test/integration/* needs a live
+# Kubernetes cluster and test/cli/* is driven by the kyverno CLI runner, not
+# `go test` -- running `./...` would surface failures that have nothing to do
+# with the PR under review.
+_GO_TEST_TARGETS = "./pkg/... ./cmd/..."
+_TEST_CMD = f"go test -v -count=1 -timeout {_TEST_TIMEOUT} {_GO_TEST_TARGETS}"
+
+_GO_ENV = """export CI=true
+export CGO_ENABLED=0
+export GOTOOLCHAIN=auto
+export GOPATH=/go
+export GOFLAGS=-p=2
+export PATH=/usr/local/go/bin:/go/bin:$PATH"""
 
 
 class KyvernoImageBase(Image):
@@ -19,8 +41,8 @@ class KyvernoImageBase(Image):
     def config(self) -> Config:
         return self._config
 
-    def dependency(self) -> Union[str, "Image"]:
-        return "golang:latest"
+    def dependency(self) -> str:
+        return _BASE_IMAGE
 
     def image_tag(self) -> str:
         return "base"
@@ -32,25 +54,71 @@ class KyvernoImageBase(Image):
         return []
 
     def dockerfile(self) -> str:
-        image_name = self.dependency()
-        if isinstance(image_name, Image):
-            image_name = image_name.image_full_name()
+        org = self.pr.org
+        repo = self.pr.repo
+        return f"""# syntax=docker/dockerfile:1.6
 
-        if self.config.need_clone:
-            code = f"RUN git clone https://github.com/{self.pr.org}/{self.pr.repo}.git /home/{self.pr.repo}"
-        else:
-            code = f"COPY {self.pr.repo} /home/{self.pr.repo}"
+FROM {_BASE_IMAGE}
 
-        return f"""FROM {image_name}
+ARG TARGETARCH
+ARG REPO_URL="https://github.com/{org}/{repo}.git"
+ARG BASE_COMMIT
 
-{self.global_env}
+ARG http_proxy=""
+ARG https_proxy=""
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG no_proxy="localhost,127.0.0.1,::1"
+ARG NO_PROXY="localhost,127.0.0.1,::1"
+ARG CA_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    TZ=UTC \\
+    http_proxy=${{http_proxy}} \\
+    https_proxy=${{https_proxy}} \\
+    HTTP_PROXY=${{HTTP_PROXY}} \\
+    HTTPS_PROXY=${{HTTPS_PROXY}} \\
+    no_proxy=${{no_proxy}} \\
+    NO_PROXY=${{NO_PROXY}} \\
+    SSL_CERT_FILE=${{CA_CERT_PATH}} \\
+    REQUESTS_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    CURL_CA_BUNDLE=${{CA_CERT_PATH}} \\
+    GOPATH=/go \\
+    GOTOOLCHAIN=auto \\
+    CGO_ENABLED=0 \\
+    CI=true
+
+LABEL org.opencontainers.image.title="{org}/{repo}" \\
+      org.opencontainers.image.description="{org}/{repo} Docker image" \\
+      org.opencontainers.image.source="https://github.com/{org}/{repo}" \\
+      org.opencontainers.image.authors="https://www.ethara.ai/"
+
+RUN mkdir -p /etc/pki/tls/certs /etc/pki/tls /etc/pki/ca-trust/extracted/pem /etc/ssl/certs && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cacert.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem && \\
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
 
 WORKDIR /home/
 
-{code}
+RUN printf 'Acquire::Retries "5";\\n' > /etc/apt/apt.conf.d/99retries
 
-{self.clear_env}
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        {_APT_PACKAGES} \\
+    && rm -rf /var/lib/apt/lists/*
 
+RUN git config --global --add safe.directory '*'
+
+RUN go version
+
+RUN git clone "${{REPO_URL}}" /home/{repo} && \\
+    cd /home/{repo} && git rev-parse HEAD > /dev/null
+
+CMD ["/bin/bash"]
 """
 
 
@@ -68,7 +136,7 @@ class KyvernoImageDefault(Image):
         return self._config
 
     def dependency(self) -> Image:
-        return KyvernoImageBase(self.pr, self.config)
+        return KyvernoImageBase(self.pr, self._config)
 
     def image_tag(self) -> str:
         return f"pr-{self.pr.number}"
@@ -77,21 +145,10 @@ class KyvernoImageDefault(Image):
         return f"pr-{self.pr.number}"
 
     def files(self) -> list[File]:
-        return [
-            File(
-                ".",
-                "fix.patch",
-                f"{self.pr.fix_patch}",
-            ),
-            File(
-                ".",
-                "test.patch",
-                f"{self.pr.test_patch}",
-            ),
-            File(
-                ".",
-                "check_git_changes.sh",
-                """#!/bin/bash
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+
+        check_git_changes = """#!/bin/bash
 set -e
 
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
@@ -101,88 +158,146 @@ fi
 
 if [[ -n $(git status --porcelain) ]]; then
   echo "check_git_changes: Uncommitted changes"
+  git status --porcelain | head -20
   exit 1
 fi
 
 echo "check_git_changes: No uncommitted changes"
 exit 0
+"""
 
-""".format(),
-            ),
-            File(
-                ".",
-                "prepare.sh",
-                """#!/bin/bash
-set -e
+        prepare = f"""#!/bin/bash
+set -eo pipefail
 
-cd /home/{pr.repo}
+{_GO_ENV}
+
+# --- Section 1: PIN ---
+cd /home/{repo}
 git reset --hard
+git clean -fdx
 bash /home/check_git_changes.sh
-git checkout {pr.base.sha}
+git checkout --detach {sha}
+test "$(git rev-parse HEAD)" = "{sha}"
 bash /home/check_git_changes.sh
 
-go test -v -count=1 ./... || true
+# --- Section 2: PROVISION ---
+# Warm the module graph and the build cache for the graded test targets so
+# the per-stage `go test` runs do not need network access.  Build failures
+# here are tolerated -- the fix patch may be what makes the tree compile --
+# but the gate below is non-tolerant and will catch an unusable toolchain.
+go env GOVERSION
+awk '/^go /{{print "prepare.sh: go.mod requires go" $2; exit}}' go.mod
+go mod download
 
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "run.sh",
-                """#!/bin/bash
+go build -p {_GO_PARALLEL} {_GO_TEST_TARGETS} || true
+go test -p {_GO_PARALLEL} -count=1 -timeout {_TEST_TIMEOUT} -run '^$' {_GO_TEST_TARGETS} || true
+
+# --- Section 3: GATE ---
+# Hard, non-tolerant: `go list` must succeed, proving the module graph loads
+# and every graded package is at least discoverable.  A half-resolved graph
+# cannot slip through to the run stages and report 0/0/0.
+go list {_GO_TEST_TARGETS} > /dev/null
+echo "DEPS_OK"
+"""
+
+        run_tests = f"""#!/bin/bash
 set -eo pipefail
 
-cd /home/{pr.repo}
-go test -v -count=1 ./...
+{_GO_ENV}
 
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "test-run.sh",
-                """#!/bin/bash
+cd /home/{repo}
+
+{_TEST_CMD}
+"""
+
+        run = f"""#!/bin/bash
 set -eo pipefail
 
-cd /home/{pr.repo}
+{_GO_ENV}
+
+cd /home/{repo}
+
+bash /home/run_tests.sh
+"""
+
+        test_run = f"""#!/bin/bash
+set -eo pipefail
+
+{_GO_ENV}
+
+cd /home/{repo}
+
 git apply --whitespace=nowarn /home/test.patch
-go test -v -count=1 ./...
 
-""".format(pr=self.pr),
-            ),
-            File(
-                ".",
-                "fix-run.sh",
-                """#!/bin/bash
+bash /home/run_tests.sh
+"""
+
+        fix_run = f"""#!/bin/bash
 set -eo pipefail
 
-cd /home/{pr.repo}
-git apply --whitespace=nowarn /home/test.patch /home/fix.patch
-go test -v -count=1 ./...
+{_GO_ENV}
 
-""".format(pr=self.pr),
-            ),
+cd /home/{repo}
+
+git apply --whitespace=nowarn /home/test.patch /home/fix.patch
+
+bash /home/run_tests.sh
+"""
+
+        return [
+            File(".", "fix.patch", self.pr.fix_patch),
+            File(".", "test.patch", self.pr.test_patch),
+            File(".", "check_git_changes.sh", check_git_changes),
+            File(".", "prepare.sh", prepare),
+            File(".", "run_tests.sh", run_tests),
+            File(".", "run.sh", run),
+            File(".", "test-run.sh", test_run),
+            File(".", "fix-run.sh", fix_run),
         ]
 
     def dockerfile(self) -> str:
-        image = self.dependency()
-        name = image.image_name()
-        tag = image.image_tag()
+        repo = self.pr.repo
+        sha = self.pr.base.sha
+        copy_commands = "".join(f"COPY {f.name} /home/\n" for f in self.files())
 
-        copy_commands = ""
-        for file in self.files():
-            copy_commands += f"COPY {file.name} /home/\n"
+        return f"""FROM {self.dependency().image_full_name()}
 
-        prepare_commands = "RUN bash /home/prepare.sh"
-
-        return f"""FROM {name}:{tag}
-
-{self.global_env}
+WORKDIR /home/{repo}
 
 {copy_commands}
+RUN bash /home/prepare.sh
 
-{prepare_commands}
+RUN set -eux; \\
+    cd /home/{repo}; \\
+    test "$(git rev-parse HEAD)" = "{sha}"; \\
+    git remote remove origin 2>/dev/null || true; \\
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags refs/replace \\
+        | xargs -r -n1 git update-ref -d; \\
+    git reflog expire --expire=now --all; \\
+    git reflog expire --expire-unreachable=now --all; \\
+    git gc --prune=now --aggressive; \\
+    git repack -a -d -l --quiet; \\
+    rm -f .git/objects/info/alternates; \\
+    git config --local gc.auto 0; \\
+    git config --local fetch.recurseSubmodules false; \\
+    git config --local remote.pushDefault ""; \\
+    test "$(git rev-parse HEAD)" = "{sha}"; \\
+    test -z "$(git for-each-ref refs/heads refs/remotes refs/tags refs/replace)"; \\
+    test -z "$(git remote)"; \\
+    test "$(git rev-list --all --count)" = "$(git rev-list HEAD --count)"
 
-{self.clear_env}
-
+RUN if [ -f /home/{repo}/.gitmodules ]; then \\
+        cd /home/{repo} && git submodule foreach --recursive ' \\
+            git checkout --detach HEAD; \\
+            git remote remove origin 2>/dev/null || true; \\
+            git for-each-ref --format="%(refname)" refs/heads refs/remotes refs/tags refs/replace \\
+                | xargs -r -n1 git update-ref -d; \\
+            git reflog expire --expire=now --all; \\
+            git reflog expire --expire-unreachable=now --all; \\
+            git gc --prune=now --aggressive; \\
+            rm -f .git/objects/info/alternates; \\
+        '; \\
+    fi
 """
 
 
@@ -197,80 +312,75 @@ class Kyverno(Instance):
     def pr(self) -> PullRequest:
         return self._pr
 
-    def dependency(self) -> Image:
+    def dependency(self) -> Optional[Image]:
         return KyvernoImageDefault(self.pr, self._config)
 
     def run(self, run_cmd: str = "") -> str:
-        if run_cmd:
-            return run_cmd
-
-        return "bash /home/run.sh"
+        return run_cmd or "bash /home/run.sh"
 
     def test_patch_run(self, test_patch_run_cmd: str = "") -> str:
-        if test_patch_run_cmd:
-            return test_patch_run_cmd
-
-        return "bash /home/test-run.sh"
+        return test_patch_run_cmd or "bash /home/test-run.sh"
 
     def fix_patch_run(self, fix_patch_run_cmd: str = "") -> str:
-        if fix_patch_run_cmd:
-            return fix_patch_run_cmd
-
-        return "bash /home/fix-run.sh"
+        return fix_patch_run_cmd or "bash /home/fix-run.sh"
 
     def parse_log(self, test_log: str) -> TestResult:
-        passed_tests = set()
-        failed_tests = set()
-        skipped_tests = set()
-
-        re_pass_tests = [re.compile(r"--- PASS: (\S+)")]
-        re_fail_tests = [
-            re.compile(r"--- FAIL: (\S+)"),
-            re.compile(r"FAIL:?\s?(.+?)\s"),
-        ]
-        re_skip_tests = [re.compile(r"--- SKIP: (\S+)")]
-
-        def get_base_name(test_name: str) -> str:
-            return test_name
-
         test_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_log)
 
-        for line in test_log.splitlines():
-            line = line.strip()
+        passed_tests: set[str] = set()
+        failed_tests: set[str] = set()
+        skipped_tests: set[str] = set()
 
-            for re_pass_test in re_pass_tests:
-                pass_match = re_pass_test.match(line)
-                if pass_match:
-                    test_name = pass_match.group(1)
-                    if test_name in failed_tests:
-                        continue
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    passed_tests.add(get_base_name(test_name))
+        re_pass = re.compile(r"--- PASS: (\S+)")
+        re_fail = re.compile(r"--- FAIL: (\S+)")
+        re_skip = re.compile(r"--- SKIP: (\S+)")
+        re_pkg_fail = re.compile(
+            rf"^FAIL\s+({re.escape(_MODULE_PREFIX)}\S*)\s+(?:\[|[\d.])"
+        )
 
-            for re_fail_test in re_fail_tests:
-                fail_match = re_fail_test.match(line)
-                if fail_match:
-                    test_name = fail_match.group(1)
-                    # Skip package-level FAIL entries (e.g., "github.com/kyverno/kyverno/pkg/engine")
-                    # Go test names always start with Test/Benchmark/Example/Fuzz (uppercase)
-                    if not test_name[:1].isupper():
-                        continue
-                    if test_name in passed_tests:
-                        passed_tests.remove(test_name)
-                    if test_name in skipped_tests:
-                        skipped_tests.remove(test_name)
-                    failed_tests.add(get_base_name(test_name))
+        def base_name(test_name: str) -> str:
+            idx = test_name.rfind("/")
+            return test_name if idx == -1 else test_name[:idx]
 
-            for re_skip_test in re_skip_tests:
-                skip_match = re_skip_test.match(line)
-                if skip_match:
-                    test_name = skip_match.group(1)
-                    if test_name in passed_tests:
-                        continue
-                    if test_name in failed_tests:
-                        continue
-                    skipped_tests.add(get_base_name(test_name))
+        for raw in test_log.splitlines():
+            line = raw.strip()
+
+            m = re_pass.match(line)
+            if m:
+                name = base_name(m.group(1))
+                if name not in failed_tests:
+                    skipped_tests.discard(name)
+                    passed_tests.add(name)
+                continue
+
+            m = re_fail.match(line)
+            if m:
+                name = m.group(1)
+                # Only accept leaf test names (Go names begin uppercase);
+                # suppress stray "FAIL: tool" or other text that happens to
+                # look like a failure line.
+                if not name[:1].isupper():
+                    continue
+                name = base_name(name)
+                passed_tests.discard(name)
+                skipped_tests.discard(name)
+                failed_tests.add(name)
+                continue
+
+            m = re_skip.match(line)
+            if m:
+                name = base_name(m.group(1))
+                if name not in passed_tests and name not in failed_tests:
+                    skipped_tests.add(name)
+                continue
+
+            m = re_pkg_fail.match(line)
+            if m:
+                failed_tests.add(m.group(1))
+
+        passed_tests -= failed_tests
+        skipped_tests -= failed_tests
+        skipped_tests -= passed_tests
 
         return TestResult(
             passed_count=len(passed_tests),
