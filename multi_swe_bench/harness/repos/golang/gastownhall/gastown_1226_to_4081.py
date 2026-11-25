@@ -83,8 +83,7 @@ cd /home/[[REPO]]
 cat > /tmp/mswb_go_report.py <<'MSWBPY'
 [[REPORT]]
 MSWBPY
-files=$( { awk '/^diff --git a\//{sub(/^b\//, "", $4); print $4}' /home/test.patch | sed -n '/_test\.go$/p'
-  awk '/^diff --git a\//{sub(/^b\//, "", $4); print $4}' /home/fix.patch | sed -n '/_test\.go$/d; s/\.go$/_test.go/p'; } | sort -u)
+files=$(awk '/^diff --git a\//{sub(/^b\//, "", $4); print $4}' /home/test.patch | sed -n '/_test\.go$/p' | sort -u)
 plain='s/^func (Test[A-Za-z0-9_]*)\([A-Za-z_][A-Za-z0-9_]* \*testing\.T\).*/\1/p'
 suite=yes
 for f in $(git ls-tree --name-only HEAD -- $files); do [ -z "$(git show "HEAD:$f" | sed -nE "$plain")" ] || suite=no; done
