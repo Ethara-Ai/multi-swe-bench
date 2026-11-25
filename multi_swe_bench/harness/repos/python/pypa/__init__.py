@@ -35,3 +35,7 @@ from multi_swe_bench.harness.repos.python.pypa.bandersnatch_928_to_469 import *
 from multi_swe_bench.harness.repos.python.pypa.bandersnatch_1594_to_1309 import *
 from multi_swe_bench.harness.repos.python.pypa.bandersnatch_2151_to_1861 import *
 from multi_swe_bench.harness.repos.python.pypa.setuptools import *
+from multi_swe_bench.harness.repos.python.pypa.pip_12095_to_10577 import *
+from multi_swe_bench.harness.repos.python.pypa.pip_13065_to_12705 import *
+from multi_swe_bench.harness.repos.python.pypa.pip_13746_to_13602 import *
+from multi_swe_bench.harness.repos.python.pypa.pip_14415_to_13876 import *

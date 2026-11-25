@@ -42,3 +42,8 @@ from multi_swe_bench.harness.repos.python.HypothesisWorks.hypothesis_4633_to_461
 from multi_swe_bench.harness.repos.python.HypothesisWorks.hypothesis_4641_to_4635 import *
 from multi_swe_bench.harness.repos.python.HypothesisWorks.hypothesis_4644_to_4642 import *
 from multi_swe_bench.harness.repos.python.HypothesisWorks.hypothesis_4649_to_4643 import *
+from multi_swe_bench.harness.repos.python.HypothesisWorks.hypothesis_3221_to_3084 import *
+from multi_swe_bench.harness.repos.python.HypothesisWorks.hypothesis_3444_to_3247 import *
+from multi_swe_bench.harness.repos.python.HypothesisWorks.hypothesis_3837_to_3540 import *
+from multi_swe_bench.harness.repos.python.HypothesisWorks.hypothesis_4283_to_3924 import *
+from multi_swe_bench.harness.repos.python.HypothesisWorks.hypothesis_4509_to_4470 import *
