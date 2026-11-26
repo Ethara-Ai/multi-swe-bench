@@ -309,3 +309,4 @@ from multi_swe_bench.harness.repos.golang.gastownhall import *
 from multi_swe_bench.harness.repos.golang.velero_io import *
 from multi_swe_bench.harness.repos.golang.Tencent import *
 from multi_swe_bench.harness.repos.golang.opentofu import *
+from multi_swe_bench.harness.repos.golang.johnkerl import *
