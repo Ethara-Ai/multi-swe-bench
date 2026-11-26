@@ -499,3 +499,4 @@ from multi_swe_bench.harness.repos.python.python_websockets import *
 from multi_swe_bench.harness.repos.python.amd import *
 from multi_swe_bench.harness.repos.python.vectorize_io import *
 from multi_swe_bench.harness.repos.python.wagtail import *
+from multi_swe_bench.harness.repos.python.WeblateOrg import *

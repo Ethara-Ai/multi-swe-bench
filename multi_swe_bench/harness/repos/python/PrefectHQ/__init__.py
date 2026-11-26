@@ -9,3 +9,4 @@ from multi_swe_bench.harness.repos.python.PrefectHQ.prefect_1786_to_1673 import 
 from multi_swe_bench.harness.repos.python.PrefectHQ.prefect_1673_to_1118 import *
 from multi_swe_bench.harness.repos.python.PrefectHQ.prefect_557_to_532 import *
 from multi_swe_bench.harness.repos.python.PrefectHQ.prefect_131_to_47 import *
+from multi_swe_bench.harness.repos.python.PrefectHQ.uv_pytest import *

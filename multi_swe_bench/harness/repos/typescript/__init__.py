@@ -316,3 +316,5 @@ from multi_swe_bench.harness.repos.typescript.coleam00 import *
 from multi_swe_bench.harness.repos.typescript.unocss import *
 from multi_swe_bench.harness.repos.typescript.kenryu42 import *
 from multi_swe_bench.harness.repos.typescript.assistant_ui import *
+from multi_swe_bench.harness.repos.typescript.readest import *
+from multi_swe_bench.harness.repos.typescript.OpenCTI_Platform import *
