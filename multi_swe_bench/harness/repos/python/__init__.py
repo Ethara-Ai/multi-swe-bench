@@ -505,3 +505,4 @@ from multi_swe_bench.harness.repos.python.LearningCircuit import *
 from multi_swe_bench.harness.repos.python.Mirascope import *
 from multi_swe_bench.harness.repos.python.dj_bolt import *
 from multi_swe_bench.harness.repos.python.xorbitsai import *
+from multi_swe_bench.harness.repos.python.PostHog import *
