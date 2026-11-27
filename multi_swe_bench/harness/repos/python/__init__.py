@@ -500,3 +500,7 @@ from multi_swe_bench.harness.repos.python.amd import *
 from multi_swe_bench.harness.repos.python.vectorize_io import *
 from multi_swe_bench.harness.repos.python.wagtail import *
 from multi_swe_bench.harness.repos.python.WeblateOrg import *
+from multi_swe_bench.harness.repos.python.LearningCircuit import *
+from multi_swe_bench.harness.repos.python.Mirascope import *
+from multi_swe_bench.harness.repos.python.dj_bolt import *
+from multi_swe_bench.harness.repos.python.xorbitsai import *
